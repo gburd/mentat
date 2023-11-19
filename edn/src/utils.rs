@@ -23,7 +23,7 @@ pub fn merge(left: &Value, right: &Value) -> Option<Value> {
     match (left, right) {
         (&Value::Map(ref l), &Value::Map(ref r)) => {
             let mut result = l.clone();
-            result.extend(r.clone().into_iter());
+            result.extend(r.clone());
             Some(Value::Map(result))
         }
         _ => None,
