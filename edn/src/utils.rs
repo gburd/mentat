@@ -21,7 +21,7 @@ use crate::types::Value;
 /// TODO: implement `merge` for [Value], following the `concat`/`SliceConcatExt` pattern.
 pub fn merge(left: &Value, right: &Value) -> Option<Value> {
     match (left, right) {
-        (&Value::Map(ref l), &Value::Map(ref r)) => {
+        (Value::Map(l), Value::Map(r)) => {
             let mut result = l.clone();
             result.extend(r.clone());
             Some(Value::Map(result))

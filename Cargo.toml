@@ -1,5 +1,5 @@
 [package]
-edition = "2018"
+edition = "2021"
 authors = [
   "Richard Newman <rnewman@twinql.com>",
   "Nicholas Alexander <nalexander@mozilla.com>",
@@ -14,7 +14,7 @@ authors = [
   "Gregory Burd <greg@burd.me>",
 ]
 name = "mentat"
-version = "0.13.0"
+version = "0.14.0"
 build = "build/version.rs"
 
 [features]
