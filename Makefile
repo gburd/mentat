@@ -1,3 +1,4 @@
+.PHONY: outdated fix
 
 outdated:
 	for p in $(dirname $(ls Cargo.toml */Cargo.toml */*/Cargo.toml)); do echo $p; (cd $p; cargo outdated -R); done

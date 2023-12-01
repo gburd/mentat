@@ -1123,14 +1123,14 @@ impl OrJoin {
         (self.clauses, self.unify_vars, vars)
     }
 
-    pub fn mentioned_variables(mut self) -> BTreeSet<Variable> {
+    pub fn mentioned_variables<'a>(&'a mut self) -> &'a BTreeSet<Variable> {
         if self.mentioned_vars.is_none() {
             let m = self.collect_mentioned_variables();
             self.mentioned_vars = Some(m);
         }
 
         if let Some(ref mentioned) = self.mentioned_vars {
-            mentioned.clone()
+            mentioned
         } else {
             unreachable!()
         }
