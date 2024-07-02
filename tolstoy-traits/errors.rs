@@ -59,10 +59,13 @@ pub enum TolstoyError {
     UuidError(#[cause] uuid::Error),
 
     #[fail(display = "{}", _0)]
-    NetworkError(#[cause] hyper::Error),
+    HyperNetworkError(#[cause] hyper::Error),
 
     #[fail(display = "{}", _0)]
-    UriError(#[cause] http::uri::InvalidUri),
+    ReqwestNetworkError(#[cause] reqwest::Error),
+
+    #[fail(display = "{}", _0)]
+    UrlError(#[cause] url::ParseError),
 }
 
 impl From<DbError> for TolstoyError {
@@ -99,14 +102,24 @@ impl From<uuid::Error> for TolstoyError {
     }
 }
 
-impl From<hyper::Error> for TolstoyError {
-    fn from(error: hyper::Error) -> Self {
-        TolstoyError::NetworkError(error)
+impl From<reqwest::Error> for TolstoyError {
+    fn from(error: reqwest::Error) -> Self {
+        TolstoyError::ReqwestNetworkError(error)
     }
 }
 
-impl From<http::uri::InvalidUri> for TolstoyError {
-    fn from(error: http::uri::InvalidUri) -> Self {
-        TolstoyError::UriError(error)
+impl From<hyper::Error> for TolstoyError {
+    fn from(error: hyper::Error) -> Self {
+        TolstoyError::HyperNetworkError(error)
     }
+}
+
+impl From<url::ParseError> for TolstoyError {
+    fn from(error: url::ParseError) -> Self {
+        TolstoyError::UrlError(error)
+    }
+}
+
+impl From<std::string::String> for TolstoyError {
+    fn from(error: std::string::String) -> Self { TolstoyError::BadRemoteResponse(error) }
 }

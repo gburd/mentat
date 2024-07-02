@@ -10,12 +10,16 @@
 
 #![allow(dead_code)]
 
-use hyper::{body, header, Body, Client, Method, Request, StatusCode};
-use hyper_tls::HttpsConnector;
+use std::fmt::Display;
+use reqwest::Url;
+use hyper::{StatusCode};
+use serde::{Deserialize, Serialize};
+use serde_json;
 // TODO: https://github.com/mozilla/mentat/issues/570
 // use serde_cbor;
 use futures::executor::block_on;
 use uuid::Uuid;
+use public_traits::errors::MentatError::TolstoyError;
 
 use crate::logger::d;
 use public_traits::errors::Result;
@@ -62,151 +66,121 @@ impl RemoteClient {
     }
 
     fn bound_base_uri(&self) -> String {
-        // TODO escaping
-        format!("{}/{}", self.base_uri, self.user_uuid)
+        format!("{}/{}", self.base_uri, self.user_uuid) // TODO escaping
     }
 
-    // TODO what we want is a method that returns a deserialized json structure.
-    // It'll need a type T so that consumers can specify what downloaded json will map to. I ran
-    // into borrow issues doing that - probably need to restructure this and use PhantomData markers
-    // or somesuch. But for now, we get code duplication.
     fn get_uuid(&self, uri: String) -> Result<Uuid> {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, Body>(https);
-
-        d(&"client".to_string());
-
-        let uri = uri.parse()?;
-
-        d(&format!("GET {:?}", uri));
-
-        let work = async {
-            let res = client.get(uri).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            dbg!("response.status: {}", res.status());
-
-            let body_bytes = body::to_bytes(res.into_body()).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            let body =
-                String::from_utf8(body_bytes.to_vec()).expect("response was not valid utf-8");
-            let json: SerializedHead = serde_json::from_str(&body)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            Ok(json.head)
-        };
-        block_on(work)
+        Ok(block_on(async {
+            let result: SerializedHead = https_get(uri).await?;
+            result.head
+        }))
     }
 
     fn put<T>(&self, uri: String, payload: T, expected: StatusCode) -> Result<()>
     where
-        hyper::Body: std::convert::From<T>,
+        T: Display
     {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, Body>(https);
-
-        d(&format!("PUT {:?}", uri));
-
-        let req = Request::builder()
-            .method(Method::PUT)
-            .uri(uri)
-            .header(header::CONTENT_TYPE, mime::APPLICATION_JSON.to_string())
-            .body(payload.into())
-            .unwrap();
-
-        let work = async {
-            let res = client.request(req).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            let status_code = res.status();
-
-            if status_code != expected {
-                d(&format!("bad put response: {:?}", status_code));
-            }
-            Ok(())
-        };
-        block_on(work)
+        block_on(async {
+            https_put(uri, payload, expected).await.unwrap(); //TODO ?
+        });
+        Ok(())
     }
 
     fn get_transactions(&self, parent_uuid: &Uuid) -> Result<Vec<Uuid>> {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, Body>(https);
-
-        d(&"client".to_string());
-
         let uri = format!(
             "{}/transactions?from={}",
             self.bound_base_uri(),
             parent_uuid
         );
-        let uri = uri.parse()?;
-
-        d(&format!("GET {:?}", uri));
-
-        let work = async {
-            let res = client.get(uri).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            dbg!("response.status: {}", res.status());
-
-            let body_bytes = body::to_bytes(res.into_body()).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            let body =
-                String::from_utf8(body_bytes.to_vec()).expect("response was not valid utf-8");
-            let json: SerializedTransactions = serde_json::from_str(&body)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            d(&format!("got transactions: {:?}", &json.transactions));
-            Ok(json.transactions)
-        };
-        block_on(work)
+        Ok(block_on(async {
+            let result: SerializedTransactions = https_get(uri).await?;
+            d(&format!("got transactions: {:?}", &result.transactions));
+            result.transactions
+        }))
     }
 
     fn get_chunks(&self, transaction_uuid: &Uuid) -> Result<Vec<Uuid>> {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, Body>(https);
-
-        d(&"client".to_string());
-
         let uri = format!(
             "{}/transactions/{}",
             self.bound_base_uri(),
             transaction_uuid
         );
-        let uri = uri.parse()?;
-
-        d(&format!("GET {:?}", uri));
-
-        let work = async {
-            let res = client.get(uri).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            dbg!("response.status: {}", res.status());
-
-            let body_bytes = body::to_bytes(res.into_body()).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            let body =
-                String::from_utf8(body_bytes.to_vec()).expect("response was not valid utf-8");
-            let json: DeserializableTransaction = serde_json::from_str(&body)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-
-            d(&format!("got transaction chunks: {:?}", &json.chunks));
-            Ok(json.chunks)
-        };
-        block_on(work)
+        Ok(block_on(async {
+            let result: DeserializableTransaction = https_get(uri);
+            d(&format!("got transaction chunks: {:?}", &result.chunks));
+            result.chunks
+        }))
     }
 
     fn get_chunk(&self, chunk_uuid: &Uuid) -> Result<TxPart> {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, Body>(https);
-
-        d(&"client".to_string());
-
         let uri = format!("{}/chunks/{}", self.bound_base_uri(), chunk_uuid);
-        let uri = uri.parse()?;
+        Ok(block_on(async {
+            let result: TxPart = https_get(uri);
+            d(&format!("got transaction chunk: {:?}", &result));
+            result
+        }))
+    }
+}
 
-        d(&format!("GET {:?}", uri));
+async fn https_put<T>(uri: String, payload: T, expected: StatusCode) -> Result<()>
+where
+    T: ToString
+{
+    d(&format!("PUT {:?}", uri));
+    let url = Url::parse(&*uri)?;
 
-        let work = async {
-            let res = client.get(uri).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            dbg!("response.status: {}", res.status());
+    // Create a reqwest client
+    let client = reqwest::Client::new();
 
-            let body_bytes = body::to_bytes(res.into_body()).await.unwrap(); // TODO use '?' fix From hyper::Error to MentatError;
-            let body =
-                String::from_utf8(body_bytes.to_vec()).expect("response was not valid utf-8");
-            let json: TxPart = serde_json::from_str(&body)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-            d(&format!("got transaction chunk: {:?}", &json));
-            Ok(json)
-        };
-        block_on(work)
+    // Make the HTTP PUT request with the Accept: application/json header
+    let response = client
+        .put(url)
+        .header(reqwest::header::ACCEPT, mime::APPLICATION_JSON.to_string())
+        .body(payload.to_string())
+        .send()
+        .await?;
+
+    // Check if the request was successful (status code 2xx)
+    dbg!("HTTP/PUT response.status: {}", response.status());
+    if !response.status().is_success() {
+        Err(format!("HTTP/PUT request failed with status code: {}", response.status()).into())
+    } else if response.status() != expected {
+        Err(format!("HTTP/PUT request status code: {} does not match expected code: {}", response.status(), expected).into())
+    } else {
+        Ok(())
+    }
+}
+
+async fn https_get<'de, T>(uri: String) -> Result<T>
+    where
+        T: Deserialize<'de> + Serialize,
+{
+    d(&format!("GET {:?}", uri));
+    let url = Url::parse(&*uri)?;
+
+    // Create a reqwest client
+    let client = reqwest::Client::builder()
+        .tcp_nodelay(true)
+        .build()?;
+
+    // Make the HTTP GET request
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, mime::APPLICATION_JSON.to_string())
+        .send()
+        .await?;
+
+    // Check if the request was successful (status code 2xx)
+    dbg!("HTTP/GET response.status: {}", response.status());
+
+    if !response.status().is_success() {
+        Err(TolstoyError::BadRemoteResponse(format!("Failed to get JSON from URL: {}", response.status())))
+    } else {
+        // Deserialize the JSON response in the body
+        let body = response.text().await?;
+        let result = serde_json::from_str::<T>(&body)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        Ok(result)
     }
 }
 
@@ -227,8 +201,7 @@ impl GlobalTransactionLog for RemoteClient {
     }
 
     /// Slurp transactions and datoms after `tx`, returning them as owned data.
-    ///
-    /// This is inefficient but convenient for development.
+    /// TODO: This is inefficient but convenient for development.
     fn transactions_after(&self, tx: &Uuid) -> Result<Vec<Tx>> {
         let new_txs = self.get_transactions(tx)?;
         let mut tx_list = Vec::new();

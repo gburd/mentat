@@ -1,3 +1,9 @@
+# Cargo
+  * https://github.com/kbknapp/cargo-outdated
+  * https://github.com/killercup/cargo-edit
+  * https://github.com/dentosal/cargo-recursive
+  * https://github.com/rhysd/cargo-husky
+
 * sqlite -> monetdb-lite-c + fts5 + bayesdb
 * fts5 + regex + tre/fuzzy + codesearch/trigram filters, streaming bloom filters https://arxiv.org/abs/2001.03147
 * datalog to "goblin relational engine" (gtk)

@@ -129,11 +129,15 @@ pub enum MentatError {
 
     #[cfg(feature = "syncable")]
     #[fail(display = "{}", _0)]
-    NetworkError(#[cause] hyper::Error),
+    HyperNetworkError(#[cause] hyper::Error),
 
     #[cfg(feature = "syncable")]
     #[fail(display = "{}", _0)]
-    UriError(#[cause] http::uri::InvalidUri),
+    ReqwestNetworkError(#[cause] reqwest::Error),
+
+    #[cfg(feature = "syncable")]
+    #[fail(display = "{}", _0)]
+    UrlError(#[cause] url::ParseError),
 
     #[cfg(feature = "syncable")]
     #[fail(display = "{}", _0)]
@@ -215,13 +219,20 @@ impl From<serde_json::Error> for MentatError {
 #[cfg(feature = "syncable")]
 impl From<hyper::Error> for MentatError {
     fn from(error: hyper::Error) -> Self {
-        MentatError::NetworkError(error)
+        MentatError::HyperNetworkError(error)
     }
 }
 
 #[cfg(feature = "syncable")]
-impl From<http::uri::InvalidUri> for MentatError {
-    fn from(error: http::uri::InvalidUri) -> Self {
-        MentatError::UriError(error)
+impl From<reqwest::Error> for MentatError {
+    fn from(error: reqwest::Error) -> Self {
+        MentatError::ReqwestNetworkError(error)
+    }
+}
+
+#[cfg(feature = "syncable")]
+impl From<url::ParseError> for MentatError {
+    fn from(error: url::ParseError) -> Self {
+        MentatError::UrlError(error)
     }
 }
