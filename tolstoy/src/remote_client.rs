@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use hyper::{body, header, Body, Client, Method, Request, StatusCode};
+use hyper::{body, header, body::Body, Method, Request, StatusCode};
 use hyper_tls::HttpsConnector;
 // TODO: https://github.com/mozilla/mentat/issues/570
 // use serde_cbor;
@@ -66,11 +66,19 @@ impl RemoteClient {
         format!("{}/{}", self.base_uri, self.user_uuid)
     }
 
-    // TODO what we want is a method that returns a deserialized json structure.
+    // TODO: what we want is a method that returns a deserialized json structure.
     // It'll need a type T so that consumers can specify what downloaded json will map to. I ran
     // into borrow issues doing that - probably need to restructure this and use PhantomData markers
-    // or somesuch. But for now, we get code duplication.
+    // or some such. But for now, we get code duplication.
     fn get_uuid(&self, uri: String) -> Result<Uuid> {
+        let url = uri.parse::<hyper::Uri>()?;
+        let authority = url.authority().unwrap().clone();
+        let req = Request::builder()
+            .uri(url)
+            .header(hyper::header::HOST, authority.as_str())
+            .body(Empty::<Bytes>::new())?;
+        
+        
         let https = HttpsConnector::new();
         let client = Client::builder().build::<_, Body>(https);
 

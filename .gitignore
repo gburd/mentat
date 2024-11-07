@@ -8,6 +8,9 @@
 .*.sw*
 *.rs.bak
 *.bak
+.direnv
+.envrc
+.netlify
 .hg/
 .hgignore
 .lein-deps-sum

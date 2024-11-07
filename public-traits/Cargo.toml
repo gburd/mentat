@@ -2,6 +2,7 @@
 name = "public_traits"
 version = "0.0.2"
 workspace = ".."
+edition = "2021"
 
 [lib]
 name = "public_traits"
@@ -15,16 +16,16 @@ syncable = ["tolstoy_traits", "hyper", "serde_json"]
 [dependencies]
 failure = "~0.1"
 failure_derive = "~0.1"
-http = "~0.2"
-tokio = { version = "1.8.0", features = ["full"] }
-uuid = "~1.0"
+http = "~1.1"
+tokio = { version = "1.41.0", features = ["full"] }
+uuid = "~1.11"
 
 [dependencies.rusqlite]
-version = "~0.29"
+version = "~0.32"
 features = ["limits", "bundled"]
 
 [dependencies.hyper]
-version = "~0.14"
+version = "~1.5"
 optional = true
 
 [dependencies.serde_json]

@@ -2,6 +2,7 @@
 name = "mentat_query_algebrizer"
 version = "0.0.2"
 workspace = ".."
+edition = "2021"
 
 [dependencies]
 failure = "~0.1"
@@ -19,4 +20,4 @@ path = "../core-traits"
 path = "../query-algebrizer-traits"
 
 [dev-dependencies]
-itertools = "~0.10"
+itertools = "~0.13"

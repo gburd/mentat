@@ -2,9 +2,10 @@
 name = "mentat_query_sql"
 version = "0.0.2"
 workspace = ".."
+edition = "2021"
 
 [dependencies.rusqlite]
-version = "~0.29"
+version = "~0.32"
 features = ["limits", "bundled"]
 
 [dependencies.edn]

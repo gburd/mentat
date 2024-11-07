@@ -10,6 +10,7 @@
 
 use rusqlite;
 use rusqlite::types::ToSql;
+use rusqlite::params_from_iter;
 
 use std::rc::Rc;
 
@@ -289,19 +290,16 @@ fn run_statement<'sqlite, 'stmt, 'bound>(
     let rows = if bindings.is_empty() {
         statement.query(rusqlite::params![])?
     } else {
-        let refs: Vec<(&str, &dyn ToSql)> = bindings
-            .iter()
-            .map(|&(ref k, ref v)| (k.as_str(), v.as_ref() as &dyn ToSql))
-            .collect();
-        statement.query_named(&refs)?
+        let  params: Vec<&dyn ToSql> = bindings.iter().map(|(_, v)| v.as_ref() as &dyn ToSql).collect();
+        statement.query(params_from_iter(params.iter()))?
     };
     Ok(rows)
 }
 
-fn run_sql_query<'sqlite, 'sql, 'bound, T, F>(
-    sqlite: &'sqlite rusqlite::Connection,
-    sql: &'sql str,
-    bindings: &'bound [(String, Rc<rusqlite::types::Value>)],
+fn run_sql_query<T, F>(
+    sqlite: &rusqlite::Connection,
+    sql: &str,
+    bindings: &[(String, Rc<rusqlite::types::Value>)],
     mut mapper: F,
 ) -> Result<Vec<T>>
 where

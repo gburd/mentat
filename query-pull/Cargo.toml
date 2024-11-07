@@ -2,6 +2,7 @@
 name = "mentat_query_pull"
 version = "0.0.2"
 workspace = ".."
+edition = "2021"
 
 [features]
 sqlcipher = ["rusqlite/sqlcipher"]
@@ -13,7 +14,7 @@ failure = "~0.1"
 path = "../query-pull-traits"
 
 [dependencies.rusqlite]
-version = "~0.29"
+version = "~0.32"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
