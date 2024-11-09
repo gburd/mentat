@@ -330,10 +330,10 @@ impl ConjoiningClauses {
             alias_counter: self.alias_counter.clone(),
             empty_because: self.empty_because.clone(),
             input_variables: self.input_variables.intersection(vars).cloned().collect(),
-            value_bindings: self.value_bindings.with_intersected_keys(&vars),
-            known_types: self.known_types.with_intersected_keys(&vars),
-            extracted_types: self.extracted_types.with_intersected_keys(&vars),
-            required_types: self.required_types.with_intersected_keys(&vars),
+            value_bindings: self.value_bindings.with_intersected_keys(vars),
+            known_types: self.known_types.with_intersected_keys(vars),
+            extracted_types: self.extracted_types.with_intersected_keys(vars),
+            required_types: self.required_types.with_intersected_keys(vars),
             ..Default::default()
         }
     }
@@ -358,7 +358,7 @@ impl ConjoiningClauses {
 
         // Are we also trying to figure out the type of the value when the query runs?
         // If so, constrain that!
-        if let Some(qa) = self.extracted_types.get(&var) {
+        if let Some(qa) = self.extracted_types.get(var) {
             self.wheres
                 .add_intersection(ColumnConstraint::has_unit_type(qa.0.clone(), vt));
         }
@@ -508,7 +508,7 @@ impl ConjoiningClauses {
 
         self.column_bindings
             .entry(var)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(alias);
     }
 
@@ -763,18 +763,18 @@ impl ConjoiningClauses {
         self.empty_because = Some(why);
     }
 
-    fn entid_for_ident<'s, 'a>(
+    fn entid_for_ident(
         &self,
-        schema: &'s Schema,
-        ident: &'a Keyword,
+        schema: &Schema,
+        ident: &Keyword,
     ) -> Option<KnownEntid> {
-        schema.get_entid(&ident)
+        schema.get_entid(ident)
     }
 
-    fn table_for_attribute_and_value<'s, 'a>(
+    fn table_for_attribute_and_value(
         &self,
-        attribute: &'s Attribute,
-        value: &'a EvolvedValuePlace,
+        attribute: &Attribute,
+        value: &EvolvedValuePlace,
     ) -> ::std::result::Result<DatomsTable, EmptyBecause> {
         if attribute.fulltext {
             match value {
@@ -837,9 +837,9 @@ impl ConjoiningClauses {
     /// If the attribute input or value binding doesn't name an attribute, or doesn't name an
     /// attribute that is congruent with the supplied value, we return an `EmptyBecause`.
     /// The caller is responsible for marking the CC as known-empty if this is a fatal failure.
-    fn table_for_places<'s, 'a>(
+    fn table_for_places<'a>(
         &self,
-        schema: &'s Schema,
+        schema: &Schema,
         attribute: &'a EvolvedNonValuePlace,
         value: &'a EvolvedValuePlace,
     ) -> ::std::result::Result<DatomsTable, EmptyBecause> {
@@ -896,10 +896,10 @@ impl ConjoiningClauses {
     /// This is a mutating method because it mutates the aliaser function!
     /// Note that if this function decides that a pattern cannot match, it will flip
     /// `empty_because`.
-    fn alias_table<'s, 'a>(
+    fn alias_table(
         &mut self,
-        schema: &'s Schema,
-        pattern: &'a EvolvedPattern,
+        schema: &Schema,
+        pattern: &EvolvedPattern,
     ) -> Option<SourceAlias> {
         self.table_for_places(schema, &pattern.attribute, &pattern.value)
             .map_err(|reason| {
@@ -922,10 +922,10 @@ impl ConjoiningClauses {
         }
     }
 
-    fn get_attribute<'s, 'a>(
+    fn get_attribute<'s>(
         &self,
         schema: &'s Schema,
-        pattern: &'a EvolvedPattern,
+        pattern: &EvolvedPattern,
     ) -> Option<&'s Attribute> {
         match pattern.attribute {
             EvolvedNonValuePlace::Entid(id) =>
@@ -946,10 +946,10 @@ impl ConjoiningClauses {
         }
     }
 
-    fn get_value_type<'s, 'a>(
+    fn get_value_type(
         &self,
-        schema: &'s Schema,
-        pattern: &'a EvolvedPattern,
+        schema: &Schema,
+        pattern: &EvolvedPattern,
     ) -> Option<ValueType> {
         self.get_attribute(schema, pattern).map(|a| a.value_type)
     }

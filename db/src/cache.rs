@@ -210,7 +210,7 @@ pub struct AevRows<'conn, F> {
 
 /// Unwrap the Result from MappedRows. We could also use this opportunity to map_err it, but
 /// for now it's convenient to avoid error handling.
-impl<'conn, F> Iterator for AevRows<'conn, F>
+impl<F> Iterator for AevRows<'_, F>
 where
     F: FnMut(&rusqlite::Row) -> rusqlite::Result<Aev>,
 {
@@ -374,7 +374,7 @@ impl RemoveFromCache for MultiValAttributeCache {
 
 impl CardinalityManyCache for MultiValAttributeCache {
     fn acc(&mut self, e: Entid, v: TypedValue) {
-        self.e_vs.entry(e).or_insert_with(Vec::new).push(v)
+        self.e_vs.entry(e).or_default().push(v)
     }
 
     fn set(&mut self, e: Entid, vs: Vec<TypedValue>) {
@@ -472,7 +472,7 @@ impl ClearCache for NonUniqueReverseAttributeCache {
 
 impl RemoveFromCache for NonUniqueReverseAttributeCache {
     fn remove(&mut self, e: Entid, v: &TypedValue) {
-        if let Some(vec) = self.v_es.get_mut(&v) {
+        if let Some(vec) = self.v_es.get_mut(v) {
             let removed = vec.remove(&e);
             if !removed {
                 eprintln!(
@@ -491,7 +491,7 @@ impl RemoveFromCache for NonUniqueReverseAttributeCache {
 
 impl NonUniqueReverseAttributeCache {
     fn acc(&mut self, e: Entid, v: TypedValue) {
-        self.v_es.entry(v).or_insert_with(BTreeSet::new).insert(e);
+        self.v_es.entry(v).or_default().insert(e);
     }
 
     fn get_es(&self, v: &TypedValue) -> Option<&BTreeSet<Entid>> {
@@ -677,7 +677,7 @@ impl AttributeCaches {
         self.single_vals.entry(a).or_insert_with(|| {
             fallback
                 .and_then(|c| c.single_vals.get(&a).cloned())
-                .unwrap_or_else(Default::default)
+                .unwrap_or_default()
         })
     }
 
@@ -686,7 +686,7 @@ impl AttributeCaches {
         self.multi_vals.entry(a).or_insert_with(|| {
             fallback
                 .and_then(|c| c.multi_vals.get(&a).cloned())
-                .unwrap_or_else(Default::default)
+                .unwrap_or_default()
         })
     }
 
@@ -699,7 +699,7 @@ impl AttributeCaches {
         self.unique_reverse.entry(a).or_insert_with(|| {
             fallback
                 .and_then(|c| c.unique_reverse.get(&a).cloned())
-                .unwrap_or_else(Default::default)
+                .unwrap_or_default()
         })
     }
 
@@ -712,7 +712,7 @@ impl AttributeCaches {
         self.non_unique_reverse.entry(a).or_insert_with(|| {
             fallback
                 .and_then(|c| c.non_unique_reverse.get(&a).cloned())
-                .unwrap_or_else(Default::default)
+                .unwrap_or_default()
         })
     }
 
@@ -730,12 +730,12 @@ impl AttributeCaches {
             self.single_vals.entry(a).or_insert_with(|| {
                 forward_fallback
                     .and_then(|c| c.single_vals.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
             self.unique_reverse.entry(a).or_insert_with(|| {
                 reverse_fallback
                     .and_then(|c| c.unique_reverse.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
         )
     }
@@ -754,12 +754,12 @@ impl AttributeCaches {
             self.multi_vals.entry(a).or_insert_with(|| {
                 forward_fallback
                     .and_then(|c| c.multi_vals.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
             self.unique_reverse.entry(a).or_insert_with(|| {
                 reverse_fallback
                     .and_then(|c| c.unique_reverse.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
         )
     }
@@ -778,12 +778,12 @@ impl AttributeCaches {
             self.single_vals.entry(a).or_insert_with(|| {
                 forward_fallback
                     .and_then(|c| c.single_vals.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
             self.non_unique_reverse.entry(a).or_insert_with(|| {
                 reverse_fallback
                     .and_then(|c| c.non_unique_reverse.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
         )
     }
@@ -802,12 +802,12 @@ impl AttributeCaches {
             self.multi_vals.entry(a).or_insert_with(|| {
                 forward_fallback
                     .and_then(|c| c.multi_vals.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
             self.non_unique_reverse.entry(a).or_insert_with(|| {
                 reverse_fallback
                     .and_then(|c| c.non_unique_reverse.get(&a).cloned())
-                    .unwrap_or_else(Default::default)
+                    .unwrap_or_default()
             }),
         )
     }
@@ -1025,7 +1025,7 @@ impl AttributeCaches {
         attribute: Entid,
         entid: Entid,
     ) -> Option<Option<&TypedValue>> {
-        if let Some(&Some(ref tv)) = self
+        if let Some(Some(tv)) = self
             .value_pairs(schema, attribute)
             .and_then(|c| c.get(&entid))
         {
@@ -1064,11 +1064,11 @@ impl AttributeCaches {
         self.repopulate_from_aevt(schema, &mut stmt, args, replacing)
     }
 
-    fn repopulate_from_aevt<'a, 's, 'c, 'v>(
-        &'a mut self,
-        schema: &'s Schema,
-        statement: &'c mut rusqlite::Statement,
-        args: Vec<&'v dyn rusqlite::types::ToSql>,
+    fn repopulate_from_aevt(
+        &mut self,
+        schema: &Schema,
+        statement: &mut rusqlite::Statement,
+        args: Vec<&dyn rusqlite::types::ToSql>,
         replacing: bool,
     ) -> Result<()> {
         let mut aev_factory = AevFactory::new();
@@ -1126,10 +1126,10 @@ impl AttributeCaches {
     ///
     /// Each provided attribute will be marked as forward-cached; the caller is responsible for
     /// ensuring that this cache is complete or that it is not expected to be complete.
-    fn populate_cache_for_entities_and_attributes<'s, 'c>(
+    fn populate_cache_for_entities_and_attributes(
         &mut self,
-        schema: &'s Schema,
-        sqlite: &'c rusqlite::Connection,
+        schema: &Schema,
+        sqlite: &rusqlite::Connection,
         attrs: AttributeSpec,
         entities: &[Entid],
     ) -> Result<()> {
@@ -1203,9 +1203,9 @@ impl AttributeCaches {
     /// Return a reference to the cache for the provided `a`, if `a` names an attribute that is
     /// cached in the forward direction. If `a` doesn't name an attribute, or it's not cached at
     /// all, or it's only cached in reverse (`v` to `e`, not `e` to `v`), `None` is returned.
-    pub fn forward_attribute_cache_for_attribute<'a, 's>(
+    pub fn forward_attribute_cache_for_attribute<'a>(
         &'a self,
-        schema: &'s Schema,
+        schema: &Schema,
         a: Entid,
     ) -> Option<&'a dyn AttributeCache> {
         if !self.forward_cached_attributes.contains(&a) {
@@ -1223,10 +1223,10 @@ impl AttributeCaches {
     /// Fetch the requested entities and attributes from the store and put them in the cache.
     /// The caller is responsible for ensuring that `entities` is unique.
     /// Attributes for which every entity is already cached will not be processed again.
-    pub fn extend_cache_for_entities_and_attributes<'s, 'c>(
+    pub fn extend_cache_for_entities_and_attributes(
         &mut self,
-        schema: &'s Schema,
-        sqlite: &'c rusqlite::Connection,
+        schema: &Schema,
+        sqlite: &rusqlite::Connection,
         mut attrs: AttributeSpec,
         entities: &[Entid],
     ) -> Result<()> {
@@ -1255,12 +1255,12 @@ impl AttributeCaches {
                             // Return true if there are any entities missing for this attribute.
                             if attr.multival {
                                 self.multi_vals
-                                    .get(&a)
+                                    .get(a)
                                     .map(|cache| entities.iter().any(|e| !cache.has_e(*e)))
                                     .unwrap_or(true)
                             } else {
                                 self.single_vals
-                                    .get(&a)
+                                    .get(a)
                                     .map(|cache| entities.iter().any(|e| !cache.has_e(*e)))
                                     .unwrap_or(true)
                             }
@@ -1280,9 +1280,9 @@ impl AttributeCaches {
 
     /// Fetch the requested entities and attributes and put them in a new cache.
     /// The caller is responsible for ensuring that `entities` is unique.
-    pub fn make_cache_for_entities_and_attributes<'s, 'c>(
-        schema: &'s Schema,
-        sqlite: &'c rusqlite::Connection,
+    pub fn make_cache_for_entities_and_attributes(
+        schema: &Schema,
+        sqlite: &rusqlite::Connection,
         attrs: AttributeSpec,
         entities: &[Entid],
     ) -> Result<AttributeCaches> {
@@ -1309,7 +1309,7 @@ impl CachedAttributes for AttributeCaches {
         attribute: Entid,
         entid: Entid,
     ) -> Option<&TypedValue> {
-        if let Some(&Some(ref tv)) = self
+        if let Some(Some(tv)) = self
             .value_pairs(schema, attribute)
             .and_then(|c| c.get(&entid))
         {
@@ -1949,7 +1949,7 @@ impl<'a> InProgressCacheTransactWatcher<'a> {
     }
 }
 
-impl<'a> TransactWatcher for InProgressCacheTransactWatcher<'a> {
+impl TransactWatcher for InProgressCacheTransactWatcher<'_> {
     fn datom(&mut self, op: OpType, e: Entid, a: Entid, v: &TypedValue) {
         if !self.active {
             return;

@@ -50,7 +50,7 @@ impl ValueTypes for FnArg {
                 }
             }
 
-            &FnArg::IdentOrKeyword(ref x) => {
+            FnArg::IdentOrKeyword(x) => {
                 if schema.get_entid(x).is_some() {
                     ValueTypeSet::of_keywords()
                 } else {
@@ -97,9 +97,9 @@ impl ConjoiningClauses {
     /// The conversion depends on, and can fail because of:
     /// - Existing known types of a variable to which this arg will be bound.
     /// - Existing bindings of a variable `FnArg`.
-    pub(crate) fn typed_value_from_arg<'s>(
+    pub(crate) fn typed_value_from_arg(
         &self,
-        schema: &'s Schema,
+        schema: &Schema,
         var: &Variable,
         arg: FnArg,
         known_types: ValueTypeSet,

@@ -134,20 +134,20 @@ impl Datom {
 
 impl Datoms {
     pub fn to_edn(&self) -> edn::Value {
-        edn::Value::Vector((&self.0).iter().map(|x| x.to_edn()).collect())
+        edn::Value::Vector(self.0.iter().map(|x| x.to_edn()).collect())
     }
 }
 
 impl Transactions {
     pub fn to_edn(&self) -> edn::Value {
-        edn::Value::Vector((&self.0).iter().map(|x| x.to_edn()).collect())
+        edn::Value::Vector(self.0.iter().map(|x| x.to_edn()).collect())
     }
 }
 
 impl FulltextValues {
     pub fn to_edn(&self) -> edn::Value {
         edn::Value::Vector(
-            (&self.0)
+            self.0
                 .iter()
                 .map(|&(x, ref y)| {
                     edn::Value::Vector(vec![edn::Value::Integer(x), edn::Value::Text(y.clone())])
@@ -210,7 +210,7 @@ pub fn datoms_after<S: Borrow<Schema>>(
     let mut stmt: rusqlite::Statement = conn.prepare("SELECT e, a, v, value_type_tag, tx FROM datoms WHERE tx > ? ORDER BY e ASC, a ASC, value_type_tag ASC, v ASC, tx ASC")?;
 
     let r: Result<Vec<_>> = stmt
-        .query_and_then(&[&tx], |row| {
+        .query_and_then([&tx], |row| {
             let e: i64 = row.get(0)?;
             let a: i64 = row.get(1)?;
 
@@ -244,7 +244,7 @@ pub fn datoms_after<S: Borrow<Schema>>(
         })?
         .collect();
 
-    Ok(Datoms(r?.into_iter().filter_map(|x| x).collect()))
+    Ok(Datoms(r?.into_iter().flatten().collect()))
 }
 
 /// Return the sequence of transactions in the store with transaction ID strictly greater than the
@@ -261,7 +261,7 @@ pub fn transactions_after<S: Borrow<Schema>>(
     let mut stmt: rusqlite::Statement = conn.prepare("SELECT e, a, v, value_type_tag, tx, added FROM transactions WHERE tx > ? ORDER BY tx ASC, e ASC, a ASC, value_type_tag ASC, v ASC, added ASC")?;
 
     let r: Result<Vec<_>> = stmt
-        .query_and_then(&[&tx], |row| {
+        .query_and_then([&tx], |row| {
             let e: i64 = row.get(0)?;
             let a: i64 = row.get(1)?;
 
@@ -295,7 +295,7 @@ pub fn transactions_after<S: Borrow<Schema>>(
     // Group by tx.
     let r: Vec<Datoms> = r?
         .into_iter()
-        .group_by(|x| x.tx)
+        .chunk_by(|x| x.tx)
         .into_iter()
         .map(|(_key, group)| Datoms(group.collect()))
         .collect();

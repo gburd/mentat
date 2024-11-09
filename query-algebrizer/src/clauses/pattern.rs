@@ -445,7 +445,7 @@ impl ConjoiningClauses {
                 if let Some(entid) = known.schema.get_entid(&kw) {
                     Place(EvolvedNonValuePlace::Entid(entid.into()))
                 } else {
-                    Empty(EmptyBecause::UnresolvedIdent((&*kw).clone()))
+                    Empty(EmptyBecause::UnresolvedIdent((*kw).clone()))
                 }
             }
             PatternNonValuePlace::Variable(var) => {
@@ -458,7 +458,7 @@ impl ConjoiningClauses {
                         if let Some(entid) = known.schema.get_entid(&kw) {
                             Place(EvolvedNonValuePlace::Entid(entid.into()))
                         } else {
-                            Empty(EmptyBecause::UnresolvedIdent((&*kw).clone()))
+                            Empty(EmptyBecause::UnresolvedIdent((*kw).clone()))
                         }
                     }
                     Some(v) => Empty(EmptyBecause::InvalidBinding(col.into(), v)),
@@ -528,7 +528,7 @@ impl ConjoiningClauses {
                         if let Some(entid) = known.schema.get_entid(&kw) {
                             Place(EvolvedValuePlace::Entid(entid.into()))
                         } else {
-                            Empty(EmptyBecause::UnresolvedIdent((&*kw).clone()))
+                            Empty(EmptyBecause::UnresolvedIdent((*kw).clone()))
                         }
                     }
                     Some(ValueType::Keyword) => {
@@ -614,7 +614,7 @@ impl ConjoiningClauses {
         match &pattern.entity {
             EvolvedNonValuePlace::Variable(ref var) => {
                 // See if we have it yet!
-                match self.bound_value(&var) {
+                match self.bound_value(var) {
                     None => (),
                     Some(TypedValue::Ref(entid)) => {
                         new_entity = Some(EvolvedNonValuePlace::Entid(entid));
@@ -622,7 +622,7 @@ impl ConjoiningClauses {
                     Some(v) => {
                         return Empty(EmptyBecause::TypeMismatch {
                             var: var.clone(),
-                            existing: self.known_type_set(&var),
+                            existing: self.known_type_set(var),
                             desired: ValueTypeSet::of_one(ValueType::Ref),
                         });
                     }
@@ -633,7 +633,7 @@ impl ConjoiningClauses {
         match &pattern.value {
             EvolvedValuePlace::Variable(ref var) => {
                 // See if we have it yet!
-                match self.bound_value(&var) {
+                match self.bound_value(var) {
                     None => (),
                     Some(tv) => {
                         new_value = Some(EvolvedValuePlace::Value(tv));

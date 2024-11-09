@@ -124,8 +124,8 @@ fn test_simple_pull() {
     ]
     .into();
 
-    let expected: BTreeMap<Entid, ValueRc<StructuredMap>>;
-    expected = vec![(capitol, c.into()), (beacon, b.into())]
+    
+    let expected: BTreeMap<Entid, ValueRc<StructuredMap>> = vec![(capitol, c.into()), (beacon, b.into())]
         .into_iter()
         .collect();
 

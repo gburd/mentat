@@ -14,7 +14,7 @@ authors = [
   "Gregory Burd <greg@burd.me>",
 ]
 name = "mentat"
-version = "0.13.0"
+version = "0.14.0"
 build = "build/version.rs"
 
 [features]
@@ -34,7 +34,7 @@ members = [
 rustc_version = "~0.4"
 
 [dev-dependencies]
-assert_approx_eq = "~1.1"
+assert_approx_eq = "~1"
 
 #[dev-dependencies.cargo-husky]
 #version = "1"

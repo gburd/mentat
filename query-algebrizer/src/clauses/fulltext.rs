@@ -58,7 +58,7 @@ impl ConjoiningClauses {
         let bindings = match where_fn.binding {
             Binding::BindRel(bindings) => {
                 let bindings_count = bindings.len();
-                if bindings_count < 1 || bindings_count > 4 {
+                if !(1..=4).contains(&bindings_count) {
                     bail!(AlgebrizerError::InvalidBinding(
                         where_fn.operator.clone(),
                         BindingError::InvalidNumberOfBindings {
@@ -131,12 +131,12 @@ impl ConjoiningClauses {
         // attribute, is likely enough to be a coding error that we choose to bail instead of
         // marking the pattern as known-empty.
         let op = where_fn.operator.clone(); //TODO(gburd): remove me...
-        let a = a.ok_or_else(move || AlgebrizerError::InvalidArgument(op, "attribute", 1))?;
+        let a = a.ok_or(AlgebrizerError::InvalidArgument(op, "attribute", 1))?;
         let op = where_fn.operator.clone(); //TODO(gburd): remove me...
         let attribute = schema
             .attribute_for_entid(a)
             .cloned()
-            .ok_or_else(move || AlgebrizerError::InvalidArgument(op, "attribute", 1))?;
+            .ok_or(AlgebrizerError::InvalidArgument(op, "attribute", 1))?;
 
         if !attribute.fulltext {
             // We can never get results from a non-fulltext attribute!
@@ -209,7 +209,7 @@ impl ConjoiningClauses {
                             if let Some(binding) = self
                                 .column_bindings
                                 .get(&in_var)
-                                .and_then(|bindings| bindings.get(0).cloned())
+                                .and_then(|bindings| bindings.first().cloned())
                             {
                                 Either::Right(binding)
                             } else {

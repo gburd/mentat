@@ -75,7 +75,6 @@ use crate::upsert_resolution::{FinalPopulations, Generation};
 use crate::watcher::TransactWatcher;
 use edn::entities as entmod;
 use edn::entities::{AttributePlace, Entity, OpType, TempId};
-use rusqlite;
 
 /// Defines transactor's high level behaviour.
 pub(crate) enum TransactorAction {
@@ -175,9 +174,9 @@ where
     /// Given a collection of tempids and the [a v] pairs that they might upsert to, resolve exactly
     /// which [a v] pairs do upsert to entids, and map each tempid that upserts to the upserted
     /// entid.  The keys of the resulting map are exactly those tempids that upserted.
-    pub(crate) fn resolve_temp_id_avs<'b>(
+    pub(crate) fn resolve_temp_id_avs(
         &self,
-        temp_id_avs: &'b [(TempIdHandle, AVPair)],
+        temp_id_avs: &[(TempIdHandle, AVPair)],
     ) -> Result<TempIdMap> {
         if temp_id_avs.is_empty() {
             return Ok(TempIdMap::default());
@@ -200,7 +199,7 @@ where
         // Errors.  BTree* since we want deterministic results.
         let mut conflicting_upserts: BTreeMap<TempId, BTreeSet<KnownEntid>> = BTreeMap::default();
 
-        for &(ref tempid, ref av_pair) in temp_id_avs {
+        for (tempid, av_pair) in temp_id_avs {
             trace!(
                 "tempid {:?} av_pair {:?} -> {:?}",
                 tempid,
@@ -290,7 +289,7 @@ where
                 let lr_a: i64 = match lookup_ref.a {
                     AttributePlace::Entid(entmod::EntidOrIdent::Entid(ref a)) => *a,
                     AttributePlace::Entid(entmod::EntidOrIdent::Ident(ref a)) => {
-                        self.schema.require_entid(&a)?.into()
+                        self.schema.require_entid(a)?.into()
                     }
                 };
                 let lr_attribute: &Attribute = self.schema.require_attribute_for_entid(lr_a)?;
@@ -298,7 +297,7 @@ where
                 let lr_typed_value: TypedValue = lookup_ref
                     .v
                     .clone()
-                    .into_typed_value(&self.schema, lr_attribute.value_type)?;
+                    .into_typed_value(self.schema, lr_attribute.value_type)?;
                 if lr_attribute.unique.is_none() {
                     bail!(DbErrorKind::NotYetImplemented(format!(
                         "Cannot resolve (lookup-ref {} {:?}) with attribute that is not :db/unique",
@@ -324,7 +323,7 @@ where
                     entmod::EntityPlace::Entid(e) => {
                         let e = match e {
                             entmod::EntidOrIdent::Entid(ref e) => self.ensure_entid_exists(*e)?,
-                            entmod::EntidOrIdent::Ident(ref e) => self.ensure_ident_exists(&e)?,
+                            entmod::EntidOrIdent::Ident(ref e) => self.ensure_ident_exists(e)?,
                         };
                         Ok(Either::Left(e))
                     }
@@ -352,7 +351,7 @@ where
             fn entity_a_into_term_a(&mut self, x: entmod::EntidOrIdent) -> Result<Entid> {
                 let a = match x {
                     entmod::EntidOrIdent::Entid(ref a) => *a,
-                    entmod::EntidOrIdent::Ident(ref a) => self.schema.require_entid(&a)?.into(),
+                    entmod::EntidOrIdent::Ident(ref a) => self.schema.require_entid(a)?.into(),
                 };
                 Ok(a)
             }
@@ -390,7 +389,7 @@ where
                                 match v.as_tempid() {
                                     Some(tempid) => Ok(Either::Right(LookupRefOrTempId::TempId(self.temp_ids.intern(tempid)))),
                                     None => {
-                                        if let TypedValue::Ref(entid) = v.into_typed_value(&self.schema, ValueType::Ref)? {
+                                        if let TypedValue::Ref(entid) = v.into_typed_value(self.schema, ValueType::Ref)? {
                                             Ok(Either::Left(KnownEntid(entid)))
                                         } else {
                                             // The given value is expected to be :db.type/ref, so this shouldn't happen.
@@ -428,7 +427,7 @@ where
         }
 
         let mut in_process = InProcess::with_schema_and_partition_map(
-            &self.schema,
+            self.schema,
             &self.partition_map,
             KnownEntid(self.tx_id),
         );
@@ -489,11 +488,11 @@ where
                                             in_process.temp_ids.intern(tempid),
                                         )),
                                         None => v
-                                            .into_typed_value(&self.schema, attribute.value_type)
+                                            .into_typed_value(self.schema, attribute.value_type)
                                             .map(Either::Left)?,
                                     }
                                 } else {
-                                    v.into_typed_value(&self.schema, attribute.value_type)
+                                    v.into_typed_value(self.schema, attribute.value_type)
                                         .map(Either::Left)?
                                 }
                             }
@@ -667,8 +666,8 @@ where
                 |term: TermWithTempIdsAndLookupRefs| -> Result<TermWithTempIds> {
                     match term {
                         Term::AddOrRetract(op, e, a, v) => {
-                            let e = replace_lookup_ref(&lookup_ref_map, e, KnownEntid)?;
-                            let v = replace_lookup_ref(&lookup_ref_map, v, TypedValue::Ref)?;
+                            let e = replace_lookup_ref(lookup_ref_map, e, KnownEntid)?;
+                            let v = replace_lookup_ref(lookup_ref_map, v, TypedValue::Ref)?;
                             Ok(Term::AddOrRetract(op, e, a, v))
                         }
                     }
@@ -733,7 +732,7 @@ where
 
         // Pipeline stage 3: upsert tempids -> terms without tempids or lookup refs.
         // Now we can collect upsert populations.
-        let (mut generation, inert_terms) = Generation::from(terms, &self.schema)?;
+        let (mut generation, inert_terms) = Generation::from(terms, self.schema)?;
 
         // And evolve them forward.
         while generation.can_evolve() {
@@ -784,7 +783,7 @@ where
 
         // Allocate entids for tempids that didn't upsert.  BTreeMap so this is deterministic.
         let unresolved_temp_ids: BTreeMap<TempIdHandle, usize> =
-            generation.temp_ids_in_allocations(&self.schema)?;
+            generation.temp_ids_in_allocations(self.schema)?;
 
         debug!("unresolved tempids {:?}", unresolved_temp_ids);
 
@@ -830,7 +829,7 @@ where
         let mut tx_might_update_metadata = false;
 
         // Mutable so that we can add the transaction :db/txInstant.
-        let mut aev_trie = into_aev_trie(&self.schema, final_populations, inert_terms)?;
+        let mut aev_trie = into_aev_trie(self.schema, final_populations, inert_terms)?;
 
         let tx_instant;
         {
@@ -870,7 +869,7 @@ where
             // Pipeline stage 4: final terms (after rewriting) -> DB insertions.
             // Collect into non_fts_*.
 
-            tx_instant = get_or_insert_tx_instant(&mut aev_trie, &self.schema, self.tx_id)?;
+            tx_instant = get_or_insert_tx_instant(&mut aev_trie, self.schema, self.tx_id)?;
 
             for ((a, attribute), evs) in aev_trie {
                 if entids::might_update_metadata(a) {
@@ -955,7 +954,7 @@ where
                 db::update_metadata(
                     self.store,
                     &old_schema,
-                    &*self.schema_for_mutation,
+                    &self.schema_for_mutation,
                     &metadata_report,
                 )?;
             }
@@ -1014,8 +1013,8 @@ where
 ///
 /// This approach is explained in https://github.com/mozilla/mentat/wiki/Transacting.
 // TODO: move this to the transactor layer.
-pub fn transact<'conn, 'a, I, V, W>(
-    conn: &'conn rusqlite::Connection,
+pub fn transact<'a, I, V, W>(
+    conn: &rusqlite::Connection,
     partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
@@ -1033,8 +1032,8 @@ where
 }
 
 /// Just like `transact`, but accepts lower-level inputs to allow bypassing the parser interface.
-pub fn transact_terms<'conn, 'a, I, W>(
-    conn: &'conn rusqlite::Connection,
+pub fn transact_terms<'a, I, W>(
+    conn: &rusqlite::Connection,
     partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
@@ -1059,8 +1058,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn transact_terms_with_action<'conn, 'a, I, W>(
-    conn: &'conn rusqlite::Connection,
+pub(crate) fn transact_terms_with_action<'a, I, W>(
+    conn: &rusqlite::Connection,
     partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
@@ -1091,9 +1090,9 @@ where
 
         let a_and_r = trie
             .entry((a, attribute))
-            .or_insert_with(BTreeMap::default)
+            .or_default()
             .entry(e)
-            .or_insert_with(AddAndRetract::default);
+            .or_default();
 
         match op {
             OpType::Add => a_and_r.add.insert(v),
@@ -1104,11 +1103,11 @@ where
     Ok(())
 }
 
-pub(crate) fn into_aev_trie<'schema>(
-    schema: &'schema Schema,
+pub(crate) fn into_aev_trie(
+    schema: &Schema,
     final_populations: FinalPopulations,
     inert_terms: Vec<TermWithTempIds>,
-) -> Result<AEVTrie<'schema>> {
+) -> Result<AEVTrie<'_>> {
     let mut trie = AEVTrie::default();
     extend_aev_trie(schema, final_populations.resolved, &mut trie)?;
     extend_aev_trie(schema, final_populations.allocated, &mut trie)?;
@@ -1134,9 +1133,9 @@ fn get_or_insert_tx_instant<'schema>(
             entids::DB_TX_INSTANT,
             schema.require_attribute_for_entid(entids::DB_TX_INSTANT)?,
         ))
-        .or_insert_with(BTreeMap::default)
+        .or_default()
         .entry(tx_id)
-        .or_insert_with(AddAndRetract::default);
+        .or_default();
     if !ars.retract.is_empty() {
         // Cannot retract :db/txInstant!
     }

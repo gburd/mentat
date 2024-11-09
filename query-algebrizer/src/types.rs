@@ -449,6 +449,7 @@ impl From<ColumnConstraint> for ColumnConstraintOrAlternation {
 /// A `ColumnIntersection` constraint is satisfied if all of its inner constraints are satisfied.
 /// An empty intersection is always satisfied.
 #[derive(PartialEq, Eq)]
+#[derive(Default)]
 pub struct ColumnIntersection(pub Vec<ColumnConstraintOrAlternation>);
 
 impl From<Vec<ColumnConstraint>> for ColumnIntersection {
@@ -457,11 +458,6 @@ impl From<Vec<ColumnConstraint>> for ColumnIntersection {
     }
 }
 
-impl Default for ColumnIntersection {
-    fn default() -> Self {
-        ColumnIntersection(vec![])
-    }
-}
 
 impl IntoIterator for ColumnIntersection {
     type Item = ColumnConstraintOrAlternation;
@@ -501,13 +497,9 @@ impl ColumnIntersection {
 /// A `ColumnAlternation` constraint is satisfied if at least one of its inner constraints is
 /// satisfied. An empty `ColumnAlternation` is never satisfied.
 #[derive(PartialEq, Eq, Debug)]
+#[derive(Default)]
 pub struct ColumnAlternation(pub Vec<ColumnIntersection>);
 
-impl Default for ColumnAlternation {
-    fn default() -> Self {
-        ColumnAlternation(vec![])
-    }
-}
 
 impl IntoIterator for ColumnAlternation {
     type Item = ColumnIntersection;

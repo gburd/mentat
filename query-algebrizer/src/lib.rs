@@ -66,7 +66,7 @@ impl<'s, 'c> Known<'s, 'c> {
 
 /// This is `CachedAttributes`, but with handy generic parameters.
 /// Why not make the trait generic? Because then we can't use it as a trait object in `Known`.
-impl<'s, 'c> Known<'s, 'c> {
+impl Known<'_, '_> {
     pub fn is_attribute_cached_reverse<U>(&self, entid: U) -> bool
     where
         U: Into<Entid>,
@@ -176,7 +176,7 @@ impl AlgebraicQuery {
 
             // For now, we pretend that aggregate functions are never fully bound:
             // we don't statically compute them, even if we know the value of the var.
-            &Element::Aggregate(ref _fn) => false,
+            Element::Aggregate(_fn) => false,
         })
     }
 

@@ -33,7 +33,7 @@ use crate::Known;
 /// Return true if both left and right are the same variable or both are non-variable.
 fn _simply_matches_place(left: &PatternNonValuePlace, right: &PatternNonValuePlace) -> bool {
     match (left, right) {
-        (&PatternNonValuePlace::Variable(ref a), &PatternNonValuePlace::Variable(ref b)) => a == b,
+        (PatternNonValuePlace::Variable(a), PatternNonValuePlace::Variable(b)) => a == b,
         (&PatternNonValuePlace::Placeholder, &PatternNonValuePlace::Placeholder) => true,
         (&PatternNonValuePlace::Entid(_), &PatternNonValuePlace::Entid(_)) => true,
         (&PatternNonValuePlace::Entid(_), &PatternNonValuePlace::Ident(_)) => true,
@@ -46,7 +46,7 @@ fn _simply_matches_place(left: &PatternNonValuePlace, right: &PatternNonValuePla
 /// Return true if both left and right are the same variable or both are non-variable.
 fn _simply_matches_value_place(left: &PatternValuePlace, right: &PatternValuePlace) -> bool {
     match (left, right) {
-        (&PatternValuePlace::Variable(ref a), &PatternValuePlace::Variable(ref b)) => a == b,
+        (PatternValuePlace::Variable(a), PatternValuePlace::Variable(b)) => a == b,
         (&PatternValuePlace::Placeholder, &PatternValuePlace::Placeholder) => true,
         (&PatternValuePlace::Variable(_), _) => false,
         (_, &PatternValuePlace::Variable(_)) => false,
@@ -214,7 +214,7 @@ impl ConjoiningClauses {
                     }
                     Ok(table) => {
                         // Check the shape of the pattern against a previous pattern.
-                        let same_shape = if let Some(template) = patterns.get(0) {
+                        let same_shape = if let Some(template) = patterns.first() {
                             template.source == p.source &&     // or-arms all use the same source anyway.
                                 _simply_matches_place(&template.entity, &p.entity) &&
                                 _simply_matches_place(&template.attribute, &p.attribute) &&

@@ -328,11 +328,7 @@ impl FromValue<PatternNonValuePlace> for PatternNonValuePlace {
             crate::SpannedValue::PlainSymbol(ref x) => {
                 if x.0.as_str() == "_" {
                     Some(PatternNonValuePlace::Placeholder)
-                } else if let Some(v) = Variable::from_symbol(x) {
-                    Some(PatternNonValuePlace::Variable(v))
-                } else {
-                    None
-                }
+                } else { Variable::from_symbol(x).map(PatternNonValuePlace::Variable) }
             }
             crate::SpannedValue::Keyword(ref x) => Some(x.clone().into()),
             _ => None,
@@ -1028,8 +1024,8 @@ impl ParsedQuery {
         Ok(ParsedQuery {
             find_spec: find_spec.ok_or("expected :find")?,
             default_source: SrcVar::DefaultSrc,
-            with: with.unwrap_or_else(Vec::new), //
-            in_vars: in_vars.unwrap_or_else(Vec::new),
+            with: with.unwrap_or_default(), //
+            in_vars: in_vars.unwrap_or_default(),
             in_sources: BTreeSet::default(),
             limit: limit.unwrap_or(Limit::None),
             where_clauses: where_clauses.ok_or("expected :where")?,
@@ -1123,7 +1119,7 @@ impl OrJoin {
         (self.clauses, self.unify_vars, vars)
     }
 
-    pub fn mentioned_variables<'a>(&'a mut self) -> &'a BTreeSet<Variable> {
+    pub fn mentioned_variables(&mut self) -> &BTreeSet<Variable> {
         if self.mentioned_vars.is_none() {
             let m = self.collect_mentioned_variables();
             self.mentioned_vars = Some(m);

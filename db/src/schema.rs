@@ -12,7 +12,6 @@
 
 use crate::db::TypedSQLValue;
 use db_traits::errors::{DbErrorKind, Result};
-use edn;
 use edn::symbols;
 
 use core_traits::{attribute, Attribute, Entid, KnownEntid, TypedValue, ValueType};
@@ -226,7 +225,7 @@ impl AttributeBuilder {
                 attribute.unique = *unique;
                 mutations.push(AttributeAlteration::Unique);
             }
-        } else if attribute.unique != None {
+        } else if attribute.unique.is_some() {
             attribute.unique = None;
             mutations.push(AttributeAlteration::Unique);
         }
@@ -274,7 +273,7 @@ impl SchemaBuilding for Schema {
     }
 
     fn require_entid(&self, ident: &symbols::Keyword) -> Result<KnownEntid> {
-        self.get_entid(&ident)
+        self.get_entid(ident)
             .ok_or_else(|| DbErrorKind::UnrecognizedIdent(ident.to_string()).into())
     }
 
@@ -366,7 +365,7 @@ impl SchemaTypeChecking for Schema {
                 // Ref coerces a little: we interpret some things depending on the schema as a Ref.
                 (ValueType::Ref, TypedValue::Long(x)) => Ok(TypedValue::Ref(x)),
                 (ValueType::Ref, TypedValue::Keyword(ref x)) => {
-                    self.require_entid(&x).map(|entid| entid.into())
+                    self.require_entid(x).map(|entid| entid.into())
                 }
 
                 // Otherwise, we have a type mismatch.

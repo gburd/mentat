@@ -68,7 +68,7 @@ fn test_multiple() {
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
     let q = "[:find ?e :where [?e _ ?v] [(type ?v :db.type/long)] [(type ?v :db.type/double)]]";
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 

@@ -92,7 +92,7 @@ fn test_ground_doesnt_bail_for_type_conflicts() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground 9.95) ?x]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 
@@ -101,7 +101,7 @@ fn test_ground_tuple_fails_impossible() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [5 9.95]) [?x ?p]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 
@@ -110,7 +110,7 @@ fn test_ground_scalar_fails_impossible() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground true) ?p]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 
@@ -121,7 +121,7 @@ fn test_ground_coll_skips_impossible() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [5 9.95 11]) [?x ...]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
     assert_eq!(
         cc.computed_tables[0],
@@ -137,7 +137,7 @@ fn test_ground_coll_fails_if_all_impossible() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [5.1 5.2]) [?p ...]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 
@@ -146,7 +146,7 @@ fn test_ground_rel_skips_impossible() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [[8 "foo"] [5 7] [9.95 9] [11 12]]) [[?x ?p]]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
     assert_eq!(
         cc.computed_tables[0],
@@ -170,7 +170,7 @@ fn test_ground_rel_fails_if_all_impossible() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [[11 5.1] [12 5.2]]) [[?x ?p]]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 
@@ -179,7 +179,7 @@ fn test_ground_tuple_rejects_all_placeholders() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [8 "foo" 3]) [_ _ _]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    bails(known, &q);
+    bails(known, q);
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn test_ground_rel_rejects_all_placeholders() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [[8 "foo"]]) [[_ _]]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    bails(known, &q);
+    bails(known, q);
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn test_ground_tuple_placeholders() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [8 "foo" 3]) [?x _ ?p]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
     assert_eq!(
         cc.bound_value(&Variable::from_valid_name("?x")),
@@ -212,7 +212,7 @@ fn test_ground_rel_placeholders() {
     let q = r#"[:find ?x :where [?x :foo/knows ?p] [(ground [[8 "foo" 3] [5 false 7] [5 9.95 9]]) [[?x _ ?p]]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
     assert_eq!(
         cc.computed_tables[0],
@@ -239,7 +239,7 @@ fn test_multiple_reference_type_failure() {
     let q = r#"[:find ?x :where [?x :foo/age ?y] [?x :foo/knows ?y]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_some());
 }
 
@@ -248,7 +248,7 @@ fn test_ground_tuple_infers_types() {
     let q = r#"[:find ?x :where [?x :foo/age ?v] [(ground [8 10]) [?x ?v]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
     assert_eq!(
         cc.bound_value(&Variable::from_valid_name("?x")),
@@ -269,7 +269,7 @@ fn test_ground_coll_infers_attribute_types() {
                        [?x ?a ?v]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
 }
 
@@ -278,7 +278,7 @@ fn test_ground_rel_infers_types() {
     let q = r#"[:find ?x :where [?x :foo/age ?v] [(ground [[8 10]]) [[?x ?v]]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    let cc = alg(known, &q);
+    let cc = alg(known, q);
     assert!(cc.empty_because.is_none());
     assert_eq!(
         cc.computed_tables[0],
@@ -297,7 +297,7 @@ fn test_ground_coll_heterogeneous_types() {
     let q = r#"[:find ?x :where [?x _ ?v] [(ground [false 8.5]) [?v ...]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    assert_eq!(bails(known, &q), AlgebrizerError::InvalidGroundConstant);
+    assert_eq!(bails(known, q), AlgebrizerError::InvalidGroundConstant);
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn test_ground_rel_heterogeneous_types() {
     let q = r#"[:find ?x :where [?x _ ?v] [(ground [[false] [5]]) [[?v]]]]"#;
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
-    assert_eq!(bails(known, &q), AlgebrizerError::InvalidGroundConstant);
+    assert_eq!(bails(known, q), AlgebrizerError::InvalidGroundConstant);
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn test_ground_tuple_duplicate_vars() {
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
     assert_eq!(
-        bails(known, &q),
+        bails(known, q),
         AlgebrizerError::InvalidBinding(
             PlainSymbol::plain("ground"),
             BindingError::RepeatedBoundVariable
@@ -328,7 +328,7 @@ fn test_ground_rel_duplicate_vars() {
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
     assert_eq!(
-        bails(known, &q),
+        bails(known, q),
         AlgebrizerError::InvalidBinding(
             PlainSymbol::plain("ground"),
             BindingError::RepeatedBoundVariable
@@ -342,7 +342,7 @@ fn test_ground_nonexistent_variable_invalid() {
     let schema = prepopulated_schema();
     let known = Known::for_schema(&schema);
     assert_eq!(
-        bails(known, &q),
+        bails(known, q),
         AlgebrizerError::UnboundVariable(PlainSymbol::plain("?v"))
     );
 }
@@ -361,7 +361,7 @@ fn test_unbound_input_variable_invalid() {
     let i = QueryInputs::new(types, BTreeMap::default()).expect("valid QueryInputs");
 
     assert_eq!(
-        bails_with_inputs(known, &q, i),
+        bails_with_inputs(known, q, i),
         AlgebrizerError::UnboundVariable(PlainSymbol::plain("?x"))
     );
 }

@@ -42,7 +42,7 @@ fn collect_ordered_txs_to_move(
 ) -> Result<Vec<Entid>> {
     let mut stmt = conn.prepare("SELECT tx, timeline FROM timelined_transactions WHERE tx >= ? AND timeline = ? GROUP BY tx ORDER BY tx DESC")?;
     let mut rows = stmt.query_and_then(
-        &[&txs_from.start, &timeline],
+        [&txs_from.start, &timeline],
         |row: &rusqlite::Row| -> Result<(Entid, Entid)> { Ok((row.get(0)?, row.get(1)?)) },
     )?;
 
@@ -87,7 +87,7 @@ fn move_transactions_to(
 }
 
 fn remove_tx_from_datoms(conn: &rusqlite::Connection, tx_id: Entid) -> Result<()> {
-    conn.execute("DELETE FROM datoms WHERE e = ?", &[&tx_id])?;
+    conn.execute("DELETE FROM datoms WHERE e = ?", [&tx_id])?;
     Ok(())
 }
 
@@ -95,7 +95,7 @@ fn is_timeline_empty(conn: &rusqlite::Connection, timeline: Entid) -> Result<boo
     let mut stmt = conn.prepare(
         "SELECT timeline FROM timelined_transactions WHERE timeline = ? GROUP BY timeline",
     )?;
-    let rows = stmt.query_and_then(&[&timeline], |row| -> Result<i64> { Ok(row.get(0)?) })?;
+    let rows = stmt.query_and_then([&timeline], |row| -> Result<i64> { Ok(row.get(0)?) })?;
     Ok(rows.count() == 0)
 }
 
@@ -106,7 +106,7 @@ fn reversed_terms_for(
 ) -> Result<Vec<TermWithoutTempIds>> {
     let mut stmt = conn.prepare("SELECT e, a, v, value_type_tag, tx, added FROM timelined_transactions WHERE tx = ? AND timeline = ? ORDER BY tx DESC")?;
     let rows = stmt.query_and_then(
-        &[&tx_id, &crate::TIMELINE_MAIN],
+        [&tx_id, &crate::TIMELINE_MAIN],
         |row| -> Result<TermWithoutTempIds> {
             let op = if row.get(5)? {
                 OpType::Retract

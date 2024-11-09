@@ -103,7 +103,7 @@ where
                     assert_eq!(k, entity);
                     vs.cloned()
                 })
-                .unwrap_or_else(StructuredMap::default)
+                .unwrap_or_default()
         })
 }
 
@@ -171,7 +171,7 @@ impl Puller {
                     ref attribute,
                     ref alias,
                 }) => {
-                    let alias = alias.as_ref().map(|ref r| r.to_value_rc());
+                    let alias = alias.as_ref().map(|r| r.to_value_rc());
                     match attribute {
                         // Handle :db/id.
                         PullConcreteAttribute::Ident(ref i) if i.as_ref() == db_id.as_ref() => {

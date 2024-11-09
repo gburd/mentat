@@ -15,7 +15,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use indexmap;
 use petgraph::unionfind;
 
 use crate::internal_types::{
@@ -230,7 +229,7 @@ impl Generation {
     pub(crate) fn temp_id_avs(&self) -> Vec<(TempIdHandle, AVPair)> {
         let mut temp_id_avs: Vec<(TempIdHandle, AVPair)> = vec![];
         // TODO: map/collect.
-        for &UpsertE(ref t, ref a, ref v) in &self.upserts_e {
+        for UpsertE(t, a, v) in &self.upserts_e {
             // TODO: figure out how to make this less expensive, i.e., don't require
             // clone() of an arbitrary value.
             temp_id_avs.push((t.clone(), (*a, v.clone())));
@@ -276,7 +275,7 @@ impl Generation {
                     if attribute.unique == Some(attribute::Unique::Identity) {
                         tempid_avs
                             .entry((*a, Right(t2.clone())))
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(t1.clone());
                     }
                 }
@@ -286,7 +285,7 @@ impl Generation {
                     if attribute.unique == Some(attribute::Unique::Identity) {
                         tempid_avs
                             .entry((*a, x.clone()))
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(t.clone());
                     }
                 }

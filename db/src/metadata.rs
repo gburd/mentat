@@ -173,7 +173,7 @@ pub fn update_attribute_map_from_entid_triples(
         existing
             .get(&attribute_id)
             .map(AttributeBuilder::modify_attribute)
-            .unwrap_or_else(AttributeBuilder::default)
+            .unwrap_or_default()
     }
 
     // Group mutations by impacted entid.
@@ -234,7 +234,7 @@ pub fn update_attribute_map_from_entid_triples(
 
     for (entid, attr, ref value) in assertions.into_iter() {
         // For assertions, we can start with an empty attribute builder.
-        let builder = builders.entry(entid).or_insert_with(Default::default);
+        let builder = builders.entry(entid).or_default();
 
         // TODO: improve error messages throughout.
         match attr {

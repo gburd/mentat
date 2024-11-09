@@ -28,11 +28,11 @@ impl ConjoiningClauses {
         let mut template = self.use_as_template(&unified);
 
         for v in unified.iter() {
-            if self.value_bindings.contains_key(&v) {
-                let val = self.value_bindings.get(&v).unwrap().clone();
+            if self.value_bindings.contains_key(v) {
+                let val = self.value_bindings.get(v).unwrap().clone();
                 template.value_bindings.insert(v.clone(), val);
-            } else if self.column_bindings.contains_key(&v) {
-                let col = self.column_bindings.get(&v).unwrap()[0].clone();
+            } else if self.column_bindings.contains_key(v) {
+                let col = self.column_bindings.get(v).unwrap()[0].clone();
                 template.column_bindings.insert(v.clone(), vec![col]);
             } else {
                 bail!(AlgebrizerError::UnboundVariable(v.name()));

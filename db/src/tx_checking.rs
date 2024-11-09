@@ -24,11 +24,11 @@ pub(crate) type TypeDisagreements = BTreeMap<(Entid, Entid, TypedValue), ValueTy
 /// We try to be maximally helpful by yielding every malformed datom, rather than only the first.
 /// In the future, we might change this choice, or allow the consumer to specify the robustness of
 /// the type checking desired, since there is a cost to providing helpful diagnostics.
-pub(crate) fn type_disagreements<'schema>(aev_trie: &AEVTrie<'schema>) -> TypeDisagreements {
+pub(crate) fn type_disagreements(aev_trie: &AEVTrie<'_>) -> TypeDisagreements {
     let mut errors: TypeDisagreements = TypeDisagreements::default();
 
     for (&(a, attribute), evs) in aev_trie {
-        for (&e, ref ars) in evs {
+        for (&e, ars) in evs {
             for v in ars.add.iter().chain(ars.retract.iter()) {
                 if attribute.value_type != v.value_type() {
                     errors.insert((e, a, v.clone()), attribute.value_type);
@@ -52,13 +52,13 @@ pub(crate) fn type_disagreements<'schema>(aev_trie: &AEVTrie<'schema>) -> TypeDi
 /// We try to be maximally helpful by yielding every malformed set of datoms, rather than just the
 /// first set, or even the first conflict.  In the future, we might change this choice, or allow the
 /// consumer to specify the robustness of the cardinality checking desired.
-pub(crate) fn cardinality_conflicts<'schema>(
-    aev_trie: &AEVTrie<'schema>,
+pub(crate) fn cardinality_conflicts(
+    aev_trie: &AEVTrie<'_>,
 ) -> Vec<CardinalityConflict> {
     let mut errors = vec![];
 
     for (&(a, attribute), evs) in aev_trie {
-        for (&e, ref ars) in evs {
+        for (&e, ars) in evs {
             if !attribute.multival && ars.add.len() > 1 {
                 let vs = ars.add.clone();
                 errors.push(CardinalityConflict::CardinalityOneAddConflict { e, a, vs });

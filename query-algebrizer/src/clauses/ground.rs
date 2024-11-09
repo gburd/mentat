@@ -29,9 +29,9 @@ impl ConjoiningClauses {
     /// the provided types.
     /// Construct a computed table to yield this relation.
     /// This function will panic if some invariants are not met.
-    fn collect_named_bindings<'s>(
+    fn collect_named_bindings(
         &mut self,
-        schema: &'s Schema,
+        schema: &Schema,
         names: Vec<Variable>,
         types: Vec<ValueType>,
         values: Vec<TypedValue>,
@@ -67,9 +67,9 @@ impl ConjoiningClauses {
         self.from.push(SourceAlias(table, alias));
     }
 
-    fn apply_ground_place<'s>(
+    fn apply_ground_place(
         &mut self,
-        schema: &'s Schema,
+        schema: &Schema,
         var: VariableOrPlaceholder,
         arg: FnArg,
     ) -> Result<()> {
@@ -81,9 +81,9 @@ impl ConjoiningClauses {
 
     /// Constrain the CC to associate the given var with the given ground argument.
     /// Marks known-empty on failure.
-    fn apply_ground_var<'s>(
+    fn apply_ground_var(
         &mut self,
-        schema: &'s Schema,
+        schema: &Schema,
         var: Variable,
         arg: FnArg,
     ) -> Result<()> {

@@ -273,7 +273,7 @@ impl QueryFragment for Expression {
     fn push_sql(&self, out: &mut dyn QueryBuilder) -> BuildQueryResult {
         match self {
             Expression::Unary {
-                ref sql_op,
+                sql_op,
                 ref arg,
             } => {
                 out.push_sql(sql_op); // No need to escape built-ins.
@@ -293,12 +293,12 @@ impl QueryFragment for Projection {
             One => out.push_sql("1"),
             Star => out.push_sql("*"),
             Columns(ref cols) => {
-                let &ProjectedColumn(ref col, ref alias) = &cols[0];
+                let ProjectedColumn(col, alias) = &cols[0];
                 col.push_sql(out)?;
                 out.push_sql(" AS ");
                 out.push_identifier(alias.as_str())?;
 
-                for &ProjectedColumn(ref col, ref alias) in &cols[1..] {
+                for ProjectedColumn(col, alias) in &cols[1..] {
                     out.push_sql(", ");
                     col.push_sql(out)?;
                     out.push_sql(" AS ");
@@ -421,7 +421,7 @@ fn qualified_alias_push_sql(out: &mut dyn QueryBuilder, qa: &QualifiedAlias) -> 
 
 // We don't own SourceAlias or QueryFragment, so we can't implement the trait.
 fn source_alias_push_sql(out: &mut dyn QueryBuilder, sa: &SourceAlias) -> BuildQueryResult {
-    let &SourceAlias(ref table, ref alias) = sa;
+    let SourceAlias(table, alias) = sa;
     out.push_identifier(table.name())?;
     out.push_sql(" AS ");
     out.push_identifier(alias.as_str())
@@ -601,7 +601,7 @@ impl QueryFragment for SelectQuery {
         if !self.order.is_empty() {
             out.push_sql(" ORDER BY ");
             interpose!(
-                &OrderBy(ref dir, ref var),
+                OrderBy(dir, var),
                 self.order,
                 {
                     push_variable_column(out, var)?;

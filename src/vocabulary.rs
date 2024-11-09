@@ -345,8 +345,8 @@ where
 }
 
 impl Definition {
-    fn description_for_attributes<'s, T, R>(
-        &'s self,
+    fn description_for_attributes<T, R>(
+        &self,
         attributes: &[R],
         via: &T,
         diff: Option<BTreeMap<Keyword, Attribute>>,
@@ -386,8 +386,8 @@ impl Definition {
 
         // Describe each of its attributes.
         // This is a lot like Schema::to_edn_value; at some point we should tidy this up.
-        for ref r in attributes.iter() {
-            let &(ref kw, ref attr) = r.borrow();
+        for r in attributes.iter() {
+            let (kw, attr) = r.borrow();
 
             let tempid = builder.named_tempid(kw.to_string());
             let name: TypedValue = kw.clone().into();
@@ -449,7 +449,7 @@ impl Definition {
             }
         }
 
-        builder.build().map_err(|e| e)
+        builder.build()
     }
 
     /// Return a sequence of terms that describes this vocabulary definition and its attributes.
@@ -460,7 +460,7 @@ impl Definition {
         let relevant = self
             .attributes
             .iter()
-            .filter_map(|&(ref keyword, _)|
+            .filter_map(|(keyword, _)|
                                // Look up the keyword to see if it's currently in use.
                                via.get_entid(keyword)
 
@@ -648,9 +648,9 @@ impl<'a> CheckedVocabularies<'a> {
     }
 }
 
-impl<'a> VocabularyStatus for CheckedVocabularies<'a> {
+impl VocabularyStatus for CheckedVocabularies<'_> {
     fn get(&self, name: &Keyword) -> Option<(&Definition, &VocabularyCheck<'_>)> {
-        self.items.get(name).map(|&(ref d, ref c)| (*d, c))
+        self.items.get(name).map(|&(d, ref c)| (d, c))
     }
 
     fn version(&self, name: &Keyword) -> Option<Version> {
@@ -682,11 +682,11 @@ impl Vocabulary {
         self.attributes
             .iter()
             .find(|&&(e, _)| e == to_find)
-            .map(|&(_, ref a)| a)
+            .map(|(_, a)| a)
     }
 }
 
-impl<'a, 'c> VersionedStore for InProgress<'a, 'c> {
+impl VersionedStore for InProgress<'_, '_> {
     fn ensure_vocabulary(&mut self, definition: &Definition) -> Result<VocabularyOutcome> {
         match self.check_vocabulary(definition)? {
             VocabularyCheck::Present => Ok(VocabularyOutcome::Existed),
@@ -846,7 +846,7 @@ impl VocabularySource for SimpleVocabularySource {
     }
 }
 
-impl<'a, 'c> VocabularyMechanics for InProgress<'a, 'c> {
+impl VocabularyMechanics for InProgress<'_, '_> {
     /// Turn the vocabulary into datoms, transact them, and on success return the outcome.
     fn install_vocabulary(&mut self, definition: &Definition) -> Result<VocabularyOutcome> {
         let (terms, _tempids) = definition.description(self)?;
@@ -965,7 +965,7 @@ where
             if let Some(attribute) = self.attribute_for_entid(attr).cloned() {
                 attributes
                     .entry(vocab)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((attr, attribute));
             }
         }

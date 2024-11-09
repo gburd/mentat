@@ -13,7 +13,6 @@
 use crate::db::TypedSQLValue;
 use crate::entids;
 use db_traits::errors::{DbErrorKind, Result};
-use edn;
 use edn::entities::Entity;
 use edn::symbols;
 use edn::types::Value;
@@ -207,7 +206,7 @@ lazy_static! {
 fn idents_to_assertions(idents: &[(symbols::Keyword, i64)]) -> Vec<Value> {
     idents
         .iter()
-        .map(|&(ref ident, _)| {
+        .map(|(ident, _)| {
             let value = Value::Keyword(ident.clone());
             Value::Vector(vec![
                 values::DB_ADD.clone(),

@@ -104,11 +104,11 @@ impl Store {
         &self.conn
     }
 
-    pub fn begin_read<'m>(&'m mut self) -> Result<InProgressRead<'m, 'm>> {
+    pub fn begin_read(&mut self) -> Result<InProgressRead<'_, '_>> {
         self.conn.begin_read(&mut self.sqlite)
     }
 
-    pub fn begin_transaction<'m>(&'m mut self) -> Result<InProgress<'m, 'm>> {
+    pub fn begin_transaction(&mut self) -> Result<InProgress<'_, '_>> {
         self.conn.begin_transaction(&mut self.sqlite)
     }
 
@@ -288,12 +288,12 @@ mod tests {
             _ => panic!(),
         };
 
-        let start = time::Instant::now();
+        let start = std::time::Instant::now();
         let results = prepared.run(None).expect("results");
-        let end = time::Instant::now();
+        let end = std::time::Instant::now();
         println!(
             "Prepared cache execution took {}µs",
-            (end - start).whole_microseconds()
+            (end - start).as_micros()
         );
         assert_eq!(
             results.into_rel().expect("result"),

@@ -104,13 +104,13 @@ fn test_add_to_cache() {
     }
 
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), attr)
+        .register(schema, store.sqlite_mut(), attr)
         .expect("No errors on add to cache");
     {
         let cached_values = attribute_cache.value_pairs(schema, attr).expect("non-None");
         assert!(!cached_values.is_empty());
         let flattened: BTreeSet<TypedValue> =
-            cached_values.values().cloned().filter_map(|x| x).collect();
+            cached_values.values().cloned().flatten().collect();
         let expected: BTreeSet<TypedValue> = vec![TypedValue::Long(100), TypedValue::Long(200)]
             .into_iter()
             .collect();
@@ -133,7 +133,7 @@ fn test_add_attribute_already_in_cache() {
     let one = schema.get_entid(&kw!(:item/one)).expect("one");
     let two = schema.get_entid(&kw!(:item/two)).expect("two");
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), attr)
+        .register(&schema, store.sqlite_mut(), attr)
         .expect("No errors on add to cache");
     assert_value_present_for_attribute(
         &schema,
@@ -143,7 +143,7 @@ fn test_add_attribute_already_in_cache() {
         TypedValue::Long(100),
     );
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), attr)
+        .register(&schema, store.sqlite_mut(), attr)
         .expect("No errors on add to cache");
     assert_value_present_for_attribute(
         &schema,
@@ -199,7 +199,7 @@ fn test_remove_from_cache() {
         .is_none());
 
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), entidr)
+        .register(&schema, store.sqlite_mut(), entidr)
         .expect("No errors on add to cache");
     assert_value_present_for_attribute(
         &schema,
@@ -216,7 +216,7 @@ fn test_remove_from_cache() {
         TypedValue::Long(200),
     );
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), entidz)
+        .register(&schema, store.sqlite_mut(), entidz)
         .expect("No errors on add to cache");
     assert_value_present_for_attribute(
         &schema,
@@ -233,7 +233,7 @@ fn test_remove_from_cache() {
         TypedValue::Boolean(false),
     );
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), entidp)
+        .register(&schema, store.sqlite_mut(), entidp)
         .expect("No errors on add to cache");
     assert_values_present_for_attribute(
         &schema,
@@ -314,7 +314,7 @@ fn test_fetch_attribute_value_for_entid() {
     let mut attribute_cache = SQLiteAttributeCache::default();
 
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), attr_entid)
+        .register(&schema, store.sqlite_mut(), attr_entid)
         .expect("No errors on add to cache");
     let val = attribute_cache
         .get_value_for_entid(&schema, attr_entid, entid)
@@ -346,7 +346,7 @@ fn test_fetch_attribute_values_for_entid() {
     let mut attribute_cache = SQLiteAttributeCache::default();
 
     attribute_cache
-        .register(&schema, &store.sqlite_mut(), attr_entid)
+        .register(&schema, store.sqlite_mut(), attr_entid)
         .expect("No errors on add to cache");
     let val = attribute_cache
         .get_values_for_entid(&schema, attr_entid, entid)

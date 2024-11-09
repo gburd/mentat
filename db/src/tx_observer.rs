@@ -87,7 +87,7 @@ impl Command for TxCommand {
             for (key, observer) in observers.iter() {
                 let applicable_reports = observer.applicable_reports(&self.reports);
                 if !applicable_reports.is_empty() {
-                    observer.notify(&key, applicable_reports);
+                    observer.notify(key, applicable_reports);
                 }
             }
         }
@@ -118,7 +118,7 @@ impl TxObservationService {
     }
 
     pub fn deregister(&mut self, key: &str) {
-        Arc::make_mut(&mut self.observers).remove(key);
+        Arc::make_mut(&mut self.observers).shift_remove(key);
     }
 
     pub fn has_observers(&self) -> bool {

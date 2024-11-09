@@ -282,7 +282,7 @@ pub fn create_empty_current_version(
 ) -> Result<(rusqlite::Transaction, DB)> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
 
-    for statement in (&V1_STATEMENTS).iter() {
+    for statement in V1_STATEMENTS.iter() {
         tx.execute(statement, rusqlite::params![])?;
     }
 
@@ -303,7 +303,7 @@ fn create_current_partition_view(conn: &rusqlite::Connection) -> Result<()> {
         .collect();
 
     let mut case = vec![];
-    for &(ref part, ref end) in known_parts?.iter() {
+    for (part, end) in known_parts?.iter() {
         case.push(format!(r#"WHEN e <= {} THEN "{}""#, end, part));
     }
 
@@ -334,7 +334,7 @@ pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
         // TODO: Convert "keyword" part to SQL using Value conversion.
         tx.execute(
             "INSERT INTO known_parts (part, start, end, allow_excision) VALUES (?, ?, ?, ?)",
-            &[
+            [
                 part,
                 &partition.start.to_string(),
                 &partition.end.to_string(),
@@ -379,7 +379,7 @@ pub fn ensure_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
         panic!("Mentat requires at least sqlite {}", MIN_SQLITE_VERSION);
     }
 
-    let user_version = get_user_version(&conn)?;
+    let user_version = get_user_version(conn)?;
     match user_version {
         0 => create_current_version(conn),
         CURRENT_VERSION => read_db(conn),
@@ -617,14 +617,14 @@ pub trait MentatStoring {
     fn begin_tx_application(&self) -> Result<()>;
 
     // TODO: this is not a reasonable abstraction, but I don't want to really consider non-SQL storage just yet.
-    fn insert_non_fts_searches<'a>(
+    fn insert_non_fts_searches(
         &self,
-        entities: &'a [ReducedEntity],
+        entities: &[ReducedEntity],
         search_type: SearchType,
     ) -> Result<()>;
-    fn insert_fts_searches<'a>(
+    fn insert_fts_searches(
         &self,
-        entities: &'a [ReducedEntity],
+        entities: &[ReducedEntity],
         search_type: SearchType,
     ) -> Result<()>;
 
@@ -693,7 +693,7 @@ fn insert_transaction(conn: &rusqlite::Connection, tx: Entid) -> Result<()> {
       WHERE added0 IS 1 AND ((rid IS NULL) OR ((rid IS NOT NULL) AND (v0 IS NOT v)))"#;
 
     let mut stmt = conn.prepare_cached(s)?;
-    stmt.execute(&[&tx])
+    stmt.execute([&tx])
         .context(DbErrorKind::TxInsertFailedToAddMissingDatoms)?;
 
     let s = r#"
@@ -705,7 +705,7 @@ fn insert_transaction(conn: &rusqlite::Connection, tx: Entid) -> Result<()> {
              (added0 IS 1 AND search_type IS ':db.cardinality/one' AND v0 IS NOT v))"#;
 
     let mut stmt = conn.prepare_cached(s)?;
-    stmt.execute(&[&tx])
+    stmt.execute([&tx])
         .context(DbErrorKind::TxInsertFailedToRetractDatoms)?;
 
     Ok(())
@@ -754,7 +754,7 @@ fn update_datoms(conn: &rusqlite::Connection, tx: Entid) -> Result<()> {
     );
 
     let mut stmt = conn.prepare_cached(&s)?;
-    stmt.execute(&[&tx])
+    stmt.execute([&tx])
         .context(DbErrorKind::DatomsUpdateFailedToAdd)?;
     Ok(())
 }
@@ -787,7 +787,7 @@ impl MentatStoring for rusqlite::Connection {
             }).collect();
 
             // `params` reference computed values in `block`.
-            let params: Vec<&dyn ToSql> = block.iter().flat_map(|&(ref searchid, ref a, ref value, ref value_type_tag)| {
+            let params: Vec<&dyn ToSql> = block.iter().flat_map(|(searchid, a, value, value_type_tag)| {
                 // Avoid inner heap allocation.
                 once(searchid as &dyn ToSql)
                     .chain(once(a as &dyn ToSql)
@@ -919,7 +919,7 @@ impl MentatStoring for rusqlite::Connection {
                                    ToSqlOutput<'a> /* value */,
                                    i32 /* value_type_tag */,
                                    bool, /* added0 */
-                                   u8 /* flags0 */)>> = chunk.map(|&(e, a, ref attribute, ref typed_value, added)| {
+                                   u8 /* flags0 */)>> = chunk.map(|&(e, a, attribute, ref typed_value, added)| {
                 count += 1;
 
                 // Now we can represent the typed value as an SQL value.
@@ -997,7 +997,7 @@ impl MentatStoring for rusqlite::Connection {
                                    i32 /* value_type_tag */,
                                    bool /* added0 */,
                                    u8 /* flags0 */,
-                                   i64 /* searchid */)>> = chunk.map(|&(e, a, ref attribute, ref typed_value, added)| {
+                                   i64 /* searchid */)>> = chunk.map(|&(e, a, attribute, ref typed_value, added)| {
                 match typed_value {
                     TypedValue::String(ref rc) => {
                         datom_count += 1;
@@ -1090,13 +1090,13 @@ impl MentatStoring for rusqlite::Connection {
     }
 
     fn commit_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
-        insert_transaction(&self, tx_id)?;
+        insert_transaction(self, tx_id)?;
         Ok(())
     }
 
     fn materialize_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
-        search(&self)?;
-        update_datoms(&self, tx_id)?;
+        search(self)?;
+        update_datoms(self, tx_id)?;
         Ok(())
     }
 
@@ -1147,7 +1147,7 @@ pub fn committed_metadata_assertions(
 
     let mut stmt = conn.prepare_cached(&sql_stmt)?;
     let m: Result<Vec<_>> = stmt
-        .query_and_then(&[&tx_id as &dyn ToSql], row_to_transaction_assertion)?
+        .query_and_then([&tx_id as &dyn ToSql], row_to_transaction_assertion)?
         .collect();
     m
 }
@@ -1253,13 +1253,13 @@ SELECT EXISTS
             match alteration {
                 &Index => {
                     // This should always succeed.
-                    index_stmt.execute(&[&attribute.index, &entid as &dyn ToSql])?;
+                    index_stmt.execute([&attribute.index, &entid as &dyn ToSql])?;
                 }
                 &Unique => {
                     // TODO: This can fail if there are conflicting values; give a more helpful
                     // error message in this case.
                     if unique_value_stmt
-                        .execute(&[
+                        .execute([
                             to_bool_ref(attribute.unique.is_some()),
                             &entid as &dyn ToSql,
                         ])
@@ -1289,7 +1289,7 @@ SELECT EXISTS
                     // TODO: improve the failure message.  Perhaps try to mimic what Datomic says in
                     // this case?
                     if !attribute.multival {
-                        let mut rows = cardinality_stmt.query(&[&entid as &dyn ToSql])?;
+                        let mut rows = cardinality_stmt.query([&entid as &dyn ToSql])?;
                         if rows.next()?.is_some() {
                             bail!(DbErrorKind::SchemaAlterationFailed(format!(
                                 "Cannot alter schema attribute {} to be :db.cardinality/one",

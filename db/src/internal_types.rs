@@ -50,7 +50,7 @@ impl TransactableValue for ValueAndSpan {
                 let mut it = ls.iter();
                 match (it.next().map(|x| &x.inner), it.next(), it.next(), it.next()) {
                     // Like "(transaction-id)".
-                    (Some(&PlainSymbol(ref op)), None, None, None) => {
+                    (Some(PlainSymbol(op)), None, None, None) => {
                         Ok(EntityPlace::TxFunction(TxFunction { op: op.clone() }))
                     }
                     // Like "(lookup-ref)".

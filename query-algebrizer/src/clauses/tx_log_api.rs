@@ -103,9 +103,9 @@ impl ConjoiningClauses {
         }
 
         let tx1 =
-            self.resolve_tx_argument(&known.schema, &where_fn.operator, 1, args.next().unwrap())?;
+            self.resolve_tx_argument(known.schema, &where_fn.operator, 1, args.next().unwrap())?;
         let tx2 =
-            self.resolve_tx_argument(&known.schema, &where_fn.operator, 2, args.next().unwrap())?;
+            self.resolve_tx_argument(known.schema, &where_fn.operator, 2, args.next().unwrap())?;
 
         let transactions = self.next_alias_for_table(DatomsTable::Transactions);
 
@@ -177,7 +177,7 @@ impl ConjoiningClauses {
         let bindings = match where_fn.binding {
             Binding::BindRel(bindings) => {
                 let bindings_count = bindings.len();
-                if bindings_count < 1 || bindings_count > 5 {
+                if !(1..=5).contains(&bindings_count) {
                     bail!(AlgebrizerError::InvalidBinding(
                         where_fn.operator.clone(),
                         BindingError::InvalidNumberOfBindings {
@@ -225,7 +225,7 @@ impl ConjoiningClauses {
         }
 
         let tx =
-            self.resolve_tx_argument(&known.schema, &where_fn.operator, 1, args.next().unwrap())?;
+            self.resolve_tx_argument(known.schema, &where_fn.operator, 1, args.next().unwrap())?;
 
         let transactions = self.next_alias_for_table(DatomsTable::Transactions);
 

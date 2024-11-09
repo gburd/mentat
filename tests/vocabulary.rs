@@ -160,7 +160,7 @@ fn test_add_vocab() {
         .fulltext(true)
         .build();
     let thing2_only = vec![(kw!(:foo/bar), thing2.clone())];
-    let thing3_only = vec![(kw!(:foo/baz), thing3.clone())];
+    let thing3_only = [(kw!(:foo/baz), thing3.clone())];
     let thing2_and_thing3 = vec![
         (kw!(:foo/bar), thing2.clone()),
         (kw!(:foo/baz), thing3.clone()),
@@ -356,9 +356,8 @@ fn test_add_vocab() {
         vocabulary::Definition::new(kw!(:org.mozilla/foo), 2, multival_bar_and_baz);
 
     // foo/bar starts single-valued.
-    assert_eq!(
-        false,
-        conn.current_schema()
+    assert!(
+        !conn.current_schema()
             .attribute_for_ident(&kw!(:foo/bar))
             .expect("attribute")
             .0
@@ -380,8 +379,7 @@ fn test_add_vocab() {
     }
 
     // Now it's multi-valued.
-    assert_eq!(
-        true,
+    assert!(
         conn.current_schema()
             .attribute_for_ident(&kw!(:foo/bar))
             .expect("attribute")
@@ -713,7 +711,7 @@ fn test_upgrade_with_functions() {
             return Ok(());
         }
 
-        ip.transact_builder(builder).and(Ok(())).map_err(|e| e)
+        ip.transact_builder(builder).and(Ok(()))
     }
 
     fn people_v1_to_v2(
@@ -799,7 +797,7 @@ fn test_upgrade_with_functions() {
             return Ok(());
         }
 
-        ip.transact_builder(builder).and(Ok(())).map_err(|e| e)
+        ip.transact_builder(builder).and(Ok(()))
     }
 
     /// This is the function we write to dedupe. This logic is very suitable for sharing:
@@ -867,7 +865,7 @@ fn test_upgrade_with_functions() {
             return Ok(());
         }
 
-        ip.transact_builder(builder).and(Ok(())).map_err(|e| e)
+        ip.transact_builder(builder).and(Ok(()))
     }
 
     // This migration is bad: it can't impose the uniqueness constraint because we end up with
@@ -1084,7 +1082,7 @@ fn test_upgrade_with_functions() {
             // need to migrate data.
             // We'll simulate that here by tracking the version.
             match checks.get(&kw!(:org.mozilla/food)) {
-                Some((_, &VocabularyCheck::PresentButNeedsUpdate { ref older_version })) => {
+                Some((_, VocabularyCheck::PresentButNeedsUpdate { older_version })) => {
                     self.pre_food_version = older_version.version;
                     Ok(())
                 }
@@ -1143,7 +1141,7 @@ fn test_upgrade_with_functions() {
                 db_doc,
                 TypedValue::typed_string("Deprecated. Use :movie/likes or :food/likes instead."),
             )?;
-            ip.transact_builder(builder).and(Ok(())).map_err(|e| e)
+            ip.transact_builder(builder).and(Ok(()))
         }
     }
 

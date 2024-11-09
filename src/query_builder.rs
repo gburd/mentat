@@ -103,7 +103,7 @@ impl<'a> QueryBuilder<'a> {
         let types = ::std::mem::take(&mut self.types);
         let query_inputs = QueryInputs::new(types, values)?;
         let read = self.store.begin_read()?;
-        read.q_once(&self.query, query_inputs).map_err(|e| e)
+        read.q_once(&self.query, query_inputs)
     }
 
     pub fn execute_scalar(&mut self) -> Result<Option<Binding>> {
@@ -320,8 +320,7 @@ mod test {
         .execute_tuple()
         .expect("TupleResult")
         .expect("Vec<TypedValue>");
-        let entid = results
-            .get(0)
+        let entid = results.first()
             .and_then(|t| t.to_owned().into_entid())
             .expect("entid");
         let long_val = results
@@ -436,8 +435,7 @@ mod test {
         .expect("RelResult")
         .into_iter()
         .map(|row| Res {
-            entid: row
-                .get(0)
+            entid: row.first()
                 .and_then(|t| t.to_owned().into_entid())
                 .expect("entid"),
             boolean: row
@@ -523,12 +521,10 @@ mod test {
         .execute_tuple()
         .expect("TupleResult")
         .unwrap_or_default();
-        assert_eq!(
-            results
-                .get(0)
+        assert!(
+            results.first()
                 .and_then(|t| t.to_owned().into_boolean())
-                .expect("boolean"),
-            true
+                .expect("boolean")
         );
         assert_eq!(
             results

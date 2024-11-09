@@ -125,7 +125,7 @@ impl Conn {
     {
         // Doesn't clone, unlike `current_schema`.
         let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&*metadata.schema, Some(&metadata.attribute_cache));
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
         q_once(sqlite, known, query, inputs)
     }
 
@@ -143,23 +143,23 @@ impl Conn {
         let metadata = self.metadata.lock().unwrap();
         q_uncached(
             sqlite,
-            &*metadata.schema, // Doesn't clone, unlike `current_schema`.
+            &metadata.schema, // Doesn't clone, unlike `current_schema`.
             query,
             inputs,
         )
     }
 
-    pub fn q_prepare<'sqlite, 'query, T>(
+    pub fn q_prepare<'sqlite, T>(
         &self,
         sqlite: &'sqlite rusqlite::Connection,
-        query: &'query str,
+        query: &str,
         inputs: T,
     ) -> PreparedResult<'sqlite>
     where
         T: Into<Option<QueryInputs>>,
     {
         let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&*metadata.schema, Some(&metadata.attribute_cache));
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
         q_prepare(sqlite, known, query, inputs)
     }
 
@@ -173,7 +173,7 @@ impl Conn {
         T: Into<Option<QueryInputs>>,
     {
         let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&*metadata.schema, Some(&metadata.attribute_cache));
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
         q_explain(sqlite, known, query, inputs)
     }
 
@@ -213,7 +213,7 @@ impl Conn {
         attribute: &edn::Keyword,
     ) -> Result<Vec<TypedValue>> {
         let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&*metadata.schema, Some(&metadata.attribute_cache));
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
         lookup_values_for_attribute(sqlite, known, entity, attribute)
     }
 
@@ -224,7 +224,7 @@ impl Conn {
         attribute: &edn::Keyword,
     ) -> Result<Option<TypedValue>> {
         let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&*metadata.schema, Some(&metadata.attribute_cache));
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
         lookup_value_for_attribute(sqlite, known, entity, attribute)
     }
 
@@ -237,7 +237,7 @@ impl Conn {
         let tx = sqlite.transaction_with_behavior(behavior)?;
         let (current_generation, current_partition_map, current_schema, cache_cow) = {
             // The mutex is taken during this block.
-            let current: &Metadata = &(*self.metadata.lock().unwrap());
+            let current: &Metadata = &self.metadata.lock().unwrap();
             (
                 current.generation,
                 // Expensive, but the partition map is updated after every committed transaction.
@@ -336,7 +336,7 @@ impl Conn {
         {
             attribute_entid = metadata
                 .schema
-                .attribute_for_ident(&attribute)
+                .attribute_for_ident(attribute)
                 .ok_or_else(|| MentatError::UnknownAttribute(attribute.to_string()))?
                 .1
                 .into();
@@ -826,12 +826,12 @@ mod tests {
                 Some(TypedValue::typed_ns_keyword("db.type", "string").into())
             );
 
-            let start = time::Instant::now();
+            let start = std::time::Instant::now();
             ip.q_once(query.as_str(), None)
                 .into_scalar_result()
                 .expect("query");
-            let end = time::Instant::now();
-            println!("Uncached took {}µs", (end - start).whole_microseconds());
+            let end = std::time::Instant::now();
+            println!("Uncached took {}µs", (end - start).as_micros());
 
             ip.cache(
                 &kw!(:db/ident),
@@ -857,12 +857,12 @@ mod tests {
                 Some(TypedValue::typed_ns_keyword("db.type", "string").into())
             );
 
-            let start = time::Instant::now();
+            let start = std::time::Instant::now();
             ip.q_once(query.as_str(), None)
                 .into_scalar_result()
                 .expect("query");
-            let end = time::Instant::now();
-            println!("Cached took {}µs", (end - start).whole_microseconds());
+            let end = std::time::Instant::now();
+            println!("Cached took {}µs", (end - start).as_micros());
 
             // If we roll back the change, our caching operations are also rolled back.
             ip.rollback().expect("rolled back");

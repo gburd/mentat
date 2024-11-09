@@ -81,21 +81,21 @@ impl From<KnownEntid> for Entid {
     }
 }
 
-impl<V: TransactableValueMarker> Into<EntityPlace<V>> for KnownEntid {
-    fn into(self) -> EntityPlace<V> {
-        EntityPlace::Entid(EntidOrIdent::Entid(self.0))
+impl<V: TransactableValueMarker> From<KnownEntid> for EntityPlace<V> {
+    fn from(val: KnownEntid) -> Self {
+        EntityPlace::Entid(EntidOrIdent::Entid(val.0))
     }
 }
 
-impl Into<AttributePlace> for KnownEntid {
-    fn into(self) -> AttributePlace {
-        AttributePlace::Entid(EntidOrIdent::Entid(self.0))
+impl From<KnownEntid> for AttributePlace {
+    fn from(val: KnownEntid) -> Self {
+        AttributePlace::Entid(EntidOrIdent::Entid(val.0))
     }
 }
 
-impl<V: TransactableValueMarker> Into<ValuePlace<V>> for KnownEntid {
-    fn into(self) -> ValuePlace<V> {
-        ValuePlace::Entid(EntidOrIdent::Entid(self.0))
+impl<V: TransactableValueMarker> From<KnownEntid> for ValuePlace<V> {
+    fn from(val: KnownEntid) -> Self {
+        ValuePlace::Entid(EntidOrIdent::Entid(val.0))
     }
 }
 
