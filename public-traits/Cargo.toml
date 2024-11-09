@@ -9,9 +9,7 @@ name = "public_traits"
 path = "lib.rs"
 
 [features]
-default = ["syncable"]
 sqlcipher = ["rusqlite/sqlcipher"]
-syncable = ["tolstoy_traits", "hyper", "serde_json"]
 
 [dependencies]
 failure = "~0.1"
@@ -52,7 +50,3 @@ path = "../query-pull-traits"
 
 [dependencies.sql_traits]
 path = "../sql-traits"
-
-[dependencies.tolstoy_traits]
-path = "../tolstoy-traits"
-optional = true

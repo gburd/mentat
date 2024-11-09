@@ -12,7 +12,7 @@ use combine::parser::char::{space, spaces, string};
 use combine::parser::combinator::attempt;
 use combine::{any, choice, eof, look_ahead, many1, satisfy, sep_end_by, token, Parser};
 
-use CliError;
+use crate::CliError;
 
 use edn;
 
@@ -36,7 +36,6 @@ pub static COMMAND_QUERY_EXPLAIN_LONG: &str = &"explain_query";
 pub static COMMAND_QUERY_EXPLAIN_SHORT: &str = &"eq";
 pub static COMMAND_QUERY_PREPARED_LONG: &str = &"query_prepared";
 pub static COMMAND_SCHEMA: &str = &"schema";
-pub static COMMAND_SYNC: &str = &"sync";
 pub static COMMAND_TIMER_LONG: &str = &"timer";
 pub static COMMAND_TRANSACT_LONG: &str = &"transact";
 pub static COMMAND_TRANSACT_SHORT: &str = &"t";
@@ -54,7 +53,6 @@ pub enum Command {
     QueryExplain(String),
     QueryPrepared(String),
     Schema,
-    Sync(Vec<String>),
     Timer(bool),
     Transact(String),
 }
@@ -78,8 +76,7 @@ impl Command {
             | &Command::Open(_)
             | &Command::OpenEncrypted(_, _)
             | &Command::Timer(_)
-            | &Command::Schema
-            | &Command::Sync(_) => true,
+            | &Command::Schema => true,
         }
     }
 
@@ -98,8 +95,7 @@ impl Command {
             | &Command::OpenEncrypted(_, _)
             | &Command::QueryExplain(_)
             | &Command::Timer(_)
-            | &Command::Schema
-            | &Command::Sync(_) => false,
+            | &Command::Schema => true,
         }
     }
 
@@ -122,7 +118,6 @@ impl Command {
                 format!(".{} {}", COMMAND_QUERY_PREPARED_LONG, args)
             }
             Command::Schema => format!(".{}", COMMAND_SCHEMA),
-            Command::Sync(ref args) => format!(".{} {:?}", COMMAND_SYNC, args),
             Command::Timer(on) => format!(".{} {}", COMMAND_TIMER_LONG, on),
             Command::Transact(ref args) => format!(".{} {}", COMMAND_TRANSACT_LONG, args),
         }
@@ -253,24 +248,6 @@ pub fn command(s: &str) -> Result<Command, Error> {
         Ok(Command::Schema)
     });
 
-    let sync_parser = string(COMMAND_SYNC)
-        .with(spaces())
-        .with(arguments())
-        .map(|args| {
-            if args.is_empty() {
-                bail!(CliError::CommandParse(
-                    "Missing required argument".to_string()
-                ));
-            }
-            if args.len() > 2 {
-                bail!(CliError::CommandParse(format!(
-                    "Unrecognized argument {:?}",
-                    args[2]
-                )));
-            }
-            Ok(Command::Sync(args))
-        });
-
     let timer_parser = string(COMMAND_TIMER_LONG)
         .with(spaces())
         .with(string("on").map(|_| true).or(string("off").map(|_| false)))
@@ -294,7 +271,6 @@ pub fn command(s: &str) -> Result<Command, Error> {
         attempt(query_prepared_parser),
         attempt(query_parser),
         attempt(schema_parser),
-        attempt(sync_parser),
         attempt(transact_parser),
     ));
     spaces()
@@ -411,19 +387,6 @@ mod tests {
         let input = ".open_encrypted path/to/db.db";
         let err = command(&input).expect_err("Expected an error");
         assert_eq!(err.to_string(), "Missing required argument");
-    }
-
-    #[test]
-    fn test_sync_parser_path_arg() {
-        let input = ".sync https://example.com/api/ 316ea470-ce35-4adf-9c61-e0de6e289c59";
-        let cmd = command(&input).expect("Expected open command");
-        match cmd {
-            Command::Sync(args) => {
-                assert_eq!(args[0], "https://example.com/api/".to_string());
-                assert_eq!(args[1], "316ea470-ce35-4adf-9c61-e0de6e289c59".to_string());
-            }
-            _ => panic!(),
-        }
     }
 
     #[test]

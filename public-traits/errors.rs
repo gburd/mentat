@@ -28,15 +28,6 @@ use query_projector_traits::errors::ProjectorError;
 use query_pull_traits::errors::PullError;
 use sql_traits::errors::SQLError;
 
-#[cfg(feature = "syncable")]
-use tolstoy_traits::errors::TolstoyError;
-
-#[cfg(feature = "syncable")]
-use hyper;
-
-#[cfg(feature = "syncable")]
-use serde_json;
-
 pub type Result<T> = std::result::Result<T, MentatError>;
 
 #[derive(Debug, Fail)]
@@ -122,22 +113,6 @@ pub enum MentatError {
 
     #[fail(display = "{}", _0)]
     UuidError(#[cause] uuid::Error),
-
-    #[cfg(feature = "syncable")]
-    #[fail(display = "{}", _0)]
-    TolstoyError(#[cause] TolstoyError),
-
-    #[cfg(feature = "syncable")]
-    #[fail(display = "{}", _0)]
-    NetworkError(#[cause] hyper::Error),
-
-    #[cfg(feature = "syncable")]
-    #[fail(display = "{}", _0)]
-    UriError(#[cause] http::uri::InvalidUri),
-
-    #[cfg(feature = "syncable")]
-    #[fail(display = "{}", _0)]
-    SerializationError(#[cause] serde_json::Error),
 }
 
 impl From<std::io::Error> for MentatError {
@@ -195,33 +170,5 @@ impl From<PullError> for MentatError {
 impl From<SQLError> for MentatError {
     fn from(error: SQLError) -> Self {
         MentatError::SQLError(error)
-    }
-}
-
-#[cfg(feature = "syncable")]
-impl From<TolstoyError> for MentatError {
-    fn from(error: TolstoyError) -> Self {
-        MentatError::TolstoyError(error)
-    }
-}
-
-#[cfg(feature = "syncable")]
-impl From<serde_json::Error> for MentatError {
-    fn from(error: serde_json::Error) -> Self {
-        MentatError::SerializationError(error)
-    }
-}
-
-#[cfg(feature = "syncable")]
-impl From<hyper::Error> for MentatError {
-    fn from(error: hyper::Error) -> Self {
-        MentatError::NetworkError(error)
-    }
-}
-
-#[cfg(feature = "syncable")]
-impl From<http::uri::InvalidUri> for MentatError {
-    fn from(error: http::uri::InvalidUri) -> Self {
-        MentatError::UriError(error)
     }
 }

@@ -7,7 +7,6 @@ edition = "2021"
 [features]
 default = []
 sqlcipher = ["rusqlite/sqlcipher"]
-syncable = ["serde", "serde_json", "serde_derive"]
 
 [dependencies]
 failure = "~0.1"

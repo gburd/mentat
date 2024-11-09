@@ -26,7 +26,6 @@ use db_traits::errors;
 
 /// Represents one partition of the entid space.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
-#[cfg_attr(feature = "syncable", derive(Serialize, Deserialize))]
 pub struct Partition {
     /// The first entid in the partition.
     pub start: Entid,
@@ -87,7 +86,6 @@ impl Partition {
 
 /// Map partition names to `Partition` instances.
 #[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialOrd, PartialEq)]
-#[cfg_attr(feature = "syncable", derive(Serialize, Deserialize))]
 pub struct PartitionMap(BTreeMap<String, Partition>);
 
 impl Deref for PartitionMap {

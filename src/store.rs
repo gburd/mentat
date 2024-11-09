@@ -29,12 +29,6 @@ use public_traits::errors::Result;
 
 use mentat_transaction::query::{PreparedResult, QueryExplanation, QueryInputs, QueryOutput};
 
-#[cfg(feature = "syncable")]
-use mentat_tolstoy::{SyncFollowup, SyncReport, SyncResult};
-
-#[cfg(feature = "syncable")]
-use crate::sync::Syncable;
-
 /// A convenience wrapper around a single SQLite connection and a Conn. This is suitable
 /// for applications that don't require complex connection management.
 pub struct Store {
@@ -60,31 +54,6 @@ impl Store {
         Ok(report)
     }
 
-    #[cfg(feature = "syncable")]
-    pub fn sync(&mut self, server_uri: &str, user_uuid: &str) -> Result<SyncResult> {
-        let mut reports = vec![];
-        loop {
-            let mut ip = self.begin_transaction()?;
-            let report = ip.sync(server_uri, user_uuid)?;
-            ip.commit()?;
-
-            match report {
-                SyncReport::Merge(SyncFollowup::FullSync) => {
-                    reports.push(report);
-                    continue;
-                }
-                _ => {
-                    reports.push(report);
-                    break;
-                }
-            }
-        }
-        if reports.len() == 1 {
-            Ok(SyncResult::Atomic(reports[0].clone()))
-        } else {
-            Ok(SyncResult::NonAtomic(reports))
-        }
-    }
 }
 
 #[cfg(feature = "sqlcipher")]

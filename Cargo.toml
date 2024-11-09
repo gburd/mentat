@@ -18,17 +18,16 @@ version = "0.13.0"
 build = "build/version.rs"
 
 [features]
-default = ["bundled_sqlite3", "syncable"]
+default = ["bundled_sqlite3"]
 bundled_sqlite3 = ["rusqlite/bundled"]
 sqlcipher = ["rusqlite/sqlcipher", "mentat_db/sqlcipher"]
-syncable = ["mentat_tolstoy", "tolstoy_traits", "mentat_db/syncable"]
 
 [workspace]
 members = [
   "tools/cli",
   "ffi", "core", "core-traits","db", "db-traits", "edn", "public-traits", "query-algebrizer",
   "query-algebrizer-traits", "query-projector", "query-projector-traits","query-pull",
-  "query-sql", "sql", "sql-traits", "tolstoy-traits", "tolstoy", "transaction"
+  "query-sql", "sql", "sql-traits", "transaction"
   ]
 
 [build-dependencies]
@@ -103,14 +102,6 @@ path = "public-traits"
 
 [dependencies.mentat_transaction]
 path = "transaction"
-
-[dependencies.mentat_tolstoy]
-path = "tolstoy"
-optional = true
-
-[dependencies.tolstoy_traits]
-path = "tolstoy-traits"
-optional = true
 
 [profile.release]
 opt-level = 3

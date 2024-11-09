@@ -5,10 +5,9 @@ edition = "2021"
 
 # Forward mentat's features.
 [features]
-default = ["bundled_sqlite3", "syncable"]
+default = ["bundled_sqlite3"]
 sqlcipher = ["mentat/sqlcipher"]
 bundled_sqlite3 = ["mentat/bundled_sqlite3"]
-syncable = ["mentat/syncable"]
 
 [lib]
 name = "mentat_cli"
@@ -30,7 +29,7 @@ lazy_static = "~1.5"
 linefeed = "~0.6"
 log = "~0.4"
 tabwriter = "~1.4"
-tempfile = "~3.13"
+tempfile = "~3.14"
 termion = "~4.0"
 time = "~0.3"
 bytes = { version = "1.8.0", features = ["serde"] }

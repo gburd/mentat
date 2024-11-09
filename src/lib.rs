@@ -106,15 +106,6 @@ pub mod query_builder;
 pub mod store;
 pub mod vocabulary;
 
-#[cfg(feature = "syncable")]
-mod sync;
-
-#[cfg(feature = "syncable")]
-pub use sync::Syncable;
-
-#[cfg(feature = "syncable")]
-pub use mentat_tolstoy::SyncReport;
-
 pub use query_builder::QueryBuilder;
 
 pub use conn::Conn;

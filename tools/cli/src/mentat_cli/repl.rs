@@ -27,9 +27,9 @@ use mentat::{
     Store, TxReport, TypedValue,
 };
 
-use command_parser::Command;
+use crate::command_parser::Command;
 
-use command_parser::{
+use crate::command_parser::{
     COMMAND_CACHE, COMMAND_EXIT_LONG, COMMAND_EXIT_SHORT, COMMAND_HELP, COMMAND_IMPORT_LONG,
     COMMAND_OPEN, COMMAND_QUERY_EXPLAIN_LONG, COMMAND_QUERY_EXPLAIN_SHORT, COMMAND_QUERY_LONG,
     COMMAND_QUERY_PREPARED_LONG, COMMAND_QUERY_SHORT, COMMAND_SCHEMA, COMMAND_TIMER_LONG,
@@ -41,13 +41,10 @@ use command_parser::{
 // we weren't compiled with sqlcipher), but they're unused, since we
 // omit them from help message (since they wouldn't work).
 #[cfg(feature = "sqlcipher")]
-use command_parser::COMMAND_OPEN_ENCRYPTED;
+use crate::command_parser::COMMAND_OPEN_ENCRYPTED;
 
-#[cfg(feature = "syncable")]
-use command_parser::COMMAND_SYNC;
-
-use input::InputReader;
-use input::InputResult::{Empty, Eof, MetaCommand, More};
+use crate::input::InputReader;
+use crate::input::InputResult::{Empty, Eof, MetaCommand, More};
 
 lazy_static! {
     static ref HELP_COMMANDS: Vec<(&'static str, &'static str)> = {
@@ -80,9 +77,6 @@ lazy_static! {
             (COMMAND_TIMER_LONG, "Enable or disable timing of query and transact operations."),
 
             (COMMAND_CACHE, "Cache an attribute. Usage: `.cache :foo/bar reverse`"),
-
-            #[cfg(feature = "syncable")]
-            (COMMAND_SYNC, "Synchronize the database against a Mentat Sync Server URL for a provided user UUID."),
         ]
     };
 }
@@ -90,7 +84,7 @@ lazy_static! {
 fn eprint_out(s: &str) {
     eprint!(
         "{green}{s}{reset}",
-        green = color::Fg(::GREEN),
+        green = color::Fg(crate::GREEN),
         s = s,
         reset = color::Fg(color::Reset)
     );
@@ -321,19 +315,6 @@ impl Repl {
                     Ok(s) => println!("{}", s),
                     Err(e) => eprintln!("{}", e),
                 };
-            }
-
-            #[cfg(feature = "syncable")]
-            Command::Sync(args) => {
-                match self.store.sync(&args[0], &args[1]) {
-                    Ok(report) => println!("Sync report: {}", report),
-                    Err(e) => eprintln!("{:?}", e),
-                };
-            }
-
-            #[cfg(not(feature = "syncable"))]
-            Command::Sync(_) => {
-                eprintln!(".sync requires the syncable Mentat feature");
             }
 
             Command::Timer(on) => {

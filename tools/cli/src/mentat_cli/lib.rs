@@ -47,7 +47,7 @@ static HISTORY_FILE_PATH: &str = ".mentat_history";
 /// node_repl, python, and sqlite, at least.
 pub(crate) fn history_file_path() -> PathBuf {
     let mut p = dirs::home_dir().unwrap_or_default();
-    p.push(::HISTORY_FILE_PATH);
+    p.push(HISTORY_FILE_PATH);
     p
 }
 
