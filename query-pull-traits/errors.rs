@@ -8,7 +8,10 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use std; // To refer to std::result::Result.
+use std;
+// To refer to std::result::Result.
+
+use thiserror::Error;
 
 use db_traits::errors::DbError;
 
@@ -16,16 +19,16 @@ use core_traits::Entid;
 
 pub type Result<T> = std::result::Result<T, PullError>;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum PullError {
-    #[fail(display = "attribute {:?} has no name", _0)]
+    #[error("attribute {0:?} has no name")]
     UnnamedAttribute(Entid),
 
-    #[fail(display = ":db/id repeated")]
+    #[error(":db/id repeated")]
     RepeatedDbId,
 
-    #[fail(display = "{}", _0)]
-    DbError(#[cause] DbError),
+    #[error("{0}")]
+    DbError(DbError),
 }
 
 impl From<DbError> for PullError {

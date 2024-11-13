@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -16,14 +16,12 @@ extern crate num;
 extern crate ordered_float;
 extern crate peg;
 extern crate pretty;
-extern crate uuid;
-
 #[cfg(feature = "serde_support")]
 extern crate serde;
-
 #[cfg(feature = "serde_support")]
 #[macro_use]
 extern crate serde_derive;
+extern crate uuid;
 
 pub mod entities;
 pub mod intern_set;
@@ -55,7 +53,6 @@ pub use crate::types::{
 pub use crate::symbols::{Keyword, NamespacedSymbol, PlainSymbol};
 
 use std::collections::{BTreeMap, BTreeSet, LinkedList};
-use std::f64::{INFINITY, NAN, NEG_INFINITY};
 use std::iter::FromIterator;
 
 use chrono::TimeZone;
@@ -77,10 +74,10 @@ pub type ParseError = peg::error::ParseError<peg::str::LineCol>;
 peg::parser!(pub grammar parse() for str {
 
     pub rule nil() -> SpannedValue = "nil" { SpannedValue::Nil }
-    pub rule nan() -> SpannedValue = "#f" whitespace()+ "NaN" { SpannedValue::Float(OrderedFloat(NAN)) }
+    pub rule nan() -> SpannedValue = "#f" whitespace()+ "NaN" { SpannedValue::Float(OrderedFloat(std::f64::NAN)) }
 
     pub rule infinity() -> SpannedValue = "#f" whitespace()+ s:$(sign()) "Infinity"
-        { SpannedValue::Float(OrderedFloat(if s == "+" { INFINITY } else { NEG_INFINITY })) }
+        { SpannedValue::Float(OrderedFloat(if s == "+" { std::f64::INFINITY } else { std::f64::NEG_INFINITY })) }
 
     pub rule boolean() -> SpannedValue
         = "true"  { SpannedValue::Boolean(true) }

@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -8,12 +8,11 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-extern crate failure;
-
-extern crate edn;
-extern crate mentat_core;
 #[macro_use]
 extern crate core_traits;
+extern crate edn;
+extern crate failure;
+extern crate mentat_core;
 extern crate query_algebrizer_traits;
 
 use std::collections::BTreeSet;
@@ -136,8 +135,10 @@ impl Known<'_, '_> {
 
 #[derive(Debug)]
 pub struct AlgebraicQuery {
+    #[allow(dead_code)]
     default_source: SrcVar,
     pub find_spec: Rc<FindSpec>,
+    #[allow(dead_code)]
     has_aggregates: bool,
 
     /// The set of variables that the caller wishes to be used for grouping when aggregating.

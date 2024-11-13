@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-use failure::{Backtrace, Context, Fail};
+use thiserror::Error;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -41,7 +41,7 @@ pub enum CardinalityConflict {
 }
 
 // TODO Error/ErrorKind pair
-#[derive(Clone, Debug, Eq, PartialEq, Fail)]
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum SchemaConstraintViolation {
     /// A transaction tried to assert datoms where one tempid upserts to two (or more) distinct
     /// entids.
@@ -102,7 +102,7 @@ impl ::std::fmt::Display for SchemaConstraintViolation {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Fail)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Error)]
 pub enum InputError {
     /// Map notation included a bad `:db/id` value.
     BadDbId,
@@ -127,8 +127,9 @@ impl ::std::fmt::Display for InputError {
 }
 
 #[derive(Debug)]
+#[error("DB error: {inner}")]
 pub struct DbError {
-    inner: Context<DbErrorKind>,
+    inner: DbErrorKind,
 }
 
 impl ::std::fmt::Display for DbError {
@@ -137,7 +138,7 @@ impl ::std::fmt::Display for DbError {
     }
 }
 
-impl Fail for DbError {
+impl Error for DbError {
     fn cause(&self) -> Option<&dyn Fail> {
         self.inner.cause()
     }
@@ -175,7 +176,7 @@ impl From<rusqlite::Error> for DbError {
     }
 }
 
-#[derive(Clone, PartialEq, Debug, Fail)]
+#[derive(Clone, PartialEq, Debug, Error)]
 pub enum DbErrorKind {
     /// We're just not done yet.  Recognized a feature that is not yet implemented.
     #[fail(display = "not yet implemented: {}", _0)]

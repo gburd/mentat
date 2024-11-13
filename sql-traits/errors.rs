@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -8,12 +8,14 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-#[derive(Debug, Fail)]
+use thiserror::Error;
+
+#[derive(Debug, Error)]
 pub enum SQLError {
-    #[fail(display = "invalid parameter name: {}", _0)]
+    #[error("invalid parameter name: {0}")]
     InvalidParameterName(String),
 
-    #[fail(display = "parameter name could be generated: '{}'", _0)]
+    #[error("parameter name could be generated: '{0}'")]
     BindParamCouldBeGenerated(String),
 }
 

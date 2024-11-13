@@ -48,6 +48,7 @@
 ///! and test the external API.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+
 use std::collections::btree_map::Entry;
 
 use std::collections::btree_map::Entry::{Occupied, Vacant};
@@ -246,7 +247,9 @@ trait CardinalityOneCache: RemoveFromCache + ClearCache {
 
 trait CardinalityManyCache: RemoveFromCache + ClearCache {
     fn acc(&mut self, e: Entid, v: TypedValue);
+    #[allow(dead_code)]
     fn set(&mut self, e: Entid, vs: Vec<TypedValue>);
+    #[allow(dead_code)]
     fn get(&self, e: Entid) -> Option<&Vec<TypedValue>>;
 }
 
@@ -501,7 +504,7 @@ impl NonUniqueReverseAttributeCache {
 
 fn with_aev_iter<F, I>(a: Entid, iter: &mut Peekable<I>, mut f: F)
 where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     F: FnMut(Entid, TypedValue),
 {
     let check = Some(a);
@@ -513,7 +516,7 @@ where
 
 fn accumulate_single_val_evs_forward<I, C>(a: Entid, f: &mut C, iter: &mut Peekable<I>)
 where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: CardinalityOneCache,
 {
     with_aev_iter(a, iter, |e, v| f.set(e, v))
@@ -521,7 +524,7 @@ where
 
 fn accumulate_multi_val_evs_forward<I, C>(a: Entid, f: &mut C, iter: &mut Peekable<I>)
 where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: CardinalityManyCache,
 {
     with_aev_iter(a, iter, |e, v| f.acc(e, v))
@@ -532,7 +535,7 @@ fn accumulate_unique_evs_reverse<I>(
     r: &mut UniqueReverseAttributeCache,
     iter: &mut Peekable<I>,
 ) where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
 {
     with_aev_iter(a, iter, |e, v| r.set(e, v))
 }
@@ -542,7 +545,7 @@ fn accumulate_non_unique_evs_reverse<I>(
     r: &mut NonUniqueReverseAttributeCache,
     iter: &mut Peekable<I>,
 ) where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
 {
     with_aev_iter(a, iter, |e, v| r.acc(e, v))
 }
@@ -553,7 +556,7 @@ fn accumulate_single_val_unique_evs_both<I, C>(
     r: &mut UniqueReverseAttributeCache,
     iter: &mut Peekable<I>,
 ) where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: CardinalityOneCache,
 {
     with_aev_iter(a, iter, |e, v| {
@@ -568,7 +571,7 @@ fn accumulate_multi_val_unique_evs_both<I, C>(
     r: &mut UniqueReverseAttributeCache,
     iter: &mut Peekable<I>,
 ) where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: CardinalityManyCache,
 {
     with_aev_iter(a, iter, |e, v| {
@@ -583,7 +586,7 @@ fn accumulate_single_val_non_unique_evs_both<I, C>(
     r: &mut NonUniqueReverseAttributeCache,
     iter: &mut Peekable<I>,
 ) where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: CardinalityOneCache,
 {
     with_aev_iter(a, iter, |e, v| {
@@ -598,7 +601,7 @@ fn accumulate_multi_val_non_unique_evs_both<I, C>(
     r: &mut NonUniqueReverseAttributeCache,
     iter: &mut Peekable<I>,
 ) where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: CardinalityManyCache,
 {
     with_aev_iter(a, iter, |e, v| {
@@ -609,7 +612,7 @@ fn accumulate_multi_val_non_unique_evs_both<I, C>(
 
 fn accumulate_removal_one<I, C>(a: Entid, c: &mut C, iter: &mut Peekable<I>)
 where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     C: RemoveFromCache,
 {
     with_aev_iter(a, iter, |e, v| {
@@ -619,7 +622,7 @@ where
 
 fn accumulate_removal_both<I, F, R>(a: Entid, f: &mut F, r: &mut R, iter: &mut Peekable<I>)
 where
-    I: Iterator<Item = Aev>,
+    I: Iterator<Item=Aev>,
     F: RemoveFromCache,
     R: RemoveFromCache,
 {
@@ -821,7 +824,7 @@ impl AttributeCaches {
         iter: &mut Peekable<I>,
         behavior: AccumulationBehavior,
     ) where
-        I: Iterator<Item = Aev>,
+        I: Iterator<Item=Aev>,
     {
         if let Some(&(a, _, _)) = iter.peek() {
             if let Some(attribute) = schema.attribute_for_entid(a) {
@@ -968,7 +971,7 @@ impl AttributeCaches {
         behavior: AccumulationBehavior,
     ) -> Result<()>
     where
-        I: Iterator<Item = Aev>,
+        I: Iterator<Item=Aev>,
     {
         while iter.peek().is_some() {
             self.accumulate_evs(fallback, schema, &mut iter, behavior);
@@ -1359,7 +1362,7 @@ impl CachedAttributes for AttributeCaches {
 impl UpdateableCache<DbError> for AttributeCaches {
     fn update<I>(&mut self, schema: &Schema, retractions: I, assertions: I) -> Result<()>
     where
-        I: Iterator<Item = (Entid, Entid, TypedValue)>,
+        I: Iterator<Item=(Entid, Entid, TypedValue)>,
     {
         self.update_with_fallback(None, schema, retractions, assertions)
     }
@@ -1374,7 +1377,7 @@ impl AttributeCaches {
         assertions: I,
     ) -> Result<()>
     where
-        I: Iterator<Item = (Entid, Entid, TypedValue)>,
+        I: Iterator<Item=(Entid, Entid, TypedValue)>,
     {
         let r_aevs = retractions.peekable();
         self.accumulate_into_cache(fallback, schema, r_aevs, AccumulationBehavior::Remove)?;
@@ -1535,7 +1538,7 @@ impl SQLiteAttributeCache {
 impl UpdateableCache<DbError> for SQLiteAttributeCache {
     fn update<I>(&mut self, schema: &Schema, retractions: I, assertions: I) -> Result<()>
     where
-        I: Iterator<Item = (Entid, Entid, TypedValue)>,
+        I: Iterator<Item=(Entid, Entid, TypedValue)>,
     {
         self.make_mut().update(schema, retractions, assertions)
     }
@@ -1741,7 +1744,7 @@ impl InProgressSQLiteAttributeCache {
 impl UpdateableCache<DbError> for InProgressSQLiteAttributeCache {
     fn update<I>(&mut self, schema: &Schema, retractions: I, assertions: I) -> Result<()>
     where
-        I: Iterator<Item = (Entid, Entid, TypedValue)>,
+        I: Iterator<Item=(Entid, Entid, TypedValue)>,
     {
         self.overlay
             .update_with_fallback(Some(&self.inner), schema, retractions, assertions)
@@ -1792,13 +1795,13 @@ impl CachedAttributes for InProgressSQLiteAttributeCache {
     fn is_attribute_cached_reverse(&self, attribute: Entid) -> bool {
         !self.unregistered_reverse.contains(&attribute)
             && (self.inner.reverse_cached_attributes.contains(&attribute)
-                || self.overlay.reverse_cached_attributes.contains(&attribute))
+            || self.overlay.reverse_cached_attributes.contains(&attribute))
     }
 
     fn is_attribute_cached_forward(&self, attribute: Entid) -> bool {
         !self.unregistered_forward.contains(&attribute)
             && (self.inner.forward_cached_attributes.contains(&attribute)
-                || self.overlay.forward_cached_attributes.contains(&attribute))
+            || self.overlay.forward_cached_attributes.contains(&attribute))
     }
 
     fn has_cached_attributes(&self) -> bool {

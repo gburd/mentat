@@ -12,8 +12,7 @@ path = "lib.rs"
 sqlcipher = ["rusqlite/sqlcipher"]
 
 [dependencies]
-failure = "~0.1"
-failure_derive = "~0.1"
+thiserror = "~2.0"
 
 [dependencies.rusqlite]
 version = "~0.32"

@@ -50,7 +50,7 @@ impl Projector for ScalarProjector {
         _sqlite: &'s rusqlite::Connection,
         mut rows: Rows<'stmt>,
     ) -> Result<QueryOutput> {
-        let results = if let Some(r) = rows.next().unwrap() {
+        let results = if let Some(r) = rows.next()? {
             let row = r;
             let binding = self.template.lookup(&row)?;
             QueryResults::Scalar(Some(binding))
@@ -63,7 +63,7 @@ impl Projector for ScalarProjector {
         })
     }
 
-    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &Element> + 's> {
+    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&'s Element> + 's> {
         self.spec.columns()
     }
 }
@@ -122,7 +122,7 @@ impl Projector for TupleProjector {
         _sqlite: &'s rusqlite::Connection,
         mut rows: Rows<'stmt>,
     ) -> Result<QueryOutput> {
-        let results = if let Some(r) = rows.next().unwrap() {
+        let results = if let Some(r) = rows.next()? {
             let row = r;
             let bindings = self.collect_bindings(row)?;
             QueryResults::Tuple(Some(bindings))
@@ -135,7 +135,7 @@ impl Projector for TupleProjector {
         })
     }
 
-    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &Element> + 's> {
+    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&'s Element> + 's> {
         self.spec.columns()
     }
 }
@@ -218,7 +218,7 @@ impl Projector for RelProjector {
         })
     }
 
-    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &Element> + 's> {
+    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&'s Element> + 's> {
         self.spec.columns()
     }
 }
@@ -274,7 +274,7 @@ impl Projector for CollProjector {
         })
     }
 
-    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &Element> + 's> {
+    fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&'s Element> + 's> {
         self.spec.columns()
     }
 }

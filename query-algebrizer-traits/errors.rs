@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -8,11 +8,13 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use std; // To refer to std::result::Result.
+use std;
 
 use core_traits::{ValueType, ValueTypeSet};
 
 use edn::{query::PlainSymbol, ParseError};
+
+use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, AlgebrizerError>;
 
@@ -27,90 +29,75 @@ pub enum BindingError {
     ExpectedBindRel,
 
     /// Expected `[[?x ?y]]` or `[?x ...]` but got some other type of binding.  Mentat is
-    /// deliberately more strict than Datomic: we won't try to make sense of non-obvious (and
+    /// deliberately stricter than Datomic: we won't try to make sense of non-obvious (and
     /// potentially erroneous) bindings.
     ExpectedBindRelOrBindColl,
 
     /// Expected `[?x1 … ?xN]` or `[[?x1 … ?xN]]` but got some other number of bindings.  Mentat is
-    /// deliberately more strict than Datomic: we prefer placeholders to omission.
+    /// deliberately stricter than Datomic: we prefer placeholders to omission.
     InvalidNumberOfBindings {
         number: usize,
         expected: usize,
     },
 }
 
-#[derive(Clone, Debug, Eq, Fail, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum AlgebrizerError {
-    #[fail(display = "{} var {} is duplicated", _0, _1)]
+    #[error("{0} var {1} is duplicated")]
     DuplicateVariableError(PlainSymbol, &'static str),
 
-    #[fail(display = "unexpected FnArg")]
+    #[error("unexpected FnArg")]
     UnsupportedArgument,
 
-    #[fail(
-        display = "value of type {} provided for var {}, expected {}",
-        _0, _1, _2
-    )]
+    #[error("value of type {0} provided for var {1}, expected {2}")]
     InputTypeDisagreement(PlainSymbol, ValueType, ValueType),
 
-    #[fail(
-        display = "invalid number of arguments to {}: expected {}, got {}.",
-        _0, _1, _2
-    )]
+    #[error("invalid number of arguments to {0}: expected {1}, got {2}.")]
     InvalidNumberOfArguments(PlainSymbol, usize, usize),
 
-    #[fail(
-        display = "invalid argument to {}: expected {} in position {}.",
-        _0, _1, _2
-    )]
+    #[error("invalid argument to {0}: expected {1} in position {2}.")]
     InvalidArgument(PlainSymbol, &'static str, usize),
 
-    #[fail(
-        display = "invalid argument to {}: expected one of {:?} in position {}.",
-        _0, _1, _2
-    )]
+    #[error("invalid argument to {0}: expected one of {1:?} in position {2}.")]
     InvalidArgumentType(PlainSymbol, ValueTypeSet, usize),
 
     // TODO: flesh this out.
-    #[fail(display = "invalid expression in ground constant")]
+    #[error("invalid expression in ground constant")]
     InvalidGroundConstant,
 
-    #[fail(
-        display = "invalid limit {} of type {}: expected natural number.",
-        _0, _1
-    )]
+    #[error("invalid limit {0} of type {1}: expected natural number.")]
     InvalidLimit(String, ValueType),
 
-    #[fail(display = "mismatched bindings in ground")]
+    #[error("mismatched bindings in ground")]
     GroundBindingsMismatch,
 
-    #[fail(display = "no entid found for ident: {}", _0)]
+    #[error("no entid found for ident: {0}")]
     UnrecognizedIdent(String),
 
-    #[fail(display = "no function named {}", _0)]
+    #[error("no function named {0}")]
     UnknownFunction(PlainSymbol),
 
-    #[fail(display = ":limit var {} not present in :in", _0)]
+    #[error(":limit var {0} not present in :in")]
     UnknownLimitVar(PlainSymbol),
 
-    #[fail(display = "unbound variable {} in order clause or function call", _0)]
+    #[error("unbound variable {0} in order clause or function call")]
     UnboundVariable(PlainSymbol),
 
     // TODO: flesh out.
-    #[fail(display = "non-matching variables in 'or' clause")]
+    #[error("non-matching variables in 'or' clause")]
     NonMatchingVariablesInOrClause,
 
-    #[fail(display = "non-matching variables in 'not' clause")]
+    #[error("non-matching variables in 'not' clause")]
     NonMatchingVariablesInNotClause,
 
-    #[fail(display = "binding error in {}: {:?}", _0, _1)]
+    #[error("binding error in {0}: {1:?}")]
     InvalidBinding(PlainSymbol, BindingError),
 
-    #[fail(display = "{}", _0)]
-    EdnParseError(#[cause] ParseError),
+    #[error("{0}")]
+    EdnParseError(ParseError), // TODO [#from] ?
 }
 
-impl From<ParseError> for AlgebrizerError {
+impl core::convert::From<ParseError> for AlgebrizerError {
     fn from(error: ParseError) -> AlgebrizerError {
         AlgebrizerError::EdnParseError(error)
     }

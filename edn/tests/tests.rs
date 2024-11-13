@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -353,7 +353,7 @@ fn test_inst() {
     assert!(parse::value("#inst \"2016-01-01T11:00:00.000\"").is_err()); // No timezone.
     assert!(parse::value("#inst \"2016-01-01T11:00:00.000z\"").is_err()); // Lowercase timezone.
 
-    let expected = Utc.timestamp(1493410985, 187000000);
+    let expected = Utc.timestamp_opt(1493410985, 187000000).unwrap();
     let s = "#inst \"2017-04-28T20:23:05.187Z\"";
     let actual = parse::value(s).expect("parse success").into();
     let value = self::Value::Instant(expected);
@@ -605,15 +605,15 @@ fn test_value() {
     );
     assert_eq!(
         value("#instmillis 1493410985187").unwrap(),
-        Instant(Utc.timestamp(1493410985, 187000000))
+        Instant(Utc.timestamp_opt(1493410985, 187000000).unwrap())
     );
     assert_eq!(
         value("#instmicros 1493410985187123").unwrap(),
-        Instant(Utc.timestamp(1493410985, 187123000))
+        Instant(Utc.timestamp_opt(1493410985, 187123000).unwrap())
     );
     assert_eq!(
         value("#inst \"2017-04-28T20:23:05.187Z\"").unwrap(),
-        Instant(Utc.timestamp(1493410985, 187000000))
+        Instant(Utc.timestamp_opt(1493410985, 187000000).unwrap())
     );
     assert_eq!(
         value("#bytes 010203050403022a").unwrap(),

@@ -8,20 +8,14 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-extern crate failure;
-#[macro_use]
-extern crate failure_derive;
-extern crate rusqlite;
-
 #[macro_use]
 extern crate core_traits;
 extern crate db_traits;
-extern crate edn;
-extern crate query_pull_traits;
-
-// TODO we only want to import a *_traits here, this is a smell.
+extern crate edn; // TODO we only want to import a *_traits here, this is a smell.
 extern crate mentat_query_algebrizer;
 extern crate mentat_query_sql;
+extern crate query_pull_traits;
+extern crate rusqlite;
 
 pub mod aggregates;
 pub mod errors;

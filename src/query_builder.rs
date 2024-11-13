@@ -27,7 +27,7 @@ pub struct QueryBuilder<'a> {
 }
 
 impl<'a> QueryBuilder<'a> {
-    pub fn new<T>(store: &'a mut Store, query: T) -> QueryBuilder<'_>
+    pub fn new<T>(store: &mut Store, query: T) -> QueryBuilder<>
     where
         T: Into<String>,
     {
@@ -161,10 +161,10 @@ mod test {
                                                       :in ?v
                                                       :where [?x :foo/boolean ?v]]"#,
         )
-        .bind_value("?v", true)
-        .execute_scalar()
-        .expect("ScalarResult")
-        .and_then(|t| t.into_entid());
+            .bind_value("?v", true)
+            .execute_scalar()
+            .expect("ScalarResult")
+            .and_then(|t| t.into_entid());
         assert_eq!(entid, Some(yes));
     }
 
@@ -211,12 +211,12 @@ mod test {
                                                                  :in ?v
                                                                  :where [?x :foo/boolean ?v]]"#,
         )
-        .bind_value("?v", true)
-        .execute_coll()
-        .expect("CollResult")
-        .into_iter()
-        .map(|v| v.into_entid().expect("val"))
-        .collect();
+            .bind_value("?v", true)
+            .execute_coll()
+            .expect("CollResult")
+            .into_iter()
+            .map(|v| v.into_entid().expect("val"))
+            .collect();
 
         assert_eq!(entids, vec![l_yes, n_yes, u_yes]);
     }
@@ -262,9 +262,9 @@ mod test {
                                                         :in ?v
                                                         :where [?x :foo/boolean ?v]]"#,
         )
-        .bind_value("?v", true)
-        .execute_coll()
-        .expect("CollResult");
+            .bind_value("?v", true)
+            .execute_coll()
+            .expect("CollResult");
         let entid = results
             .get(1)
             .and_then(|t| t.to_owned().into_entid())
@@ -315,11 +315,11 @@ mod test {
                                                         :where [?x :foo/boolean ?v]
                                                                [?x :foo/long ?i]]"#,
         )
-        .bind_value("?v", true)
-        .bind_long("?i", 27)
-        .execute_tuple()
-        .expect("TupleResult")
-        .expect("Vec<TypedValue>");
+            .bind_value("?v", true)
+            .bind_long("?i", 27)
+            .execute_tuple()
+            .expect("TupleResult")
+            .expect("Vec<TypedValue>");
         let entid = results.first()
             .and_then(|t| t.to_owned().into_entid())
             .expect("entid");
@@ -374,11 +374,11 @@ mod test {
                                                                 :where [?x :foo/boolean ?v]
                                                                        [?x :foo/long ?i]]"#,
         )
-        .bind_value("?v", true)
-        .bind_long("?i", 27)
-        .execute_tuple()
-        .expect("TupleResult")
-        .unwrap_or_default();
+            .bind_value("?v", true)
+            .bind_long("?i", 27)
+            .execute_tuple()
+            .expect("TupleResult")
+            .unwrap_or_default();
         let entid = TypedValue::Ref(n_yes).into();
         let long_val = TypedValue::Long(27).into();
 
@@ -431,23 +431,23 @@ mod test {
                                                                       :where [?x :foo/boolean ?v]
                                                                              [?x :foo/long ?i]]"#,
         )
-        .execute_rel()
-        .expect("RelResult")
-        .into_iter()
-        .map(|row| Res {
-            entid: row.first()
-                .and_then(|t| t.to_owned().into_entid())
-                .expect("entid"),
-            boolean: row
-                .get(1)
-                .and_then(|t| t.to_owned().into_boolean())
-                .expect("boolean"),
-            long_val: row
-                .get(2)
-                .and_then(|t| t.to_owned().into_long())
-                .expect("long"),
-        })
-        .collect();
+            .execute_rel()
+            .expect("RelResult")
+            .into_iter()
+            .map(|row| Res {
+                entid: row.first()
+                    .and_then(|t| t.to_owned().into_entid())
+                    .expect("entid"),
+                boolean: row
+                    .get(1)
+                    .and_then(|t| t.to_owned().into_boolean())
+                    .expect("boolean"),
+                long_val: row
+                    .get(2)
+                    .and_then(|t| t.to_owned().into_long())
+                    .expect("long"),
+            })
+            .collect();
 
         let res1 = results.pop().expect("res");
         assert_eq!(
@@ -517,10 +517,10 @@ mod test {
                                                         :where [?x :foo/boolean ?v]
                                                                [?x :foo/long ?i]]"#,
         )
-        .bind_ref("?x", l_yes)
-        .execute_tuple()
-        .expect("TupleResult")
-        .unwrap_or_default();
+            .bind_ref("?x", l_yes)
+            .execute_tuple()
+            .expect("TupleResult")
+            .unwrap_or_default();
         assert!(
             results.first()
                 .and_then(|t| t.to_owned().into_boolean())

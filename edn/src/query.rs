@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -8,27 +8,27 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-///! This module defines some core types that support find expressions: sources,
-///! variables, expressions, etc.
-///! These are produced as 'fuel' by the query parser, consumed by the query
-///! translator and executor.
-///!
-///! Many of these types are defined as simple structs that are little more than
-///! a richer type alias: a variable, for example, is really just a fancy kind
-///! of string.
-///!
-///! At some point in the future, we might consider reducing copying and memory
-///! usage by recasting all of these string-holding structs and enums in terms
-///! of string references, with those references being slices of some parsed
-///! input query string, and valid for the lifetime of that string.
-///!
-///! For now, for the sake of simplicity, all of these strings are heap-allocated.
-///!
-///! Furthermore, we might cut out some of the chaff here: each time a 'tagged'
-///! type is used within an enum, we have an opportunity to simplify and use the
-///! inner type directly in conjunction with matching on the enum. Before diving
-///! deeply into this it's worth recognizing that this loss of 'sovereignty' is
-///! a tradeoff against well-typed function signatures and other such boundaries.
+//! This module defines some core types that support find expressions: sources,
+//! variables, expressions, etc.
+//! These are produced as 'fuel' by the query parser, consumed by the query
+//! translator and executor.
+//!
+//! Many of these types are defined as simple structs that are little more than
+//! a richer type alias: a variable, for example, is really just a fancy kind
+//! of string.
+//!
+//! At some point in the future, we might consider reducing copying and memory
+//! usage by recasting all of these string-holding structs and enums in terms
+//! of string references, with those references being slices of some parsed
+//! input query string, and valid for the lifetime of that string.
+//!
+//! For now, for the sake of simplicity, all of these strings are heap-allocated.
+//!
+//! Furthermore, we might cut out some of the chaff here: each time a 'tagged'
+//! type is used within an enum, we have an opportunity to simplify and use the
+//! inner type directly in conjunction with matching on the enum. Before diving
+//! deeply into this it's worth recognizing that this loss of 'sovereignty' is
+//! a tradeoff against well-typed function signatures and other such boundaries.
 use std::collections::{BTreeSet, HashSet};
 
 use std;
@@ -230,9 +230,9 @@ impl FromValue<FnArg> for FnArg {
             BigInteger(ref x) => Some(FnArg::Constant(NonIntegerConstant::BigInteger(x.clone()))),
             Text(ref x) =>
             // TODO: intern strings. #398.
-            {
-                Some(FnArg::Constant(x.clone().into()))
-            }
+                {
+                    Some(FnArg::Constant(x.clone().into()))
+                }
             Nil | NamespacedSymbol(_) | Vector(_) | List(_) | Set(_) | Map(_) | Bytes(_) => None,
         }
     }
@@ -391,9 +391,9 @@ impl FromValue<PatternValuePlace> for PatternValuePlace {
             }
             crate::SpannedValue::Text(ref x) =>
             // TODO: intern strings. #398.
-            {
-                Some(PatternValuePlace::Constant(x.clone().into()))
-            }
+                {
+                    Some(PatternValuePlace::Constant(x.clone().into()))
+                }
             crate::SpannedValue::Uuid(ref u) => {
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Uuid(*u)))
             }
@@ -563,9 +563,9 @@ impl std::fmt::Display for Element {
         match self {
             Element::Variable(ref var) => write!(f, "{}", var),
             Element::Pull(Pull {
-                ref var,
-                ref patterns,
-            }) => {
+                              ref var,
+                              ref patterns,
+                          }) => {
                 write!(f, "(pull {} [ ", var)?;
                 for p in patterns.iter() {
                     write!(f, "{} ", p)?;
@@ -673,7 +673,7 @@ impl FindSpec {
         !self.is_unit_limited()
     }
 
-    pub fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &'s Element> + 's> {
+    pub fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&'s Element> + 's> {
         use self::FindSpec::*;
         match self {
             FindScalar(ref e) => Box::new(std::iter::once(e)),

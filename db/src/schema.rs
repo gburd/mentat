@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -263,7 +263,7 @@ pub trait SchemaBuilding {
     ) -> Result<Schema>;
     fn from_ident_map_and_triples<U>(ident_map: IdentMap, assertions: U) -> Result<Schema>
     where
-        U: IntoIterator<Item = (symbols::Keyword, symbols::Keyword, TypedValue)>;
+        U: IntoIterator<Item=(symbols::Keyword, symbols::Keyword, TypedValue)>;
 }
 
 impl SchemaBuilding for Schema {
@@ -296,7 +296,7 @@ impl SchemaBuilding for Schema {
     /// Turn vec![(Keyword(:ident), Keyword(:key), TypedValue(:value)), ...] into a Mentat `Schema`.
     fn from_ident_map_and_triples<U>(ident_map: IdentMap, assertions: U) -> Result<Schema>
     where
-        U: IntoIterator<Item = (symbols::Keyword, symbols::Keyword, TypedValue)>,
+        U: IntoIterator<Item=(symbols::Keyword, symbols::Keyword, TypedValue)>,
     {
         let entid_assertions: Result<Vec<(Entid, Entid, TypedValue)>> = assertions
             .into_iter()
