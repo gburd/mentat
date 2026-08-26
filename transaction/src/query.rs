@@ -9,8 +9,8 @@
 // specific language governing permissions and limitations under the License.
 
 use rusqlite;
-use rusqlite::types::ToSql;
 use rusqlite::params_from_iter;
+use rusqlite::types::ToSql;
 
 use std::rc::Rc;
 
@@ -290,7 +290,10 @@ fn run_statement<'sqlite, 'stmt, 'bound>(
     let rows = if bindings.is_empty() {
         statement.query(rusqlite::params![])?
     } else {
-        let  params: Vec<&dyn ToSql> = bindings.iter().map(|(_, v)| v.as_ref() as &dyn ToSql).collect();
+        let params: Vec<&dyn ToSql> = bindings
+            .iter()
+            .map(|(_, v)| v.as_ref() as &dyn ToSql)
+            .collect();
         statement.query(params_from_iter(params.iter()))?
     };
     Ok(rows)

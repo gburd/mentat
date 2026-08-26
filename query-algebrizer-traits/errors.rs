@@ -93,6 +93,18 @@ pub enum AlgebrizerError {
     #[error("binding error in {0}: {1:?}")]
     InvalidBinding(PlainSymbol, BindingError),
 
+    #[error("no rule named {0}")]
+    UnknownRule(PlainSymbol),
+
+    #[error("rule {0} invoked with {1} args but its definition takes {2}")]
+    RuleArgumentMismatch(PlainSymbol, usize, usize),
+
+    #[error("recursive rule {0} is not yet supported in the embedded engine")]
+    RecursiveRuleUnsupported(PlainSymbol),
+
+    #[error("multi-clause rule {0} is not yet supported in the embedded engine")]
+    MultiClauseRuleUnsupported(PlainSymbol),
+
     #[error("{0}")]
     EdnParseError(ParseError), // TODO [#from] ?
 }

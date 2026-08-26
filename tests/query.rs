@@ -96,10 +96,7 @@ fn test_failing_scalar() {
         panic!("Expected failed scalar.");
     }
 
-    println!(
-        "Failing scalar took {}µs",
-        (end - start).as_micros()
-    );
+    println!("Failing scalar took {}µs", (end - start).as_micros());
 }
 
 #[test]
@@ -1973,4 +1970,73 @@ fn test_encrypted() {
     // We expect this to blow up completely if something is wrong with the encryption,
     // so the specific test we use doesn't matter that much.
     run_tx_data_test(Store::open_with_key("", "secret").expect("opened"));
+}
+
+// Ported from pg_mentat: named (non-recursive) rules, expanded by inlining.
+// A `grandparent` rule composed of two `parent` patterns.
+#[test]
+fn test_named_rule_expansion() {
+    let mut store = Store::open("").expect("opened");
+    let (alice, _bob, carol) = {
+        let mut ip = store.begin_transaction().expect("began");
+        ip.transact(
+            r#"[{:db/ident :fam/parent
+                 :db/valueType :db.type/ref
+                 :db/cardinality :db.cardinality/many}
+                {:db/ident :fam/name
+                 :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+        // Carol -> Bob -> Alice (parent points child->parent).
+        let r = ip
+            .transact(
+                r#"[{:db/id "alice" :fam/name "Alice"}
+                    {:db/id "bob"   :fam/name "Bob"   :fam/parent "alice"}
+                    {:db/id "carol" :fam/name "Carol" :fam/parent "bob"}]"#,
+            )
+            .expect("data");
+        let a = *r.tempids.get("alice").unwrap();
+        let b = *r.tempids.get("bob").unwrap();
+        let c = *r.tempids.get("carol").unwrap();
+        ip.commit().expect("committed");
+        (a, b, c)
+    };
+
+    // grandparent(?c ?g) :- [?c :fam/parent ?p] [?p :fam/parent ?g]
+    let q = r#"[:find ?cn ?gn
+                :where
+                  (grandparent ?c ?g)
+                  [?c :fam/name ?cn]
+                  [?g :fam/name ?gn]
+                :rules [[(grandparent ?c ?g)
+                          [?c :fam/parent ?p]
+                          [?p :fam/parent ?g]]]]"#;
+    let results = store
+        .begin_read()
+        .expect("read")
+        .q_once(q, None)
+        .into_rel_result()
+        .expect("results");
+
+    // Only Carol (grandchild) / Alice (grandparent).
+    assert_eq!(results.row_count(), 1, "one grandparent pair");
+    let row = &results.rows().next().unwrap();
+    assert_eq!(row[0], Binding::Scalar(TypedValue::from("Carol")));
+    assert_eq!(row[1], Binding::Scalar(TypedValue::from("Alice")));
+    let _ = (alice, carol);
+}
+
+// A recursive rule must produce a clear error (not a panic), pending WITH
+// RECURSIVE support in the SQL IR.
+#[test]
+fn test_recursive_rule_errors_cleanly() {
+    let mut store = Store::open("").expect("opened");
+    let q = r#"[:find ?a ?d
+                :where (ancestor ?a ?d)
+                :rules [[(ancestor ?a ?d) [?a :fam/parent ?d]]
+                        [(ancestor ?a ?d) [?a :fam/parent ?x] (ancestor ?x ?d)]]]"#;
+    let res = store.begin_read().expect("read").q_once(q, None);
+    // Multi-clause (and recursive) => rejected, but as an error, not a panic.
+    assert!(res.is_err(), "recursive/multi-clause rule should error");
 }

@@ -12,22 +12,28 @@
 
 use std::path::PathBuf;
 
-#[macro_use]
-extern crate failure_derive;
+/// Return early with an error, converting via `From`. Replaces `failure::bail!`.
+macro_rules! bail {
+    ($e:expr) => {
+        return ::std::result::Result::Err(::std::convert::From::from($e))
+    };
+}
+
 #[macro_use]
 extern crate log;
 #[macro_use]
 extern crate lazy_static;
 
+extern crate anyhow;
 extern crate combine;
 extern crate dirs;
 extern crate env_logger;
-extern crate failure;
 extern crate getopts;
 extern crate linefeed;
 extern crate rusqlite;
 extern crate tabwriter;
 extern crate termion;
+extern crate thiserror;
 extern crate time;
 
 extern crate edn;
@@ -58,9 +64,9 @@ pub mod command_parser;
 pub mod input;
 pub mod repl;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, thiserror::Error)]
 pub enum CliError {
-    #[fail(display = "{}", _0)]
+    #[error("{0}")]
     CommandParse(String),
 }
 

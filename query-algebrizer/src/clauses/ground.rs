@@ -81,12 +81,7 @@ impl ConjoiningClauses {
 
     /// Constrain the CC to associate the given var with the given ground argument.
     /// Marks known-empty on failure.
-    fn apply_ground_var(
-        &mut self,
-        schema: &Schema,
-        var: Variable,
-        arg: FnArg,
-    ) -> Result<()> {
+    fn apply_ground_var(&mut self, schema: &Schema, var: Variable, arg: FnArg) -> Result<()> {
         let known_types = self.known_type_set(&var);
         match self.typed_value_from_arg(schema, &var, arg, known_types)? {
             ValueConversion::Val(value) => self.apply_ground_value(var, value),

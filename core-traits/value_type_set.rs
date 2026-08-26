@@ -166,7 +166,7 @@ impl IntoIterator for ValueTypeSet {
 }
 
 impl ::std::iter::FromIterator<ValueType> for ValueTypeSet {
-    fn from_iter<I: IntoIterator<Item=ValueType>>(iterator: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = ValueType>>(iterator: I) -> Self {
         let mut ret = Self::none();
         ret.0.extend(iterator);
         ret
@@ -174,7 +174,7 @@ impl ::std::iter::FromIterator<ValueType> for ValueTypeSet {
 }
 
 impl ::std::iter::Extend<ValueType> for ValueTypeSet {
-    fn extend<I: IntoIterator<Item=ValueType>>(&mut self, iter: I) {
+    fn extend<I: IntoIterator<Item = ValueType>>(&mut self, iter: I) {
         for element in iter {
             self.0.insert(element);
         }

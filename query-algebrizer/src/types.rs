@@ -15,7 +15,9 @@ use core_traits::{Entid, TypedValue, ValueType, ValueTypeSet};
 
 use mentat_core::ValueRc;
 
-use edn::query::{Direction, FindSpec, Keyword, Limit, Order, SrcVar, Variable, WhereClause};
+use edn::query::{
+    Direction, FindSpec, Keyword, Limit, Offset, Order, Rule, SrcVar, Variable, WhereClause,
+};
 
 /// This enum models the fixed set of default tables we have -- two
 /// tables and two views -- and computed tables defined in the enclosing CC.
@@ -448,8 +450,7 @@ impl From<ColumnConstraint> for ColumnConstraintOrAlternation {
 
 /// A `ColumnIntersection` constraint is satisfied if all of its inner constraints are satisfied.
 /// An empty intersection is always satisfied.
-#[derive(PartialEq, Eq)]
-#[derive(Default)]
+#[derive(PartialEq, Eq, Default)]
 pub struct ColumnIntersection(pub Vec<ColumnConstraintOrAlternation>);
 
 impl From<Vec<ColumnConstraint>> for ColumnIntersection {
@@ -457,7 +458,6 @@ impl From<Vec<ColumnConstraint>> for ColumnIntersection {
         ColumnIntersection(thing.into_iter().map(|x| x.into()).collect())
     }
 }
-
 
 impl IntoIterator for ColumnIntersection {
     type Item = ColumnConstraintOrAlternation;
@@ -496,10 +496,8 @@ impl ColumnIntersection {
 
 /// A `ColumnAlternation` constraint is satisfied if at least one of its inner constraints is
 /// satisfied. An empty `ColumnAlternation` is never satisfied.
-#[derive(PartialEq, Eq, Debug)]
-#[derive(Default)]
+#[derive(PartialEq, Eq, Debug, Default)]
 pub struct ColumnAlternation(pub Vec<ColumnIntersection>);
-
 
 impl IntoIterator for ColumnAlternation {
     type Item = ColumnIntersection;
@@ -687,8 +685,11 @@ pub struct FindQuery {
     pub in_vars: BTreeSet<Variable>,
     pub in_sources: BTreeSet<SrcVar>,
     pub limit: Limit,
+    pub offset: Offset,
     pub where_clauses: Vec<WhereClause>,
     pub order: Option<Vec<Order>>,
+    pub distinct: bool,
+    pub rules: Vec<Rule>,
 }
 
 // Intermediate data structures for resolving patterns.

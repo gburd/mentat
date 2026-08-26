@@ -8,13 +8,12 @@ edition = "2021"
 sqlcipher = ["rusqlite/sqlcipher"]
 
 [dependencies]
-failure = "~0.1"
 
 [dependencies.query_pull_traits]
 path = "../query-pull-traits"
 
 [dependencies.rusqlite]
-version = "~0.32"
+version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
@@ -28,3 +27,6 @@ path = "../core-traits"
 
 [dependencies.mentat_db]
 path = "../db"
+
+[dependencies.db_traits]
+path = "../db-traits"

@@ -316,6 +316,28 @@ impl Conn {
         Ok(report)
     }
 
+    /// Speculatively transact `transaction` and return its `TxReport` without
+    /// persisting anything (Datomic `d/with` / pg_mentat `mentat.with`). The
+    /// enclosing SQLite transaction is rolled back on drop, so no changes are
+    /// committed even though a real IMMEDIATE transaction was opened.
+    pub fn transact_speculative<B>(
+        &mut self,
+        sqlite: &mut rusqlite::Connection,
+        transaction: B,
+    ) -> Result<TxReport>
+    where
+        B: Borrow<str>,
+    {
+        let entities = edn::parse::entities(transaction.borrow())?;
+
+        let mut in_progress = self.begin_transaction(sqlite)?;
+        let report = in_progress.transact_entities_speculative(entities)?;
+        // Deliberately do NOT commit: drop rolls back the outer transaction.
+        drop(in_progress);
+
+        Ok(report)
+    }
+
     /// Adds or removes the values of a given attribute to an in-memory cache.
     /// The attribute should be a namespaced string: e.g., `:foo/bar`.
     /// `cache_action` determines if the attribute should be added or removed from the cache.
@@ -502,6 +524,45 @@ mod tests {
         // The DB part table changed.
         let tempid_offset_after = get_next_entid(&conn);
         assert_eq!(tempid_offset + 3, tempid_offset_after);
+    }
+
+    #[test]
+    fn test_transact_speculative() {
+        let mut sqlite = db::new_connection("").unwrap();
+        let mut conn = Conn::connect(&mut sqlite).unwrap();
+
+        let before = get_next_entid(&conn);
+
+        // Speculatively add an ident. The report should reflect the change...
+        let t = "[[:db/add \"e\" :db/ident :spec/keyword]]";
+        let report = conn
+            .transact_speculative(&mut sqlite, t)
+            .expect("speculative transact succeeded");
+        let e = *report.tempids.get("e").expect("tempid resolved");
+        assert_eq!(e, before, "speculative report allocates the next entid");
+
+        // ...but nothing is persisted: the ident is not in the store.
+        let found = conn
+            .q_once(
+                &mut sqlite,
+                "[:find ?x . :where [?x :db/ident :spec/keyword]]",
+                None,
+            )
+            .expect("query succeeded");
+        assert_eq!(
+            found.results,
+            QueryResults::Scalar(None),
+            "speculative datom must not persist"
+        );
+
+        // ...and the partition counter was rolled back, so a *real* transact
+        // reuses the same entid the speculative run reported.
+        assert_eq!(get_next_entid(&conn), before, "entid not consumed");
+        let real = conn
+            .transact(&mut sqlite, t)
+            .expect("real transact succeeded");
+        assert_eq!(*real.tempids.get("e").expect("tempid"), before);
+        assert_eq!(get_next_entid(&conn), before + 1);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::CliError;
 
 use edn;
 
-use failure::Error;
+use anyhow::Error;
 
 use combine::error::StringStreamError;
 use mentat::CacheDirection;

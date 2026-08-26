@@ -12,14 +12,13 @@ path = "lib.rs"
 sqlcipher = ["rusqlite/sqlcipher"]
 
 [dependencies]
-failure = "~0.1"
-failure_derive = "~0.1"
+thiserror = "~2.0"
 http = "~1.1"
 tokio = { version = "1.41.0", features = ["full"] }
-uuid = "~1.11"
+uuid = "~1.25"
 
 [dependencies.rusqlite]
-version = "~0.32"
+version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.hyper]

@@ -263,7 +263,7 @@ pub trait SchemaBuilding {
     ) -> Result<Schema>;
     fn from_ident_map_and_triples<U>(ident_map: IdentMap, assertions: U) -> Result<Schema>
     where
-        U: IntoIterator<Item=(symbols::Keyword, symbols::Keyword, TypedValue)>;
+        U: IntoIterator<Item = (symbols::Keyword, symbols::Keyword, TypedValue)>;
 }
 
 impl SchemaBuilding for Schema {
@@ -296,7 +296,7 @@ impl SchemaBuilding for Schema {
     /// Turn vec![(Keyword(:ident), Keyword(:key), TypedValue(:value)), ...] into a Mentat `Schema`.
     fn from_ident_map_and_triples<U>(ident_map: IdentMap, assertions: U) -> Result<Schema>
     where
-        U: IntoIterator<Item=(symbols::Keyword, symbols::Keyword, TypedValue)>,
+        U: IntoIterator<Item = (symbols::Keyword, symbols::Keyword, TypedValue)>,
     {
         let entid_assertions: Result<Vec<(Entid, Entid, TypedValue)>> = assertions
             .into_iter()
@@ -390,8 +390,8 @@ impl SchemaTypeChecking for Schema {
 
 #[cfg(test)]
 mod test {
-    use self::edn::Keyword;
     use super::*;
+    use edn::Keyword;
 
     fn add_attribute(schema: &mut Schema, ident: Keyword, entid: Entid, attribute: Attribute) {
         schema.entid_map.insert(entid, ident.clone());

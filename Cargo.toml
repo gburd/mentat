@@ -45,14 +45,13 @@ assert_approx_eq = "~1"
 
 [dependencies]
 chrono = "~0.4"
-failure = "~0.1"
 lazy_static = "~1.5"
 time = "0.3.36"
 log = "~0.4"
-uuid = { version = "~1.11", features = ["v4", "serde"] }
+uuid = { version = "~1.25", features = ["v4", "serde"] }
 
 [dependencies.rusqlite]
-version = "~0.32"
+version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]

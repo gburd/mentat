@@ -8,7 +8,12 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-extern crate failure;
+/// Return early with an error, converting via `From`. Replaces `failure::bail!`.
+macro_rules! bail {
+    ($e:expr) => {
+        return ::std::result::Result::Err(::std::convert::From::from($e))
+    };
+}
 
 extern crate indexmap;
 extern crate rusqlite;

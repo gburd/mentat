@@ -356,6 +356,18 @@ peg::parser!(pub grammar parse() for str {
 
     rule pull_attribute() -> query::PullAttributeSpec
         = __ "*" __ { query::PullAttributeSpec::Wildcard }
+        / __ k:raw_backward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
+            // Reverse pull, e.g. `:person/_friends`. Store the *forward* ident
+            // (k.to_reversed()) for schema lookup and mark it reverse.
+            let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k.to_reversed()));
+            let alias = alias.map(::std::rc::Rc::new);
+            query::PullAttributeSpec::Attribute(
+                query::NamedPullAttribute {
+                    attribute,
+                    alias,
+                    reverse: true,
+                })
+        }
         / __ k:raw_forward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
             let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k));
             let alias = alias.map(::std::rc::Rc::new);
@@ -363,6 +375,7 @@ peg::parser!(pub grammar parse() for str {
                 query::NamedPullAttribute {
                     attribute,
                     alias,
+                    reverse: false,
                 })
         }
 
@@ -373,6 +386,16 @@ peg::parser!(pub grammar parse() for str {
                 Ok(query::Limit::Fixed(n as u64))
             } else {
                 Err("expected positive integer")
+            }
+        }
+
+    rule offset() -> query::Offset
+        = __ v:variable() __ { query::Offset::Variable(v) }
+        / __ n:(raw_octalinteger() / raw_hexinteger() / raw_basedinteger() / raw_integer()) __ {?
+            if n >= 0 {
+                Ok(query::Offset::Fixed(n as u64))
+            } else {
+                Err("expected non-negative integer")
             }
         }
 
@@ -503,14 +526,69 @@ peg::parser!(pub grammar parse() for str {
         / type_annotation()
         / pred()
         / where_fn()
+        / rule_invocation()
+
+    // A rule invocation in a query body, e.g. `(ancestor ?x ?y)`. Ported from
+    // pg_mentat. Only matches names that are NOT reserved clause keywords
+    // (those are handled by their own rules above).
+    rule rule_invocation() -> query::WhereClause
+        = __ "(" __ n:$(symbol_name()) args:fn_arg()+ ")" __ {?
+            let name = n.to_string();
+            if name == "or" || name == "not" || name == "and"
+                || name == "or-join" || name == "not-join"
+                || name == "type" || name == "fulltext" || name == "ground"
+                || name == "get-else" || name == "missing?" {
+                Err("not a rule invocation")
+            } else {
+                Ok(query::WhereClause::RuleExpr(query::RuleInvocation {
+                    name: PlainSymbol::plain(&name),
+                    args,
+                }))
+            }
+        }
+
+    // A rule head: (rule-name ?arg1 ?arg2)
+    rule rule_head() -> query::RuleInvocation
+        = __ "(" __ n:$(symbol_name()) args:fn_arg()+ ")" __ {
+            query::RuleInvocation {
+                name: PlainSymbol::plain(n),
+                args,
+            }
+        }
+
+    // A rule clause: [(rule-name ?a ?b) body-patterns...]
+    rule rule_clause() -> query::RuleClause
+        = __ "[" head:rule_head() body:where_clause()+ "]" __ {
+            query::RuleClause { head, body }
+        }
+
+    // A set of rule clauses: [clause1 clause2 ...], grouped by rule name.
+    rule rule_definitions() -> Vec<query::Rule>
+        = __ "[" clauses:rule_clause()+ "]" __ {
+            let mut rule_map: std::collections::BTreeMap<String, Vec<query::RuleClause>> =
+                std::collections::BTreeMap::new();
+            for clause in clauses {
+                let name = clause.head.name.0.clone();
+                rule_map.entry(name).or_default().push(clause);
+            }
+            rule_map.into_iter().map(|(name, clauses)| {
+                query::Rule {
+                    name: PlainSymbol::plain(&name),
+                    clauses,
+                }
+            }).collect()
+        }
 
     rule query_part() -> query::QueryPart
         = __ ":find" fs:find_spec() { query::QueryPart::FindSpec(fs) }
         / __ ":in" in_vars:variable()+ { query::QueryPart::InVars(in_vars) }
         / __ ":limit" l:limit() { query::QueryPart::Limit(l) }
+        / __ ":offset" o:offset() { query::QueryPart::Offset(o) }
         / __ ":order" os:order()+ { query::QueryPart::Order(os) }
         / __ ":where" ws:where_clause()+ { query::QueryPart::WhereClauses(ws) }
+        / __ ":rules" rules:rule_definitions() { query::QueryPart::Rules(rules) }
         / __ ":with" with_vars:variable()+ { query::QueryPart::WithVars(with_vars) }
+        / __ ":distinct" { query::QueryPart::Distinct }
 
     pub rule parse_query() -> query::ParsedQuery
         = __ "[" qps:query_part()+ "]" __ {? query::ParsedQuery::from_parts(qps) }

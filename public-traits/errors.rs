@@ -15,6 +15,8 @@ use std; // To refer to std::result::Result.
 use std::collections::BTreeSet;
 use std::error::Error;
 
+use thiserror::Error;
+
 use rusqlite;
 use uuid;
 
@@ -30,89 +32,82 @@ use sql_traits::errors::SQLError;
 
 pub type Result<T> = std::result::Result<T, MentatError>;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum MentatError {
-    #[fail(display = "bad uuid {}", _0)]
+    #[error("bad uuid {0}")]
     BadUuid(String),
 
-    #[fail(display = "path {} already exists", _0)]
+    #[error("path {0} already exists")]
     PathAlreadyExists(String),
 
-    #[fail(display = "variables {:?} unbound at query execution time", _0)]
+    #[error("variables {0:?} unbound at query execution time")]
     UnboundVariables(BTreeSet<String>),
 
-    #[fail(display = "invalid argument name: '{}'", _0)]
+    #[error("invalid argument name: '{0}'")]
     InvalidArgumentName(String),
 
-    #[fail(display = "unknown attribute: '{}'", _0)]
+    #[error("unknown attribute: '{0}'")]
     UnknownAttribute(String),
 
-    #[fail(display = "invalid vocabulary version")]
+    #[error("invalid vocabulary version")]
     InvalidVocabularyVersion,
 
-    #[fail(
-        display = "vocabulary {}/version {} already has attribute {}, and the requested definition differs",
-        _0, _1, _2
+    #[error(
+        "vocabulary {0}/version {1} already has attribute {2}, and the requested definition differs"
     )]
     ConflictingAttributeDefinitions(String, u32, String, Attribute, Attribute),
 
-    #[fail(
-        display = "existing vocabulary {} too new: wanted version {}, got version {}",
-        _0, _1, _2
-    )]
+    #[error("existing vocabulary {0} too new: wanted version {1}, got version {2}")]
     ExistingVocabularyTooNew(String, u32, u32),
 
-    #[fail(display = "core schema: wanted version {}, got version {:?}", _0, _1)]
+    #[error("core schema: wanted version {0}, got version {1:?}")]
     UnexpectedCoreSchema(u32, Option<u32>),
 
-    #[fail(display = "Lost the transact() race!")]
+    #[error("Lost the transact() race!")]
     UnexpectedLostTransactRace,
 
-    #[fail(display = "missing core attribute {}", _0)]
+    #[error("missing core attribute {0}")]
     MissingCoreVocabulary(edn::query::Keyword),
 
-    #[fail(display = "schema changed since query was prepared")]
+    #[error("schema changed since query was prepared")]
     PreparedQuerySchemaMismatch,
 
-    #[fail(
-        display = "provided value of type {} doesn't match attribute value type {}",
-        _0, _1
-    )]
+    #[error("provided value of type {0} doesn't match attribute value type {1}")]
     ValueTypeMismatch(ValueType, ValueType),
 
-    #[fail(display = "{}", _0)]
-    IoError(#[cause] std::io::Error),
+    #[error("{0}")]
+    IoError(#[source] std::io::Error),
 
     /// We're just not done yet.  Message that the feature is recognized but not yet
     /// implemented.
-    #[fail(display = "not yet implemented: {}", _0)]
+    #[error("not yet implemented: {0}")]
     NotYetImplemented(String),
 
     // It would be better to capture the underlying `rusqlite::Error`, but that type doesn't
     // implement many useful traits, including `Clone`, `Eq`, and `PartialEq`.
-    #[fail(display = "SQL error: {}, cause: {}", _0, _1)]
+    #[error("SQL error: {0}, cause: {1}")]
     RusqliteError(String, String),
 
-    #[fail(display = "{}", _0)]
-    EdnParseError(#[cause] edn::ParseError),
+    #[error("{0}")]
+    EdnParseError(#[source] edn::ParseError),
 
-    #[fail(display = "{}", _0)]
-    DbError(#[cause] DbError),
+    #[error("{0}")]
+    DbError(#[source] DbError),
 
-    #[fail(display = "{}", _0)]
-    AlgebrizerError(#[cause] AlgebrizerError),
+    #[error("{0}")]
+    AlgebrizerError(#[source] AlgebrizerError),
 
-    #[fail(display = "{}", _0)]
-    ProjectorError(#[cause] ProjectorError),
+    #[error("{0}")]
+    ProjectorError(#[source] ProjectorError),
 
-    #[fail(display = "{}", _0)]
-    PullError(#[cause] PullError),
+    #[error("{0}")]
+    PullError(#[source] PullError),
 
-    #[fail(display = "{}", _0)]
-    SQLError(#[cause] SQLError),
+    #[error("{0}")]
+    SQLError(#[source] SQLError),
 
-    #[fail(display = "{}", _0)]
-    UuidError(#[cause] uuid::Error),
+    #[error("{0}")]
+    UuidError(#[source] uuid::Error),
 }
 
 impl From<std::io::Error> for MentatError {

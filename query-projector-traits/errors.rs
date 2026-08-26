@@ -57,10 +57,10 @@ pub enum ProjectorError {
     // It would be better to capture the underlying `rusqlite::Error`, but that type doesn't
     // implement many useful traits, including `Clone`, `Eq`, and `PartialEq`.
     #[error("SQL error: {0}")]
-    RusqliteError(#[from] String),
+    RusqliteError(String),
 
     #[error("{0}")]
-    DbError(#[from] DbError),
+    DbError(DbError),
 
     #[error("{0}")]
     PullError(PullError),

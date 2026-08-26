@@ -8,10 +8,16 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
+/// Return early with an error, converting via `From`. Replaces `failure::bail!`.
+macro_rules! bail {
+    ($e:expr) => {
+        return ::std::result::Result::Err(::std::convert::From::from($e))
+    };
+}
+
 #[macro_use]
 extern crate core_traits;
 extern crate edn;
-extern crate failure;
 extern crate mentat_core;
 extern crate query_algebrizer_traits;
 
@@ -29,7 +35,11 @@ use mentat_core::{parse_query, CachedAttributes, Schema};
 
 use mentat_core::counter::RcCounter;
 
-use edn::query::{Element, FindSpec, Limit, Order, ParsedQuery, SrcVar, Variable, WhereClause};
+use edn::query::{
+    Element, FindSpec, FnArg, Limit, NotJoin, Offset, OrJoin, OrWhereClause, Order, ParsedQuery,
+    Pattern, PatternNonValuePlace, PatternValuePlace, PlainSymbol, Predicate, Rule, RuleInvocation,
+    SrcVar, Variable, WhereClause, WhereFn,
+};
 
 use query_algebrizer_traits::errors::{AlgebrizerError, Result};
 
@@ -319,7 +329,8 @@ pub fn algebrize_with_inputs(
 
     // TODO: integrate default source into pattern processing.
     // TODO: flesh out the rest of find-into-context.
-    cc.apply_clauses(known, parsed.where_clauses)?;
+    let where_clauses = expand_rules(parsed.where_clauses, &parsed.rules)?;
+    cc.apply_clauses(known, where_clauses)?;
 
     cc.expand_column_bindings();
     cc.prune_extracted_types();
@@ -365,8 +376,11 @@ impl FindQuery {
             in_vars: BTreeSet::default(),
             in_sources: BTreeSet::default(),
             limit: Limit::None,
+            offset: Offset::Unlimited,
             where_clauses,
             order: None,
+            distinct: false,
+            rules: Vec::new(),
         }
     }
 
@@ -409,8 +423,11 @@ impl FindQuery {
             in_vars,
             in_sources: parsed.in_sources,
             limit: parsed.limit,
+            offset: parsed.offset,
             where_clauses: parsed.where_clauses,
             order: parsed.order,
+            distinct: parsed.distinct,
+            rules: parsed.rules,
         })
     }
 }
@@ -419,4 +436,345 @@ pub fn parse_find_string(string: &str) -> Result<FindQuery> {
     parse_query(string)
         .map_err(|e| e.into())
         .and_then(FindQuery::from_parsed_query)
+}
+
+// ---------------------------------------------------------------------------
+// Rule expansion (ported from pg_mentat's named rules).
+//
+// A pre-pass over the where-clauses that inlines `RuleExpr` invocations by
+// substituting the invocation's arguments for the rule head's parameters and
+// splicing in the rule body. Body-local variables are renamed to fresh gensyms
+// so distinct invocations of the same rule don't collide.
+//
+// Scope of this slice (deliberately bounded; see AlgebrizerError variants):
+//   * single-clause, non-recursive rules only.
+//   * variable arguments only (a rule invoked with a constant errs).
+// Multi-clause rules (OR alternatives) and recursive rules (self reference,
+// needing WITH RECURSIVE in the SQL IR) are rejected with a clear error and
+// remain future work.
+// ---------------------------------------------------------------------------
+
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static RULE_GENSYM: AtomicUsize = AtomicUsize::new(0);
+
+fn gensym(base: &str) -> Variable {
+    let n = RULE_GENSYM.fetch_add(1, Ordering::Relaxed);
+    // Leading "?__rule" keeps these out of the user's namespace.
+    Variable::from_valid_name(&format!("?__rule_{}_{}", n, &base[1..]))
+}
+
+/// Public entry point: expand every rule invocation in `clauses` using `rules`.
+fn expand_rules(clauses: Vec<WhereClause>, rules: &[Rule]) -> Result<Vec<WhereClause>> {
+    if rules.is_empty() {
+        // Fast path: no rules defined. Any `RuleExpr` present is an error, but
+        // we only surface that if one is actually used (matching prior
+        // behavior where undefined rule invocations were unimplemented!()).
+        let mut out = Vec::with_capacity(clauses.len());
+        for c in clauses {
+            out.extend(expand_clause(c, rules, 0)?);
+        }
+        return Ok(out);
+    }
+    let mut out = Vec::with_capacity(clauses.len());
+    for c in clauses {
+        out.extend(expand_clause(c, rules, 0)?);
+    }
+    Ok(out)
+}
+
+const MAX_RULE_DEPTH: usize = 32;
+
+fn find_rule<'r>(rules: &'r [Rule], name: &PlainSymbol) -> Option<&'r Rule> {
+    rules.iter().find(|r| &r.name == name)
+}
+
+/// Expand a single clause into zero or more clauses (a rule invocation expands
+/// into its body; everything else passes through, recursing into or/not).
+fn expand_clause(clause: WhereClause, rules: &[Rule], depth: usize) -> Result<Vec<WhereClause>> {
+    match clause {
+        WhereClause::RuleExpr(inv) => expand_invocation(&inv, rules, depth),
+        WhereClause::OrJoin(o) => {
+            let OrJoin {
+                unify_vars,
+                clauses,
+                ..
+            } = o;
+            let mut new_clauses = Vec::with_capacity(clauses.len());
+            for owc in clauses {
+                new_clauses.push(expand_or_where_clause(owc, rules, depth)?);
+            }
+            Ok(vec![WhereClause::OrJoin(OrJoin::new(
+                unify_vars,
+                new_clauses,
+            ))])
+        }
+        WhereClause::NotJoin(n) => {
+            let mut body = Vec::with_capacity(n.clauses.len());
+            for c in n.clauses {
+                body.extend(expand_clause(c, rules, depth)?);
+            }
+            Ok(vec![WhereClause::NotJoin(NotJoin::new(n.unify_vars, body))])
+        }
+        other => Ok(vec![other]),
+    }
+}
+
+fn expand_or_where_clause(
+    owc: OrWhereClause,
+    rules: &[Rule],
+    depth: usize,
+) -> Result<OrWhereClause> {
+    match owc {
+        OrWhereClause::Clause(c) => {
+            let mut expanded = expand_clause(c, rules, depth)?;
+            if expanded.len() == 1 {
+                Ok(OrWhereClause::Clause(expanded.pop().unwrap()))
+            } else {
+                Ok(OrWhereClause::And(expanded))
+            }
+        }
+        OrWhereClause::And(cs) => {
+            let mut body = Vec::with_capacity(cs.len());
+            for c in cs {
+                body.extend(expand_clause(c, rules, depth)?);
+            }
+            Ok(OrWhereClause::And(body))
+        }
+    }
+}
+
+fn expand_invocation(
+    inv: &RuleInvocation,
+    rules: &[Rule],
+    depth: usize,
+) -> Result<Vec<WhereClause>> {
+    if depth >= MAX_RULE_DEPTH {
+        bail!(AlgebrizerError::RecursiveRuleUnsupported(inv.name.clone()));
+    }
+    let rule = find_rule(rules, &inv.name)
+        .ok_or_else(|| AlgebrizerError::UnknownRule(inv.name.clone()))?;
+
+    if rule.clauses.len() != 1 {
+        bail!(AlgebrizerError::MultiClauseRuleUnsupported(
+            inv.name.clone()
+        ));
+    }
+    let clause = &rule.clauses[0];
+
+    // Reject recursive rules (self reference anywhere in the body).
+    if body_references_rule(&clause.body, &inv.name) {
+        bail!(AlgebrizerError::RecursiveRuleUnsupported(inv.name.clone()));
+    }
+
+    // Head params must be variables; invocation args must be variables (safe slice).
+    let params = head_param_vars(&clause.head, &inv.name)?;
+    let args = invocation_arg_vars(inv)?;
+    if params.len() != args.len() {
+        bail!(AlgebrizerError::RuleArgumentMismatch(
+            inv.name.clone(),
+            args.len(),
+            params.len()
+        ));
+    }
+
+    // Build substitution: every variable in the body maps to a fresh gensym,
+    // except head params, which map to the corresponding invocation arg.
+    let mut subst: BTreeMap<Variable, Variable> = BTreeMap::new();
+    for (p, a) in params.iter().zip(args.iter()) {
+        subst.insert(p.clone(), a.clone());
+    }
+    // Rename any remaining body-local variable to a gensym.
+    let mut body_vars: BTreeSet<Variable> = BTreeSet::new();
+    for c in &clause.body {
+        collect_clause_vars(c, &mut body_vars);
+    }
+    for v in body_vars {
+        subst.entry(v.clone()).or_insert_with(|| gensym(v.as_str()));
+    }
+
+    // Apply substitution and recursively expand (in case the body itself
+    // invokes other, non-recursive rules).
+    let mut out = Vec::with_capacity(clause.body.len());
+    for c in &clause.body {
+        let renamed = subst_clause(c.clone(), &subst);
+        out.extend(expand_clause(renamed, rules, depth + 1)?);
+    }
+    Ok(out)
+}
+
+fn head_param_vars(head: &RuleInvocation, name: &PlainSymbol) -> Result<Vec<Variable>> {
+    let mut vars = Vec::with_capacity(head.args.len());
+    for a in &head.args {
+        match a {
+            FnArg::Variable(v) => vars.push(v.clone()),
+            _ => bail!(AlgebrizerError::MultiClauseRuleUnsupported(name.clone())),
+        }
+    }
+    Ok(vars)
+}
+
+fn invocation_arg_vars(inv: &RuleInvocation) -> Result<Vec<Variable>> {
+    let mut vars = Vec::with_capacity(inv.args.len());
+    for a in &inv.args {
+        match a {
+            FnArg::Variable(v) => vars.push(v.clone()),
+            // Non-variable args (constants) aren't handled by this slice.
+            _ => bail!(AlgebrizerError::RuleArgumentMismatch(
+                inv.name.clone(),
+                inv.args.len(),
+                inv.args.len()
+            )),
+        }
+    }
+    Ok(vars)
+}
+
+fn body_references_rule(body: &[WhereClause], name: &PlainSymbol) -> bool {
+    body.iter().any(|c| clause_references_rule(c, name))
+}
+
+fn clause_references_rule(c: &WhereClause, name: &PlainSymbol) -> bool {
+    match c {
+        WhereClause::RuleExpr(inv) => &inv.name == name,
+        WhereClause::OrJoin(o) => o.clauses.iter().any(|owc| match owc {
+            OrWhereClause::Clause(c) => clause_references_rule(c, name),
+            OrWhereClause::And(cs) => cs.iter().any(|c| clause_references_rule(c, name)),
+        }),
+        WhereClause::NotJoin(n) => n.clauses.iter().any(|c| clause_references_rule(c, name)),
+        _ => false,
+    }
+}
+
+// --- variable collection + substitution over the clause AST ---
+
+fn collect_clause_vars(c: &WhereClause, acc: &mut BTreeSet<Variable>) {
+    match c {
+        WhereClause::Pattern(p) => {
+            collect_nv(&p.entity, acc);
+            collect_nv(&p.attribute, acc);
+            collect_v(&p.value, acc);
+            collect_nv(&p.tx, acc);
+        }
+        WhereClause::Pred(p) => {
+            for a in &p.args {
+                if let FnArg::Variable(v) = a {
+                    acc.insert(v.clone());
+                }
+            }
+        }
+        WhereClause::WhereFn(f) => {
+            for a in &f.args {
+                if let FnArg::Variable(v) = a {
+                    acc.insert(v.clone());
+                }
+            }
+        }
+        WhereClause::RuleExpr(inv) => {
+            for a in &inv.args {
+                if let FnArg::Variable(v) = a {
+                    acc.insert(v.clone());
+                }
+            }
+        }
+        WhereClause::OrJoin(o) => {
+            for owc in &o.clauses {
+                match owc {
+                    OrWhereClause::Clause(c) => collect_clause_vars(c, acc),
+                    OrWhereClause::And(cs) => cs.iter().for_each(|c| collect_clause_vars(c, acc)),
+                }
+            }
+        }
+        WhereClause::NotJoin(n) => n.clauses.iter().for_each(|c| collect_clause_vars(c, acc)),
+        WhereClause::TypeAnnotation(_) => {}
+    }
+}
+
+fn collect_nv(p: &PatternNonValuePlace, acc: &mut BTreeSet<Variable>) {
+    if let PatternNonValuePlace::Variable(v) = p {
+        acc.insert(v.clone());
+    }
+}
+
+fn collect_v(p: &PatternValuePlace, acc: &mut BTreeSet<Variable>) {
+    if let PatternValuePlace::Variable(v) = p {
+        acc.insert(v.clone());
+    }
+}
+
+fn sv(v: &Variable, subst: &BTreeMap<Variable, Variable>) -> Variable {
+    subst.get(v).cloned().unwrap_or_else(|| v.clone())
+}
+
+fn subst_nv(p: PatternNonValuePlace, subst: &BTreeMap<Variable, Variable>) -> PatternNonValuePlace {
+    match p {
+        PatternNonValuePlace::Variable(v) => PatternNonValuePlace::Variable(sv(&v, subst)),
+        other => other,
+    }
+}
+
+fn subst_v(p: PatternValuePlace, subst: &BTreeMap<Variable, Variable>) -> PatternValuePlace {
+    match p {
+        PatternValuePlace::Variable(v) => PatternValuePlace::Variable(sv(&v, subst)),
+        other => other,
+    }
+}
+
+fn subst_fnarg(a: FnArg, subst: &BTreeMap<Variable, Variable>) -> FnArg {
+    match a {
+        FnArg::Variable(v) => FnArg::Variable(sv(&v, subst)),
+        FnArg::Vector(xs) => FnArg::Vector(xs.into_iter().map(|x| subst_fnarg(x, subst)).collect()),
+        other => other,
+    }
+}
+
+fn subst_clause(c: WhereClause, subst: &BTreeMap<Variable, Variable>) -> WhereClause {
+    match c {
+        WhereClause::Pattern(p) => WhereClause::Pattern(Pattern {
+            source: p.source,
+            entity: subst_nv(p.entity, subst),
+            attribute: subst_nv(p.attribute, subst),
+            value: subst_v(p.value, subst),
+            tx: subst_nv(p.tx, subst),
+        }),
+        WhereClause::Pred(p) => WhereClause::Pred(Predicate {
+            operator: p.operator,
+            args: p.args.into_iter().map(|a| subst_fnarg(a, subst)).collect(),
+        }),
+        WhereClause::WhereFn(f) => WhereClause::WhereFn(WhereFn {
+            operator: f.operator,
+            args: f.args.into_iter().map(|a| subst_fnarg(a, subst)).collect(),
+            binding: f.binding,
+        }),
+        WhereClause::RuleExpr(inv) => WhereClause::RuleExpr(RuleInvocation {
+            name: inv.name,
+            args: inv
+                .args
+                .into_iter()
+                .map(|a| subst_fnarg(a, subst))
+                .collect(),
+        }),
+        WhereClause::OrJoin(o) => {
+            let clauses = o
+                .clauses
+                .into_iter()
+                .map(|owc| match owc {
+                    OrWhereClause::Clause(c) => OrWhereClause::Clause(subst_clause(c, subst)),
+                    OrWhereClause::And(cs) => {
+                        OrWhereClause::And(cs.into_iter().map(|c| subst_clause(c, subst)).collect())
+                    }
+                })
+                .collect();
+            WhereClause::OrJoin(OrJoin::new(o.unify_vars, clauses))
+        }
+        WhereClause::NotJoin(n) => WhereClause::NotJoin(NotJoin::new(
+            n.unify_vars,
+            n.clauses
+                .into_iter()
+                .map(|c| subst_clause(c, subst))
+                .collect(),
+        )),
+        WhereClause::TypeAnnotation(a) => WhereClause::TypeAnnotation(a),
+    }
 }

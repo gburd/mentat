@@ -52,9 +52,7 @@ pub(crate) fn type_disagreements(aev_trie: &AEVTrie<'_>) -> TypeDisagreements {
 /// We try to be maximally helpful by yielding every malformed set of datoms, rather than just the
 /// first set, or even the first conflict.  In the future, we might change this choice, or allow the
 /// consumer to specify the robustness of the cardinality checking desired.
-pub(crate) fn cardinality_conflicts(
-    aev_trie: &AEVTrie<'_>,
-) -> Vec<CardinalityConflict> {
+pub(crate) fn cardinality_conflicts(aev_trie: &AEVTrie<'_>) -> Vec<CardinalityConflict> {
     let mut errors = vec![];
 
     for (&(a, attribute), evs) in aev_trie {

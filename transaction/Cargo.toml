@@ -8,10 +8,9 @@ edition = "2021"
 sqlcipher = ["rusqlite/sqlcipher"]
 
 [dependencies]
-failure = "~0.1"
 
 [dependencies.rusqlite]
-version = "~0.32"
+version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]

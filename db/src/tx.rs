@@ -53,9 +53,9 @@ use crate::db;
 use crate::db::MentatStoring;
 use crate::entids;
 use crate::internal_types::{
-    replace_lookup_ref, AEVTrie, KnownEntidOr, LookupRef, LookupRefOrTempId,
-    TempIdHandle, TempIdMap, Term, TermWithTempIds, TermWithTempIdsAndLookupRefs,
-    TermWithoutTempIds, TypedValueOr,
+    replace_lookup_ref, AEVTrie, KnownEntidOr, LookupRef, LookupRefOrTempId, TempIdHandle,
+    TempIdMap, Term, TermWithTempIds, TermWithTempIdsAndLookupRefs, TermWithoutTempIds,
+    TypedValueOr,
 };
 use db_traits::errors;
 use db_traits::errors::{DbErrorKind, Result};
@@ -243,7 +243,7 @@ where
         InternSet<AVPair>,
     )>
     where
-        I: IntoIterator<Item=Entity<V>>,
+        I: IntoIterator<Item = Entity<V>>,
     {
         struct InProcess<'a> {
             partition_map: &'a PartitionMap,
@@ -658,7 +658,7 @@ where
         terms: I,
     ) -> Result<Vec<TermWithTempIds>>
     where
-        I: IntoIterator<Item=TermWithTempIdsAndLookupRefs>,
+        I: IntoIterator<Item = TermWithTempIdsAndLookupRefs>,
     {
         terms
             .into_iter()
@@ -682,7 +682,7 @@ where
     // TODO: move this to the transactor layer.
     pub fn transact_entities<I, V: TransactableValue>(&mut self, entities: I) -> Result<TxReport>
     where
-        I: IntoIterator<Item=Entity<V>>,
+        I: IntoIterator<Item = Entity<V>>,
     {
         // Pipeline stage 1: entities -> terms with tempids and lookup refs.
         let (terms_with_temp_ids_and_lookup_refs, tempid_set, lookup_ref_set) =
@@ -709,7 +709,7 @@ where
         tempid_set: InternSet<TempId>,
     ) -> Result<TxReport>
     where
-        I: IntoIterator<Item=TermWithTempIds>,
+        I: IntoIterator<Item = TermWithTempIds>,
     {
         self.transact_simple_terms_with_action(
             terms,
@@ -725,7 +725,7 @@ where
         action: TransactorAction,
     ) -> Result<TxReport>
     where
-        I: IntoIterator<Item=TermWithTempIds>,
+        I: IntoIterator<Item = TermWithTempIds>,
     {
         // TODO: push these into an internal transaction report?
         let mut tempids: BTreeMap<TempId, KnownEntid> = BTreeMap::default();
@@ -1022,7 +1022,7 @@ pub fn transact<'a, I, V, W>(
     entities: I,
 ) -> Result<(TxReport, PartitionMap, Option<Schema>, W)>
 where
-    I: IntoIterator<Item=Entity<V>>,
+    I: IntoIterator<Item = Entity<V>>,
     V: TransactableValue,
     W: TransactWatcher,
 {
@@ -1042,7 +1042,7 @@ pub fn transact_terms<'a, I, W>(
     tempid_set: InternSet<TempId>,
 ) -> Result<(TxReport, PartitionMap, Option<Schema>, W)>
 where
-    I: IntoIterator<Item=TermWithTempIds>,
+    I: IntoIterator<Item = TermWithTempIds>,
     W: TransactWatcher,
 {
     transact_terms_with_action(
@@ -1069,7 +1069,7 @@ pub(crate) fn transact_terms_with_action<'a, I, W>(
     action: TransactorAction,
 ) -> Result<(TxReport, PartitionMap, Option<Schema>, W)>
 where
-    I: IntoIterator<Item=TermWithTempIds>,
+    I: IntoIterator<Item = TermWithTempIds>,
     W: TransactWatcher,
 {
     let mut tx = start_tx(conn, partition_map, schema_for_mutation, schema, watcher)?;
@@ -1083,7 +1083,7 @@ fn extend_aev_trie<'schema, I>(
     trie: &mut AEVTrie<'schema>,
 ) -> Result<()>
 where
-    I: IntoIterator<Item=TermWithoutTempIds>,
+    I: IntoIterator<Item = TermWithoutTempIds>,
 {
     for Term::AddOrRetract(op, KnownEntid(e), a, v) in terms.into_iter() {
         let attribute: &Attribute = schema.require_attribute_for_entid(a)?;

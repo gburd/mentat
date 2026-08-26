@@ -101,6 +101,13 @@ pub use mentat_transaction::query::{
     QueryOutput, QueryPlanStep, QueryResults, RelResult, Variable,
 };
 
+/// Return early with an error, converting via `From`. Replaces `failure::bail!`.
+macro_rules! bail {
+    ($e:expr) => {
+        return ::std::result::Result::Err(::std::convert::From::from($e))
+    };
+}
+
 pub mod conn;
 pub mod query_builder;
 pub mod store;

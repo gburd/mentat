@@ -10,7 +10,7 @@
 
 use std::io::Write;
 
-use failure::Error;
+use anyhow::Error;
 
 use linefeed::Interface;
 

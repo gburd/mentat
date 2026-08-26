@@ -53,7 +53,6 @@ impl Store {
         ip.commit()?;
         Ok(report)
     }
-
 }
 
 #[cfg(feature = "sqlcipher")]

@@ -272,10 +272,7 @@ impl QueryFragment for ColumnOrExpression {
 impl QueryFragment for Expression {
     fn push_sql(&self, out: &mut dyn QueryBuilder) -> BuildQueryResult {
         match self {
-            Expression::Unary {
-                sql_op,
-                ref arg,
-            } => {
+            Expression::Unary { sql_op, ref arg } => {
                 out.push_sql(sql_op); // No need to escape built-ins.
                 out.push_sql("(");
                 arg.push_sql(out)?;

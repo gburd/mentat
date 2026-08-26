@@ -506,10 +506,7 @@ impl ConjoiningClauses {
             }
         }
 
-        self.column_bindings
-            .entry(var)
-            .or_default()
-            .push(alias);
+        self.column_bindings.entry(var).or_default().push(alias);
     }
 
     pub(crate) fn constrain_column_to_constant<C: Into<Column>>(
@@ -763,11 +760,7 @@ impl ConjoiningClauses {
         self.empty_because = Some(why);
     }
 
-    fn entid_for_ident(
-        &self,
-        schema: &Schema,
-        ident: &Keyword,
-    ) -> Option<KnownEntid> {
+    fn entid_for_ident(&self, schema: &Schema, ident: &Keyword) -> Option<KnownEntid> {
         schema.get_entid(ident)
     }
 
@@ -896,11 +889,7 @@ impl ConjoiningClauses {
     /// This is a mutating method because it mutates the aliaser function!
     /// Note that if this function decides that a pattern cannot match, it will flip
     /// `empty_because`.
-    fn alias_table(
-        &mut self,
-        schema: &Schema,
-        pattern: &EvolvedPattern,
-    ) -> Option<SourceAlias> {
+    fn alias_table(&mut self, schema: &Schema, pattern: &EvolvedPattern) -> Option<SourceAlias> {
         self.table_for_places(schema, &pattern.attribute, &pattern.value)
             .map_err(|reason| {
                 self.mark_known_empty(reason);
@@ -946,11 +935,7 @@ impl ConjoiningClauses {
         }
     }
 
-    fn get_value_type(
-        &self,
-        schema: &Schema,
-        pattern: &EvolvedPattern,
-    ) -> Option<ValueType> {
+    fn get_value_type(&self, schema: &Schema, pattern: &EvolvedPattern) -> Option<ValueType> {
         self.get_attribute(schema, pattern).map(|a| a.value_type)
     }
 }
@@ -1206,7 +1191,11 @@ impl ConjoiningClauses {
                 self.apply_not_join(known, n)
             }
             WhereClause::TypeAnnotation(anno) => self.apply_type_anno(&anno),
-            _ => unimplemented!(),
+            // Rule invocations are expanded away by `expand_rules` before
+            // `apply_clauses` runs. Reaching one here means an un-expanded rule.
+            WhereClause::RuleExpr(inv) => {
+                bail!(AlgebrizerError::UnknownRule(inv.name.clone()))
+            }
         }
     }
 }

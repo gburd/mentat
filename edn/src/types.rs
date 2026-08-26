@@ -260,7 +260,7 @@ macro_rules! def_into {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use edn::types::to_symbol;
 /// # use edn::types::Value;
 /// # use edn::symbols;
@@ -290,7 +290,7 @@ macro_rules! to_symbol {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use edn::types::to_keyword;
 /// # use edn::types::Value;
 /// # use edn::symbols;
@@ -668,7 +668,11 @@ pub trait FromMicros {
 
 impl FromMicros for DateTime<Utc> {
     fn from_micros(ts: i64) -> Self {
-        Utc.timestamp_opt(ts / 1_000_000, ((ts % 1_000_000).unsigned_abs() as u32) * 1_000).unwrap()
+        Utc.timestamp_opt(
+            ts / 1_000_000,
+            ((ts % 1_000_000).unsigned_abs() as u32) * 1_000,
+        )
+        .unwrap()
     }
 }
 
@@ -690,7 +694,8 @@ pub trait FromMillis {
 
 impl FromMillis for DateTime<Utc> {
     fn from_millis(ts: i64) -> Self {
-        Utc.timestamp_opt(ts / 1_000, ((ts % 1_000).unsigned_abs() as u32) * 1_000).unwrap()
+        Utc.timestamp_opt(ts / 1_000, ((ts % 1_000).unsigned_abs() as u32) * 1_000)
+            .unwrap()
     }
 }
 

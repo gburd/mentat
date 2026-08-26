@@ -8,7 +8,13 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-extern crate failure;
+/// Return early with an error, converting via `From`. Replaces `failure::bail!`.
+macro_rules! bail {
+    ($e:expr) => {
+        return ::std::result::Result::Err(::std::convert::From::from($e))
+    };
+}
+
 extern crate rusqlite;
 
 extern crate edn;
@@ -222,6 +228,54 @@ impl<'a, 'c> InProgress<'a, 'c> {
     {
         let entities = edn::parse::entities(transaction.borrow())?;
         self.transact_entities(entities)
+    }
+
+    /// Speculatively apply an EDN transaction and return its `TxReport` WITHOUT
+    /// persisting any changes -- the equivalent of Datomic's `d/with` and
+    /// pg_mentat's `mentat.with`. Runs the transaction through the exact same
+    /// code path as a real transact (so tempid resolution, constraint checking
+    /// and cardinality handling are identical), inside a SAVEPOINT, then rolls
+    /// back both the SQLite writes and the in-memory `partition_map`/`schema`
+    /// mutations so the `InProgress` is left exactly as it was.
+    ///
+    /// The returned report's `tx_id`, `tempids` and datoms reflect what *would*
+    /// have happened; a subsequent real transact will allocate fresh ids.
+    pub fn transact_speculative<B>(&mut self, transaction: B) -> Result<TxReport>
+    where
+        B: Borrow<str>,
+    {
+        let entities = edn::parse::entities(transaction.borrow())?;
+        self.transact_entities_speculative(entities)
+    }
+
+    /// Entity-level speculative transact. See [`transact_speculative`].
+    pub fn transact_entities_speculative<I, V: TransactableValue>(
+        &mut self,
+        entities: I,
+    ) -> Result<TxReport>
+    where
+        I: IntoIterator<Item = edn::entities::Entity<V>>,
+    {
+        const SAVEPOINT: &str = "mentat_speculative";
+        // Snapshot the in-memory state that `transact_entities` mutates so we
+        // can restore it after rollback.
+        let saved_partition_map = self.partition_map.clone();
+        let saved_schema = self.schema.clone();
+
+        self.savepoint(SAVEPOINT)?;
+        let result = self.transact_entities(entities);
+
+        // Undo the SQLite writes regardless of success/failure, then restore
+        // the in-memory state. `ROLLBACK TO` leaves the savepoint active, so we
+        // also release it to discard it.
+        let rollback = self
+            .rollback_savepoint(SAVEPOINT)
+            .and_then(|()| self.release_savepoint(SAVEPOINT));
+        self.partition_map = saved_partition_map;
+        self.schema = saved_schema;
+        rollback?;
+
+        result
     }
 
     pub fn import<P>(&mut self, path: P) -> Result<TxReport>

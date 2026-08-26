@@ -124,10 +124,10 @@ fn test_simple_pull() {
     ]
     .into();
 
-    
-    let expected: BTreeMap<Entid, ValueRc<StructuredMap>> = vec![(capitol, c.into()), (beacon, b.into())]
-        .into_iter()
-        .collect();
+    let expected: BTreeMap<Entid, ValueRc<StructuredMap>> =
+        vec![(capitol, c.into()), (beacon, b.into())]
+            .into_iter()
+            .collect();
 
     assert_eq!(pulled, expected);
 
@@ -371,3 +371,79 @@ fn test_simple_pull() {
 // - That the keys in each map are ValueRc::ptr_eq.
 // - Entity presence/absence when the pull expressions don't match anything.
 // - Aliases. (No parser support yet.)
+
+// Ported from pg_mentat: reverse-reference pull (`:ns/_attr`).
+// `(pull ?e [:person/_friend])` on entity ?e returns every entity that has ?e
+// as a `:person/friend` value, as a cardinality-many list under `:person/_friend`.
+#[test]
+fn test_reverse_pull() {
+    let mut store = Store::open("").expect("opened");
+
+    let (alice, bob, carol) = {
+        let mut in_progress = store.begin_transaction().expect("began");
+        in_progress
+            .transact(
+                r#"[{:db/ident :person/name
+                     :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one}
+                    {:db/ident :person/friend
+                     :db/valueType :db.type/ref
+                     :db/cardinality :db.cardinality/many}]"#,
+            )
+            .expect("schema");
+
+        // Bob and Carol both consider Alice a friend; Alice has no friends.
+        let report = in_progress
+            .transact(
+                r#"[{:db/id "alice" :person/name "Alice"}
+                    {:db/id "bob"   :person/name "Bob"   :person/friend "alice"}
+                    {:db/id "carol" :person/name "Carol" :person/friend "alice"}]"#,
+            )
+            .expect("data");
+        let a = *report.tempids.get("alice").expect("alice");
+        let b = *report.tempids.get("bob").expect("bob");
+        let c = *report.tempids.get("carol").expect("carol");
+        in_progress.commit().expect("committed");
+        (a, b, c)
+    };
+
+    let reader = store.begin_read().expect("read");
+
+    // Reverse: who considers Alice a friend? => Bob and Carol (order by e asc).
+    let rev = reader
+        .q_once(
+            r#"[:find (pull ?e [:person/_friend]) . :in ?e :where [?e :person/name _]]"#,
+            QueryInputs::with_value_sequence(vec![(var!(?e), TypedValue::Ref(alice))]),
+        )
+        .into_scalar_result()
+        .expect("ok")
+        .expect("map");
+
+    // Bob and Carol were transacted after Alice, so bob < carol by entid.
+    let (lo, hi) = if bob < carol {
+        (bob, carol)
+    } else {
+        (carol, bob)
+    };
+    let expected: StructuredMap = vec![(
+        kw!(:person/_friend),
+        Binding::Vec(ValueRc::new(vec![
+            Binding::Scalar(TypedValue::Ref(lo)),
+            Binding::Scalar(TypedValue::Ref(hi)),
+        ])),
+    )]
+    .into();
+    assert_eq!(rev, expected.into());
+
+    // Bob refers to nobody, so a reverse pull on Bob yields an empty map.
+    let none = reader
+        .q_once(
+            r#"[:find (pull ?e [:person/_friend]) . :in ?e :where [?e :person/name _]]"#,
+            QueryInputs::with_value_sequence(vec![(var!(?e), TypedValue::Ref(bob))]),
+        )
+        .into_scalar_result()
+        .expect("ok")
+        .expect("map");
+    let empty: StructuredMap = Vec::<(Keyword, Binding)>::new().into();
+    assert_eq!(none, empty.into());
+}

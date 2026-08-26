@@ -56,7 +56,6 @@
 ///!     (pull ?person [:person/friend])
 ///      [*]))
 ///! ```
-extern crate failure;
 extern crate rusqlite;
 
 extern crate core_traits;
@@ -73,6 +72,7 @@ use core_traits::{Binding, Entid, StructuredMap, TypedValue};
 
 use mentat_core::{Cloned, HasSchema, Keyword, Schema, ValueRc};
 
+use db_traits::errors::DbError;
 use mentat_db::cache;
 
 use edn::query::{NamedPullAttribute, PullAttributeSpec, PullConcreteAttribute};
@@ -131,6 +131,13 @@ pub struct Puller {
     attributes: BTreeMap<Entid, ValueRc<Keyword>>,
     attribute_spec: cache::AttributeSpec,
 
+    // Reverse-reference attributes: `:ns/_attr`. Maps the *forward* attribute
+    // entid to the output name (default `:ns/_attr`). For each pulled entity we
+    // find, via the VAET index, all entities that refer to it through this
+    // attribute, and emit them as a cardinality-many `Ref` list. Ported from
+    // pg_mentat's reverse pull.
+    reverse_attributes: BTreeMap<Entid, ValueRc<Keyword>>,
+
     // If this is set, each pulled entity is contributed to its own output map, labeled with this
     // keyword. This is a divergence from Datomic, which has no types by which to differentiate a
     // long from an entity ID, and thus represents all entities in pull as, _e.g._, `{:db/id 1234}`.
@@ -154,6 +161,7 @@ impl Puller {
 
         let mut names: BTreeMap<Entid, ValueRc<Keyword>> = Default::default();
         let mut attrs: BTreeSet<Entid> = Default::default();
+        let mut reverse_attributes: BTreeMap<Entid, ValueRc<Keyword>> = Default::default();
         let db_id = ::std::rc::Rc::new(Keyword::namespaced("db", "id"));
         let mut db_id_alias = None;
 
@@ -170,8 +178,35 @@ impl Puller {
                 PullAttributeSpec::Attribute(NamedPullAttribute {
                     ref attribute,
                     ref alias,
+                    reverse,
                 }) => {
                     let alias = alias.as_ref().map(|r| r.to_value_rc());
+
+                    // Reverse pull (`:ns/_attr`). `attribute` holds the forward
+                    // ident; find its entid, and default the output name to the
+                    // reversed keyword unless an explicit `:as` alias is given.
+                    if *reverse {
+                        let entid = match attribute {
+                            PullConcreteAttribute::Ident(ref i) => {
+                                schema.get_entid(i).map(|e| e.into())
+                            }
+                            PullConcreteAttribute::Entid(ref e) => Some(*e),
+                        };
+                        if let Some(entid) = entid {
+                            let name = match alias {
+                                Some(a) => a,
+                                None => {
+                                    let fwd = schema
+                                        .get_ident(entid)
+                                        .ok_or(PullError::UnnamedAttribute(entid))?;
+                                    ValueRc::new(fwd.to_reversed())
+                                }
+                            };
+                            reverse_attributes.insert(entid, name);
+                        }
+                        continue;
+                    }
+
                     match attribute {
                         // Handle :db/id.
                         PullConcreteAttribute::Ident(ref i) if i.as_ref() == db_id.as_ref() => {
@@ -201,6 +236,7 @@ impl Puller {
         Ok(Puller {
             attributes: names,
             attribute_spec: cache::AttributeSpec::specified(&attrs, schema),
+            reverse_attributes,
             db_id_alias,
         })
     }
@@ -264,6 +300,40 @@ impl Puller {
                     let m = ValueRc::get_mut(r).unwrap();
 
                     m.insert(name.clone(), binding);
+                }
+            }
+        }
+
+        // Reverse-reference attributes (`:ns/_attr`). For each such attribute,
+        // query the VAET index for every entity that refers to one of our
+        // pulled entities via that attribute. Refs are stored as plain integers
+        // with value_type_tag = 0 (ValueType::Ref).
+        if !self.reverse_attributes.is_empty() && !entities.is_empty() {
+            for (attr_entid, name) in self.reverse_attributes.iter() {
+                let mut stmt = db
+                    .prepare(
+                        "SELECT DISTINCT e FROM datoms \
+                         WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet IS NOT 0 \
+                         ORDER BY e ASC",
+                    )
+                    .map_err(DbError::from)?;
+                for e in entities.iter() {
+                    let referrers: Vec<Binding> = stmt
+                        .query_map(rusqlite::params![attr_entid, e], |row| {
+                            let referrer: Entid = row.get(0)?;
+                            Ok(Binding::Scalar(TypedValue::Ref(referrer)))
+                        })
+                        .map_err(DbError::from)?
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(DbError::from)?;
+
+                    if !referrers.is_empty() {
+                        let r = maps
+                            .entry(*e)
+                            .or_insert_with(|| ValueRc::new(StructuredMap::default()));
+                        let m = ValueRc::get_mut(r).unwrap();
+                        m.insert(name.clone(), Binding::Vec(ValueRc::new(referrers)));
+                    }
                 }
             }
         }

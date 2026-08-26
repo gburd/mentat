@@ -13,8 +13,9 @@ extern crate edn;
 use edn::{Keyword, PlainSymbol};
 
 use edn::query::{
-    Direction, Element, FindSpec, FnArg, Limit, NonIntegerConstant, OrJoin, OrWhereClause, Order,
-    Pattern, PatternNonValuePlace, PatternValuePlace, Predicate, UnifyVars, Variable, WhereClause,
+    Direction, Element, FindSpec, FnArg, Limit, NonIntegerConstant, Offset, OrJoin, OrWhereClause,
+    Order, Pattern, PatternNonValuePlace, PatternValuePlace, Predicate, UnifyVars, Variable,
+    WhereClause,
 };
 
 use edn::parse::parse_query;
@@ -331,4 +332,110 @@ fn can_parse_exotic_whitespace() {
             .expect("valid pattern")
         )
     );
+}
+
+// --- Ported from pg_mentat: query grammar superset (:offset, :distinct, :rules,
+// rule invocations). These prove the parser produces the right AST; SQL
+// generation for these is a later per-feature port.
+
+#[test]
+fn can_parse_offset() {
+    let p = parse_query("[:find ?x :where [?x _ ?y] :limit 10 :offset 5]").unwrap();
+    assert_eq!(p.limit, Limit::Fixed(10));
+    assert_eq!(p.offset, Offset::Fixed(5));
+}
+
+#[test]
+fn offset_defaults_to_unlimited() {
+    let p = parse_query("[:find ?x :where [?x _ ?y]]").unwrap();
+    assert_eq!(p.offset, Offset::Unlimited);
+    assert!(!p.distinct);
+    assert!(p.rules.is_empty());
+}
+
+#[test]
+fn offset_variable_and_zero() {
+    let p = parse_query("[:find ?x :in ?n :where [?x _ ?y] :offset ?n]").unwrap();
+    assert_eq!(p.offset, Offset::Variable(Variable::from_valid_name("?n")));
+    // zero offset is valid (unlike limit, which requires positive)
+    let z = parse_query("[:find ?x :where [?x _ ?y] :offset 0]").unwrap();
+    assert_eq!(z.offset, Offset::Fixed(0));
+}
+
+#[test]
+fn can_parse_distinct() {
+    let p = parse_query("[:find ?x :where [?x _ ?y] :distinct]").unwrap();
+    assert!(p.distinct);
+}
+
+#[test]
+fn can_parse_rule_invocation_in_where() {
+    // A parenthesized non-reserved symbol with args is a rule invocation.
+    let p = parse_query("[:find ?a :where (ancestor ?p ?a)]").unwrap();
+    assert_eq!(p.where_clauses.len(), 1);
+    match &p.where_clauses[0] {
+        WhereClause::RuleExpr(inv) => {
+            assert_eq!(inv.name, PlainSymbol::plain("ancestor"));
+            assert_eq!(inv.args.len(), 2);
+            assert_eq!(
+                inv.args[0],
+                FnArg::Variable(Variable::from_valid_name("?p"))
+            );
+        }
+        other => panic!("expected RuleExpr, got {:?}", other),
+    }
+}
+
+#[test]
+fn can_parse_rule_definitions() {
+    // Recursive rule with two clauses (base + recursive), Datomic-style :rules.
+    let s = "[:find ?a \
+             :where (ancestor ?p ?a) \
+             :rules [[(ancestor ?p ?a) [?p :parent ?a]] \
+                     [(ancestor ?p ?a) [?p :parent ?x] (ancestor ?x ?a)]]]";
+    let p = parse_query(s).unwrap();
+    assert_eq!(p.rules.len(), 1, "two clauses share one rule name");
+    let rule = &p.rules[0];
+    assert_eq!(rule.name, PlainSymbol::plain("ancestor"));
+    assert_eq!(rule.clauses.len(), 2);
+    // recursive clause body has a pattern + a nested rule invocation
+    assert_eq!(rule.clauses[1].body.len(), 2);
+    assert!(matches!(rule.clauses[1].body[1], WhereClause::RuleExpr(_)));
+}
+
+#[test]
+fn reserved_clauses_are_not_rule_invocations() {
+    // `(not ...)` etc. must still parse as their own clause types, not rules.
+    let p = parse_query("[:find ?x :where [?x _ ?y] (not [?x :hidden true])]").unwrap();
+    assert!(p
+        .where_clauses
+        .iter()
+        .any(|w| matches!(w, WhereClause::NotJoin(_))));
+    assert!(!p
+        .where_clauses
+        .iter()
+        .any(|w| matches!(w, WhereClause::RuleExpr(_))));
+}
+
+#[test]
+fn can_parse_reverse_pull_attribute() {
+    let p = parse_query("[:find (pull ?e [:person/_friend]) . :where [?e _ _]]").unwrap();
+    // The forward ident is stored, with reverse = true.
+    match &p.find_spec {
+        FindSpec::FindScalar(Element::Pull(pull)) => {
+            assert_eq!(pull.patterns.len(), 1);
+            match &pull.patterns[0] {
+                edn::query::PullAttributeSpec::Attribute(a) => {
+                    assert!(a.reverse, "underscore prefix marks reverse");
+                    assert_eq!(
+                        format!("{}", a.attribute),
+                        ":person/friend",
+                        "stores forward ident"
+                    );
+                }
+                other => panic!("expected Attribute, got {:?}", other),
+            }
+        }
+        other => panic!("expected scalar pull, got {:?}", other),
+    }
 }

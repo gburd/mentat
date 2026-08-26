@@ -28,7 +28,6 @@ pub struct QueryInputs {
     pub(crate) values: BTreeMap<Variable, TypedValue>,
 }
 
-
 impl QueryInputs {
     pub fn with_value_sequence(vals: Vec<(Variable, TypedValue)>) -> QueryInputs {
         let values: BTreeMap<Variable, TypedValue> = vals.into_iter().collect();

@@ -230,9 +230,9 @@ impl FromValue<FnArg> for FnArg {
             BigInteger(ref x) => Some(FnArg::Constant(NonIntegerConstant::BigInteger(x.clone()))),
             Text(ref x) =>
             // TODO: intern strings. #398.
-                {
-                    Some(FnArg::Constant(x.clone().into()))
-                }
+            {
+                Some(FnArg::Constant(x.clone().into()))
+            }
             Nil | NamespacedSymbol(_) | Vector(_) | List(_) | Set(_) | Map(_) | Bytes(_) => None,
         }
     }
@@ -328,7 +328,9 @@ impl FromValue<PatternNonValuePlace> for PatternNonValuePlace {
             crate::SpannedValue::PlainSymbol(ref x) => {
                 if x.0.as_str() == "_" {
                     Some(PatternNonValuePlace::Placeholder)
-                } else { Variable::from_symbol(x).map(PatternNonValuePlace::Variable) }
+                } else {
+                    Variable::from_symbol(x).map(PatternNonValuePlace::Variable)
+                }
             }
             crate::SpannedValue::Keyword(ref x) => Some(x.clone().into()),
             _ => None,
@@ -391,9 +393,9 @@ impl FromValue<PatternValuePlace> for PatternValuePlace {
             }
             crate::SpannedValue::Text(ref x) =>
             // TODO: intern strings. #398.
-                {
-                    Some(PatternValuePlace::Constant(x.clone().into()))
-                }
+            {
+                Some(PatternValuePlace::Constant(x.clone().into()))
+            }
             crate::SpannedValue::Uuid(ref u) => {
                 Some(PatternValuePlace::Constant(NonIntegerConstant::Uuid(*u)))
             }
@@ -466,6 +468,11 @@ pub enum PullConcreteAttribute {
 pub struct NamedPullAttribute {
     pub attribute: PullConcreteAttribute,
     pub alias: Option<Rc<Keyword>>,
+    /// True for a reverse-reference pull like `:person/_friends`. When set,
+    /// `attribute` holds the *forward* ident (used for schema lookup) and the
+    /// pull walks the VAET index to find entities that refer to each pulled
+    /// entity via that attribute. Ported from pg_mentat's reverse pull.
+    pub reverse: bool,
 }
 
 impl From<PullConcreteAttribute> for NamedPullAttribute {
@@ -473,6 +480,7 @@ impl From<PullConcreteAttribute> for NamedPullAttribute {
         NamedPullAttribute {
             attribute: a,
             alias: None,
+            reverse: false,
         }
     }
 }
@@ -497,10 +505,17 @@ impl std::fmt::Display for PullConcreteAttribute {
 
 impl std::fmt::Display for NamedPullAttribute {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let attr = &self.attribute;
         if let Some(ref alias) = self.alias {
-            write!(f, "{} :as {}", self.attribute, alias)
+            if self.reverse {
+                write!(f, "_{} :as {}", attr, alias)
+            } else {
+                write!(f, "{} :as {}", attr, alias)
+            }
+        } else if self.reverse {
+            write!(f, "_{}", attr)
         } else {
-            write!(f, "{}", self.attribute)
+            write!(f, "{}", attr)
         }
     }
 }
@@ -563,9 +578,9 @@ impl std::fmt::Display for Element {
         match self {
             Element::Variable(ref var) => write!(f, "{}", var),
             Element::Pull(Pull {
-                              ref var,
-                              ref patterns,
-                          }) => {
+                ref var,
+                ref patterns,
+            }) => {
                 write!(f, "(pull {} [ ", var)?;
                 for p in patterns.iter() {
                     write!(f, "{} ", p)?;
@@ -585,6 +600,16 @@ impl std::fmt::Display for Element {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Limit {
     None,
+    Fixed(u64),
+    Variable(Variable),
+}
+
+/// The `:offset` clause of a find query: skip N leading results.
+/// Ported from pg_mentat for pagination support.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Offset {
+    /// No offset: start from the first result.
+    Unlimited,
     Fixed(u64),
     Variable(Variable),
 }
@@ -673,7 +698,7 @@ impl FindSpec {
         !self.is_unit_limited()
     }
 
-    pub fn columns<'s>(&'s self) -> Box<dyn Iterator<Item=&'s Element> + 's> {
+    pub fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &'s Element> + 's> {
         use self::FindSpec::*;
         match self {
             FindScalar(ref e) => Box::new(std::iter::once(e)),
@@ -930,13 +955,38 @@ pub struct TypeAnnotation {
 }
 
 #[allow(dead_code)]
+/// A rule invocation in a query, e.g., `(ancestor ?person ?ancestor)`.
+/// Ported from pg_mentat to support named and recursive rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleInvocation {
+    pub name: PlainSymbol,
+    pub args: Vec<FnArg>,
+}
+
+/// A single rule clause: head + body.
+/// Example: `[(ancestor ?p ?a) [?p :parent ?a]]`
+/// Or recursive: `[(ancestor ?p ?a) [?p :parent ?x] (ancestor ?x ?a)]`
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuleClause {
+    pub head: RuleInvocation,
+    pub body: Vec<WhereClause>,
+}
+
+/// A named rule with one or more clauses.
+/// Rules with multiple clauses represent alternatives (like OR).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Rule {
+    pub name: PlainSymbol,
+    pub clauses: Vec<RuleClause>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WhereClause {
     NotJoin(NotJoin),
     OrJoin(OrJoin),
     Pred(Predicate),
     WhereFn(WhereFn),
-    RuleExpr,
+    RuleExpr(RuleInvocation),
     Pattern(Pattern),
     TypeAnnotation(TypeAnnotation),
 }
@@ -948,19 +998,31 @@ pub struct ParsedQuery {
     pub default_source: SrcVar,
     pub with: Vec<Variable>,
     pub in_vars: Vec<Variable>,
+    pub in_bindings: Vec<Binding>,
     pub in_sources: BTreeSet<SrcVar>,
     pub limit: Limit,
+    pub offset: Offset,
     pub where_clauses: Vec<WhereClause>,
     pub order: Option<Vec<Order>>,
+    pub distinct: bool,
+    pub rules: Vec<Rule>,
 }
 
 pub(crate) enum QueryPart {
     FindSpec(FindSpec),
     WithVars(Vec<Variable>),
     InVars(Vec<Variable>),
+    // ponytail: parsed :in still emits InVars (unchanged A semantics); InBindings
+    // + ParsedQuery.in_bindings are ported infra for binding-form :in, wired when
+    // a feature needs it. Upgrade path: add a binding-based :in grammar alt.
+    #[allow(dead_code)]
+    InBindings(Vec<Binding>),
     Limit(Limit),
+    Offset(Offset),
     WhereClauses(Vec<WhereClause>),
     Order(Vec<Order>),
+    Distinct,
+    Rules(Vec<Rule>),
 }
 
 /// A `ParsedQuery` represents a parsed but potentially invalid query to the query algebrizer.
@@ -976,9 +1038,13 @@ impl ParsedQuery {
         let mut find_spec: Option<FindSpec> = None;
         let mut with: Option<Vec<Variable>> = None;
         let mut in_vars: Option<Vec<Variable>> = None;
+        let mut in_bindings: Option<Vec<Binding>> = None;
         let mut limit: Option<Limit> = None;
+        let mut offset: Option<Offset> = None;
         let mut where_clauses: Option<Vec<WhereClause>> = None;
         let mut order: Option<Vec<Order>> = None;
+        let mut distinct = false;
+        let mut rules: Option<Vec<Rule>> = None;
 
         for part in parts.into_iter() {
             match part {
@@ -1000,11 +1066,23 @@ impl ParsedQuery {
                     }
                     in_vars = Some(x)
                 }
+                QueryPart::InBindings(x) => {
+                    if in_bindings.is_some() {
+                        return Err("find query has repeated :in");
+                    }
+                    in_bindings = Some(x)
+                }
                 QueryPart::Limit(x) => {
                     if limit.is_some() {
                         return Err("find query has repeated :limit");
                     }
                     limit = Some(x)
+                }
+                QueryPart::Offset(x) => {
+                    if offset.is_some() {
+                        return Err("find query has repeated :offset");
+                    }
+                    offset = Some(x)
                 }
                 QueryPart::WhereClauses(x) => {
                     if where_clauses.is_some() {
@@ -1018,18 +1096,46 @@ impl ParsedQuery {
                     }
                     order = Some(x)
                 }
+                QueryPart::Distinct => {
+                    distinct = true;
+                }
+                QueryPart::Rules(x) => {
+                    if rules.is_some() {
+                        return Err("find query has repeated :rules");
+                    }
+                    rules = Some(x)
+                }
             }
         }
+
+        // If we got InBindings, derive in_vars from the scalar bindings
+        // for backward compatibility with existing code that uses in_vars.
+        let final_in_bindings = in_bindings.unwrap_or_default();
+        let final_in_vars = if let Some(v) = in_vars {
+            v
+        } else {
+            final_in_bindings
+                .iter()
+                .filter_map(|b| match b {
+                    Binding::BindScalar(v) => Some(v.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
 
         Ok(ParsedQuery {
             find_spec: find_spec.ok_or("expected :find")?,
             default_source: SrcVar::DefaultSrc,
-            with: with.unwrap_or_default(), //
-            in_vars: in_vars.unwrap_or_default(),
+            with: with.unwrap_or_default(),
+            in_vars: final_in_vars,
+            in_bindings: final_in_bindings,
             in_sources: BTreeSet::default(),
             limit: limit.unwrap_or(Limit::None),
+            offset: offset.unwrap_or(Offset::Unlimited),
             where_clauses: where_clauses.ok_or("expected :where")?,
             order,
+            distinct,
+            rules: rules.unwrap_or_default(),
         })
     }
 }
@@ -1083,7 +1189,13 @@ impl ContainsVariables for WhereClause {
             NotJoin(ref n) => n.accumulate_mentioned_variables(acc),
             WhereFn(ref f) => f.accumulate_mentioned_variables(acc),
             TypeAnnotation(ref a) => a.accumulate_mentioned_variables(acc),
-            RuleExpr => (),
+            RuleExpr(ref invocation) => {
+                for arg in &invocation.args {
+                    if let FnArg::Variable(ref var) = arg {
+                        acc.insert(var.clone());
+                    }
+                }
+            }
         }
     }
 }

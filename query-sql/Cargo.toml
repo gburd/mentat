@@ -5,7 +5,7 @@ workspace = ".."
 edition = "2021"
 
 [dependencies.rusqlite]
-version = "~0.32"
+version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]

@@ -963,10 +963,7 @@ where
         // TODO: validate that attributes.keys is a subset of versions.keys.
         for (vocab, attr) in pairs {
             if let Some(attribute) = self.attribute_for_entid(attr).cloned() {
-                attributes
-                    .entry(vocab)
-                    .or_default()
-                    .push((attr, attribute));
+                attributes.entry(vocab).or_default().push((attr, attribute));
             }
         }
 

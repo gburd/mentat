@@ -357,7 +357,8 @@ fn test_add_vocab() {
 
     // foo/bar starts single-valued.
     assert!(
-        !conn.current_schema()
+        !conn
+            .current_schema()
             .attribute_for_ident(&kw!(:foo/bar))
             .expect("attribute")
             .0
