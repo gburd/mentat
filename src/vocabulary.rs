@@ -87,7 +87,7 @@
 //! ```
 //!
 //! A similar approach is taken using the
-//! [VocabularyProvider](mentat::vocabulary::VocabularyProvider) trait to handle migrations across
+//! `VocabularyProvider` trait to handle migrations across
 //! multiple vocabularies.
 
 use std::collections::BTreeMap;

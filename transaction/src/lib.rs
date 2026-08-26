@@ -17,17 +17,16 @@ macro_rules! bail {
 
 extern crate rusqlite;
 
-extern crate edn;
-extern crate public_traits;
-#[macro_use]
 extern crate core_traits;
 extern crate db_traits;
+extern crate edn;
 extern crate mentat_core;
 extern crate mentat_db;
 extern crate mentat_query_algebrizer;
 extern crate mentat_query_projector;
 extern crate mentat_query_pull;
 extern crate mentat_sql;
+extern crate public_traits;
 
 use std::sync::{Arc, Mutex};
 
@@ -116,7 +115,7 @@ pub trait Queryable {
     fn q_once<T>(&self, query: &str, inputs: T) -> Result<QueryOutput>
     where
         T: Into<Option<QueryInputs>>;
-    fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult
+    fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult<'_>
     where
         T: Into<Option<QueryInputs>>;
     fn lookup_values_for_attribute<E>(
@@ -403,7 +402,7 @@ impl<'a, 'c> Queryable for InProgressRead<'a, 'c> {
         self.in_progress.q_once(query, inputs)
     }
 
-    fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult
+    fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult<'_>
     where
         T: Into<Option<QueryInputs>>,
     {
@@ -478,7 +477,7 @@ impl<'a, 'c> Queryable for InProgress<'a, 'c> {
         }
     }
 
-    fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult
+    fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult<'_>
     where
         T: Into<Option<QueryInputs>>,
     {

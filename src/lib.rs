@@ -13,7 +13,6 @@ extern crate lazy_static;
 
 pub use edn;
 
-#[macro_use]
 extern crate core_traits;
 
 pub use core_traits::{
@@ -33,7 +32,7 @@ pub use mentat_db::{change_encryption_key, new_connection_with_key};
 
 /// Produce the appropriate `Variable` for the provided valid ?-prefixed name.
 /// This lives here because we can't re-export macros:
-/// https://github.com/rust-lang/rust/issues/29638.
+/// <https://github.com/rust-lang/rust/issues/29638>.
 #[macro_export]
 macro_rules! var {
     ( ? $var:ident ) => {
@@ -43,7 +42,7 @@ macro_rules! var {
 
 /// Produce the appropriate `Keyword` for the provided namespace and name.
 /// This lives here because we can't re-export macros:
-/// https://github.com/rust-lang/rust/issues/29638.
+/// <https://github.com/rust-lang/rust/issues/29638>.
 #[macro_export]
 macro_rules! kw {
     ( : $ns:ident$(. $nss:ident)+ / $nn:ident$(. $nns:ident)+ ) => {

@@ -2013,7 +2013,7 @@ impl TransactWatcher for InProgressCacheTransactWatcher<'_> {
 }
 
 impl InProgressSQLiteAttributeCache {
-    pub fn transact_watcher(&mut self) -> InProgressCacheTransactWatcher {
+    pub fn transact_watcher(&mut self) -> InProgressCacheTransactWatcher<'_> {
         InProgressCacheTransactWatcher::new(self)
     }
 }

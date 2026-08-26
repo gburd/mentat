@@ -18,11 +18,10 @@ macro_rules! bail {
 extern crate indexmap;
 extern crate rusqlite;
 
+extern crate core_traits;
 extern crate db_traits;
 extern crate edn;
 extern crate mentat_core;
-#[macro_use]
-extern crate core_traits;
 extern crate mentat_db; // For value conversion.
 extern crate mentat_query_algebrizer;
 extern crate mentat_query_pull;

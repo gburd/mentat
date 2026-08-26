@@ -279,7 +279,7 @@ fn get_user_version(conn: &rusqlite::Connection) -> Result<i32> {
 /// Do just enough work that either `create_current_version` or sync can populate the DB.
 pub fn create_empty_current_version(
     conn: &mut rusqlite::Connection,
-) -> Result<(rusqlite::Transaction, DB)> {
+) -> Result<(rusqlite::Transaction<'_>, DB)> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
 
     for statement in V1_STATEMENTS.iter() {
@@ -397,7 +397,7 @@ pub trait TypedSQLValue {
         value: rusqlite::types::Value,
         value_type_tag: i32,
     ) -> Result<TypedValue>;
-    fn to_sql_value_pair(&self) -> (ToSqlOutput, i32);
+    fn to_sql_value_pair(&self) -> (ToSqlOutput<'_>, i32);
     fn from_edn_value(value: &Value) -> Option<TypedValue>;
     fn to_edn_value_pair(&self) -> (Value, ValueType);
 }
@@ -461,7 +461,7 @@ impl TypedSQLValue for TypedValue {
     }
 
     /// Return the corresponding SQLite `value` and `value_type_tag` pair.
-    fn to_sql_value_pair(&self) -> (ToSqlOutput, i32) {
+    fn to_sql_value_pair(&self) -> (ToSqlOutput<'_>, i32) {
         match self {
             TypedValue::Ref(x) => ((*x).into(), 0),
             TypedValue::Boolean(x) => ((if *x { 1 } else { 0 }).into(), 1),

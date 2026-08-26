@@ -27,7 +27,7 @@ pub struct QueryBuilder<'a> {
 }
 
 impl<'a> QueryBuilder<'a> {
-    pub fn new<T>(store: &mut Store, query: T) -> QueryBuilder
+    pub fn new<T>(store: &mut Store, query: T) -> QueryBuilder<'_>
     where
         T: Into<String>,
     {

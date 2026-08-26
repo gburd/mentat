@@ -15,7 +15,6 @@ macro_rules! bail {
     };
 }
 
-#[macro_use]
 extern crate core_traits;
 extern crate edn;
 extern crate mentat_core;
