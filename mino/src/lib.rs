@@ -10,3 +10,7 @@ pub mod value;
 
 pub mod printer;
 pub mod reader;
+
+pub mod env;
+pub mod error;
+pub mod eval;
