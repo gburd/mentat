@@ -44,9 +44,9 @@ fn print_into(s: &mut String, v: &Value) {
             s.push(']');
         }
         // print.c print_map: pairs separated by ", ", key/val by a space.
-        Value::Map(pairs) => {
+        Value::Map(m) => {
             s.push('{');
-            for (i, (k, val)) in pairs.iter().enumerate() {
+            for (i, (k, val)) in m.entries().enumerate() {
                 if i > 0 {
                     s.push_str(", ");
                 }
@@ -56,9 +56,9 @@ fn print_into(s: &mut String, v: &Value) {
             }
             s.push('}');
         }
-        Value::Set(items) => {
+        Value::Set(set) => {
             s.push_str("#{");
-            for (i, e) in items.iter().enumerate() {
+            for (i, e) in set.iter().enumerate() {
                 if i > 0 {
                     s.push(' ');
                 }

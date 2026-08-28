@@ -146,7 +146,20 @@ impl<'a> Reader<'a> {
         match self.s.get(self.i + 1).copied() {
             Some(b'{') => {
                 self.i += 1; // consume '#'; read_seq consumes '{'
-                self.read_seq(b'}').map(|v| Value::Set(Gc::new(v)))
+                let items = self.read_seq(b'}')?;
+                // mino: a set *literal* with a duplicate element is a read
+                // error (verified against the binary: MRE008). `set`/`conj`
+                // dedup, but the reader rejects `#{1 1 2}`.
+                let mut set = crate::collections::map::PSet::empty();
+                for e in items {
+                    if set.contains(&e) {
+                        return Err(ReadError::Malformed(
+                            "set literal contains duplicate element".into(),
+                        ));
+                    }
+                    set = set.conj(e);
+                }
+                Ok(Value::Set(Gc::new(set)))
             }
             Some(c) => Err(ReadError::Malformed(format!(
                 "unsupported reader dispatch macro #{}",
@@ -174,17 +187,18 @@ impl<'a> Reader<'a> {
         }
     }
 
-    // read.c read_map_form: key/value pairs until '}'.
+    // read.c read_map_form: key/value pairs until '}'. Duplicate keys resolve
+    // last-write-wins via PMap.assoc, first-insertion order preserved.
     fn read_map(&mut self) -> Result<Value, ReadError> {
         self.i += 1; // consume '{'
-        let mut pairs = Vec::new();
+        let mut map = crate::collections::map::PMap::empty();
         loop {
             self.skip_ws();
             match self.peek() {
                 None => return Err(ReadError::Unterminated("map")),
                 Some(b'}') => {
                     self.i += 1;
-                    return Ok(Value::Map(Gc::new(pairs)));
+                    return Ok(Value::Map(Gc::new(map)));
                 }
                 _ => {
                     let k = self.read_form()?;
@@ -195,7 +209,7 @@ impl<'a> Reader<'a> {
                         ));
                     }
                     let v = self.read_form()?;
-                    pairs.push((k, v));
+                    map = map.assoc(k, v);
                 }
             }
         }

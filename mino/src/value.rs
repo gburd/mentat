@@ -18,10 +18,10 @@ pub enum Value {
     Cons(Gc<(Value, Value)>),
     // Persistent vector: 32-way trie (see collections::vector::PVec).
     Vector(Gc<crate::collections::vector::PVec>),
-    // Phase 2: replace Vec-of-pairs backing with a HAMT. Insertion order is
-    // preserved for printing until then. (Set dedup on read: not yet — Phase 2.)
-    Map(Gc<Vec<(Value, Value)>>),
-    Set(Gc<Vec<Value>>),
+    // Persistent HAMT map/set (see collections::map). Both track key
+    // insertion order for printing (mino's key_order companion vector).
+    Map(Gc<crate::collections::map::PMap>),
+    Set(Gc<crate::collections::map::PSet>),
     // Closures (`fn`) and built-in primitives. Ports MINO_FN / native prim.
     Fn(Gc<Closure>),
     Prim(Prim),

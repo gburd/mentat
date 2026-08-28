@@ -23,7 +23,7 @@ const MASK: usize = WIDTH - 1; // 0x1f
 /// A trie node: either a branch (`slots` -> child `Node`s) or a leaf
 /// (`items` -> `Value`s). vec.c uses an untyped union keyed by level; here
 /// two enum arms make the distinction explicit and keep Trace derivable.
-#[derive(Trace, Finalize)]
+#[derive(Trace, Finalize, Clone)]
 enum Node {
     Branch(Vec<Gc<Node>>),
     Leaf(Vec<Value>),
@@ -45,7 +45,7 @@ impl Node {
 }
 
 /// A persistent vector.
-#[derive(Trace, Finalize)]
+#[derive(Trace, Finalize, Clone)]
 pub struct PVec {
     root: Option<Gc<Node>>, // trie of full 32-wide leaves; None when empty
     tail: Vec<Value>,       // trailing 1..=32 elements
