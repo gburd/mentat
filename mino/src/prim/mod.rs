@@ -2,6 +2,7 @@
 
 pub mod collections;
 pub mod numeric;
+pub mod reflection;
 
 use crate::env::Env;
 use crate::symbol::Symbol;
@@ -84,4 +85,12 @@ pub fn install_core(root: &Env) {
     register(root, "zero?", c::zero_p);
     register(root, "pos?", c::pos_p);
     register(root, "neg?", c::neg_p);
+
+    // Error / reflection prims (Task 3.2, prim/reflection.c + core.clj
+    // ex-info/ex-message/ex-data).
+    use reflection as r;
+    register(root, "throw", r::throw);
+    register(root, "ex-info", r::ex_info);
+    register(root, "ex-message", r::ex_message);
+    register(root, "ex-data", r::ex_data);
 }

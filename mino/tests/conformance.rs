@@ -121,3 +121,55 @@ fn binding_corpus_passes() {
     assert!(passed > 0, "no assertions ran");
     assert_eq!(failed, 0, "{failed} binding_test assertions failed");
 }
+
+/// Task 3.2 gate: clj_control_test.clj. This file is a Clojure-suite port of
+/// control-flow forms. The `try`/`catch`/`finally`/`throw`/`ex-info` machinery
+/// is now ported, so those work — but nearly every deftest here is built on
+/// core.clj control MACROS (`when`, `when-not`, `if-let`, `when-let`, `cond`,
+/// `condp`, `case`, `dotimes`, `for`, `and`, `or`) and core.clj/Phase-5 fns
+/// (`not`, `str`, `some`, `rem`, `atom`/`swap!`/`deref`, `range`, `odd?`
+/// via core), none of which exist before Phase 4/5. Only `clj-loop-recur`
+/// (loop/recur + conj/first/next/seq/* + inc) is Phase-3-complete; every other
+/// deftest is skipped with the enabling phase noted. Phase 4 (core.clj +
+/// clojure.test) turns the rest on.
+const CONTROL_SKIP: &[&str] = &[
+    // core.clj macro `when` + `throw`/`ex-info` (Phase 4 core.clj).
+    "clj-when",
+    // core.clj macro `when-not` (Phase 4 core.clj).
+    "clj-when-not",
+    // core.clj macro `if-let` + list destructuring in binding (Phase 4).
+    "clj-if-let",
+    // core.clj macro `when-let` (Phase 4 core.clj).
+    "clj-when-let",
+    // core.clj macro `cond` + `not`/coll literals as truthy tests (Phase 4).
+    "clj-cond",
+    // core.clj macro `condp` (Phase 4 core.clj).
+    "clj-condp",
+    // core.clj macro `condp` :>> arrow form + `some`/`inc`/`dec` (Phase 4).
+    "clj-condp-arrow-form",
+    // core.clj macro `case` + `let`/`fn` closures over case (Phase 4).
+    "clj-case",
+    // core.clj macro `dotimes` + `atom`/`swap!`/`deref` (Phase 4 + Phase 5).
+    "clj-dotimes",
+    // core.clj macro `for` + `range`/`odd?`/`even?`/`rem` (Phase 4/5).
+    "clj-for-when",
+    "clj-for-while",
+    "clj-for-let",
+    "clj-for-nesting",
+    // core.clj macro `and` + `throw`/`ex-info` in short-circuited arms (Phase 4).
+    "clj-and",
+    // core.clj macro `or` + `throw`/`ex-info` in short-circuited arms (Phase 4).
+    "clj-or",
+    // core.clj fn `not` + coll literals as args (Phase 4 core.clj).
+    "clj-not",
+];
+
+#[test]
+fn clj_control_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/clj_control_test.clj"),
+        CONTROL_SKIP,
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} clj_control_test assertions failed");
+}

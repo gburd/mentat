@@ -4,7 +4,7 @@
 //! Bignum/ratio (Phase 5.5) are not here: `/` on ints that don't divide
 //! evenly promotes to Float (mino returns an exact ratio, e.g. 7/2).
 
-use crate::error::{throw_str, Throw};
+use crate::error::{throw_classified, throw_str, Throw};
 use crate::eval::Interp;
 use crate::value::Value;
 
@@ -144,7 +144,7 @@ pub fn div(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             Num::Float(_) => unreachable!(),
         };
         if d == 0 {
-            return Err(throw_str("division by zero"));
+            return Err(throw_classified("eval/type", "MTY001", "division by zero"));
         }
         float_acc /= d as f64;
         if exact && int_acc % d == 0 {

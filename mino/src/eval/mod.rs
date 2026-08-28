@@ -9,6 +9,7 @@ use crate::reader::read_all;
 use crate::value::Value;
 
 pub mod bindings;
+pub mod control;
 pub mod func;
 pub mod special;
 
@@ -85,9 +86,13 @@ impl Interp {
                 Ok(Value::Set(gc::Gc::new(out)))
             }
 
-            Value::Sym(sym) => env
-                .get(sym)
-                .ok_or_else(|| throw_str(&format!("Unable to resolve symbol: {sym}"))),
+            Value::Sym(sym) => env.get(sym).ok_or_else(|| {
+                crate::error::throw_classified(
+                    "name",
+                    "MNS001",
+                    &format!("unbound symbol: {sym}"),
+                )
+            }),
 
             Value::Cons(_) => self.eval_list(form, env),
         }
@@ -132,6 +137,10 @@ impl Interp {
                         let args = collect(rest);
                         return bindings::eval_loop(self, &args, env);
                     }
+                    "try" => {
+                        let args = collect(rest);
+                        return control::eval_try(self, &args, env);
+                    }
                     "letfn*" => {
                         let args = collect(rest);
                         return bindings::eval_letfn_star(self, &args, env);
@@ -155,10 +164,11 @@ impl Interp {
         // Application: eval the head, then args left-to-right, then apply.
         let callee = self.eval_value(head, env)?;
         if !matches!(callee, Value::Fn(_) | Value::Prim(_)) {
-            return Err(throw_str(&format!(
-                "not callable: {}",
-                crate::printer::print_str(head)
-            )));
+            return Err(crate::error::throw_classified(
+                "eval/type",
+                "MTY002",
+                &format!("not a function (got {})", type_tag(&callee)),
+            ));
         }
         let mut args = Vec::new();
         let mut cur = rest;
@@ -241,6 +251,28 @@ fn collect(list: &Value) -> Vec<Value> {
         cur = &cell.1;
     }
     out
+}
+
+/// Short type label for a value, matching mino's `type_tag_str` (error.c) for
+/// the values the port has so far. Used in "not a function (got TYPE)".
+fn type_tag(v: &Value) -> &'static str {
+    match v {
+        Value::Nil => "nil",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Char(_) => "char",
+        Value::Str(_) => "string",
+        Value::Sym(_) => "symbol",
+        Value::Keyword(_) => "keyword",
+        Value::EmptyList | Value::Cons(_) => "list",
+        Value::Vector(_) => "vector",
+        Value::Map(_) => "map",
+        Value::Set(_) => "set",
+        Value::Fn(_) | Value::Prim(_) => "fn",
+        Value::Var(_) => "var",
+        Value::Recur(_) => "recur",
+    }
 }
 
 #[cfg(test)]
