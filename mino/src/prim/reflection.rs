@@ -304,6 +304,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Regex(_) => "regex",
         Value::Var(_) => "var",
         Value::Atom(_) => "atom",
+        Value::Store(_) => "store",
         Value::Recur(_) => "recur",
     };
     Ok(Value::Keyword(Symbol::plain(tag)))
@@ -372,7 +373,14 @@ pub fn class(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 pub fn resolve(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let v = one_arg(args, "resolve")?;
     match v {
-        Value::Sym(s) => Ok(it.root.get(s).unwrap_or(Value::Nil)),
+        // Return the Var identity when bound (so `@(resolve 's)` derefs to the
+        // value and `((resolve 's) ...)` calls it), else nil. The flat-env Var
+        // carries the symbol; deref/call resolve it in root.
+        Value::Sym(s) => Ok(if it.root.get(s).is_some() {
+            Value::Var(s.clone())
+        } else {
+            Value::Nil
+        }),
         _ => Err(throw_classified("type", "MTY001", "resolve: expects a symbol")),
     }
 }

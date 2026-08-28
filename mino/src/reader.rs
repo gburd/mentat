@@ -389,6 +389,54 @@ impl<'a> Reader<'a> {
                     other => Err(ReadError::Malformed(format!("unknown ## literal: ##{other}"))),
                 }
             }
+            // `#'foo` var-quote -> `(var foo)`. Ports read.c's var-quote.
+            Some(b'\'') => {
+                self.i += 2; // consume `#'`
+                self.skip_ws();
+                let form = self.read_form()?;
+                Ok(cons(
+                    Value::Sym(Symbol::plain("var")),
+                    cons(form, Value::EmptyList),
+                ))
+            }
+            // `#_form` discard is unused by the store corpus and can't be
+            // done correctly here (read_form must return a value; a discard
+            // yields nothing). Skipped: add a read_seq-level discard when a
+            // corpus file needs it.
+            // Tagged literal `#tag form`: read the tag symbol and the
+            // following form, then expand to a data-reader call. mino's
+            // `#inst "..."` / `#uuid "..."` are the ones the corpus uses;
+            // both expand to a resolvable core fn so eval builds the value.
+            Some(c) if c.is_ascii_alphabetic() => {
+                self.i += 1; // consume '#'
+                let start = self.i;
+                while self.s.get(self.i).is_some_and(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'/')
+                }) {
+                    self.i += 1;
+                }
+                let tag = std::str::from_utf8(&self.s[start..self.i])
+                    .map_err(|_| ReadError::Malformed("invalid tagged-literal tag".into()))?
+                    .to_string();
+                self.skip_ws();
+                let form = self.read_form()?;
+                let call = match tag.as_str() {
+                    "inst" => cons(
+                        Value::Sym(Symbol::namespaced("clojure.instant", "read-instant-date")),
+                        cons(form, Value::EmptyList),
+                    ),
+                    "uuid" => cons(
+                        Value::Sym(Symbol::plain("parse-uuid")),
+                        cons(form, Value::EmptyList),
+                    ),
+                    other => {
+                        return Err(ReadError::Malformed(format!(
+                            "unsupported reader tag #{other}"
+                        )))
+                    }
+                };
+                Ok(call)
+            }
             Some(c) => Err(ReadError::Malformed(format!(
                 "unsupported reader dispatch macro #{}",
                 c as char

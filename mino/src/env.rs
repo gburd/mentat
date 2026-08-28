@@ -61,7 +61,13 @@ impl Env {
                     return Some(v);
                 }
             }
-            return self.get_exact(&Symbol::plain(&sym.name));
+            // Bare-name fallback for a QUALIFIED symbol resolves against the
+            // ROOT frame only (namespace-level defs/prims), never local `let`/
+            // `fn` frames: `mino.store/schema` must reach the store fn even
+            // when a local `let [schema ...]` shadows the bare name. A local
+            // binding is unqualified by construction, so a qualified read can
+            // never mean it.
+            return self.root_get_exact(&Symbol::plain(&sym.name));
         }
         None
     }
@@ -102,6 +108,17 @@ impl Env {
                 None => return None,
             }
         }
+    }
+
+    /// Look up `sym` in the ROOT frame only (skip all local frames). The
+    /// bare-name fallback for a qualified symbol uses this so a local
+    /// shadow can't capture a namespace-qualified read.
+    fn root_get_exact(&self, sym: &Symbol) -> Option<Value> {
+        let mut cur = &self.0;
+        while let Some(p) = &cur.parent {
+            cur = p;
+        }
+        cur.bindings.borrow().get(sym).cloned()
     }
 
     /// True if `sym` is bound in a NON-root frame (a lexical local). Used by

@@ -15,12 +15,14 @@ pub struct Symbol {
 
 impl Symbol {
     pub fn plain(name: &str) -> Self {
-        assert!(!name.is_empty(), "Symbols and keywords cannot be unnamed.");
+        // An empty name is a legal *constructed* keyword/symbol (`(keyword "")`
+        // -> `:`, `(symbol "")` -> the empty symbol, matching mino). The
+        // reader rejects a bare `:` itself (MRE008) before reaching here, so
+        // this constructor need not.
         Self { ns: None, name: name.into() }
     }
 
     pub fn namespaced(ns: &str, name: &str) -> Self {
-        assert!(!name.is_empty(), "Symbols and keywords cannot be unnamed.");
         assert!(!ns.is_empty(), "Symbols and keywords cannot have an empty namespace.");
         Self { ns: Some(ns.into()), name: name.into() }
     }

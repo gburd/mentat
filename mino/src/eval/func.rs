@@ -124,6 +124,16 @@ pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, T
             let idx = args.first().cloned().unwrap_or(Value::Nil);
             crate::prim::collections::nth(it, &[callee.clone(), idx])
         }
+        // A Var is callable: it invokes its resolved root value (Clojure:
+        // `((resolve 'f) ...)` / `(#'f ...)`).
+        Value::Var(sym) => match it.var_value(sym) {
+            Some(v) => apply(it, &v, args),
+            None => Err(crate::error::throw_classified(
+                "eval/type",
+                "MTY002",
+                &format!("cannot call unbound var: {sym}"),
+            )),
+        },
         _ => Err(crate::error::throw_classified(
             "eval/type",
             "MTY002",

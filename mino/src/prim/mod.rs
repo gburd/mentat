@@ -237,6 +237,7 @@ pub fn install_eager_seq_prims(root: &Env) {
     register(root, "hash-set", c::hash_set);
     register(root, "sort", c::sort);
     register(root, "sort-by", c::sort_by);
+    register(root, "compare", c::compare);
     register(root, "concat", c::concat);
     register(root, "assoc", c::assoc);
     register(root, "dissoc", c::dissoc);

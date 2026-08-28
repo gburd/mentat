@@ -137,6 +137,8 @@ fn hash32(v: &Value) -> u32 {
         Value::Regex(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         // Atom: identity hash by cell address (atoms are never value-equal).
         Value::Atom(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
+        // Store: identity hash by cell address (stores are never value-equal).
+        Value::Store(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
     }
 }
 
@@ -209,6 +211,9 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
         // Atoms: identity. Two distinct atoms are never `=`, even with equal
         // contents; the same atom compares equal to itself.
         (Value::Atom(x), Value::Atom(y)) => std::ptr::eq(&**x, &**y),
+        // Stores: identity. Two distinct stores are never `=` (matches mino:
+        // `(= a a)` true, `(= a (open))` false).
+        (Value::Store(x), Value::Store(y)) => std::ptr::eq(&**x, &**y),
         _ => false,
     }
 }

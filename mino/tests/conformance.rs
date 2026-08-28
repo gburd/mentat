@@ -254,3 +254,42 @@ fn clj_math_corpus_passes() {
     assert!(passed > 0, "no assertions ran");
     assert_eq!(failed, 0, "{failed} clj_math_test assertions failed");
 }
+
+/// Task 6.1 gate: store_test.clj — the EAVT store (in-memory). `mino.store`
+/// is loaded as data (`Interp::load_mino_store`) on top of the 8 store C prims
+/// (`crate::store`) + clojure.set. Every in-memory deftest (transact/read/
+/// entity/entities/where/find-by/q/datoms/pull/put/retract/schema/upsert/
+/// lookup-ref/cardinality/unique/tx-log/as-of/since/history/recent/project/
+/// merge/fold/compact/migrate) is ON.
+///
+/// DURABILITY deftests are Phase 7 (WAL + snapshot): the store C prims here
+/// are in-memory only — `store-open*` ignores the path, `store-read-snapshot*`
+/// /`store-read-wal*` return nil, `store-checkpoint*`/`store-close*` are
+/// no-ops. So a deftest that opens with a disk path and expects the reopened
+/// store to reflect prior transacts (WAL replay) cannot pass yet. Each is
+/// skipped with the reason it needs Phase 7 durability.
+const STORE_SKIP: &[&str] = &[
+    // Opens `(store/open store-test-dir)`, transacts, closes, reopens, and
+    // asserts the reopened store replays the WAL. Needs on-disk WAL (Phase 7).
+    "store-durable-survives-reopen",
+    "store-wal-survives-without-checkpoint",
+    "store-wal-multiple-transactions",
+    "store-wal-checkpoint-deletes-wal",
+    "store-wal-torn-write-recovery",
+    "store-wal-checkpoint-then-transact",
+    "store-wal-stale-entries-skipped",
+    // checkpoint writes an on-disk snapshot then reopens; needs Phase 7.
+    "store-snapshot-atomic-write",
+    // migrate on a DURABLE store + checkpoint + reopen; needs Phase 7.
+    "store-migrate-durable",
+];
+
+#[test]
+fn store_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/store_test.clj"),
+        STORE_SKIP,
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} store_test assertions failed");
+}

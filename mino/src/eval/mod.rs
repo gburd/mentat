@@ -20,6 +20,9 @@ pub struct Interp {
     /// (form-summary, error-message). Inspected by tests to keep the failure
     /// set bounded and confined to expected-deferred categories.
     core_failures: Vec<(String, String)>,
+    /// Monotonic per-interpreter store id, incremented by `store-open*` for the
+    /// `#store[0xN VAL]` print. Mirrors `mino_state.next_store_id`.
+    pub next_store_id: u64,
 }
 
 impl Interp {
@@ -32,6 +35,7 @@ impl Interp {
         crate::prim::install_eager_seq_prims(&it.root);
         it.load_supplement();
         it.load_clojure_string();
+        it.load_mino_store();
         it
     }
 
@@ -40,7 +44,8 @@ impl Interp {
     pub fn new_bare() -> Self {
         let root = Env::root();
         crate::prim::install_core(&root);
-        Interp { root, core_failures: Vec::new() }
+        crate::store::install(&root);
+        Interp { root, core_failures: Vec::new(), next_store_id: 0 }
     }
 
     /// Load the bundled `lib/clojure/string.clj` verbatim (copied to
@@ -96,6 +101,111 @@ impl Interp {
         // seed the alias the gate corpus uses. Ports the `:as` alias registered
         // by mino's require.
         self.root.alias("str", "clojure.string");
+    }
+
+    /// Load `clojure/instant.clj` (copied verbatim): the ISO-8601 parser
+    /// behind the `#inst "..."` reader literal. `#inst "S"` expands to
+    /// `(clojure.instant/read-instant-date S)`, which resolves here via the
+    /// ns-fallback. Pure Clojure (atop `parse-long`/`subs`/`mod`/`quot`), so
+    /// load-as-data is lazier than a native inst prim. store_test's temporal
+    /// reads (`as-of`/`since` by `#inst`) need it.
+    fn load_clojure_instant(&mut self) {
+        let src = include_str!("../../resources/clojure/instant.clj");
+        let env = self.root.clone();
+        for form in crate::reader::read_all_resilient(src).into_iter().flatten() {
+            if let Err(t) = self.eval(&form, &env) {
+                let summary = form_summary(&form);
+                self.core_failures
+                    .push((summary, crate::printer::print_str(&t.0)));
+            }
+        }
+        self.root.alias("instant", "clojure.instant");
+    }
+
+    /// Load `clojure/set.clj` (copied verbatim) and register the `set` alias so
+    /// `set/union` etc. resolve. `mino.store` does `(require '[clojure.set :as
+    /// set])`. It is pure Clojure (union/intersection/difference/select/...
+    /// atop `into`/`disj`/`reduce`), so loading it as data is lazier than
+    /// porting each fn as a prim. Runs after core.clj + supplement.
+    fn load_clojure_set(&mut self) {
+        // clojure.set's `select`/`index`/`join` shadow bare names already
+        // bound (clojure.string/join, etc.) in the flat env. Capture them,
+        // let set.clj overwrite, then move set's public fns to `clojure.set/X`
+        // (reached by the `set/X` alias) and restore the shadowed bare names.
+        const SET_FNS: &[&str] = &[
+            "union", "intersection", "difference", "select", "project",
+            "rename-keys", "rename", "index", "map-invert", "join",
+            "subset?", "superset?",
+        ];
+        let shadowed: Vec<(&str, Option<Value>)> = SET_FNS
+            .iter()
+            .map(|n| (*n, self.root.get(&Symbol::plain(n))))
+            .collect();
+        let src = include_str!("../../resources/clojure/set.clj");
+        let env = self.root.clone();
+        for form in crate::reader::read_all_resilient(src).into_iter().flatten() {
+            if let Err(t) = self.eval(&form, &env) {
+                let summary = form_summary(&form);
+                self.core_failures
+                    .push((summary, crate::printer::print_str(&t.0)));
+            }
+        }
+        // Publish each set fn under its qualified key, then restore the bare
+        // names that existed before (so clojure.string/join etc. survive).
+        for (name, prev) in shadowed {
+            if let Some(v) = self.root.get(&Symbol::plain(name)) {
+                self.root.set(Symbol::namespaced("clojure.set", name), v);
+            }
+            if let Some(prev) = prev {
+                self.root.set(Symbol::plain(name), prev);
+            }
+        }
+        self.root.alias("set", "clojure.set");
+    }
+
+    /// Load mino's bundled `lib/mino/store.clj` (copied verbatim) as data on
+    /// top of the store C prims (`crate::store::install`) + clojure.set. The
+    /// port has a flat env, so every `store/X` used by the corpus resolves via
+    /// the `mino.store/X` -> bare-`X` ns-fallback (see `Env::get`). Runs last,
+    /// after clojure.set (store.clj `(require '[clojure.set :as set])`). Ports
+    /// `mino_install_mino_store` (store.clj loaded as a bundled lib).
+    fn load_mino_store(&mut self) {
+        self.load_clojure_instant();
+        self.load_clojure_set();
+        // Capture the clojure.core fns that store.clj's PUBLIC defs would
+        // shadow in the flat env (`merge`, `read`). store.clj is namespaced
+        // in mino, so bare `merge`/`read` stay clojure.core's; the flat port
+        // must restore them after load (same pattern as clojure.string's
+        // reverse/replace). store.clj itself captures core's merge as the
+        // private `map-merge`, so its internals are unaffected.
+        let core_merge = self.root.get(&Symbol::plain("merge"));
+        let core_read = self.root.get(&Symbol::plain("read"));
+        let src = include_str!("../../resources/mino/store.clj");
+        let env = self.root.clone();
+        for form in crate::reader::read_all_resilient(src).into_iter().flatten() {
+            if let Err(t) = self.eval(&form, &env) {
+                let summary = form_summary(&form);
+                self.core_failures
+                    .push((summary, crate::printer::print_str(&t.0)));
+            }
+        }
+        // Move store's colliding public fns to their qualified keys (reached by
+        // `store/merge` / `mino.store/read` via the ns-fallback) and restore
+        // the bare names to clojure.core.
+        for name in ["merge", "read"] {
+            if let Some(v) = self.root.get(&Symbol::plain(name)) {
+                self.root.set(Symbol::namespaced("mino.store", name), v);
+            }
+        }
+        if let Some(v) = core_merge {
+            self.root.set(Symbol::plain("merge"), v);
+        }
+        if let Some(v) = core_read {
+            self.root.set(Symbol::plain("read"), v);
+        }
+        // `(require '[mino.store :as store])` in store_test is a flat no-op, so
+        // seed the alias the corpus uses.
+        self.root.alias("store", "mino.store");
     }
 
     /// Read and eval mino's bundled `core.clj` (embedded via include_str!) form
@@ -210,6 +320,15 @@ impl Interp {
     (if (next s) (recur (next s)) (first s))))
 (defn mapcat [f & colls] (apply concat (apply map f colls)))
 (defn remove [pred coll] (filter (fn [x] (not (pred x))) coll))
+;; The port has no chunked seqs, so chunked-seq? is always false; keep/map/
+;; etc. in core.clj then take their per-element branch. (mino ships this as a
+;; C prim; a false stub is lazier and correct for the non-chunked port.)
+(defn chunked-seq? [x] false)
+;; declare: forward-declare names (each becomes an unbound def until its real
+;; definition lands). mino ships this as a special form; a def-per-name macro
+;; is the lazy stand-in. store.clj uses `(declare pull-entity)`.
+(defmacro declare [& names]
+  (cons 'do (map (fn [n] (list 'def n)) names)))
 "#;
         let env = self.root.clone();
         for slot in crate::reader::read_all_resilient(SUPPLEMENT) {
@@ -221,6 +340,13 @@ impl Interp {
                 }
             }
         }
+    }
+
+    /// Resolve a Var's current value: look up its symbol in the root env,
+    /// falling back to the bare name (the flat-env var model). Used by
+    /// `deref` on a Var and by calling a Var. Ports var-root-deref.
+    pub fn var_value(&self, sym: &Symbol) -> Option<Value> {
+        self.root.get(sym)
     }
 
     /// Read ALL forms from `src`, eval each in the root env, return the last.
@@ -252,7 +378,8 @@ impl Interp {
             | Value::Prim(_)
             | Value::Regex(_)
             | Value::Var(_)
-            | Value::Atom(_) => Ok(form.clone()),
+            | Value::Atom(_)
+            | Value::Store(_) => Ok(form.clone()),
 
             // A `recur` signal only appears here when re-evaluated as data
             // (it never occurs in source); pass it through so the loop/fn
@@ -340,6 +467,18 @@ impl Interp {
                     // ponytail: eager lazy-seq; real deferral lands in Phase 5.
                     "lazy-seq" => return self.eval_do(rest, env),
                     "quote" => return self.eval_quote(rest),
+                    // `(var sym)` / `#'sym`: return the Var identity for `sym`.
+                    // The port has a flat env, so a Var just carries the
+                    // symbol; `deref`/call resolve it in root. Ports the `var`
+                    // special form.
+                    "var" => {
+                        let (arg, _) = pop(rest);
+                        let arg = arg.ok_or_else(|| throw_str("var requires one argument"))?;
+                        return match &arg {
+                            Value::Sym(s) => Ok(Value::Var(s.clone())),
+                            _ => Err(throw_str("var requires a symbol")),
+                        };
+                    }
                     "def" => {
                         let args = collect(rest);
                         return special::eval_def(self, &args, env);
@@ -732,6 +871,7 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Regex(_) => "regex",
         Value::Var(_) => "var",
         Value::Atom(_) => "atom",
+        Value::Store(_) => "store",
         Value::Recur(_) => "recur",
     }
 }
@@ -790,6 +930,10 @@ mod tests {
             msg.contains("lazy-map-1")            // lazy seqs (Phase 5)
                 || msg.contains("realized?")      // delays (Phase 5.3)
                 || msg.contains("atom")           // atoms (Phase 5.3)
+                || msg.contains("alter-var-root") // real vars (Phase 4); the
+                                                  // #inst data-reader setup now
+                                                  // READS (#' support) then
+                                                  // fails on alter-var-root
                 || msg.contains("-empty-queue")   // persistent queue (out of scope)
                 || msg.contains("read error: unsupported reader dispatch macro #\"") // regex (Phase 5.2)
                 || msg.contains("read error: unsupported reader dispatch macro #'")  // var-quote (Phase 4)

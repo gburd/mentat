@@ -192,12 +192,28 @@ fn conj1(coll: &Value, x: &Value) -> Result<Value, Throw> {
         Value::Vector(v) => Ok(Value::Vector(Gc::new(v.conj(x.clone())))),
         Value::Set(s) => Ok(Value::Set(Gc::new(s.conj(x.clone())))),
         Value::Map(m) => {
-            // x must be a [k v] pair (vector or 2-list).
-            let pair = to_vec(x)?;
-            if pair.len() != 2 {
-                return Err(throw_str("conj on a map requires a [k v] pair"));
+            // Clojure conj on a map accepts: another map (merge), a [k v]
+            // vector/2-list (add), or nil (no-op).
+            match x {
+                Value::Nil => Ok(Value::Map(m.clone())),
+                Value::Map(other) => {
+                    let mut out = crate::collections::map::PMap::empty();
+                    for (k, v) in m.entries() {
+                        out = out.assoc(k.clone(), v.clone());
+                    }
+                    for (k, v) in other.entries() {
+                        out = out.assoc(k.clone(), v.clone());
+                    }
+                    Ok(Value::Map(Gc::new(out)))
+                }
+                _ => {
+                    let pair = to_vec(x)?;
+                    if pair.len() != 2 {
+                        return Err(throw_str("conj on a map requires a [k v] pair"));
+                    }
+                    Ok(Value::Map(Gc::new(m.assoc(pair[0].clone(), pair[1].clone()))))
+                }
             }
-            Ok(Value::Map(Gc::new(m.assoc(pair[0].clone(), pair[1].clone()))))
         }
         other => Err(throw_str(&format!(
             "cannot conj onto: {}",
@@ -468,6 +484,13 @@ pub fn hash_set(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 // lexicographically. Mixed uncomparable types -> error.
 fn default_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, Throw> {
     use std::cmp::Ordering;
+    // nil sorts before everything (Clojure: (compare nil x) < 0, (compare x nil) > 0).
+    match (a, b) {
+        (Value::Nil, Value::Nil) => return Ok(Ordering::Equal),
+        (Value::Nil, _) => return Ok(Ordering::Less),
+        (_, Value::Nil) => return Ok(Ordering::Greater),
+        _ => {}
+    }
     let as_f = |v: &Value| match v {
         Value::Int(n) => Some(*n as f64),
         Value::Float(x) => Some(*x),
@@ -481,6 +504,20 @@ fn default_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, Throw> {
         (Value::Char(x), Value::Char(y)) => Ok(x.cmp(y)),
         (Value::Keyword(x), Value::Keyword(y)) => Ok(x.to_string().cmp(&y.to_string())),
         (Value::Sym(x), Value::Sym(y)) => Ok(x.to_string().cmp(&y.to_string())),
+        (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
+        // Vectors compare by length first, then element-wise (Clojure semantics).
+        (Value::Vector(x), Value::Vector(y)) => {
+            if x.len() != y.len() {
+                return Ok(x.len().cmp(&y.len()));
+            }
+            for i in 0..x.len() {
+                let ord = default_cmp(x.nth(i).unwrap(), y.nth(i).unwrap())?;
+                if ord != Ordering::Equal {
+                    return Ok(ord);
+                }
+            }
+            Ok(Ordering::Equal)
+        }
         _ if eq_val(a, b) => Ok(Ordering::Equal),
         _ => Err(throw_str(&format!(
             "cannot compare {} and {}",
@@ -488,6 +525,21 @@ fn default_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, Throw> {
             crate::printer::print_str(b)
         ))),
     }
+}
+
+/// `(compare a b)` -> -1/0/1. The default total order used by `sort`. nil
+/// sorts first; numbers by magnitude; strings/chars/keywords/symbols
+/// lexicographically; vectors by length then element-wise. Ports `prim_compare`.
+pub fn compare(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let (a, b) = match args {
+        [a, b] => (a, b),
+        _ => return Err(throw_str("compare requires two arguments")),
+    };
+    Ok(Value::Int(match default_cmp(a, b)? {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }))
 }
 
 /// `(sort coll)` / `(sort cmp coll)`: cmp is either a 2-arg predicate (truthy =

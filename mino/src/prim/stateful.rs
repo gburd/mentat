@@ -159,10 +159,13 @@ pub fn atom(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// `(deref ref)` / `@ref` — the current value. Only atoms are supported now;
 /// delays/futures/vars route elsewhere. Ports the atom arm of `prim_deref`.
 /// ponytail: atoms only; add delay/future/var arms when those land (Phase 4+).
-pub fn deref(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn deref(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     match args {
         [a] => match a {
             Value::Atom(cell) => Ok(cell.borrow().val.clone()),
+            Value::Store(cell) => Ok(crate::store::store_deref(cell)),
+            // Deref a Var to its current root value (`@#'x`, `@(resolve 's)`).
+            Value::Var(sym) => Ok(it.var_value(sym).unwrap_or(Value::Nil)),
             _ => Err(throw_classified(
                 "eval/type",
                 "MTY001",

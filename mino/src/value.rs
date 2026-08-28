@@ -68,6 +68,12 @@ pub enum Value {
     // Ports MINO_ATOM (prim/stateful.c). The port is single-threaded, so
     // `swap!` is a plain read-compute-store (no CAS loop needed).
     Atom(Gc<gc::GcCell<crate::prim::stateful::AtomState>>),
+    // An EAVT store connection (`mino.store/open`). An identity cell holding
+    // the current immutable db value plus a durable path (None = in-memory),
+    // a monotonic print id, and a watches map. Equality/hash are by identity
+    // (Clojure: two distinct stores are never `=`). Ports MINO_STORE
+    // (prim/store.c). Durability (WAL/snapshot) is Phase 7.
+    Store(Gc<gc::GcCell<crate::store::StoreState>>),
     // later phases extend this enum
 }
 

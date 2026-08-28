@@ -41,7 +41,11 @@ pub fn run_corpus_file(path: &str, skip_deftests: &[&str]) -> (usize, usize) {
                 let form = read_one(form_src)
                     .unwrap_or_else(|e| panic!("deftest {name}: read error: {e:?}"))
                     .0;
+                let before = (passed, failed);
                 run_deftest(&mut it, &form, &mut passed, &mut failed);
+                if std::env::var("CORPUS_VERBOSE").is_ok() && failed > before.1 {
+                    eprintln!("FAIL {name}: {} failed", failed - before.1);
+                }
             }
             // Bare (require ...) / (ns ...) etc.: no-op (no test.clj loaded).
             Some("require") | Some("ns") | Some("in-ns") => {}
@@ -153,23 +157,48 @@ fn binding_pairs(bindings: &Value) -> Vec<(Value, Value)> {
         .collect()
 }
 
-/// `(is EXPR)` — pass iff EXPR is truthy, evaluated in `env`. `(is (= A B))`
-/// uses the port's `=`. `(is (thrown? EXPR))` — pass iff EXPR throws.
+/// `(is EXPR [msg])` — pass iff EXPR is truthy, evaluated in `env`.
+///
+/// Mirrors mino's `clojure.test/assert-expr` dispatch for the two operator
+/// shapes the store corpus uses:
+///  - `(= a b ...)`: compare ONLY the first two operands (mino's `assert-expr
+///    '=` binds just `a` and `b`; any trailing arg, e.g. a stray doc string, is
+///    ignored). Evaluating the whole `(= a b "msg")` would be `false`.
+///  - `(thrown? [Type] body...)`: pass iff evaluating the body throws. A
+///    leading type symbol is documentation-only (mino has no class hierarchy).
 fn run_is(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, failed: &mut usize) {
     let args = rest_elems(form);
     let Some(expr) = args.first() else {
         *failed += 1;
         return;
     };
-    // (is (thrown? EXPR)): pass iff evaluating EXPR throws.
+    // (is (thrown? [Type] body...)): pass iff evaluating the body throws.
     if let Some("thrown?") = list_head(expr) {
-        let inner = rest_elems(expr);
-        let threw = match inner.first() {
-            Some(e) => it.eval(e, env).is_err(),
-            None => false,
-        };
+        let mut inner = rest_elems(expr);
+        // Drop a leading bare type symbol (documentation-only in mino).
+        if matches!(inner.first(), Some(Value::Sym(s)) if s.ns.is_none()) && inner.len() > 1 {
+            inner.remove(0);
+        }
+        let mut threw = false;
+        for e in &inner {
+            if it.eval(e, env).is_err() {
+                threw = true;
+                break;
+            }
+        }
         tally(threw, passed, failed);
         return;
+    }
+    // (is (= a b ...)): compare only the first two operands.
+    if let Some("=") = eq_head(expr) {
+        let ops = rest_elems(expr);
+        if ops.len() >= 2 {
+            match (it.eval(&ops[0], env), it.eval(&ops[1], env)) {
+                (Ok(a), Ok(b)) => tally(crate::collections::hashing::eq_val(&a, &b), passed, failed),
+                _ => *failed += 1,
+            }
+            return;
+        }
     }
     match it.eval(expr, env) {
         Ok(v) => tally(v.is_truthy(), passed, failed),
@@ -406,6 +435,18 @@ fn list_head(v: &Value) -> Option<&'static str> {
                 "let*" => Some("let*"),
                 _ => None,
             };
+        }
+    }
+    None
+}
+
+/// True if `v` is a `(= ...)` call form; returns its head name.
+fn eq_head(v: &Value) -> Option<&'static str> {
+    if let Value::Cons(cell) = v {
+        if let Value::Sym(s) = &cell.0 {
+            if s.ns.is_none() && &*s.name == "=" {
+                return Some("=");
+            }
         }
     }
     None

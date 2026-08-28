@@ -16,5 +16,6 @@ pub mod env;
 pub mod error;
 pub mod eval;
 pub mod prim;
+pub mod store;
 
 pub mod corpus;

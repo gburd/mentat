@@ -110,6 +110,15 @@ fn print_into(s: &mut String, v: &Value) {
             print_into(s, &cell.borrow().val);
             s.push(']');
         }
+        Value::Store(cell) => {
+            // #store[0xN VAL]: N is the monotonic per-interp counter in hex.
+            let st = cell.borrow();
+            s.push_str("#store[0x");
+            s.push_str(&format!("{:x}", st.id));
+            s.push(' ');
+            print_into(s, &st.val);
+            s.push(']');
+        }
     }
 }
 

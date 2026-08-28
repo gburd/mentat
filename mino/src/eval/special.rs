@@ -5,7 +5,6 @@ use crate::env::Env;
 use crate::error::{throw_str, Throw};
 use crate::eval::func;
 use crate::eval::Interp;
-use crate::symbol::Symbol;
 use crate::value::Value;
 
 /// `(def name)` / `(def name value)`. Binds `name` in the root/current-ns env
@@ -34,7 +33,7 @@ pub fn eval_def(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
         let value = it.eval(value_form, env)?;
         it.root.set(name.clone(), value);
     }
-    Ok(Value::Var(Symbol::namespaced("user", &name.name)))
+    Ok(Value::Var(crate::symbol::Symbol::namespaced("user", &name.name)))
 }
 
 /// `(fn ...)` / `(fn* ...)`: build a closure over the calling env.
