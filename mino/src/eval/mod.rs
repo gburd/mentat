@@ -8,6 +8,7 @@ use crate::error::{throw_str, Throw};
 use crate::reader::read_all;
 use crate::value::Value;
 
+pub mod bindings;
 pub mod func;
 pub mod special;
 
@@ -48,12 +49,41 @@ impl Interp {
             | Value::Prim(_)
             | Value::Var(_) => Ok(form.clone()),
 
+            // A `recur` signal only appears here when re-evaluated as data
+            // (it never occurs in source); pass it through so the loop/fn
+            // trampoline sees it. Non-tail eval sites use `eval_value`, which
+            // rejects it.
+            Value::Recur(_) => Ok(form.clone()),
+
             // The empty list self-evaluates to itself (Clojure: `()` => `()`),
             // it is NOT an empty call.
             Value::EmptyList => Ok(form.clone()),
 
-            // Phase 2: eval collection elements (needs fn calls first).
-            Value::Vector(_) | Value::Map(_) | Value::Set(_) => Ok(form.clone()),
+            // Collection literals evaluate their elements (Clojure semantics:
+            // `[a b]` => a vector of the *values* of a and b).
+            Value::Vector(v) => {
+                let mut out = crate::collections::vector::PVec::empty();
+                for e in v.iter() {
+                    out = out.conj(self.eval_value(e, env)?);
+                }
+                Ok(Value::Vector(gc::Gc::new(out)))
+            }
+            Value::Map(m) => {
+                let mut out = crate::collections::map::PMap::empty();
+                for (k, val) in m.entries() {
+                    let ek = self.eval_value(k, env)?;
+                    let ev = self.eval_value(val, env)?;
+                    out = out.assoc(ek, ev);
+                }
+                Ok(Value::Map(gc::Gc::new(out)))
+            }
+            Value::Set(s) => {
+                let mut out = crate::collections::map::PSet::empty();
+                for e in s.iter() {
+                    out = out.conj(self.eval_value(e, env)?);
+                }
+                Ok(Value::Set(gc::Gc::new(out)))
+            }
 
             Value::Sym(sym) => env
                 .get(sym)
@@ -61,6 +91,17 @@ impl Interp {
 
             Value::Cons(_) => self.eval_list(form, env),
         }
+    }
+
+    /// Evaluate `form` for its value at a NON-tail position: a stray `recur`
+    /// (`Value::Recur`) here is an error ("recur must be in tail position").
+    /// Ports mino's `eval_value`.
+    pub fn eval_value(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+        let v = self.eval(form, env)?;
+        if matches!(v, Value::Recur(_)) {
+            return Err(throw_str("recur must be in tail position"));
+        }
+        Ok(v)
     }
 
     fn eval_list(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
@@ -73,7 +114,7 @@ impl Interp {
             if sym.ns.is_none() {
                 match &*sym.name {
                     "if" => return self.eval_if(rest, env),
-                    "do" => return self.eval_implicit_do(rest, env),
+                    "do" => return self.eval_do(rest, env),
                     "quote" => return self.eval_quote(rest),
                     "def" => {
                         let args = collect(rest);
@@ -83,13 +124,36 @@ impl Interp {
                         let args = collect(rest);
                         return special::eval_fn(self, &args, env);
                     }
+                    "let" | "let*" => {
+                        let args = collect(rest);
+                        return bindings::eval_let(self, &args, env);
+                    }
+                    "loop" | "loop*" => {
+                        let args = collect(rest);
+                        return bindings::eval_loop(self, &args, env);
+                    }
+                    "letfn*" => {
+                        let args = collect(rest);
+                        return bindings::eval_letfn_star(self, &args, env);
+                    }
+                    "recur" => {
+                        // Eval args at non-tail (they must be values), then
+                        // return the recur signal for the loop/fn trampoline.
+                        let mut vals = Vec::new();
+                        let mut cur = rest;
+                        while let Value::Cons(cell) = cur {
+                            vals.push(self.eval_value(&cell.0, env)?);
+                            cur = &cell.1;
+                        }
+                        return Ok(Value::Recur(gc::Gc::new(vals)));
+                    }
                     _ => {}
                 }
             }
         }
 
         // Application: eval the head, then args left-to-right, then apply.
-        let callee = self.eval(head, env)?;
+        let callee = self.eval_value(head, env)?;
         if !matches!(callee, Value::Fn(_) | Value::Prim(_)) {
             return Err(throw_str(&format!(
                 "not callable: {}",
@@ -99,7 +163,7 @@ impl Interp {
         let mut args = Vec::new();
         let mut cur = rest;
         while let Value::Cons(cell) = cur {
-            args.push(self.eval(&cell.0, env)?);
+            args.push(self.eval_value(&cell.0, env)?);
             cur = &cell.1;
         }
         func::apply(self, &callee, &args)
@@ -114,7 +178,9 @@ impl Interp {
         let then_form = then_form.ok_or_else(|| throw_str("if: too few forms"))?;
         let (else_form, _) = pop(&tail);
 
-        if self.eval(&cond, env)?.is_truthy() {
+        // Condition is a value (non-tail); branches are tail positions and
+        // may legitimately produce a `recur` signal, so use plain `eval`.
+        if self.eval_value(&cond, env)?.is_truthy() {
             self.eval(&then_form, env)
         } else {
             match else_form {
@@ -125,15 +191,22 @@ impl Interp {
     }
 
     /// `(do e1 e2 ... en)`: eval each, return the last; empty yields nil.
-    /// Ports `eval_implicit_do`.
-    fn eval_implicit_do(&mut self, body: &Value, env: &Env) -> Result<Value, Throw> {
-        let mut cur = body;
-        let mut last = Value::Nil;
-        while let Value::Cons(cell) = cur {
-            last = self.eval(&cell.0, env)?;
-            cur = &cell.1;
+    /// Ports `eval_implicit_do`. Non-last forms are values (reject `recur`);
+    /// the last form is tail position (propagates a `recur` signal).
+    pub fn eval_implicit_do(&mut self, body: &[Value], env: &Env) -> Result<Value, Throw> {
+        let Some((last, init)) = body.split_last() else {
+            return Ok(Value::Nil);
+        };
+        for form in init {
+            self.eval_value(form, env)?;
         }
-        Ok(last)
+        self.eval(last, env)
+    }
+
+    /// The `(do ...)` special form: body is the cons tail.
+    fn eval_do(&mut self, body: &Value, env: &Env) -> Result<Value, Throw> {
+        let forms = collect(body);
+        self.eval_implicit_do(&forms, env)
     }
 
     /// `(quote x)`: return x unevaluated.

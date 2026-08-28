@@ -81,6 +81,9 @@ fn print_into(s: &mut String, v: &Value) {
         Value::Var(sym) => {
             let _ = write!(s, "#'{sym}");
         }
+        // Internal recur signal; never printed in normal use (matches mino's
+        // MINO_RECUR having only a diagnostic print form).
+        Value::Recur(_) => s.push_str("#<recur>"),
     }
 }
 

@@ -9,12 +9,13 @@ use crate::symbol::Symbol;
 use crate::value::Value;
 use gc::{Finalize, Gc, Trace};
 
-/// One arity clause: fixed params, an optional `& rest` param, and the body
-/// (an implicit `do`).
+/// One arity clause: the raw parameter vector (so full destructuring works),
+/// its fixed-arg count, whether it is variadic (`& rest`), and the body.
 #[derive(Trace, Finalize, Clone)]
 pub struct Arity {
-    pub params: Vec<Symbol>,
-    pub rest: Option<Symbol>,
+    pub params: Value,
+    pub fixed: usize,
+    pub variadic: bool,
     pub body: Vec<Value>,
 }
 
@@ -69,34 +70,27 @@ pub fn make_fn(args: &[Value], env: &Env) -> Result<Value, Throw> {
     })))
 }
 
-/// Parse one param vector + body into an `Arity`. `& rest` marks the
-/// variadic tail (the symbol after `&`).
+/// Parse one param vector + body into an `Arity`, recording the fixed-arg
+/// count and variadic flag for arity dispatch. The full param vector is kept
+/// so destructuring patterns (`[a [b c]]`, `{:keys [x]}`) bind correctly.
 fn parse_arity(params: &Value, body: &[Value]) -> Result<Arity, Throw> {
     let items = match params {
         Value::Vector(v) => v.iter().cloned().collect::<Vec<Value>>(),
         _ => return Err(throw_str("fn parameter list must be a vector")),
     };
-    let mut fixed = Vec::new();
-    let mut rest = None;
-    let mut i = 0;
-    while i < items.len() {
-        match &items[i] {
-            Value::Sym(s) if &*s.name == "&" => {
-                let after = items.get(i + 1);
-                match after {
-                    Some(Value::Sym(r)) => rest = Some(r.clone()),
-                    _ => return Err(throw_str("& must be followed by a symbol")),
-                }
-                break;
-            }
-            Value::Sym(s) => fixed.push(s.clone()),
-            _ => return Err(throw_str("fn parameters must be symbols")),
+    let mut fixed = 0usize;
+    let mut variadic = false;
+    for p in &items {
+        if matches!(p, Value::Sym(s) if s.ns.is_none() && &*s.name == "&") {
+            variadic = true;
+            break;
         }
-        i += 1;
+        fixed += 1;
     }
     Ok(Arity {
-        params: fixed,
-        rest,
+        params: params.clone(),
+        fixed,
+        variadic,
         body: body.to_vec(),
     })
 }
@@ -115,16 +109,16 @@ pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, T
 
 fn apply_closure(it: &mut Interp, closure: &Closure, args: &[Value]) -> Result<Value, Throw> {
     // Pick the arity whose fixed count matches exactly, else a variadic one
-    // whose fixed count args can cover.
+    // whose fixed count the args can cover.
     let arity = closure
         .arities
         .iter()
-        .find(|a| a.rest.is_none() && a.params.len() == args.len())
+        .find(|a| !a.variadic && a.fixed == args.len())
         .or_else(|| {
             closure
                 .arities
                 .iter()
-                .find(|a| a.rest.is_some() && args.len() >= a.params.len())
+                .find(|a| a.variadic && args.len() >= a.fixed)
         })
         .ok_or_else(|| {
             throw_str(&format!(
@@ -133,21 +127,28 @@ fn apply_closure(it: &mut Interp, closure: &Closure, args: &[Value]) -> Result<V
             ))
         })?;
 
-    let frame = closure.env.child();
-    for (p, v) in arity.params.iter().zip(args) {
-        frame.set(p.clone(), v.clone());
+    // Recur trampoline: bind params, run the body; if the body produced a
+    // `Recur` signal, rebind this arity's params to the new args and iterate
+    // in this Rust `for`-free loop — constant stack, no recursive Rust call.
+    let mut cur_args: Vec<Value> = args.to_vec();
+    loop {
+        let frame = closure.env.child();
+        crate::eval::bindings::bind_params(
+            it,
+            &frame,
+            &arity.params,
+            &cur_args,
+            crate::eval::bindings::Ctx::Fn,
+        )?;
+        let result = it.eval_implicit_do(&arity.body, &frame)?;
+        match &result {
+            Value::Recur(new_args) => {
+                // recur re-enters this arity's param loop with new args.
+                cur_args = (**new_args).clone();
+            }
+            _ => return Ok(result),
+        }
     }
-    if let Some(rest) = &arity.rest {
-        // `& rest` binds a list of the extra args (mino: list?, empty -> nil).
-        frame.set(rest.clone(), vec_to_list(&args[arity.params.len()..]));
-    }
-
-    // Body is an implicit do.
-    let mut last = Value::Nil;
-    for form in &arity.body {
-        last = it.eval(form, &frame)?;
-    }
-    Ok(last)
 }
 
 /// Collect a proper cons list into a Vec (stops at nil / improper tail).
@@ -159,20 +160,6 @@ fn list_to_vec(list: &Value) -> Vec<Value> {
         cur = &cell.1;
     }
     out
-}
-
-/// Build the `& rest` binding: a proper list of the extra args (terminating
-/// in the empty-list value), or `nil` when there are none (matching mino:
-/// `((fn [a & r] r) 1)` => nil, `(list? ...)` on a non-empty rest => true).
-fn vec_to_list(items: &[Value]) -> Value {
-    if items.is_empty() {
-        return Value::Nil;
-    }
-    let mut acc = Value::EmptyList;
-    for v in items.iter().rev() {
-        acc = Value::Cons(Gc::new((v.clone(), acc)));
-    }
-    acc
 }
 
 #[cfg(test)]

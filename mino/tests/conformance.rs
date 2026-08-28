@@ -76,3 +76,48 @@ fn are_corpus_passes() {
     assert!(passed > 0, "no assertions ran");
     assert_eq!(failed, 0, "{failed} are_test assertions failed");
 }
+
+/// Task 3.1 gate: binding_test.clj. Only the deftests that need nothing beyond
+/// def / let / loop / recur / destructuring are kept. Everything gated on
+/// later phases is skipped with the phase noted:
+///   - dynamic vars + `binding` + bound?/thread-bound?/with-bindings*/
+///     push+pop-thread-bindings + `*ns*` thread-binding: Phase 4 (dynamic
+///     vars, namespaces, `ns`/`in-ns`/`alias`).
+///   - `try`/`catch`/`throw`/`finally` + `eval`: Task 3.2 (control) / Phase 4.
+/// The kept deftests (def-then-read, def-redefine, let-binding,
+/// var-redef-closure) exercise def + let + sequential/testing only.
+const BINDING_SKIP: &[&str] = &[
+    // dynamic-var `binding` + `re-find`/`eval`/`try` (Phase 4 + Task 3.2).
+    "binding-on-dynamic-var-rebinds",
+    "binding-on-non-dynamic-var-throws",
+    // bound?/thread-bound?/with-bindings*/push+pop + dynamic vars (Phase 4).
+    "bound?-checks-root-or-thread",
+    "thread-bound?-checks-only-thread",
+    "with-bindings-installs-and-pops",
+    "push-pop-thread-bindings-pair",
+    "with-bindings-snapshot-via-get-thread-bindings",
+    "binding-frame-unwinds-on-throw",
+    // var-identity binding across ns/alias spellings (Phase 4 namespaces).
+    "qualified-binding-visible-to-unqualified-reader",
+    "alias-binding-visible-to-unqualified-reader",
+    "qualified-binding-visible-via-qualified-read",
+    "nested-qualified-bindings-stack-and-restore",
+    "core-var-qualified-binding-bare-read",
+    "core-var-bare-binding-qualified-read",
+    "qualified-binding-frame-unwinds-on-throw",
+    // *ns* thread-binding save/restore across in-ns (Phase 4 namespaces).
+    "binding-ns-restore-after-in-ns",
+    "binding-ns-body-reflects-in-ns-then-restores",
+    "binding-ns-nested-restore",
+    "binding-ns-restores-on-throw",
+];
+
+#[test]
+fn binding_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/binding_test.clj"),
+        BINDING_SKIP,
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} binding_test assertions failed");
+}

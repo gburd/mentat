@@ -112,6 +112,9 @@ fn hash32(v: &Value) -> u32 {
         Value::Fn(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         Value::Prim(p) => hash_identity(fnv_mix(h, 0x0b), p.0 as usize),
         Value::Var(sym) => fnv_bytes(fnv_mix(h, 0x06), sym.to_string().as_bytes()),
+        // Internal recur signal: identity hash; it never enters a real
+        // collection, but the match must stay exhaustive.
+        Value::Recur(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
     }
 }
 

@@ -34,6 +34,11 @@ pub enum Value {
     // var cell (root binding, metadata, dynamic) lands with namespaces in
     // Phase 4; Task 1.2 only needs its identity for def's return value.
     Var(crate::symbol::Symbol),
+    // Internal `recur` signal (mirrors mino's MINO_RECUR value type). Produced
+    // ONLY by the `recur` special form and consumed by the `loop`/`fn`
+    // trampolines; it must never escape to user code. `eval_value` (non-tail
+    // eval sites) rejects it as "recur must be in tail position".
+    Recur(Gc<Vec<Value>>),
     // later phases extend this enum
 }
 
