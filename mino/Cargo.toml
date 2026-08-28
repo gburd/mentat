@@ -1,0 +1,12 @@
+[package]
+name = "mino-rs"
+version = "0.0.0"
+edition = "2021"
+description = "Pure-Rust port of the mino Clojure-dialect interpreter (reader, evaluator, persistent collections, core.clj stdlib, EAVT store). Reused by Mentat and pg_mentat."
+license = "MIT"
+
+[dependencies]
+gc = { version = "0.5", features = ["derive"] }
+
+[dev-dependencies]
+# conformance harness runs mino's own .clj corpus; no framework deps
