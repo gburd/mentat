@@ -139,7 +139,7 @@ turn on in Phase 5.5.
 - Produces: `pub fn nil() -> Value`, `Value::is_truthy(&self) -> bool` (only
   `Nil` and `Bool(false)` are falsy — port from `MINO_IS_NIL`/bool semantics).
 
-- [x] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -152,12 +152,12 @@ fn truthiness_matches_clojure() {
 }
 ```
 
-- [x] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p mino-rs truthiness_matches_clojure`
 Expected: FAIL (Value/is_truthy not defined).
 
-- [x] **Step 3: Implement `Value`, `is_truthy`, `gc_str` helper**
+- [ ] **Step 3: Implement `Value`, `is_truthy`, `gc_str` helper**
 
 ```rust
 // value.rs
@@ -181,12 +181,12 @@ impl Value {
 fn gc_str(s: &str) -> Gc<String> { Gc::new(s.to_string()) }
 ```
 
-- [x] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p mino-rs truthiness_matches_clojure`
 Expected: PASS.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add mino-rs/Cargo.toml mino-rs/src/lib.rs mino-rs/src/value.rs
@@ -211,7 +211,7 @@ git commit -m "feat(mino-rs): crate skeleton + Value enum with Clojure truthines
   `edn/namespaceable_name.rs` in Mentat (already exists — reuse its rules for
   what a valid ns/name split is) rather than re-deriving.
 
-- [x] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -224,12 +224,12 @@ fn symbol_display_and_split() {
 }
 ```
 
-- [x] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p mino-rs symbol_display_and_split`
 Expected: FAIL.
 
-- [x] **Step 3: Implement `Symbol`**
+- [ ] **Step 3: Implement `Symbol`**
 
 ```rust
 use std::rc::Rc;
@@ -251,12 +251,12 @@ impl std::fmt::Display for Symbol {
 gc::unsafe_empty_trace!(Symbol);
 ```
 
-- [x] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p mino-rs symbol_display_and_split`
 Expected: PASS.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add mino-rs/src/symbol.rs mino-rs/src/lib.rs
@@ -284,7 +284,7 @@ git commit -m "feat(mino-rs): interned Symbol/keyword with namespaced names"
   literals, reader conditionals, radix literals (add in Phase 5 when a test
   needs them).
 
-- [x] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -300,12 +300,12 @@ fn read_print_roundtrip() {
 }
 ```
 
-- [x] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p mino-rs read_print_roundtrip`
 Expected: FAIL.
 
-- [x] **Step 3: Implement reader + printer**
+- [ ] **Step 3: Implement reader + printer**
 
 Port `read.c`'s scanner (skip whitespace + `;` comments + `,` as whitespace),
 dispatch on first non-ws char; port `print.c`'s switch. (Full code lives in the
@@ -313,12 +313,12 @@ port — this step's deliverable is the two files passing the round-trip.) Map
 reader macros: `'x`→`(quote x)`, `` `x ``→`(quasiquote x)`, `~x`→`(unquote x)`,
 `~@x`→`(unquote-splicing x)` (as `Cons` lists, matching mino).
 
-- [x] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p mino-rs read_print_roundtrip`
 Expected: PASS.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add mino-rs/src/reader.rs mino-rs/src/printer.rs mino-rs/src/lib.rs
@@ -347,7 +347,7 @@ git commit -m "feat(mino-rs): reader + printer with read/print round-trip"
 - **Port reference:** `eval/eval.c` (`eval_value`, `eval_implicit_do`),
   `special_registry.c` (`if`/`do`/`quote` inline handlers).
 
-- [x] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -361,24 +361,24 @@ fn eval_core_forms() {
 }
 ```
 
-- [x] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p mino-rs eval_core_forms`
 Expected: FAIL.
 
-- [x] **Step 3: Implement Env, Interp, eval of self-eval/symbol/if/do/quote**
+- [ ] **Step 3: Implement Env, Interp, eval of self-eval/symbol/if/do/quote**
 
 Self-evaluating: nil/bool/int/float/char/string/keyword/vector/map/set. Symbol:
 `env.get` else `Throw` "unable to resolve symbol". List: look at head; if special
 form (`if`/`do`/`quote`), dispatch; else Phase 1.2's call path (stub with an
 "unknown form" throw for now so the test above passes without fn calls).
 
-- [x] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p mino-rs eval_core_forms`
 Expected: PASS.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add mino-rs/src/env.rs mino-rs/src/eval/mod.rs mino-rs/src/error.rs mino-rs/src/lib.rs
@@ -405,7 +405,7 @@ git commit -m "feat(mino-rs): env + eval of if/do/quote/self-eval"
 - Produces: `prim::install_numeric(root: &Env)` registering `+ - * / = <`.
 - **Port reference:** `fn.c`, `defs.c`, `numeric.c`.
 
-- [x] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -420,24 +420,24 @@ fn fn_def_and_plus() {
 }
 ```
 
-- [x] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p mino-rs fn_def_and_plus`
 Expected: FAIL.
 
-- [x] **Step 3: Implement fn/def/apply + numeric prims + wire install into Interp::new**
+- [ ] **Step 3: Implement fn/def/apply + numeric prims + wire install into Interp::new**
 
 `Interp::new` builds root env then calls `prim::install_numeric(&root)`. Call
 path in `eval/mod.rs`: eval head; if `Fn`/`Prim`, eval args left-to-right, then
 `func::apply`. `+` mixes int/float per mino's `args_have_float` rule (all int →
 int, any float → float).
 
-- [x] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p mino-rs fn_def_and_plus`
 Expected: PASS.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add mino-rs/src/eval/func.rs mino-rs/src/eval/special.rs mino-rs/src/prim/ mino-rs/src/eval/mod.rs mino-rs/src/value.rs
@@ -465,7 +465,7 @@ git commit -m "feat(mino-rs): fn/def/apply, multi-arity, numeric primitives"
   `clojure.test` in Phase 4 once `defmacro` + core.clj land.
 - Produces: `run_corpus_file(path: &str) -> (usize passed, usize failed)`.
 
-- [x] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -481,25 +481,25 @@ fn arithmetic_corpus_passes() {
 }
 ```
 
-- [x] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `MINO_SRC=$HOME/src/mino cargo test -p mino-rs arithmetic_corpus_passes`
 Expected: FAIL (either harness missing, or genuine semantic gaps → fix the
 evaluator/prims until it passes; each gap is a real port bug).
 
-- [x] **Step 3: Implement the harness + close the gaps arithmetic_test needs**
+- [ ] **Step 3: Implement the harness + close the gaps arithmetic_test needs**
 
 `run_corpus_file(path, skip_deftests)` reads the file, evals each top-level
 form, recognizes `(deftest name ...)` (skipping any name in `skip_deftests`)
 and inner `(is ...)`/`(are ...)` assertions, tracks pass/fail. Fix whatever the
 kept `arithmetic_test.clj` deftests exercise that the port doesn't yet handle.
 
-- [x] **Step 4: Run to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
 Run: `MINO_SRC=$HOME/src/mino cargo test -p mino-rs arithmetic_corpus_passes`
 Expected: PASS.
 
-- [x] **Step 5: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add mino-rs/tests/conformance.rs mino-rs/resources/mino/test.clj
