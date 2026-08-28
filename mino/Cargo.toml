@@ -10,6 +10,12 @@ gc = { version = "0.5", features = ["derive"] }
 # fancy-regex: pure-Rust regex WITH backreferences, which mino's engine
 # supports (`(a+)\1`) and the `regex` crate cannot. See src/prim/regex.rs.
 fancy-regex = "0.14"
+# Numeric tower (Phase 5.5): arbitrary-precision int + exact rationals.
+# Pure Rust, NOT a port of mino's vendored imath.
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
 
 [dev-dependencies]
 # conformance harness runs mino's own .clj corpus; no framework deps

@@ -780,38 +780,6 @@ pub fn merge_with(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
 }
 
-// ---- inc / dec ---------------------------------------------------------
-
-/// `(inc x)`: mirrors `(+ x 1)` — Int overflows throw (Phase 5.5 bignum),
-/// Float increments.
-pub fn inc(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    match &args[0] {
-        Value::Int(n) => n
-            .checked_add(1)
-            .map(Value::Int)
-            .ok_or_else(|| throw_str("integer overflow")),
-        Value::Float(x) => Ok(Value::Float(x + 1.0)),
-        other => Err(throw_str(&format!(
-            "inc: not a number: {}",
-            crate::printer::print_str(other)
-        ))),
-    }
-}
-
-pub fn dec(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    match &args[0] {
-        Value::Int(n) => n
-            .checked_sub(1)
-            .map(Value::Int)
-            .ok_or_else(|| throw_str("integer overflow")),
-        Value::Float(x) => Ok(Value::Float(x - 1.0)),
-        other => Err(throw_str(&format!(
-            "dec: not a number: {}",
-            crate::printer::print_str(other)
-        ))),
-    }
-}
-
 // ---- type predicates ---------------------------------------------------
 
 fn pred(args: &[Value], f: impl Fn(&Value) -> bool) -> Result<Value, Throw> {
@@ -819,7 +787,16 @@ fn pred(args: &[Value], f: impl Fn(&Value) -> bool) -> Result<Value, Throw> {
 }
 
 pub fn number_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    pred(a, |v| matches!(v, Value::Int(_) | Value::Float(_)))
+    pred(a, |v| {
+        matches!(
+            v,
+            Value::Int(_)
+                | Value::Float(_)
+                | Value::Float32(_)
+                | Value::BigInt(_)
+                | Value::Ratio(_)
+        )
+    })
 }
 pub fn nil_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Nil))
@@ -861,16 +838,20 @@ pub fn fn_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Fn(_) | Value::Prim(_)))
 }
 pub fn int_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
+    // int? is the long tier ONLY (not bigint), matching mino's C prim.
     pred(a, |v| matches!(v, Value::Int(_)))
 }
 pub fn float_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    pred(a, |v| matches!(v, Value::Float(_)))
+    // float? is true for BOTH the 64-bit float and the 32-bit float32 tier.
+    pred(a, |v| matches!(v, Value::Float(_) | Value::Float32(_)))
 }
-/// `(NaN? x)`: true only for a float NaN. A one-liner numeric predicate that
-/// core.clj's `min`/`max` need; the rest of the numeric-coercion predicate
-/// family is Phase 5.
+/// `(NaN? x)`: true for a NaN in either float tier.
 pub fn nan_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    pred(a, |v| matches!(v, Value::Float(f) if f.is_nan()))
+    pred(a, |v| match v {
+        Value::Float(f) => f.is_nan(),
+        Value::Float32(f) => f.is_nan(),
+        _ => false,
+    })
 }
 pub fn boolean_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Bool(_)))
@@ -890,6 +871,11 @@ pub fn coll_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
 fn int_pred(args: &[Value], f: impl Fn(i64) -> bool, ctx: &str) -> Result<Value, Throw> {
     match args.first() {
         Some(Value::Int(n)) => Ok(bool_v(f(*n))),
+        // even?/odd? also accept bigints: test the low bit of the magnitude.
+        Some(Value::BigInt(b)) => {
+            use num_integer::Integer;
+            Ok(bool_v(f(if b.0.is_even() { 0 } else { 1 })))
+        }
         Some(other) => Err(throw_str(&format!(
             "{ctx}: not an integer: {}",
             crate::printer::print_str(other)
@@ -905,11 +891,26 @@ pub fn odd_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     int_pred(a, |n| n % 2 != 0, "odd?")
 }
 
-// zero?/pos?/neg? accept ints and floats (numeric.c).
+// zero?/pos?/neg? accept the whole numeric tower (numeric.c). The int and
+// float closures cover Int/Float; BigInt and Ratio dispatch on their sign,
+// Float32 on its double value.
 fn num_pred(args: &[Value], fi: fn(i64) -> bool, ff: fn(f64) -> bool, ctx: &str) -> Result<Value, Throw> {
+    use num_traits::Signed;
+    // Map a sign (-1/0/1) through the int predicate (which only tests the
+    // sign for pos?/neg?/zero?).
+    let by_sign = |s: i64| fi(s);
     match args.first() {
         Some(Value::Int(n)) => Ok(bool_v(fi(*n))),
         Some(Value::Float(x)) => Ok(bool_v(ff(*x))),
+        Some(Value::Float32(x)) => Ok(bool_v(ff(*x as f64))),
+        Some(Value::BigInt(b)) => {
+            let s = if b.0.is_positive() { 1 } else if b.0.is_negative() { -1 } else { 0 };
+            Ok(bool_v(by_sign(s)))
+        }
+        Some(Value::Ratio(r)) => {
+            let s = if r.0.is_positive() { 1 } else if r.0.is_negative() { -1 } else { 0 };
+            Ok(bool_v(by_sign(s)))
+        }
         Some(other) => Err(throw_str(&format!(
             "{ctx}: not a number: {}",
             crate::printer::print_str(other)

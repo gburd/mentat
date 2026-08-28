@@ -69,6 +69,21 @@ fn hash32(v: &Value) -> u32 {
         Value::Nil => fnv_mix(h, 0x01),
         Value::Bool(b) => fnv_mix(fnv_mix(h, 0x02), if *b { 1 } else { 0 }),
         Value::Int(n) => hash_i64_bytes(fnv_mix(h, 0x03), *n),
+        // BigInt hashes at the int tag when it fits i64 (so (= 1N 1) hashes
+        // alike); otherwise hashes its two's-complement magnitude bytes.
+        Value::BigInt(b) => {
+            use num_traits::ToPrimitive;
+            if let Some(ll) = b.0.to_i64() {
+                return hash_i64_bytes(fnv_mix(h, 0x03), ll);
+            }
+            fnv_bytes(fnv_mix(h, 0x03), &b.0.to_signed_bytes_le())
+        }
+        // Ratio hashes num and denom (reduced, denom != 1 -> never collides
+        // with the int tag).
+        Value::Ratio(r) => {
+            let hn = fnv_bytes(fnv_mix(h, 0x0e), &r.0.numer().to_signed_bytes_le());
+            fnv_bytes(hn, &r.0.denom().to_signed_bytes_le())
+        }
         Value::Float(d) => {
             // Integral, finite floats collapse to the int tag so (= 1 1.0)
             // hashes alike; everything else hashes its raw IEEE bytes.
@@ -80,6 +95,9 @@ fn hash32(v: &Value) -> u32 {
             }
             fnv_bytes(fnv_mix(h, 0x04), &d.to_le_bytes())
         }
+        // Float32 hashes its raw f32 bytes under its own tag; (= float float32)
+        // is false, so they need not hash alike.
+        Value::Float32(d) => fnv_bytes(fnv_mix(h, 0x10), &d.to_le_bytes()),
         Value::Char(c) => hash_u32_bytes(fnv_mix(h, 0x0f), *c as u32),
         Value::Str(s) => fnv_bytes(fnv_mix(h, 0x05), s.as_bytes()),
         // Symbols/keywords hash their full text (ns/name), matching mino's
@@ -154,8 +172,21 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
         (Value::Nil, Value::Nil) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
+        // Float32 is `=` only to another Float32 of equal value; never to a
+        // Float (double) or Int (matches mino: (= 5.0 (float 5)) is
+        // representation-strict via the value classes, though numerically ==).
+        (Value::Float32(x), Value::Float32(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
+        // Int and BigInt are `=` when numerically equal ((= 1 1N) is true).
+        (Value::BigInt(x), Value::BigInt(y)) => x.0 == y.0,
+        (Value::Int(x), Value::BigInt(y)) | (Value::BigInt(y), Value::Int(x)) => {
+            num_bigint::BigInt::from(*x) == y.0
+        }
+        // Ratio is `=` only to another Ratio of equal value. A ratio that
+        // would equal an integer was never constructed as Ratio, so a Ratio
+        // never equals an Int/BigInt here.
+        (Value::Ratio(x), Value::Ratio(y)) => x.0 == y.0,
         (Value::Str(x), Value::Str(y)) => **x == **y,
         (Value::Sym(x), Value::Sym(y)) => x == y,
         (Value::Keyword(x), Value::Keyword(y)) => x == y,

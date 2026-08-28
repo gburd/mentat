@@ -288,6 +288,9 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Float32(_) => "float32",
+        Value::BigInt(_) => "bigint",
+        Value::Ratio(_) => "ratio",
         Value::Char(_) => "char",
         Value::Str(_) => "string",
         Value::Sym(_) => "symbol",
@@ -313,7 +316,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 pub fn mino_installed_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let installed = matches!(
         args.first(),
-        Some(Value::Keyword(k)) if &*k.name == "regex"
+        Some(Value::Keyword(k)) if matches!(&*k.name, "regex" | "bignum")
     );
     Ok(Value::Bool(installed))
 }

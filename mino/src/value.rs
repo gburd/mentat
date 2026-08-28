@@ -11,6 +11,11 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(f64),
+    // A 32-bit float, produced by `(float x)` / `(unchecked-float x)`.
+    // A DISTINCT tier from Float (f64): mino tags it MINO_FLOAT32 so
+    // `(double? (float 5))` is false while `(float? (float 5))` is true,
+    // and `type` returns `:float32`. Prints with f32's shortest decimal.
+    Float32(f32),
     Char(char),
     Str(Gc<String>),
     Sym(crate::symbol::Symbol),
@@ -30,6 +35,18 @@ pub enum Value {
     // Closures (`fn`) and built-in primitives. Ports MINO_FN / native prim.
     Fn(Gc<Closure>),
     Prim(Prim),
+    // Arbitrary-precision integer (`42N`, or the auto-promotion result of
+    // `+'`/`*'`/etc. on i64 overflow). A distinct tier from Int: prints with
+    // an `N` suffix and `type` returns `:bigint`. A BigInt is only produced
+    // when a value cannot (or must not, per contagion) stay in the i64 tier;
+    // `(+ 1N 1)` stays `2N` (bigint contagion), it never narrows back to Int.
+    // Holds no Gc pointers, so its trace is empty.
+    BigInt(Gc<BigIntVal>),
+    // Exact fraction in lowest terms with denominator != 1 (`22/7`, `(/ 7 2)`).
+    // ALWAYS reduced; a ratio that reduces to an integer is constructed as
+    // Int/BigInt instead, never Ratio. `type` returns `:ratio`, prints
+    // `num/den`. Holds no Gc pointers, so its trace is empty.
+    Ratio(Gc<RatioVal>),
     // A compiled regex literal `#"..."` (or the result of `re-pattern`).
     // Holds the pattern SOURCE verbatim plus a lazily-compiled matcher. mino
     // compiles at match time (re-find/re-matches), not at construction, so an
@@ -85,6 +102,23 @@ impl RegexVal {
 
 impl Finalize for RegexVal {}
 unsafe impl Trace for RegexVal {
+    gc::unsafe_empty_trace!();
+}
+
+/// Arbitrary-precision integer wrapper. Holds a `num_bigint::BigInt`, no Gc
+/// pointers, so its trace is empty.
+pub struct BigIntVal(pub num_bigint::BigInt);
+impl Finalize for BigIntVal {}
+unsafe impl Trace for BigIntVal {
+    gc::unsafe_empty_trace!();
+}
+
+/// Exact rational wrapper. Holds a `num_rational::BigRational`, ALWAYS in
+/// lowest terms with denominator != 1 (constructors that would yield an
+/// integer return Int/BigInt instead). No Gc pointers, so its trace is empty.
+pub struct RatioVal(pub num_rational::BigRational);
+impl Finalize for RatioVal {}
+unsafe impl Trace for RatioVal {
     gc::unsafe_empty_trace!();
 }
 

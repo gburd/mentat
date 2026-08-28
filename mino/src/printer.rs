@@ -23,6 +23,18 @@ fn print_into(s: &mut String, v: &Value) {
             let _ = write!(s, "{n}");
         }
         Value::Float(x) => print_float(s, *x),
+        // A 32-bit float prints via f32's shortest round-trip decimal, then
+        // reshaped to JVM form (forced `.0`, `E` scientific). mino's
+        // MINO_FLOAT32 print path uses the float (not double) shortest form.
+        Value::Float32(x) => print_float32(s, *x),
+        // Bigint prints like an int but with an `N` suffix (mino's print.c).
+        Value::BigInt(b) => {
+            let _ = write!(s, "{}N", b.0);
+        }
+        // Ratio prints `num/den` (always reduced, denom != 1).
+        Value::Ratio(r) => {
+            let _ = write!(s, "{}/{}", r.0.numer(), r.0.denom());
+        }
         Value::Char(c) => print_char(s, *c),
         Value::Str(gc) => print_string_escaped(s, gc),
         // print.c: symbols write their name bytes; keywords prefix ':'.
@@ -192,6 +204,37 @@ fn print_float(s: &mut String, x: f64) {
     if use_sci {
         // Rust "{:E}" -> "1.5E2" / "1E5" (no '+' , no leading exponent zero),
         // which already matches JVM's shape. Ensure a decimal point.
+        let raw = format!("{x:E}");
+        match raw.split_once('E') {
+            Some((mantissa, exp)) if !mantissa.contains('.') => {
+                let _ = write!(s, "{mantissa}.0E{exp}");
+            }
+            _ => s.push_str(&raw),
+        }
+    } else {
+        let raw = format!("{x}");
+        s.push_str(&raw);
+        if !raw.contains('.') {
+            s.push_str(".0");
+        }
+    }
+}
+
+/// 32-bit float print: identical JVM reshaping as `print_float`, but the
+/// shortest-decimal source is f32's (so `(float 3.14159265358979)` prints
+/// `3.1415927`, not the f64 form). Threshold uses the f32 magnitude.
+fn print_float32(s: &mut String, x: f32) {
+    if x.is_nan() {
+        s.push_str("##NaN");
+        return;
+    }
+    if x.is_infinite() {
+        s.push_str(if x > 0.0 { "##Inf" } else { "##-Inf" });
+        return;
+    }
+    let absx = x.abs();
+    let use_sci = x != 0.0 && (absx < 1e-3 || absx >= 1e7);
+    if use_sci {
         let raw = format!("{x:E}");
         match raw.split_once('E') {
             Some((mantissa, exp)) if !mantissa.contains('.') => {

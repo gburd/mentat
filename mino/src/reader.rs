@@ -368,6 +368,27 @@ impl<'a> Reader<'a> {
                     .map_err(|_| ReadError::Malformed("regex literal is not valid UTF-8".into()))?;
                 Ok(Value::Regex(Gc::new(crate::value::RegexVal::new(src))))
             }
+            // `##NaN` / `##Inf` / `##-Inf`: symbolic special floats. Ports
+            // read.c's `##` reader (a `#` followed by `#` then a symbol).
+            Some(b'#') => {
+                self.i += 2; // consume `##`
+                let start = self.i;
+                while self
+                    .s
+                    .get(self.i)
+                    .is_some_and(|c| !c.is_ascii_whitespace() && !matches!(c, b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' | b'"'))
+                {
+                    self.i += 1;
+                }
+                let name = std::str::from_utf8(&self.s[start..self.i])
+                    .map_err(|_| ReadError::Malformed("invalid ## token".into()))?;
+                match name {
+                    "NaN" => Ok(Value::Float(f64::NAN)),
+                    "Inf" => Ok(Value::Float(f64::INFINITY)),
+                    "-Inf" => Ok(Value::Float(f64::NEG_INFINITY)),
+                    other => Err(ReadError::Malformed(format!("unknown ## literal: ##{other}"))),
+                }
+            }
             Some(c) => Err(ReadError::Malformed(format!(
                 "unsupported reader dispatch macro #{}",
                 c as char
@@ -572,11 +593,10 @@ impl<'a> Reader<'a> {
         }
         // Number before symbol: a token that starts with a digit (or sign+digit)
         // is numeric syntax; if it fails to parse it is malformed, not a symbol.
-        if let Some(n) = try_parse_int(tok) {
-            return Ok(Value::Int(n));
-        }
-        if let Some(f) = try_parse_float(tok) {
-            return Ok(Value::Float(f));
+        // Phase 5.5: bigint (42N), ratio (22/7), radix (2r1010), hex (0xFF),
+        // octal (010) all handled here.
+        if let Some(v) = try_parse_number(tok)? {
+            return Ok(v);
         }
         let bytes = tok.as_bytes();
         let d = if bytes[0] == b'+' || bytes[0] == b'-' { 1 } else { 0 };
@@ -745,18 +765,136 @@ fn parse_symbol(tok: &str) -> Result<Symbol, ReadError> {
     }
 }
 
-// Plain decimal integer, optional sign. Phase 5: octal (0NNN), hex (0xFF),
-// radix (2r101), ratio (a/b), bigint (42N), bigdec (1.5M) all live here.
-fn try_parse_int(tok: &str) -> Option<i64> {
-    tok.parse::<i64>().ok()
+// Numeric literal parser. Returns Ok(Some(value)) for a recognized number,
+// Ok(None) if the token is not numeric (caller falls through to symbol), and
+// Err for a token that IS numeric syntax but malformed. Handles (in order):
+// float (has '.'/'e'/exponent), ratio (a/b), bigint (NNN N), radix (BrDDD),
+// hex (0xFF), octal (0NNN), plain decimal int. Ports read_numeric.c.
+fn try_parse_number(tok: &str) -> Result<Option<Value>, ReadError> {
+    // Only tokens beginning with a digit, or sign+digit, are numbers.
+    let b = tok.as_bytes();
+    let sign_len = if b.first().is_some_and(|c| *c == b'+' || *c == b'-') { 1 } else { 0 };
+    if !b.get(sign_len).is_some_and(|c| c.is_ascii_digit()) {
+        return Ok(None);
+    }
+    let malformed = || ReadError::Malformed(format!("invalid number: {tok}"));
+
+    // Float: a '.' or exponent (but NOT radix 'r' / hex 'x' / ratio '/').
+    if tok.bytes().any(|c| matches!(c, b'.' | b'e' | b'E'))
+        && !tok.contains('/')
+        && !tok.contains('r')
+        && !tok.contains('R')
+        && !tok.to_ascii_lowercase().starts_with("0x")
+        && !tok.to_ascii_lowercase().starts_with("-0x")
+        && !tok.to_ascii_lowercase().starts_with("+0x")
+    {
+        return tok.parse::<f64>().map(|f| Some(Value::Float(f))).map_err(|_| malformed());
+    }
+
+    // Ratio: `num/den`, both integers, den != 0, reduced.
+    if let Some((num, den)) = tok.split_once('/') {
+        let n: num_bigint::BigInt = num.parse().map_err(|_| malformed())?;
+        let d: num_bigint::BigInt = den.parse().map_err(|_| malformed())?;
+        use num_traits::Zero;
+        if d.is_zero() {
+            return Err(malformed());
+        }
+        let r = num_rational::BigRational::new(n, d); // reduces
+        return Ok(Some(ratio_literal_to_value(r)));
+    }
+
+    // Bigint: trailing `N`.
+    if let Some(digits) = tok.strip_suffix('N') {
+        let b: num_bigint::BigInt = digits.parse().map_err(|_| malformed())?;
+        return Ok(Some(bigint_literal_to_value(b)));
+    }
+
+    // Radix: `BrDDD` / `-BrDDD` (base 2..36, case-insensitive on 'r').
+    let lower = tok.to_ascii_lowercase();
+    if lower.contains('r') {
+        let (sign, body) = match tok.as_bytes()[0] {
+            b'+' => ("", &tok[1..]),
+            b'-' => ("-", &tok[1..]),
+            _ => ("", tok),
+        };
+        let r_body = body
+            .to_ascii_lowercase()
+            .find('r')
+            .ok_or_else(malformed)?;
+        let (base_str, rest) = body.split_at(r_body);
+        let digits = &rest[1..]; // skip 'r'
+        let base: u32 = base_str.parse().map_err(|_| malformed())?;
+        if !(2..=36).contains(&base) || digits.is_empty() {
+            return Err(malformed());
+        }
+        let signed = format!("{sign}{digits}");
+        let bi = num_bigint::BigInt::parse_bytes(signed.as_bytes(), base).ok_or_else(malformed)?;
+        return Ok(Some(int_literal_narrow(bi)));
+    }
+
+    // Hex: `0xFF` / `0XFF` (with optional sign).
+    let (sign, unsigned) = match tok.as_bytes()[0] {
+        b'+' => ("", &tok[1..]),
+        b'-' => ("-", &tok[1..]),
+        _ => ("", tok),
+    };
+    let ul = unsigned.to_ascii_lowercase();
+    if let Some(hex) = ul.strip_prefix("0x") {
+        if hex.is_empty() {
+            return Err(malformed());
+        }
+        let signed = format!("{sign}{}", &unsigned[2..]);
+        let bi = num_bigint::BigInt::parse_bytes(signed.as_bytes(), 16).ok_or_else(malformed)?;
+        return Ok(Some(int_literal_narrow(bi)));
+    }
+
+    // Octal: a leading 0 with more digits (`010` = 8), all in [0,7].
+    if unsigned.len() > 1 && unsigned.starts_with('0') {
+        let signed = format!("{sign}{}", &unsigned[1..]);
+        let bi = num_bigint::BigInt::parse_bytes(signed.as_bytes(), 8).ok_or_else(malformed)?;
+        return Ok(Some(int_literal_narrow(bi)));
+    }
+
+    // Plain decimal integer. If it overflows i64, keep it as an Int only when
+    // it fits; a decimal literal wider than i64 with no `N` is a bigint in
+    // mino (mino boxes wide ints in the int tier, but for the port a plain
+    // decimal that overflows i64 becomes a BigInt so arithmetic stays exact).
+    match tok.parse::<i64>() {
+        Ok(n) => Ok(Some(Value::Int(n))),
+        Err(_) => {
+            let bi: num_bigint::BigInt = tok.parse().map_err(|_| malformed())?;
+            Ok(Some(bigint_literal_to_value(bi)))
+        }
+    }
 }
 
-// Decimal float: must carry a '.' or exponent, else it's not a float token.
-fn try_parse_float(tok: &str) -> Option<f64> {
-    if !tok.bytes().any(|c| matches!(c, b'.' | b'e' | b'E')) {
-        return None;
+// A bigint literal keeps the bigint tier even when it fits i64 (`42N` -> a
+// BigInt whose value is 42, NOT an Int).
+fn bigint_literal_to_value(b: num_bigint::BigInt) -> Value {
+    Value::BigInt(gc::Gc::new(crate::value::BigIntVal(b)))
+}
+
+// A radix/hex/octal integer literal narrows to Int when it fits i64 (mino:
+// `0xFF` -> 255 Int), else BigInt.
+fn int_literal_narrow(b: num_bigint::BigInt) -> Value {
+    use num_traits::ToPrimitive;
+    match b.to_i64() {
+        Some(n) => Value::Int(n),
+        None => bigint_literal_to_value(b),
     }
-    tok.parse::<f64>().ok()
+}
+
+// A ratio literal reduces; if it reduces to an integer it becomes Int/BigInt.
+fn ratio_literal_to_value(r: num_rational::BigRational) -> Value {
+    use num_traits::{One, ToPrimitive};
+    if r.denom().is_one() {
+        match r.numer().to_i64() {
+            Some(n) => Value::Int(n),
+            None => bigint_literal_to_value(r.numer().clone()),
+        }
+    } else {
+        Value::Ratio(gc::Gc::new(crate::value::RatioVal(r)))
+    }
 }
 
 #[cfg(test)]

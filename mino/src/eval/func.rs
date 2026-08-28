@@ -236,14 +236,14 @@ mod tests {
     }
 
     #[test]
-    fn division_matches_oracle_where_ratios_not_needed() {
+    fn division_is_exact() {
         let mut it = Interp::new();
-        // oracle: (/ 6 2) => 3 (exact int), (/ 2.0 4) => 0.5, (- 10 3 2) => 5
+        // oracle: (/ 6 2) => 3 (exact int), (/ 2.0 4) => 0.5, (- 10 3 2) => 5,
+        // (/ 7 2) => 7/2 (exact ratio, Phase 5.5).
         assert_eq!(print_str(&it.eval_str("(/ 6 2)").unwrap()), "3");
         assert_eq!(print_str(&it.eval_str("(/ 2.0 4)").unwrap()), "0.5");
         assert_eq!(print_str(&it.eval_str("(- 10 3 2)").unwrap()), "5");
-        // Phase 5.5: mino returns 7/2; we promote to float meanwhile.
-        assert_eq!(print_str(&it.eval_str("(/ 7 2)").unwrap()), "3.5");
+        assert_eq!(print_str(&it.eval_str("(/ 7 2)").unwrap()), "7/2");
     }
 
     #[test]

@@ -28,11 +28,69 @@ pub fn install_core(root: &Env) {
     register(root, "-", numeric::sub);
     register(root, "*", numeric::mul);
     register(root, "/", numeric::div);
+    register(root, "+'", numeric::addp);
+    register(root, "-'", numeric::subp);
+    register(root, "*'", numeric::mulp);
+    register(root, "inc'", numeric::incp);
+    register(root, "dec'", numeric::decp);
     register(root, "=", numeric::eq);
     register(root, "<", numeric::lt);
     register(root, ">", numeric::gt);
     register(root, "<=", numeric::le);
     register(root, ">=", numeric::ge);
+    // mod / rem / quot (numeric.c prim_mqr).
+    register(root, "mod", numeric::mod_);
+    register(root, "rem", numeric::rem);
+    register(root, "quot", numeric::quot);
+    // Bitwise (numeric_bit.c).
+    register(root, "bit-and", numeric::bit_and);
+    register(root, "bit-or", numeric::bit_or);
+    register(root, "bit-xor", numeric::bit_xor);
+    register(root, "bit-not", numeric::bit_not);
+    register(root, "bit-shift-left", numeric::bit_shift_left);
+    register(root, "bit-shift-right", numeric::bit_shift_right);
+    register(root, "unsigned-bit-shift-right", numeric::unsigned_bit_shift_right);
+    // Coercions (numeric_coerce.c + bignum.c + ratio.c).
+    register(root, "int", numeric::int_);
+    register(root, "long", numeric::long_);
+    register(root, "short", numeric::short_);
+    register(root, "byte", numeric::byte_);
+    register(root, "char", numeric::char_);
+    register(root, "double", numeric::double_);
+    register(root, "float", numeric::float_);
+    register(root, "bigint", numeric::bigint);
+    register(root, "numerator", numeric::numerator);
+    register(root, "denominator", numeric::denominator);
+    register(root, "rationalize", numeric::rationalize);
+    register(root, "parse-long", numeric::parse_long);
+    register(root, "parse-double", numeric::parse_double);
+    // unchecked-* family (numeric.c).
+    register(root, "unchecked-add", numeric::unchecked_add);
+    register(root, "unchecked-subtract", numeric::unchecked_subtract);
+    register(root, "unchecked-multiply", numeric::unchecked_multiply);
+    register(root, "unchecked-inc", numeric::unchecked_inc);
+    register(root, "unchecked-dec", numeric::unchecked_dec);
+    register(root, "unchecked-negate", numeric::unchecked_negate);
+    register(root, "unchecked-long", numeric::unchecked_long_cast);
+    register(root, "unchecked-int", numeric::unchecked_int_cast);
+    register(root, "unchecked-short", numeric::unchecked_short_cast);
+    register(root, "unchecked-byte", numeric::unchecked_byte_cast);
+    register(root, "unchecked-char", numeric::unchecked_char_cast);
+    register(root, "unchecked-float", numeric::unchecked_float_cast);
+    register(root, "unchecked-double", numeric::unchecked_double_cast);
+    register(root, "unchecked-add-int", numeric::unchecked_add_int);
+    register(root, "unchecked-subtract-int", numeric::unchecked_subtract_int);
+    register(root, "unchecked-multiply-int", numeric::unchecked_multiply_int);
+    register(root, "unchecked-inc-int", numeric::unchecked_inc_int);
+    register(root, "unchecked-dec-int", numeric::unchecked_dec_int);
+    register(root, "unchecked-negate-int", numeric::unchecked_negate_int);
+    register(root, "unchecked-remainder-int", numeric::unchecked_remainder_int);
+    register(root, "unchecked-divide-int", numeric::quot);
+    // Tier predicates.
+    register(root, "bigint?", numeric::bigint_p);
+    register(root, "ratio?", numeric::ratio_p);
+    register(root, "rational?", numeric::rational_p);
+    register(root, "decimal?", numeric::decimal_p);
 
     install_eager_seq_prims(root);
     // Type / numeric predicates (reflection.c + numeric.c).
@@ -152,8 +210,7 @@ pub fn install_core(root: &Env) {
 /// called. Re-registering the eager versions makes the working implementation
 /// win. ponytail: eager prims shadow lazy core.clj defns until Phase 5 lazy seqs.
 pub fn install_eager_seq_prims(root: &Env) {
-    use collections as c;
-    register(root, "list", c::list);
+    use collections as c;    register(root, "list", c::list);
     register(root, "cons", c::cons);
     register(root, "first", c::first);
     register(root, "rest", c::rest);
@@ -189,6 +246,6 @@ pub fn install_eager_seq_prims(root: &Env) {
     register(root, "vals", c::vals);
     register(root, "merge", c::merge);
     register(root, "merge-with", c::merge_with);
-    register(root, "inc", c::inc);
-    register(root, "dec", c::dec);
+    register(root, "inc", numeric::inc);
+    register(root, "dec", numeric::dec);
 }

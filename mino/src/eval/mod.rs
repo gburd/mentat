@@ -242,6 +242,9 @@ impl Interp {
             | Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
+            | Value::Float32(_)
+            | Value::BigInt(_)
+            | Value::Ratio(_)
             | Value::Char(_)
             | Value::Str(_)
             | Value::Keyword(_)
@@ -714,6 +717,9 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Float32(_) => "float32",
+        Value::BigInt(_) => "bigint",
+        Value::Ratio(_) => "ratio",
         Value::Char(_) => "char",
         Value::Str(_) => "string",
         Value::Sym(_) => "symbol",
