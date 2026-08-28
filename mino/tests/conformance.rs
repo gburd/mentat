@@ -54,3 +54,25 @@ fn arithmetic_corpus_passes() {
     assert!(passed > 0, "no assertions ran");
     assert_eq!(failed, 0, "{failed} arithmetic assertions failed");
 }
+
+/// Task 2.3 gate: are_test.clj. The `are`/`is`/`thrown?` deftests exercise
+/// `=`, `inc`, `number?`, `nth`, and `thrown?` — all now implemented.
+///
+/// The three `is-*`/`binding`-based deftests need `let`, `binding`, `atom`,
+/// `try`/`catch`, and `*report-counters*` (Phase 3 let/try, Phase 5 atoms).
+/// They are skipped with rationale; the four `are-*` deftests must pass.
+const ARE_SKIP: &[&str] = &[
+    // needs let + atom + binding + try/catch + *report-counters* (Phase 3/5).
+    "is-eq-continues-after-throw-in-value",
+    "is-truthy-continues-after-throw-in-value",
+];
+
+#[test]
+fn are_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/are_test.clj"),
+        ARE_SKIP,
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} are_test assertions failed");
+}
