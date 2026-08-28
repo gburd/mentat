@@ -33,6 +33,7 @@ fn print_into(s: &mut String, v: &Value) {
             let _ = write!(s, ":{sym}");
         }
         Value::Cons(_) => print_list(s, v),
+        Value::EmptyList => s.push_str("()"),
         Value::Vector(items) => {
             s.push('[');
             for (i, e) in items.iter().enumerate() {
@@ -83,9 +84,9 @@ fn print_into(s: &mut String, v: &Value) {
     }
 }
 
-/// Walk a cons chain as a list `( ... )`. Task 0.3 only builds proper
-/// nil-terminated lists via the reader, so no dotted-pair tail handling
-/// yet (print.c emits " . " for improper tails; add when eval produces them).
+/// Walk a cons chain as a list `( ... )`. Proper lists terminate in
+/// `Value::EmptyList` (the empty-list value); a bare `Nil` tail is also
+/// treated as a list terminator. An improper (dotted) tail prints " . tail".
 fn print_list(s: &mut String, v: &Value) {
     s.push('(');
     let mut cur = v;
@@ -100,7 +101,7 @@ fn print_list(s: &mut String, v: &Value) {
                 print_into(s, &cell.0);
                 cur = &cell.1;
             }
-            Value::Nil => break,
+            Value::EmptyList | Value::Nil => break,
             // improper tail — see doc comment; print.c uses " . ".
             other => {
                 s.push_str(" . ");

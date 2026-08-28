@@ -373,6 +373,6 @@ fn rest_elems(v: &Value) -> Vec<Value> {
 fn list2(a: &Value, b: &Value) -> Value {
     Value::Cons(gc::Gc::new((
         a.clone(),
-        Value::Cons(gc::Gc::new((b.clone(), Value::Nil))),
+        Value::Cons(gc::Gc::new((b.clone(), Value::EmptyList))),
     )))
 }

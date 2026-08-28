@@ -86,8 +86,10 @@ fn hash32(v: &Value) -> u32 {
         // `v->as.s.data` which stores the namespaced string verbatim.
         Value::Sym(sym) => fnv_bytes(fnv_mix(h, 0x06), sym.to_string().as_bytes()),
         Value::Keyword(sym) => fnv_bytes(fnv_mix(h, 0x07), sym.to_string().as_bytes()),
-        // Sequentials (cons list, vector) share tag 0x09 so (= '(1 2) [1 2]).
-        Value::Cons(_) | Value::Vector(_) => hash_sequential(v),
+        // Sequentials (cons list, vector, empty-list) share tag 0x09 so
+        // (= '(1 2) [1 2]) and (= () []). The empty list hashes as the empty
+        // sequential.
+        Value::EmptyList | Value::Cons(_) | Value::Vector(_) => hash_sequential(v),
         // Maps: order-insensitive XOR-fold of per-entry hashes.
         Value::Map(m) => {
             let mut acc: u32 = 0;
@@ -130,7 +132,7 @@ fn hash_sequential(v: &Value) -> u32 {
                 h = hash_u32_bytes(h, hash32(&cell.0));
                 cur = &cell.1;
             }
-            _ => break, // nil terminator (or improper tail: stop)
+            _ => break, // EmptyList / nil terminator (or improper tail: stop)
         }
     }
     h
@@ -144,17 +146,18 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Nil, Value::Nil) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
         (Value::Char(x), Value::Char(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => **x == **y,
         (Value::Sym(x), Value::Sym(y)) => x == y,
         (Value::Keyword(x), Value::Keyword(y)) => x == y,
         (Value::Var(x), Value::Var(y)) => x == y,
-        // Sequentials compare element-wise across cons/vector.
+        // Sequentials compare element-wise across cons/vector/empty-list.
+        // `(= () [])` and `(= () '())` are true; `(= () nil)` is false.
         (
-            Value::Cons(_) | Value::Vector(_),
-            Value::Cons(_) | Value::Vector(_),
+            Value::EmptyList | Value::Cons(_) | Value::Vector(_),
+            Value::EmptyList | Value::Cons(_) | Value::Vector(_),
         ) => eq_sequential(a, b),
         (Value::Map(x), Value::Map(y)) => eq_map(x, y),
         (Value::Set(x), Value::Set(y)) => eq_set(x, y),
@@ -203,6 +206,7 @@ impl<'a> SeqCursor<'a> {
     fn new(v: &'a Value) -> Self {
         match v {
             Value::Vector(vec) => SeqCursor::Vec(vec, 0),
+            // EmptyList is an empty cons chain: the cursor yields nothing.
             other => SeqCursor::Cons(other),
         }
     }

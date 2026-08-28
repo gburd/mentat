@@ -164,43 +164,13 @@ pub fn div(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// the same magnitude (`(= 1 1.0)` -> false, matching Clojure/mino). Variadic:
 /// every arg must equal the first; 0/1 args -> true.
 pub fn eq(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    let all = args.windows(2).all(|w| value_eq(&w[0], &w[1]));
+    // Delegate to the canonical structural equality (hashing::eq_val), the
+    // single source of truth: handles the whole tower incl. maps/sets and the
+    // empty-list/vector sequential group ((= () []) true, (= () nil) false).
+    let all = args
+        .windows(2)
+        .all(|w| crate::collections::hashing::eq_val(&w[0], &w[1]));
     Ok(Value::Bool(all))
-}
-
-fn value_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Nil, Value::Nil) => true,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Char(x), Value::Char(y)) => x == y,
-        (Value::Str(x), Value::Str(y)) => **x == **y,
-        (Value::Sym(x), Value::Sym(y)) => x == y,
-        (Value::Keyword(x), Value::Keyword(y)) => x == y,
-        (Value::Cons(_), Value::Cons(_)) => seq_eq(a, b),
-        (Value::Vector(x), Value::Vector(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| value_eq(p, q))
-        }
-        _ => false,
-    }
-}
-
-fn seq_eq(a: &Value, b: &Value) -> bool {
-    let (mut pa, mut pb) = (a, b);
-    loop {
-        match (pa, pb) {
-            (Value::Cons(x), Value::Cons(y)) => {
-                if !value_eq(&x.0, &y.0) {
-                    return false;
-                }
-                pa = &x.1;
-                pb = &y.1;
-            }
-            (Value::Nil, Value::Nil) => return true,
-            _ => return false,
-        }
-    }
 }
 
 /// Chained numeric comparison: `(op a b c ...)` is true iff `a op b`,

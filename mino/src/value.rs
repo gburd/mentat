@@ -15,6 +15,11 @@ pub enum Value {
     Str(Gc<String>),
     Sym(crate::symbol::Symbol),
     Keyword(crate::symbol::Symbol),
+    // The empty list `()`. mino models this as a distinct singleton
+    // (MINO_EMPTY_LIST), NOT nil: `(= () nil)` is false, `(nil? ())` is
+    // false, but `(seq? ())`/`(list? ())`/`(empty? ())` are true. A proper
+    // list is a chain of `Cons` cells terminating in `EmptyList`.
+    EmptyList,
     Cons(Gc<(Value, Value)>),
     // Persistent vector: 32-way trie (see collections::vector::PVec).
     Vector(Gc<crate::collections::vector::PVec>),
@@ -49,7 +54,14 @@ impl Value {
     /// Clojure truthiness: only `nil` and `false` are falsy. 0, "", empty
     /// collections are all truthy. Ports `MINO_IS_NIL`/bool semantics.
     pub fn is_truthy(&self) -> bool {
+        // Only nil and false are falsy; the empty list is truthy.
         !matches!(self, Value::Nil | Value::Bool(false))
+    }
+
+    /// The empty list `()`. Cons chains end in `EmptyList`; seq walkers stop
+    /// on it and list predicates treat it as a (empty) list, distinct from nil.
+    pub fn is_empty_list(&self) -> bool {
+        matches!(self, Value::EmptyList)
     }
 }
 

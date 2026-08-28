@@ -161,10 +161,14 @@ fn list_to_vec(list: &Value) -> Vec<Value> {
     out
 }
 
-/// Build a nil-terminated cons list from a slice. Empty slice -> Nil (so
-/// `& rest` with no extra args reads as `nil`, matching mino).
+/// Build the `& rest` binding: a proper list of the extra args (terminating
+/// in the empty-list value), or `nil` when there are none (matching mino:
+/// `((fn [a & r] r) 1)` => nil, `(list? ...)` on a non-empty rest => true).
 fn vec_to_list(items: &[Value]) -> Value {
-    let mut acc = Value::Nil;
+    if items.is_empty() {
+        return Value::Nil;
+    }
+    let mut acc = Value::EmptyList;
     for v in items.iter().rev() {
         acc = Value::Cons(Gc::new((v.clone(), acc)));
     }

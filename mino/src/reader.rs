@@ -135,7 +135,7 @@ impl<'a> Reader<'a> {
         let inner = self.read_form()?;
         Ok(cons(
             Value::Sym(Symbol::plain(sym)),
-            cons(inner, Value::Nil),
+            cons(inner, Value::EmptyList),
         ))
     }
 
@@ -393,8 +393,10 @@ fn cons(car: Value, cdr: Value) -> Value {
     Value::Cons(Gc::new((car, cdr)))
 }
 
+// Build a proper list from a slice; empty -> the empty-list value `()`
+// (distinct from nil, matching mino's MINO_EMPTY_LIST).
 fn list_from_vec(items: Vec<Value>) -> Value {
-    let mut acc = Value::Nil;
+    let mut acc = Value::EmptyList;
     for e in items.into_iter().rev() {
         acc = cons(e, acc);
     }

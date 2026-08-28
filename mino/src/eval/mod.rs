@@ -48,6 +48,10 @@ impl Interp {
             | Value::Prim(_)
             | Value::Var(_) => Ok(form.clone()),
 
+            // The empty list self-evaluates to itself (Clojure: `()` => `()`),
+            // it is NOT an empty call.
+            Value::EmptyList => Ok(form.clone()),
+
             // Phase 2: eval collection elements (needs fn calls first).
             Value::Vector(_) | Value::Map(_) | Value::Set(_) => Ok(form.clone()),
 
@@ -191,5 +195,73 @@ mod tests {
         assert_eq!(print_str(&it.eval_str("(if true 1)").unwrap()), "1");
         // unbound symbol throws
         assert!(it.eval_str("nope").is_err());
+    }
+
+    /// The empty list `()` is a distinct value from `nil` (mino's
+    /// MINO_EMPTY_LIST). Every expected value below is copied verbatim from
+    /// the `mino -e '(pr-str ...)'` oracle.
+    #[test]
+    fn empty_list_distinct_from_nil() {
+        let mut it = Interp::new();
+        let ev = |it: &mut Interp, s: &str| print_str(&it.eval_str(s).unwrap());
+
+        // Reading/printing: () self-evaluates and prints "()", not "nil".
+        assert_eq!(ev(&mut it, "()"), "()");
+        assert_eq!(ev(&mut it, "'()"), "()");
+        assert_eq!(ev(&mut it, "(list)"), "()");
+
+        // Equality: () != nil, () == (), () == [], (list) == ().
+        assert_eq!(ev(&mut it, "(= () nil)"), "false");
+        assert_eq!(ev(&mut it, "(= () ())"), "true");
+        assert_eq!(ev(&mut it, "(= () [])"), "true");
+        assert_eq!(ev(&mut it, "(= (list) ())"), "true");
+
+        // Predicates: nil? true only for nil; seq?/list? true for the empty
+        // list but false for nil; empty? true for both () and nil.
+        assert_eq!(ev(&mut it, "(nil? ())"), "false");
+        assert_eq!(ev(&mut it, "(nil? nil)"), "true");
+        assert_eq!(ev(&mut it, "(seq? ())"), "true");
+        assert_eq!(ev(&mut it, "(list? ())"), "true");
+        assert_eq!(ev(&mut it, "(seq? nil)"), "false");
+        assert_eq!(ev(&mut it, "(list? nil)"), "false");
+        assert_eq!(ev(&mut it, "(empty? ())"), "true");
+        assert_eq!(ev(&mut it, "(empty? nil)"), "true");
+        assert_eq!(ev(&mut it, "(empty? [1])"), "false");
+
+        // seq on empty -> nil; on non-empty -> a seq.
+        assert_eq!(ev(&mut it, "(seq ())"), "nil");
+        assert_eq!(ev(&mut it, "(seq nil)"), "nil");
+        assert_eq!(ev(&mut it, "(seq [1])"), "(1)");
+
+        // first on empty/nil -> nil.
+        assert_eq!(ev(&mut it, "(first ())"), "nil");
+        assert_eq!(ev(&mut it, "(first nil)"), "nil");
+
+        // rest ALWAYS returns a seq (the empty list), never nil.
+        assert_eq!(ev(&mut it, "(rest ())"), "()");
+        assert_eq!(ev(&mut it, "(rest nil)"), "()");
+        assert_eq!(ev(&mut it, "(rest (list 1))"), "()");
+        assert_eq!(ev(&mut it, "(rest [1])"), "()");
+
+        // next returns nil when there is no more.
+        assert_eq!(ev(&mut it, "(next (list 1))"), "nil");
+        assert_eq!(ev(&mut it, "(next ())"), "nil");
+        assert_eq!(ev(&mut it, "(next nil)"), "nil");
+
+        // cons onto nil / () / a list all make proper lists.
+        assert_eq!(ev(&mut it, "(cons 1 nil)"), "(1)");
+        assert_eq!(ev(&mut it, "(cons 1 ())"), "(1)");
+        assert_eq!(ev(&mut it, "(cons 1 (list 2))"), "(1 2)");
+
+        // count of both empties is 0.
+        assert_eq!(ev(&mut it, "(count ())"), "0");
+        assert_eq!(ev(&mut it, "(count nil)"), "0");
+
+        // conj on nil or () makes a one-element list.
+        assert_eq!(ev(&mut it, "(conj nil 1)"), "(1)");
+        assert_eq!(ev(&mut it, "(conj () 1)"), "(1)");
+
+        // () is truthy (only nil and false are falsy).
+        assert_eq!(ev(&mut it, "(if () :t :f)"), ":t");
     }
 }

@@ -9,10 +9,11 @@
 //! (lazy.c); the printed shape of an eager realization matches a lazy seq
 //! (`(2 3 4)`), so the corpus can't tell. // Phase 5: lazy seqs.
 //!
-//! `list?` returns true for any Nil/Cons chain here. mino distinguishes a
-//! concrete PersistentList from a Cons cell / lazy-seq (`(list? (cons 1 nil))`
-//! => false), but the port has a single `Cons` arm; are_test doesn't exercise
-//! that distinction. // Phase 5: distinct seq types for exact list?/seq?.
+//! `list?` returns true for a proper list: any `Cons` chain or the empty
+//! list (`Value::EmptyList`), matching the empty-list-distinct-from-nil model.
+//! mino further distinguishes a concrete PersistentList from a lazy-seq cell;
+//! the port has a single `Cons` arm, which are_test doesn't exercise.
+//! // Phase 5: distinct seq types for exact list?/seq?.
 
 use crate::collections::hashing::eq_val;
 use crate::collections::map::{PMap, PSet};
@@ -25,9 +26,10 @@ use gc::Gc;
 
 // ---- shared helpers ----------------------------------------------------
 
-/// Build a nil-terminated cons list from a slice. Empty -> Nil-terminated `()`.
+/// Build a proper list from a slice. Empty -> the empty-list value `()`
+/// (distinct from nil, matching mino's MINO_EMPTY_LIST).
 fn list_of(items: &[Value]) -> Value {
-    let mut acc = Value::Nil;
+    let mut acc = Value::EmptyList;
     for v in items.iter().rev() {
         acc = Value::Cons(Gc::new((v.clone(), acc)));
     }
@@ -39,7 +41,7 @@ fn list_of(items: &[Value]) -> Value {
 /// chars, map yields `[k v]` entry vectors, set yields elements.
 fn to_vec(v: &Value) -> Result<Vec<Value>, Throw> {
     match v {
-        Value::Nil => Ok(Vec::new()),
+        Value::Nil | Value::EmptyList => Ok(Vec::new()),
         Value::Cons(_) => {
             let mut out = Vec::new();
             let mut cur = v;
@@ -117,7 +119,7 @@ pub fn next_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// `(count coll)`: elements in a coll, chars in a string, 0 for nil.
 pub fn count(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let n = match &args[0] {
-        Value::Nil => 0,
+        Value::Nil | Value::EmptyList => 0,
         Value::Vector(v) => v.len(),
         Value::Map(m) => m.count(),
         Value::Set(s) => s.count(),
@@ -184,8 +186,8 @@ pub fn conj(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 fn conj1(coll: &Value, x: &Value) -> Result<Value, Throw> {
     match coll {
-        // nil conj -> a one-element list.
-        Value::Nil => Ok(Value::Cons(Gc::new((x.clone(), Value::Nil)))),
+        // nil conj -> a one-element list; empty-list conj -> prepend.
+        Value::Nil | Value::EmptyList => Ok(Value::Cons(Gc::new((x.clone(), Value::EmptyList)))),
         Value::Cons(_) => Ok(Value::Cons(Gc::new((x.clone(), coll.clone())))),
         Value::Vector(v) => Ok(Value::Vector(Gc::new(v.conj(x.clone())))),
         Value::Set(s) => Ok(Value::Set(Gc::new(s.conj(x.clone())))),
@@ -256,7 +258,8 @@ pub fn contains(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// `(empty? coll)`: true for nil and zero-length colls/strings.
 pub fn empty_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let empty = match &args[0] {
-        Value::Nil => true,
+        // Clojure/mino: (empty? nil) and (empty? ()) are both true.
+        Value::Nil | Value::EmptyList => true,
         Value::Vector(v) => v.is_empty(),
         Value::Map(m) => m.is_empty(),
         Value::Set(s) => s.is_empty(),
@@ -778,13 +781,14 @@ pub fn set_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Set(_)))
 }
 pub fn list_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    // Nil/Cons chain. mino distinguishes concrete lists from cons/seq cells;
-    // see module doc. // Phase 5: distinct seq types.
-    pred(a, |v| matches!(v, Value::Cons(_) | Value::Nil))
+    // A list is a cons chain or the empty list; NOT nil.
+    // (list? ()) => true, (list? nil) => false.
+    pred(a, |v| matches!(v, Value::Cons(_) | Value::EmptyList))
 }
 pub fn seq_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    // seq? is true for a realized cons chain here (not nil). // Phase 5.
-    pred(a, |v| matches!(v, Value::Cons(_)))
+    // seq? is true for any seq incl. the empty list; false for nil.
+    // (seq? ()) => true, (seq? nil) => false.
+    pred(a, |v| matches!(v, Value::Cons(_) | Value::EmptyList))
 }
 pub fn fn_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Fn(_) | Value::Prim(_)))
@@ -805,7 +809,7 @@ pub fn coll_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| {
         matches!(
             v,
-            Value::Vector(_) | Value::Map(_) | Value::Set(_) | Value::Cons(_)
+            Value::Vector(_) | Value::Map(_) | Value::Set(_) | Value::Cons(_) | Value::EmptyList
         )
     })
 }
@@ -907,7 +911,7 @@ mod tests {
         assert_eq!(ev("(range 2 5)"), "(2 3 4)");
         assert_eq!(ev("(range 0 10 2)"), "(0 2 4 6 8)");
         assert_eq!(ev("(range 5 0 -1)"), "(5 4 3 2 1)");
-        assert_eq!(ev("(range 0 0)"), "nil"); // binary: "()"; empty list == nil in port
+        assert_eq!(ev("(range 0 0)"), "()"); // empty range -> () (empty list)
     }
 
     #[test]
@@ -923,8 +927,8 @@ mod tests {
     fn seq_basics_match_oracle() {
         assert_eq!(ev("(first [1 2 3])"), "1");
         assert_eq!(ev("(first nil)"), "nil");
-        assert_eq!(ev("(rest (list 1))"), "nil"); // binary: "()"; port has no
-        assert_eq!(ev("(rest nil)"), "nil"); //  distinct empty-list value yet.
+        assert_eq!(ev("(rest (list 1))"), "()"); // rest always returns a seq
+        assert_eq!(ev("(rest nil)"), "()"); //     (the empty list), never nil.
         assert_eq!(ev("(next (list 1))"), "nil");
         assert_eq!(ev("(next [1 2 3])"), "(2 3)");
         assert_eq!(ev("(count {:a 1 :b 2})"), "2");
