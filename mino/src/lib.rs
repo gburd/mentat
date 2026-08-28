@@ -14,3 +14,4 @@ pub mod reader;
 pub mod env;
 pub mod error;
 pub mod eval;
+pub mod prim;

@@ -8,13 +8,18 @@ use crate::error::{throw_str, Throw};
 use crate::reader::read_all;
 use crate::value::Value;
 
+pub mod func;
+pub mod special;
+
 pub struct Interp {
     pub root: Env,
 }
 
 impl Interp {
     pub fn new() -> Self {
-        Interp { root: Env::root() }
+        let root = Env::root();
+        crate::prim::install_core(&root);
+        Interp { root }
     }
 
     /// Read ALL forms from `src`, eval each in the root env, return the last.
@@ -31,14 +36,17 @@ impl Interp {
 
     pub fn eval(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
         match form {
-            // Self-evaluating scalars.
+            // Self-evaluating: scalars plus already-built fns/prims/vars.
             Value::Nil
             | Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
             | Value::Char(_)
             | Value::Str(_)
-            | Value::Keyword(_) => Ok(form.clone()),
+            | Value::Keyword(_)
+            | Value::Fn(_)
+            | Value::Prim(_)
+            | Value::Var(_) => Ok(form.clone()),
 
             // Phase 2: eval collection elements (needs fn calls first).
             Value::Vector(_) | Value::Map(_) | Value::Set(_) => Ok(form.clone()),
@@ -63,16 +71,34 @@ impl Interp {
                     "if" => return self.eval_if(rest, env),
                     "do" => return self.eval_implicit_do(rest, env),
                     "quote" => return self.eval_quote(rest),
+                    "def" => {
+                        let args = collect(rest);
+                        return special::eval_def(self, &args, env);
+                    }
+                    "fn" | "fn*" => {
+                        let args = collect(rest);
+                        return special::eval_fn(self, &args, env);
+                    }
                     _ => {}
                 }
             }
         }
 
-        // Task 1.2 adds fn/prim application here.
-        Err(throw_str(&format!(
-            "unknown form / not callable: {}",
-            crate::printer::print_str(form)
-        )))
+        // Application: eval the head, then args left-to-right, then apply.
+        let callee = self.eval(head, env)?;
+        if !matches!(callee, Value::Fn(_) | Value::Prim(_)) {
+            return Err(throw_str(&format!(
+                "not callable: {}",
+                crate::printer::print_str(head)
+            )));
+        }
+        let mut args = Vec::new();
+        let mut cur = rest;
+        while let Value::Cons(cell) = cur {
+            args.push(self.eval(&cell.0, env)?);
+            cur = &cell.1;
+        }
+        func::apply(self, &callee, &args)
     }
 
     /// `(if cond then else?)`: eval cond, then-branch when truthy else
@@ -127,6 +153,17 @@ fn pop(list: &Value) -> (Option<Value>, Value) {
         Value::Cons(cell) => (Some(cell.0.clone()), cell.1.clone()),
         _ => (None, Value::Nil),
     }
+}
+
+/// Collect a proper cons list's elements into a Vec (special-form args).
+fn collect(list: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut cur = list;
+    while let Value::Cons(cell) = cur {
+        out.push(cell.0.clone());
+        cur = &cell.1;
+    }
+    out
 }
 
 #[cfg(test)]

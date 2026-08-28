@@ -2,6 +2,7 @@
 //! Ports `src/values/layout.h` + `val.c`. Immediates + heap `Gc<T>` cells.
 //! Later phases extend this enum (Vector/Map/Set/Fn/Prim/Handle).
 
+use crate::eval::func::Closure;
 use gc::{Finalize, Gc, Trace};
 
 #[derive(Trace, Finalize, Clone)]
@@ -21,7 +22,27 @@ pub enum Value {
     // preserved for printing until then. (Set dedup on read: not yet — Phase 2.)
     Map(Gc<Vec<(Value, Value)>>),
     Set(Gc<Vec<Value>>),
+    // Closures (`fn`) and built-in primitives. Ports MINO_FN / native prim.
+    Fn(Gc<Closure>),
+    Prim(Prim),
+    // A namespace var, as returned by `def`. Prints `#'ns/name`. The full
+    // var cell (root binding, metadata, dynamic) lands with namespaces in
+    // Phase 4; Task 1.2 only needs its identity for def's return value.
+    Var(crate::symbol::Symbol),
     // later phases extend this enum
+}
+
+/// A native primitive: a Rust fn pointer plus its name (for printing).
+pub type PrimFn = fn(&mut crate::eval::Interp, &[Value]) -> Result<Value, crate::error::Throw>;
+
+/// Newtype wrapping a `PrimFn` so `Value` can derive `Trace`: a bare fn
+/// pointer holds no Gc roots, so its trace is empty.
+#[derive(Clone, Copy)]
+pub struct Prim(pub PrimFn, pub &'static str);
+
+impl Finalize for Prim {}
+unsafe impl Trace for Prim {
+    gc::unsafe_empty_trace!();
 }
 
 impl Value {

@@ -66,6 +66,20 @@ fn print_into(s: &mut String, v: &Value) {
             }
             s.push('}');
         }
+        // print.c: fns print `#<fn>` (or `#<fn name>`), prims `#<prim name>`.
+        Value::Fn(closure) => match &closure.name {
+            Some(n) => {
+                let _ = write!(s, "#<fn {n}>");
+            }
+            None => s.push_str("#<fn>"),
+        },
+        Value::Prim(p) => {
+            let _ = write!(s, "#<prim {}>", p.1);
+        }
+        // def returns a var, printed `#'ns/name`.
+        Value::Var(sym) => {
+            let _ = write!(s, "#'{sym}");
+        }
     }
 }
 
