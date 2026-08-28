@@ -219,6 +219,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Set(_) => "set",
         Value::Fn(c) if c.is_macro => "macro",
         Value::Fn(_) | Value::Prim(_) => "fn",
+        Value::Regex(_) => "regex",
         Value::Var(_) => "var",
         Value::Recur(_) => "recur",
     };
@@ -226,10 +227,15 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 }
 
 /// `(mino-installed? kw)` — whether an optional mino subsystem is present.
-/// The port ships none of the optional host subsystems yet (bignum/net/etc.),
-/// so always false. ponytail: no host subsystems; revisit if a phase adds one.
-pub fn mino_installed_p(_it: &mut Interp, _args: &[Value]) -> Result<Value, Throw> {
-    Ok(Value::Bool(false))
+/// The port ships the regex subsystem (Task 5.2); the rest of the optional
+/// host subsystems (bignum/net/etc.) are not ported yet.
+/// ponytail: only :regex is on; add subsystems as later phases land them.
+pub fn mino_installed_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let installed = matches!(
+        args.first(),
+        Some(Value::Keyword(k)) if &*k.name == "regex"
+    );
+    Ok(Value::Bool(installed))
 }
 
 // Runtime gensym counter, distinct from the reader's syntax-quote counter

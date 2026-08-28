@@ -315,6 +315,53 @@ impl<'a> Reader<'a> {
                     cons(Value::Vector(Gc::new(pv)), cons(body, Value::EmptyList)),
                 ))
             }
+            // `#"..."` regex literal: read the raw body verbatim (NO string
+            // escape processing -- `\d` stays two chars) up to the closing
+            // quote, honoring `\"` as an escaped quote so a pattern can match
+            // a literal quote. Ports read.c's regex reader. Compilation is
+            // deferred to re-find/re-matches (mino compiles at match time).
+            Some(b'"') => {
+                self.i += 2; // consume `#"`
+                let mut bytes: Vec<u8> = Vec::new();
+                loop {
+                    match self.s.get(self.i).copied() {
+                        None => return Err(ReadError::Eof),
+                        Some(b'"') => {
+                            self.i += 1;
+                            break;
+                        }
+                        Some(b'\\') => {
+                            // A backslash is KEPT verbatim (the engine, not the
+                            // reader, interprets `\d` etc.). `\"` additionally
+                            // means the quote does NOT terminate the literal:
+                            // both the `\` and the `"` land in the source. mino
+                            // verified: `(str #"x[\"y\"]")` => `x[\"y\"]`.
+                            match self.s.get(self.i + 1).copied() {
+                                Some(b'"') => {
+                                    bytes.push(b'\\');
+                                    bytes.push(b'"');
+                                    self.i += 2;
+                                }
+                                Some(_) => {
+                                    bytes.push(b'\\');
+                                    self.i += 1;
+                                }
+                                None => return Err(ReadError::Eof),
+                            }
+                        }
+                        Some(byte) => {
+                            // Copy one byte; multibyte UTF-8 (e.g. `[A-Ã]`)
+                            // is preserved because we only special-case ASCII
+                            // `"` and `\`.
+                            bytes.push(byte);
+                            self.i += 1;
+                        }
+                    }
+                }
+                let src = String::from_utf8(bytes)
+                    .map_err(|_| ReadError::Malformed("regex literal is not valid UTF-8".into()))?;
+                Ok(Value::Regex(Gc::new(crate::value::RegexVal::new(src))))
+            }
             Some(c) => Err(ReadError::Malformed(format!(
                 "unsupported reader dispatch macro #{}",
                 c as char

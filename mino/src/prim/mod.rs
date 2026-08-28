@@ -3,6 +3,7 @@
 pub mod collections;
 pub mod numeric;
 pub mod reflection;
+pub mod regex;
 pub mod string;
 
 use crate::env::Env;
@@ -109,6 +110,14 @@ pub fn install_core(root: &Env) {
     // wraps them with char/regex dispatch under the public bare names.
     register(root, "-string-replace", st::replace);
     register(root, "-string-replace-first", st::replace_first);
+
+    // Regex prims (Task 5.2, prim/regex.c). re-seq/re-matcher/re-groups and
+    // the matcher-aware re-find arity are defined in core.clj on top of these.
+    use regex as rx;
+    register(root, "re-pattern", rx::re_pattern);
+    register(root, "re-find", rx::re_find);
+    register(root, "re-matches", rx::re_matches);
+    register(root, "re-find-from", rx::re_find_from);
 }
 
 /// The eager collection/sequence prims the port implements natively. Split

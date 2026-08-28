@@ -30,6 +30,12 @@ pub enum Value {
     // Closures (`fn`) and built-in primitives. Ports MINO_FN / native prim.
     Fn(Gc<Closure>),
     Prim(Prim),
+    // A compiled regex literal `#"..."` (or the result of `re-pattern`).
+    // Holds the pattern SOURCE verbatim plus a lazily-compiled matcher. mino
+    // compiles at match time (re-find/re-matches), not at construction, so an
+    // invalid pattern surfaces as a throw from re-find, not from the reader or
+    // re-pattern. Equality is by identity (Clojure: `(= #"a" #"a")` is false).
+    Regex(Gc<RegexVal>),
     // A namespace var, as returned by `def`. Prints `#'ns/name`. The full
     // var cell (root binding, metadata, dynamic) lands with namespaces in
     // Phase 4; Task 1.2 only needs its identity for def's return value.
@@ -52,6 +58,27 @@ pub struct Prim(pub PrimFn, pub &'static str);
 
 impl Finalize for Prim {}
 unsafe impl Trace for Prim {
+    gc::unsafe_empty_trace!();
+}
+
+/// A regex value: the pattern SOURCE (verbatim, as read) plus a lazily
+/// compiled `fancy_regex::Regex` cached on first use. mino compiles the
+/// pattern only when a match is attempted, so `re-pattern`/the reader never
+/// fail on a bad pattern; `re-find`/`re-matches` do. Holds no Gc pointers, so
+/// its trace is empty.
+pub struct RegexVal {
+    pub source: String,
+    pub compiled: std::cell::OnceCell<Result<fancy_regex::Regex, String>>,
+}
+
+impl RegexVal {
+    pub fn new(source: String) -> Self {
+        Self { source, compiled: std::cell::OnceCell::new() }
+    }
+}
+
+impl Finalize for RegexVal {}
+unsafe impl Trace for RegexVal {
     gc::unsafe_empty_trace!();
 }
 

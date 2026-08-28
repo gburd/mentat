@@ -247,6 +247,7 @@ impl Interp {
             | Value::Keyword(_)
             | Value::Fn(_)
             | Value::Prim(_)
+            | Value::Regex(_)
             | Value::Var(_) => Ok(form.clone()),
 
             // A `recur` signal only appears here when re-evaluated as data
@@ -328,6 +329,12 @@ impl Interp {
                 match &*sym.name {
                     "if" => return self.eval_if(rest, env),
                     "do" => return self.eval_do(rest, env),
+                    // `(lazy-seq body...)`: the port has no deferred seqs
+                    // (Phase 5), so evaluate the body eagerly like an implicit
+                    // `do`. Correct for finite seqs (re-seq over a string);
+                    // an infinite lazy-seq would not terminate here.
+                    // ponytail: eager lazy-seq; real deferral lands in Phase 5.
+                    "lazy-seq" => return self.eval_do(rest, env),
                     "quote" => return self.eval_quote(rest),
                     "def" => {
                         let args = collect(rest);
@@ -715,6 +722,7 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Map(_) => "map",
         Value::Set(_) => "set",
         Value::Fn(_) | Value::Prim(_) => "fn",
+        Value::Regex(_) => "regex",
         Value::Var(_) => "var",
         Value::Recur(_) => "recur",
     }

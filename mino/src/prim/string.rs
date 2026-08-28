@@ -26,6 +26,8 @@ fn arg_to_str(out: &mut String, a: &Value) {
         Value::Str(s) => out.push_str(s),
         Value::Nil => {}
         Value::Char(c) => out.push(*c),
+        // (str #"a\d+") => the pattern source, unescaped (verified: mino).
+        Value::Regex(r) => out.push_str(&r.source),
         other => out.push_str(&print_str(other)),
     }
 }
@@ -224,8 +226,9 @@ pub fn split(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     };
     let sep = match &args[1] {
         Value::Str(sep) => sep.as_str(),
-        // Regex separator: Task 5.2.
-        _ => return Err(throw_str("split: regex separators are not supported yet (Task 5.2)")),
+        // Regex separator (Task 5.2): delegate to a regex split.
+        pat @ Value::Regex(_) => return regex_split(s, pat, limit),
+        _ => return Err(throw_str("split: separator must be a string or regex")),
     };
     let pieces = split_string(s, sep, limit);
     let pv = PVec::from_vec(pieces.into_iter().map(|p| Value::Str(Gc::new(p))).collect());
@@ -235,24 +238,28 @@ pub fn split(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// `(clojure.string/replace s match repl)`: STRING match, single pass, all
 /// occurrences. Char/regex `match` dispatch lives in the clojure.string
 /// wrapper (char -> string here; regex -> Task 5.2 throw).
-pub fn replace(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    str_replace(args, false)
+pub fn replace(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    str_replace(it, args, false)
 }
 
 /// `(clojure.string/replace-first s match repl)`: STRING match, first only.
-pub fn replace_first(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    str_replace(args, true)
+pub fn replace_first(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    str_replace(it, args, true)
 }
 
-fn str_replace(args: &[Value], first_only: bool) -> Result<Value, Throw> {
+fn str_replace(it: &mut Interp, args: &[Value], first_only: bool) -> Result<Value, Throw> {
     if args.len() != 3 {
         return Err(throw_str("str-replace requires three arguments"));
     }
     let s = as_str(&args[0], "str-replace: first argument")?;
+    // Regex match dispatches to the regex replacer, which honors `$N`
+    // template replacements, `\$`/`\\` escapes, and function replacements.
+    if let Value::Regex(_) = &args[1] {
+        return regex_replace(it, s, &args[1], &args[2], first_only);
+    }
     let m = match &args[1] {
         Value::Str(m) => m.as_str(),
-        // Regex match: Task 5.2.
-        _ => return Err(throw_str("str-replace: regex match is not supported yet (Task 5.2)")),
+        _ => return Err(throw_str("str-replace: match must be a string or regex")),
     };
     let r = match &args[2] {
         Value::Str(r) => r.as_str(),
@@ -272,6 +279,204 @@ fn str_replace(args: &[Value], first_only: bool) -> Result<Value, Throw> {
 }
 
 // ---- helpers ----
+// ---- regex-backed split/replace (Task 5.2) ----
+
+use crate::eval::func::apply;
+use crate::prim::regex::compile_for;
+
+/// `(clojure.string/split s #"re" limit)`: JVM `Pattern.split` semantics.
+/// Emits the substrings between successive non-overlapping matches. A
+/// zero-width match at position 0 is ignored (Java rule), so `#""` on "abc"
+/// yields per-char pieces. limit 0 trims trailing empties; <0 keeps them; >0
+/// caps the piece count with the last piece absorbing the rest.
+fn regex_split(s: &str, pat: &Value, limit: i64) -> Result<Value, Throw> {
+    let re = compile_for(pat, "split")?;
+    let mut pieces: Vec<String> = Vec::new();
+    let mut last_end = 0usize;
+    let mut search = 0usize;
+    while search <= s.len() {
+        if limit > 0 && pieces.len() as i64 + 1 == limit {
+            break;
+        }
+        let m = match re.find_from_pos(s, search).map_err(|_| throw_str("split: regex error"))? {
+            Some(m) => m,
+            None => break,
+        };
+        let (ms, me) = (m.start(), m.end());
+        // Ignore a zero-width match at the very start of the string (Java).
+        if ms == me {
+            if ms == 0 {
+                search = next_char_boundary(s, search);
+                continue;
+            }
+            // Zero-width match elsewhere: split before this position.
+            pieces.push(s[last_end..ms].to_string());
+            last_end = ms;
+            search = next_char_boundary(s, ms);
+            continue;
+        }
+        pieces.push(s[last_end..ms].to_string());
+        last_end = me;
+        search = me;
+    }
+    pieces.push(s[last_end..].to_string());
+    if limit == 0 {
+        while pieces.last().is_some_and(|p| p.is_empty()) {
+            pieces.pop();
+        }
+    }
+    let pv = PVec::from_vec(pieces.into_iter().map(|p| Value::Str(Gc::new(p))).collect());
+    Ok(Value::Vector(Gc::new(pv)))
+}
+
+fn next_char_boundary(s: &str, mut i: usize) -> usize {
+    i += 1;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// `(clojure.string/replace s #"re" repl)` / replace-first. `repl` is either a
+/// `$N` template string (with `\$`/`\\` escapes; a `$N` past the group count
+/// throws MCT001) or a function called per match with the whole-match string
+/// (no groups) or `[whole g1 ...]` (groups). Zero-width matches are replaced at
+/// every position, matching JVM `replaceAll`.
+fn regex_replace(
+    it: &mut Interp,
+    s: &str,
+    pat: &Value,
+    repl: &Value,
+    first_only: bool,
+) -> Result<Value, Throw> {
+    let re = compile_for(pat, "replace")?;
+    let mut out = String::new();
+    let mut last_end = 0usize;
+    let mut search = 0usize;
+    loop {
+        let m = match re.captures_from_pos(s, search).map_err(|_| throw_str("replace: regex error"))? {
+            Some(caps) => caps,
+            None => break,
+        };
+        let whole = m.get(0).unwrap();
+        let (ms, me) = (whole.start(), whole.end());
+        out.push_str(&s[last_end..ms]);
+        let replacement = build_replacement(it, &m, repl)?;
+        out.push_str(&replacement);
+        last_end = me;
+        if first_only {
+            break;
+        }
+        // Advance the scan; step one char past a zero-width match so we make
+        // progress and emit the skipped char.
+        if ms == me {
+            let step = next_char_boundary(s, me);
+            out.push_str(&s[me..step.min(s.len())]);
+            last_end = step.min(s.len());
+            if step > s.len() {
+                break;
+            }
+            search = step;
+        } else {
+            search = me;
+        }
+        if search > s.len() {
+            break;
+        }
+    }
+    out.push_str(&s[last_end..]);
+    Ok(Value::Str(Gc::new(out)))
+}
+
+/// Compute one match's replacement text: expand a `$N` template or call a fn.
+fn build_replacement(
+    it: &mut Interp,
+    caps: &fancy_regex::Captures,
+    repl: &Value,
+) -> Result<String, Throw> {
+    let n_groups = caps.len() - 1;
+    match repl {
+        Value::Str(tmpl) => expand_template(tmpl, caps),
+        Value::Fn(_) | Value::Prim(_) => {
+            // The match arg mirrors re-find: string (no groups) or
+            // [whole g1 ...] (groups).
+            let arg = if n_groups == 0 {
+                Value::Str(Gc::new(caps.get(0).unwrap().as_str().to_string()))
+            } else {
+                let mut items = Vec::with_capacity(caps.len());
+                for i in 0..caps.len() {
+                    items.push(match caps.get(i) {
+                        Some(mm) => Value::Str(Gc::new(mm.as_str().to_string())),
+                        None => Value::Nil,
+                    });
+                }
+                Value::Vector(Gc::new(PVec::from_vec(items)))
+            };
+            let result = apply(it, repl, &[arg])?;
+            let mut buf = String::new();
+            arg_to_str(&mut buf, &result);
+            Ok(buf)
+        }
+        _ => Err(throw_str("replace: replacement must be a string or function")),
+    }
+}
+
+/// Expand a `$N` template: `$0` whole match, `$1`.. groups; `\$`/`\\` are
+/// literal `$`/`\`. A `$N` past the last group throws MCT001 (matches mino).
+fn expand_template(tmpl: &str, caps: &fancy_regex::Captures) -> Result<String, Throw> {
+    let b = tmpl.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    let n_groups = caps.len() - 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => {
+                // `\X` -> literal X (Java escapes `\$` and `\\`).
+                if i + 1 < b.len() {
+                    out.push(b[i + 1] as char);
+                    i += 2;
+                } else {
+                    out.push('\\');
+                    i += 1;
+                }
+            }
+            b'$' => {
+                // `$N`: read the digit run.
+                let mut j = i + 1;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j == i + 1 {
+                    // Bare `$` with no digits: literal `$`.
+                    out.push('$');
+                    i += 1;
+                    continue;
+                }
+                let num: usize = tmpl[i + 1..j].parse().unwrap_or(usize::MAX);
+                if num > n_groups {
+                    return Err(throw_str_mct(
+                        "str-replace: replacement references missing capture group",
+                    ));
+                }
+                if let Some(m) = caps.get(num) {
+                    out.push_str(m.as_str());
+                }
+                i = j;
+            }
+            _ => {
+                // Copy one UTF-8 char.
+                let ch = tmpl[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn throw_str_mct(msg: &str) -> Throw {
+    crate::error::throw_classified("eval/contract", "MCT001", msg)
+}
 
 fn ascii_upper(c: char) -> char {
     c.to_ascii_uppercase()
