@@ -25,6 +25,10 @@ pub struct Closure {
     pub arities: Vec<Arity>,
     pub env: Env,
     pub name: Option<Symbol>,
+    // A macro is a fn flagged as macro (mino: the MINO_MACRO value type). The
+    // evaluator EXPANDS a macro call with unevaluated argument forms instead
+    // of calling it as a function. defmacro sets this true.
+    pub is_macro: bool,
 }
 
 /// Build a `Closure` from the args of an `(fn ...)` form.
@@ -67,6 +71,7 @@ pub fn make_fn(args: &[Value], env: &Env) -> Result<Value, Throw> {
         arities,
         env: env.clone(),
         name,
+        is_macro: false,
     })))
 }
 
@@ -99,7 +104,7 @@ fn parse_arity(params: &Value, body: &[Value]) -> Result<Arity, Throw> {
 pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, Throw> {
     match callee {
         Value::Prim(p) => (p.0)(it, args),
-        Value::Fn(closure) => apply_closure(it, closure, args),
+        Value::Fn(closure) => apply_closure(it, closure, callee, args),
         _ => Err(throw_str(&format!(
             "not callable: {}",
             crate::printer::print_str(callee)
@@ -107,7 +112,12 @@ pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, T
     }
 }
 
-fn apply_closure(it: &mut Interp, closure: &Closure, args: &[Value]) -> Result<Value, Throw> {
+fn apply_closure(
+    it: &mut Interp,
+    closure: &Closure,
+    callee: &Value,
+    args: &[Value],
+) -> Result<Value, Throw> {
     // Pick the arity whose fixed count matches exactly, else a variadic one
     // whose fixed count the args can cover.
     let arity = closure
@@ -133,6 +143,12 @@ fn apply_closure(it: &mut Interp, closure: &Closure, args: &[Value]) -> Result<V
     let mut cur_args: Vec<Value> = args.to_vec();
     loop {
         let frame = closure.env.child();
+        // Named fn: bind the self-name in the body scope so recursive calls
+        // like (fn f [n] ... (f ...)) resolve (mino binds the fn name in its
+        // own frame). Anonymous fns skip this.
+        if let Some(name) = &closure.name {
+            frame.set(name.clone(), callee.clone());
+        }
         crate::eval::bindings::bind_params(
             it,
             &frame,
@@ -230,5 +246,18 @@ mod tests {
         // oracle: (def x 5) => #'user/x
         assert_eq!(print_str(&it.eval_str("(def x 5)").unwrap()), "#'user/x");
         assert_eq!(print_str(&it.eval_str("x").unwrap()), "5");
+    }
+
+    #[test]
+    fn named_fn_self_recursion() {
+        let mut it = Interp::new();
+        // oracle: ((fn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) 5) => 120
+        assert_eq!(
+            print_str(
+                &it.eval_str("((fn fact [n] (if (< n 2) 1 (* n (fact (dec n))))) 5)")
+                    .unwrap()
+            ),
+            "120"
+        );
     }
 }

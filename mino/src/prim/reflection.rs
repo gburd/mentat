@@ -10,6 +10,7 @@ use crate::eval::Interp;
 use crate::symbol::Symbol;
 use crate::value::Value;
 use gc::Gc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn kw(name: &str) -> Value {
     Value::Keyword(Symbol::plain(name))
@@ -110,5 +111,43 @@ fn one_arg<'a>(args: &'a [Value], name: &str) -> Result<&'a Value, Throw> {
             "MAR001",
             &format!("{name} requires one argument"),
         )),
+    }
+}
+
+// Runtime gensym counter, distinct from the reader's syntax-quote counter
+// (mino keeps both on S but they never share a name space in practice).
+static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// `(gensym)` / `(gensym prefix)` — a fresh unqualified symbol. Ports
+/// `prim_gensym`: default prefix "G__", suffix a monotonic counter.
+pub fn gensym(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let prefix = match args {
+        [] => "G__".to_string(),
+        [Value::Str(s)] => (**s).clone(),
+        [Value::Sym(s)] => s.to_string(),
+        [_] => return Err(throw_classified("type", "MTY001", "gensym: prefix must be a string or symbol")),
+        _ => return Err(throw_classified("eval/arity", "MAR001", "gensym takes zero or one argument")),
+    };
+    let n = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(Value::Sym(Symbol::plain(&format!("{prefix}{n}"))))
+}
+
+/// `(macroexpand-1 form)` — expand `form` once if its head is a macro, else
+/// return it unchanged. Ports `macroexpand1` (eval.c).
+pub fn macroexpand_1(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let form = one_arg(args, "macroexpand-1")?.clone();
+    it.macroexpand1(&form)
+}
+
+/// `(macroexpand form)` — expand repeatedly until the head is no longer a
+/// macro. Ports `macroexpand_all` (eval.c).
+pub fn macroexpand(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let mut form = one_arg(args, "macroexpand")?.clone();
+    loop {
+        let (next, expanded) = it.macroexpand1_flagged(&form)?;
+        if !expanded {
+            return Ok(form);
+        }
+        form = next;
     }
 }

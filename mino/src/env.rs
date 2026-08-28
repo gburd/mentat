@@ -37,7 +37,20 @@ impl Env {
     }
 
     /// Look up `sym`, walking the parent chain. `None` if unbound anywhere.
+    /// A namespaced symbol falls back to its bare name: the port has no ns
+    /// tables, so syntax-quote's `clojure.core/cond` / `user/x` output must
+    /// resolve against the single flat env keyed by bare names.
     pub fn get(&self, sym: &Symbol) -> Option<Value> {
+        if let Some(v) = self.get_exact(sym) {
+            return Some(v);
+        }
+        if sym.ns.is_some() {
+            return self.get_exact(&Symbol::plain(&sym.name));
+        }
+        None
+    }
+
+    fn get_exact(&self, sym: &Symbol) -> Option<Value> {
         let mut cur = &self.0;
         loop {
             if let Some(v) = cur.bindings.borrow().get(sym) {
@@ -46,6 +59,24 @@ impl Env {
             match &cur.parent {
                 Some(p) => cur = p,
                 None => return None,
+            }
+        }
+    }
+
+    /// True if `sym` is bound in a NON-root frame (a lexical local). Used by
+    /// syntax-quote to leave macro-local args (let/fn bindings) unqualified.
+    pub fn is_local(&self, sym: &Symbol) -> bool {
+        let mut cur = &self.0;
+        loop {
+            match &cur.parent {
+                // Root frame reached: bindings here are defs/prims, not locals.
+                None => return false,
+                Some(p) => {
+                    if cur.bindings.borrow().contains_key(sym) {
+                        return true;
+                    }
+                    cur = p;
+                }
             }
         }
     }

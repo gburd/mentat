@@ -93,4 +93,7 @@ pub fn install_core(root: &Env) {
     register(root, "ex-info", r::ex_info);
     register(root, "ex-message", r::ex_message);
     register(root, "ex-data", r::ex_data);
+    register(root, "gensym", r::gensym);
+    register(root, "macroexpand-1", r::macroexpand_1);
+    register(root, "macroexpand", r::macroexpand);
 }

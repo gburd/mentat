@@ -8,6 +8,21 @@ use crate::symbol::Symbol;
 use crate::value::Value;
 use gc::Gc;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Global monotonic gensym counter (mino keeps this in S->gensym_counter).
+// Two separate syntax-quote reads never collide because each `foo#` maps to
+// a fresh suffix drawn from this counter.
+static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// One syntax-quote gensym scope. `suppress` frames (pushed by ~ / ~@) stop
+// `foo#` rewriting inside unquotes; non-suppress frames (pushed by `) map
+// each distinct `foo#` name to one `foo__N__auto__` gensym for the frame's
+// lifetime, matching mino's per-syntax-quote GENSYM_ENV (read.c).
+struct QqFrame {
+    suppress: bool,
+    entries: Vec<(String, String)>, // (name-without-#, replacement)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadError {
@@ -33,7 +48,7 @@ impl std::error::Error for ReadError {}
 /// Read one form. Returns the value and the number of bytes consumed
 /// (leading whitespace/comments up to and including the form).
 pub fn read_one(src: &str) -> Result<(Value, usize), ReadError> {
-    let mut r = Reader { s: src.as_bytes(), i: 0 };
+    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new() };
     r.skip_ws();
     let v = r.read_form()?;
     Ok((v, r.i))
@@ -41,7 +56,7 @@ pub fn read_one(src: &str) -> Result<(Value, usize), ReadError> {
 
 /// Read every form in `src`.
 pub fn read_all(src: &str) -> Result<Vec<Value>, ReadError> {
-    let mut r = Reader { s: src.as_bytes(), i: 0 };
+    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new() };
     let mut out = Vec::new();
     loop {
         r.skip_ws();
@@ -55,6 +70,8 @@ pub fn read_all(src: &str) -> Result<Vec<Value>, ReadError> {
 struct Reader<'a> {
     s: &'a [u8],
     i: usize,
+    // Active syntax-quote gensym frames (read.c qq_gensym_top chain).
+    qq: Vec<QqFrame>,
 }
 
 // read.c is_ws: space, tab, newline, CR, and comma-as-whitespace.
@@ -107,7 +124,15 @@ impl<'a> Reader<'a> {
             b')' | b']' | b'}' => Err(ReadError::Unexpected(c as char)),
             b'"' => self.read_string(),
             b'\'' => self.read_wrap("quote"),
-            b'`' => self.read_wrap("quasiquote"),
+            b'`' => {
+                // Push a gensym frame for the duration of the quoted form so
+                // `foo#` inside it maps to a per-read auto-gensym (read.c).
+                self.i += 1;
+                self.qq.push(QqFrame { suppress: false, entries: Vec::new() });
+                let r = self.wrap_next("quasiquote");
+                self.qq.pop();
+                r
+            }
             b'@' => self.read_wrap("deref"),
             b'~' => {
                 self.i += 1;
@@ -117,7 +142,16 @@ impl<'a> Reader<'a> {
                 } else {
                     "unquote"
                 };
-                self.wrap_next(name)
+                // Inside a syntax-quote, ~ / ~@ suppress `foo#` rewriting
+                // for the unquoted form (read.c pushes a suppress frame).
+                if self.qq.is_empty() {
+                    self.wrap_next(name)
+                } else {
+                    self.qq.push(QqFrame { suppress: true, entries: Vec::new() });
+                    let r = self.wrap_next(name);
+                    self.qq.pop();
+                    r
+                }
             }
             b'#' => self.read_dispatch(),
             b'\\' => self.read_char_literal(),
@@ -376,8 +410,37 @@ impl<'a> Reader<'a> {
         if bytes.get(d).is_some_and(|c| c.is_ascii_digit()) {
             return Err(ReadError::Malformed(format!("invalid number: {tok}")));
         }
+        // Inside an active (non-suppress) syntax-quote frame, a trailing-#
+        // symbol resolves to its per-read auto-gensym (read.c
+        // qq_gensym_resolve): `foo#` -> `foo__N__auto__`, same name -> same
+        // gensym within the frame.
+        if let Some(g) = self.qq_gensym_resolve(tok) {
+            return Ok(Value::Sym(Symbol::plain(&g)));
+        }
         // Symbol.
         Ok(Value::Sym(parse_symbol(tok)?))
+    }
+
+    // read.c qq_gensym_resolve: rewrite `foo#` inside a syntax-quote. Returns
+    // None (plain-symbol path) when there is no active non-suppress frame,
+    // the token is not a trailing-# name, or it is namespaced.
+    fn qq_gensym_resolve(&mut self, tok: &str) -> Option<String> {
+        let frame = self.qq.last_mut()?;
+        if frame.suppress {
+            return None;
+        }
+        let bytes = tok.as_bytes();
+        if bytes.len() < 2 || bytes[bytes.len() - 1] != b'#' || tok.contains('/') {
+            return None;
+        }
+        let base = &tok[..tok.len() - 1];
+        if let Some((_, repl)) = frame.entries.iter().find(|(n, _)| n == base) {
+            return Some(repl.clone());
+        }
+        let n = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+        let repl = format!("{base}__{n}__auto__");
+        frame.entries.push((base.to_string(), repl.clone()));
+        Some(repl)
     }
 
     // Decode and consume the next UTF-8 codepoint at self.i.
@@ -488,6 +551,27 @@ mod tests {
             print_str(&read_one("~@x").unwrap().0),
             "(unquote-splicing x)"
         );
+    }
+
+    #[test]
+    fn syntax_quote_autogensym() {
+        // Inside a syntax-quote, `foo#` rewrites to `foo__N__auto__`, and the
+        // same name maps to the same gensym within one read (matches the
+        // mino binary: `(x# x#) => (x__N__auto__ x__N__auto__)).
+        let printed = print_str(&read_one("`(x# x#)").unwrap().0);
+        // (quasiquote (x__N__auto__ x__N__auto__))
+        assert!(printed.contains("__auto__"), "no gensym: {printed}");
+        let inner = &printed["(quasiquote (".len()..printed.len() - 2];
+        let (a, b) = inner.split_once(' ').unwrap();
+        assert_eq!(a, b, "same name -> same gensym: {printed}");
+        assert!(a.starts_with("x__") && a.ends_with("__auto__"), "{a}");
+
+        // Outside any syntax-quote, `x#` is a plain symbol (no rewrite).
+        assert_eq!(print_str(&read_one("'x#").unwrap().0), "(quote x#)");
+
+        // `~` suppresses gensym rewriting for the unquoted form.
+        let s = print_str(&read_one("`(a ~x#)").unwrap().0);
+        assert!(s.contains("x#") && !s.contains("__auto__"), "suppress: {s}");
     }
 
     #[test]
