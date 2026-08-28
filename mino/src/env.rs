@@ -11,6 +11,12 @@ use std::collections::HashMap;
 pub struct EnvInner {
     parent: Option<Gc<EnvInner>>,
     bindings: GcCell<HashMap<Symbol, Value>>,
+    /// Namespace aliases (`alias -> target-ns`), e.g. `str -> clojure.string`
+    /// from `(require '[clojure.string :as str])`. Only the root frame carries
+    /// them; namespaced-symbol lookup retargets an aliased ns before the
+    /// bare-name fallback. Ports the per-ns alias table (`ns_env.c`) as a
+    /// single flat map, enough for the flat-env resolution the port uses.
+    aliases: GcCell<HashMap<String, String>>,
 }
 
 // HashMap<Symbol, Value>: Symbol is empty-trace, Value derives Trace, so gc's
@@ -25,6 +31,7 @@ impl Env {
         Env(Gc::new(EnvInner {
             parent: None,
             bindings: GcCell::new(HashMap::new()),
+            aliases: GcCell::new(HashMap::new()),
         }))
     }
 
@@ -33,21 +40,55 @@ impl Env {
         Env(Gc::new(EnvInner {
             parent: Some(self.0.clone()),
             bindings: GcCell::new(HashMap::new()),
+            aliases: GcCell::new(HashMap::new()),
         }))
     }
 
     /// Look up `sym`, walking the parent chain. `None` if unbound anywhere.
-    /// A namespaced symbol falls back to its bare name: the port has no ns
-    /// tables, so syntax-quote's `clojure.core/cond` / `user/x` output must
-    /// resolve against the single flat env keyed by bare names.
+    /// A namespaced symbol resolves in order: exact `ns/name`; then, if `ns`
+    /// is a registered alias, `target-ns/name`; then the bare name. The port
+    /// has no per-ns var tables, so most namespaced spellings collapse to the
+    /// bare name, but aliased qualified names (`str/replace` ->
+    /// `clojure.string/replace`) must reach their qualified binding *before*
+    /// the bare fallback, since bare `replace` is clojure.core's collection fn.
     pub fn get(&self, sym: &Symbol) -> Option<Value> {
         if let Some(v) = self.get_exact(sym) {
             return Some(v);
         }
-        if sym.ns.is_some() {
+        if let Some(ns) = &sym.ns {
+            if let Some(target) = self.alias_target(ns) {
+                if let Some(v) = self.get_exact(&Symbol::namespaced(&target, &sym.name)) {
+                    return Some(v);
+                }
+            }
             return self.get_exact(&Symbol::plain(&sym.name));
         }
         None
+    }
+
+    /// Record `alias -> target` on the root frame.
+    pub fn alias(&self, alias: &str, target: &str) {
+        let mut cur = &self.0;
+        while let Some(p) = &cur.parent {
+            cur = p;
+        }
+        cur.aliases
+            .borrow_mut()
+            .insert(alias.to_string(), target.to_string());
+    }
+
+    /// Resolve an alias to its target ns (root frame), if any.
+    fn alias_target(&self, alias: &str) -> Option<String> {
+        let mut cur = &self.0;
+        loop {
+            if let Some(t) = cur.aliases.borrow().get(alias) {
+                return Some(t.clone());
+            }
+            match &cur.parent {
+                Some(p) => cur = p,
+                None => return None,
+            }
+        }
     }
 
     fn get_exact(&self, sym: &Symbol) -> Option<Value> {

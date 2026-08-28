@@ -10,7 +10,14 @@ use crate::symbol::Symbol;
 use crate::value::{Prim, PrimFn, Value};
 
 fn register(root: &Env, name: &'static str, f: PrimFn) {
-    root.set(Symbol::plain(name), Value::Prim(Prim(f, name)));
+    // A `ns/name` spelling registers a namespaced key (isolated from the bare
+    // clojure.core name); otherwise a plain bare key. `/` alone (the division
+    // prim) is not a namespace separator.
+    let sym = match name.rsplit_once('/') {
+        Some((ns, n)) if !ns.is_empty() && !n.is_empty() => Symbol::namespaced(ns, n),
+        _ => Symbol::plain(name),
+    };
+    root.set(sym, Value::Prim(Prim(f, name)));
 }
 
 /// Install the core numeric primitives into `root`. Called from `Interp::new`.
@@ -42,6 +49,7 @@ pub fn install_core(root: &Env) {
     register(root, "fn?", c::fn_p);
     register(root, "int?", c::int_p);
     register(root, "float?", c::float_p);
+    register(root, "NaN?", c::nan_p);
     register(root, "boolean?", c::boolean_p);
     register(root, "char?", c::char_p);
     register(root, "coll?", c::coll_p);
@@ -81,6 +89,26 @@ pub fn install_core(root: &Env) {
     register(root, "println", st::println_);
     register(root, "print", st::print_);
     register(root, "prn", st::prn);
+    // Core string prims + clojure.string C primitives (string.c). The rest of
+    // clojure.string (blank?/capitalize/escape/triml/trimr/reverse/index-of/
+    // last-index-of/re-quote-replacement) is defined on top of these by the
+    // bundled lib/clojure/string.clj loaded in Interp::load_supplement.
+    register(root, "subs", st::subs);
+    register(root, "char-at", st::char_at);
+    register(root, "upper-case", st::upper_case);
+    register(root, "lower-case", st::lower_case);
+    register(root, "trim", st::trim);
+    register(root, "starts-with?", st::starts_with_p);
+    register(root, "ends-with?", st::ends_with_p);
+    register(root, "includes?", st::includes_p);
+    register(root, "join", st::join);
+    register(root, "split", st::split);
+    // The clojure.string `replace`/`replace-first` C primitives, under private
+    // dash-prefixed names that never collide with a clojure.core var. The
+    // bundled lib/clojure/string.clj captures these as `prim-replace` and
+    // wraps them with char/regex dispatch under the public bare names.
+    register(root, "-string-replace", st::replace);
+    register(root, "-string-replace-first", st::replace_first);
 }
 
 /// The eager collection/sequence prims the port implements natively. Split

@@ -31,6 +31,7 @@ impl Interp {
         // can't run yet; re-assert the eager prims so the working versions win.
         crate::prim::install_eager_seq_prims(&it.root);
         it.load_supplement();
+        it.load_clojure_string();
         it
     }
 
@@ -40,6 +41,61 @@ impl Interp {
         let root = Env::root();
         crate::prim::install_core(&root);
         Interp { root, core_failures: Vec::new() }
+    }
+
+    /// Load the bundled `lib/clojure/string.clj` verbatim (copied to
+    /// `resources/clojure/string.clj`). It defines blank?/capitalize/escape/
+    /// triml/trimr/reverse/index-of/last-index-of/re-quote-replacement on top
+    /// of the C string prims. Runs after core.clj + supplement so its
+    /// `defn`/`cond`/`loop`/`when-not`/`ex-info` deps resolve. Forms using
+    /// regex literals (`split-lines` = `#"\r?\n"`) fail to read and are
+    /// skipped by the resilient loader (regex is Task 5.2).
+    /// ponytail: bundled lib loaded as data, not rewritten; regex-dependent
+    /// forms (split-lines) land with Task 5.2.
+    fn load_clojure_string(&mut self) {
+        // Capture clojure.core's collection `reverse`/`replace` (a prim and a
+        // core.clj fn) before string.clj's bare `(defn reverse/replace ...)`
+        // shadow them.
+        let core_reverse = self.root.get(&Symbol::plain("reverse"));
+        let core_replace = self.root.get(&Symbol::plain("replace"));
+        let src = include_str!("../../resources/clojure/string.clj");
+        let env = self.root.clone();
+        for slot in crate::reader::read_all_resilient(src) {
+            if let Ok(form) = slot {
+                if let Err(t) = self.eval(&form, &env) {
+                    let summary = form_summary(&form);
+                    self.core_failures
+                        .push((summary, crate::printer::print_str(&t.0)));
+                }
+            }
+        }
+        // `reverse`/`replace` are the only clojure.string names that collide
+        // with clojure.core. Move the string versions to their qualified keys
+        // (reached by the `str` alias) and restore the bare names to the
+        // clojure.core versions so `(reverse [..])` / `(replace smap coll)`
+        // keep working. Every other clojure.string name is collision-free and
+        // resolves via the bare fallback. `replace-first` also gets a qualified
+        // copy so `str/replace-first` reaches it.
+        if let Some(v) = self.root.get(&Symbol::plain("reverse")) {
+            self.root.set(Symbol::namespaced("clojure.string", "reverse"), v);
+        }
+        if let Some(v) = self.root.get(&Symbol::plain("replace")) {
+            self.root.set(Symbol::namespaced("clojure.string", "replace"), v);
+        }
+        if let Some(v) = self.root.get(&Symbol::plain("replace-first")) {
+            self.root
+                .set(Symbol::namespaced("clojure.string", "replace-first"), v);
+        }
+        if let Some(v) = core_reverse {
+            self.root.set(Symbol::plain("reverse"), v);
+        }
+        if let Some(v) = core_replace {
+            self.root.set(Symbol::plain("replace"), v);
+        }
+        // `(require '[clojure.string :as str])` is a no-op in the flat env, so
+        // seed the alias the gate corpus uses. Ports the `:as` alias registered
+        // by mino's require.
+        self.root.alias("str", "clojure.string");
     }
 
     /// Read and eval mino's bundled `core.clj` (embedded via include_str!) form

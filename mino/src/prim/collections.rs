@@ -804,6 +804,12 @@ pub fn int_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
 pub fn float_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Float(_)))
 }
+/// `(NaN? x)`: true only for a float NaN. A one-liner numeric predicate that
+/// core.clj's `min`/`max` need; the rest of the numeric-coercion predicate
+/// family is Phase 5.
+pub fn nan_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
+    pred(a, |v| matches!(v, Value::Float(f) if f.is_nan()))
+}
 pub fn boolean_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Bool(_)))
 }

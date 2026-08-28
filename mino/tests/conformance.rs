@@ -169,6 +169,41 @@ fn clj_predicates_corpus_passes() {
     assert_eq!(failed, 0, "{failed} clj_predicates_test assertions failed");
 }
 
+/// Task 5.1 gate: clojure_string_test.clj. The C string prims (subs/char-at/
+/// upper-case/lower-case/trim/starts-with?/ends-with?/includes?/join/split/
+/// replace/replace-first) plus the bundled `lib/clojure/string.clj` (loaded in
+/// `Interp::new`) provide blank?/capitalize/escape/triml/trimr/reverse/
+/// index-of/last-index-of/re-quote-replacement/trim-newline. The `str` alias
+/// resolves `str/X` -> `clojure.string/X`.
+///
+/// Skipped deftests all need REGEX patterns (`#"..."`), which is Task 5.2:
+/// the Phase-5.1 reader can't parse regex literals, so a kept deftest
+/// containing one fails to read. `split-lines` is likewise regex-backed
+/// (`#"\r?\n"`) so its defn is skipped at load and its deftest is skipped here.
+const STRING_SKIP: &[&str] = &[
+    // string+regex split forms; regex literals `#","` etc. (Task 5.2).
+    "str-split-limit",
+    "str-split-zero-width",
+    // split-lines is defined with `#"\r?\n"` (Task 5.2), so it is unbound.
+    "str-split-lines-crlf",
+    // regex-match replace / replace-first (Task 5.2 regex engine).
+    "str-replace-regex-string",
+    "str-replace-regex-backref",
+    "str-replace-first-regex",
+    "str-replace-regex-quote",
+    "str-replace-regex-fn",
+];
+
+#[test]
+fn clojure_string_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/clojure_string_test.clj"),
+        STRING_SKIP,
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} clojure_string_test assertions failed");
+}
+
 /// Task 4.2 gate: clj_higher_order_test.clj. core.clj + the Clojure supplement
 /// (comp/partial/complement/juxt/zipmap/empty/find/some/every?) plus keyword/
 /// symbol/map/vector-as-fn callability make every deftest pass with NO skips.
