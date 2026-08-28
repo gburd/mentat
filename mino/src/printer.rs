@@ -92,6 +92,12 @@ fn print_into(s: &mut String, v: &Value) {
             s.push_str(&r.source);
             s.push('"');
         }
+        // Atom: `#atom[value]` (mino: `(pr-str (atom 1))` => `#atom[1]`).
+        Value::Atom(cell) => {
+            s.push_str("#atom[");
+            print_into(s, &cell.borrow().val);
+            s.push(']');
+        }
     }
 }
 

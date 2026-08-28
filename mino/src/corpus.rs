@@ -11,6 +11,7 @@
 //! Phase-1 reader can't yet parse (ratios `5/2`, `##NaN`, `0x..`, `N` bigints)
 //! does not abort the whole file — only the kept deftests are actually read.
 
+use crate::env::Env;
 use crate::eval::Interp;
 use crate::reader::read_one;
 use crate::value::Value;
@@ -59,6 +60,7 @@ pub fn run_corpus_file(path: &str, skip_deftests: &[&str]) -> (usize, usize) {
 /// blocks are transparent groupings; recurse into their bodies.
 fn run_deftest(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize) {
     // form = (deftest NAME body...). Skip the first two elements.
+    let env = it.root.clone();
     let mut cur = form;
     let mut skipped = 0;
     while let Value::Cons(cell) = cur {
@@ -67,17 +69,21 @@ fn run_deftest(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut u
             cur = &cell.1;
             continue;
         }
-        run_body_form(it, &cell.0, passed, failed);
+        run_body_form(it, &cell.0, &env, passed, failed);
         cur = &cell.1;
     }
 }
 
-/// Run one body form inside a deftest: `(is ...)`, `(are ...)`,
-/// `(testing "doc" body...)`, or any other expression (evaluated for effect).
-fn run_body_form(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize) {
+/// Run one body form inside a deftest, in lexical env `env`: `(is ...)`,
+/// `(are ...)`, `(testing "doc" body...)`, `(let [..] body...)`, or any other
+/// expression (evaluated for effect). `let`/`when`/`if`-wrapped assertions are
+/// descended into so their `is` forms are tallied in the binding's env (mino's
+/// `clojure.test` runs them the same way; the metadata corpus buries every
+/// `is` inside a `let`).
+fn run_body_form(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, failed: &mut usize) {
     match list_head(form) {
-        Some("is") => run_is(it, form, passed, failed),
-        Some("are") => run_are(it, form, passed, failed),
+        Some("is") => run_is(it, form, env, passed, failed),
+        Some("are") => run_are(it, form, env, passed, failed),
         Some("testing") => {
             // (testing "doc" body...): recurse past head + doc string.
             let mut cur = form;
@@ -88,22 +94,68 @@ fn run_body_form(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut
                     cur = &cell.1;
                     continue;
                 }
-                run_body_form(it, &cell.0, passed, failed);
+                run_body_form(it, &cell.0, env, passed, failed);
                 cur = &cell.1;
             }
         }
-        // let/other forms containing assertions aren't handled in Phase 1 (no
-        // let yet); eval for effect and ignore. Assertions inside are only in
-        // skipped deftests, so this never loses a kept assertion.
+        Some("let") | Some("let*") => {
+            // Build the let's child env (sequential binding), then run each
+            // body form in it so nested `is` assertions are tallied.
+            let elems = rest_elems(form);
+            match build_let_env(it, elems.first(), env) {
+                Ok(local) => {
+                    for body in &elems[1.min(elems.len())..] {
+                        run_body_form(it, body, &local, passed, failed);
+                    }
+                }
+                // A binding evaluation threw: evaluate the whole let for effect
+                // (its assertions, if any, count as failures via eval error).
+                Err(_) => *failed += 1,
+            }
+        }
+        // Other forms containing assertions (do/when/if bodies) are eval'd for
+        // effect in `env`. Kept deftests in the current gates only bury `is`
+        // in `let`/`testing`, so this never loses a tallied assertion.
         _ => {
-            let _ = it.eval(form, &it.root.clone());
+            let _ = it.eval(form, env);
         }
     }
 }
 
-/// `(is EXPR)` — pass iff EXPR is truthy. `(is (= A B))` uses the port's `=`.
-/// `(is (thrown? EXPR))` — pass iff EXPR throws.
-fn run_is(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize) {
+/// Build a `let`/`let*` child env by sequentially binding its pairs, mirroring
+/// `bindings::eval_let`. Returns the innermost env.
+fn build_let_env(it: &mut Interp, bindings: Option<&Value>, env: &Env) -> Result<Env, crate::error::Throw> {
+    use crate::eval::bindings::{bind_form, Ctx};
+    let Some(bindings) = bindings else {
+        return Ok(env.child());
+    };
+    let pairs = binding_pairs(bindings);
+    let mut local = env.child();
+    for (pat, val_form) in pairs {
+        let v = it.eval(&val_form, &local)?;
+        let next = local.child();
+        bind_form(it, &next, &pat, v, Ctx::Let)?;
+        local = next;
+    }
+    Ok(local)
+}
+
+/// Split a `[pat val pat val ...]` binding vector into pairs. Non-vector or
+/// odd-length inputs yield no pairs (the caller evaluates for effect instead).
+fn binding_pairs(bindings: &Value) -> Vec<(Value, Value)> {
+    let Value::Vector(v) = bindings else {
+        return Vec::new();
+    };
+    let items: Vec<Value> = v.iter().cloned().collect();
+    items
+        .chunks_exact(2)
+        .map(|c| (c[0].clone(), c[1].clone()))
+        .collect()
+}
+
+/// `(is EXPR)` — pass iff EXPR is truthy, evaluated in `env`. `(is (= A B))`
+/// uses the port's `=`. `(is (thrown? EXPR))` — pass iff EXPR throws.
+fn run_is(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, failed: &mut usize) {
     let args = rest_elems(form);
     let Some(expr) = args.first() else {
         *failed += 1;
@@ -113,13 +165,13 @@ fn run_is(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize)
     if let Some("thrown?") = list_head(expr) {
         let inner = rest_elems(expr);
         let threw = match inner.first() {
-            Some(e) => it.eval(e, &it.root.clone()).is_err(),
+            Some(e) => it.eval(e, env).is_err(),
             None => false,
         };
         tally(threw, passed, failed);
         return;
     }
-    match it.eval(expr, &it.root.clone()) {
+    match it.eval(expr, env) {
         Ok(v) => tally(v.is_truthy(), passed, failed),
         Err(_) => *failed += 1,
     }
@@ -128,7 +180,7 @@ fn run_is(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize)
 /// `(are [bindings] template rows...)`: substitute each row of values for the
 /// bindings in `template` and evaluate as `(is template')`. Only flat symbol
 /// bindings are handled (no destructuring) — enough for arithmetic/are corpus.
-fn run_are(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize) {
+fn run_are(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, failed: &mut usize) {
     let args = rest_elems(form);
     let (Some(binds_v), Some(template)) = (args.first(), args.get(1)) else {
         *failed += 1;
@@ -158,7 +210,7 @@ fn run_are(it: &mut Interp, form: &Value, passed: &mut usize, failed: &mut usize
         let subst = substitute(template, &names, chunk);
         // Each expanded row is an `(is ...)`-style assertion (bare expr here).
         let is_form = list2(&Value::Sym(crate::symbol::Symbol::plain("is")), &subst);
-        run_is(it, &is_form, passed, failed);
+        run_is(it, &is_form, env, passed, failed);
     }
 }
 
@@ -350,6 +402,8 @@ fn list_head(v: &Value) -> Option<&'static str> {
                 "are" => Some("are"),
                 "testing" => Some("testing"),
                 "thrown?" => Some("thrown?"),
+                "let" => Some("let"),
+                "let*" => Some("let*"),
                 _ => None,
             };
         }

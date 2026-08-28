@@ -245,13 +245,19 @@ impl<'a> Reader<'a> {
             b'#' => self.read_dispatch(),
             b'\\' => self.read_char_literal(),
             b'^' => {
-                // `^meta form`: read (and discard) the metadata, return the
-                // target form. The port does not track value metadata yet, so
-                // `^:private`/`^:dynamic`/etc. are read-and-dropped — they do
-                // not change eval semantics for the forms core.clj uses.
+                // `^meta form`: reader metadata. Normalize the meta form
+                // (`:kw` -> `{:kw true}`, a symbol/string -> `{:tag ...}`, a
+                // map -> itself) and ATTACH it directly to the read target when
+                // the target is a collection literal (vector/map/set) — mino
+                // stores meta on the heap value. For symbols/other targets the
+                // meta is dropped: symbol/var meta needs real vars (Phase 4),
+                // and core.clj's `^:private sym` in def/defn relies on the
+                // symbol arriving un-wrapped.
+                // ponytail: collection-literal meta only; symbol/var meta when Phase 4 vars land.
                 self.i += 1; // consume '^'
-                let _meta = self.read_form()?;
-                self.read_form()
+                let meta_form = self.read_form()?;
+                let target = self.read_form()?;
+                Ok(attach_reader_meta(target, meta_form))
             }
             _ => self.read_atom(),
         }
@@ -621,6 +627,32 @@ impl<'a> Reader<'a> {
 
 fn cons(car: Value, cdr: Value) -> Value {
     Value::Cons(Gc::new((car, cdr)))
+}
+
+// Attach reader metadata (`^meta target`) to a collection-literal target.
+// Normalizes the meta form: a keyword `:kw` -> `{:kw true}`, a symbol or
+// string `T` -> `{:tag T}`, a map -> itself. Only vector/map/set targets carry
+// the attached meta; other targets (symbols, lists) return unchanged (their
+// meta is dropped — real symbol/var meta is Phase 4). Ports read.c's meta
+// attach step (attach-to-heap-object) for the collection cases.
+fn attach_reader_meta(target: Value, meta_form: Value) -> Value {
+    use crate::collections::map::PMap;
+    let mp: PMap = match &meta_form {
+        Value::Map(m) => (*m).clone_shallow_pub(),
+        Value::Keyword(_) => PMap::empty().assoc(meta_form.clone(), Value::Bool(true)),
+        Value::Sym(_) | Value::Str(_) => {
+            PMap::empty().assoc(Value::Keyword(Symbol::plain("tag")), meta_form.clone())
+        }
+        // Anything else: no attachable meta.
+        _ => return target,
+    };
+    let meta = Some(Gc::new(mp));
+    match &target {
+        Value::Vector(v) => Value::Vector(Gc::new(v.with_meta(meta))),
+        Value::Map(m) => Value::Map(Gc::new(m.with_meta(meta))),
+        Value::Set(s) => Value::Set(Gc::new(s.with_meta(meta))),
+        _ => target,
+    }
 }
 
 // Scan an anon-fn body for `%` arg usage. Returns (max positional arg,

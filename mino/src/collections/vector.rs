@@ -51,6 +51,10 @@ pub struct PVec {
     tail: Vec<Value>,       // trailing 1..=32 elements
     shift: u32,             // height of the trie in bits (0 => root is a leaf)
     count: usize,           // total element count
+    // Metadata map (Clojure `^{...}` / `with-meta`). Ignored by eq/hash/type;
+    // derive-methods (conj/assoc/pop) copy it forward, matching mino's meta on
+    // the heap object. `None` == no metadata.
+    pub meta: Option<Gc<crate::collections::map::PMap>>,
 }
 
 impl PVec {
@@ -61,7 +65,16 @@ impl PVec {
             tail: Vec::new(),
             shift: 0,
             count: 0,
+            meta: None,
         }
+    }
+
+    /// Return a copy carrying `meta` (None clears it). Ports `with-meta` on a
+    /// vector: identity of elements unchanged, only the meta slot differs.
+    pub fn with_meta(&self, meta: Option<Gc<crate::collections::map::PMap>>) -> PVec {
+        let mut c = self.clone();
+        c.meta = meta;
+        c
     }
 
     /// Number of elements. Ports `vec.len`.
@@ -106,6 +119,7 @@ impl PVec {
                 tail: new_tail,
                 shift: self.shift,
                 count: self.count + 1,
+                meta: self.meta.clone(),
             };
         }
         // Tail is full: push it into the trie as a leaf, start a fresh tail.
@@ -136,6 +150,7 @@ impl PVec {
             tail: vec![item],
             shift: new_shift,
             count: self.count + 1,
+            meta: self.meta.clone(),
         }
     }
 
@@ -157,6 +172,7 @@ impl PVec {
                 tail: new_tail,
                 shift: self.shift,
                 count: self.count,
+                meta: self.meta.clone(),
             });
         }
         // In the trie: path-copy the spine.
@@ -166,6 +182,7 @@ impl PVec {
             tail: self.tail.clone(),
             shift: self.shift,
             count: self.count,
+            meta: self.meta.clone(),
         })
     }
 
@@ -177,7 +194,7 @@ impl PVec {
         }
         let new_len = self.count - 1;
         if new_len == 0 {
-            return Some(PVec::empty());
+            return Some(PVec::empty().with_meta(self.meta.clone()));
         }
         // Tail has more than one element: shrink the tail.
         if self.tail.len() > 1 {
@@ -188,6 +205,7 @@ impl PVec {
                 tail: new_tail,
                 shift: self.shift,
                 count: new_len,
+                meta: self.meta.clone(),
             });
         }
         // tail_len == 1: pull the rightmost trie leaf up as the new tail.
@@ -200,6 +218,7 @@ impl PVec {
                 tail: root.as_leaf().to_vec(),
                 shift: 0,
                 count: new_len,
+                meta: self.meta.clone(),
             });
         }
         let (mut new_root, new_leaf) = pop_tail(root, self.shift, trie_count);
@@ -216,6 +235,7 @@ impl PVec {
             tail: new_leaf,
             shift: new_shift,
             count: new_len,
+            meta: self.meta.clone(),
         })
     }
 

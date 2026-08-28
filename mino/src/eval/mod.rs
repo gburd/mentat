@@ -248,7 +248,8 @@ impl Interp {
             | Value::Fn(_)
             | Value::Prim(_)
             | Value::Regex(_)
-            | Value::Var(_) => Ok(form.clone()),
+            | Value::Var(_)
+            | Value::Atom(_) => Ok(form.clone()),
 
             // A `recur` signal only appears here when re-evaluated as data
             // (it never occurs in source); pass it through so the loop/fn
@@ -724,6 +725,7 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Fn(_) | Value::Prim(_) => "fn",
         Value::Regex(_) => "regex",
         Value::Var(_) => "var",
+        Value::Atom(_) => "atom",
         Value::Recur(_) => "recur",
     }
 }

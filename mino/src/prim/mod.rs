@@ -4,6 +4,7 @@ pub mod collections;
 pub mod numeric;
 pub mod reflection;
 pub mod regex;
+pub mod stateful;
 pub mod string;
 
 use crate::env::Env;
@@ -70,10 +71,12 @@ pub fn install_core(root: &Env) {
     register(root, "gensym", r::gensym);
     register(root, "macroexpand-1", r::macroexpand_1);
     register(root, "macroexpand", r::macroexpand);
+    register(root, "namespace", r::namespace);
+    register(root, "hash", r::hash);
+    register(root, "class", r::class);
+    register(root, "resolve", r::resolve);
+    register(root, "eval", r::eval);
     register(root, "not", r::not);
-    register(root, "meta", r::meta);
-    register(root, "with-meta", r::with_meta);
-    register(root, "vary-meta", r::vary_meta);
     register(root, "name", r::name);
     register(root, "keyword", r::keyword);
     register(root, "symbol", r::symbol);
@@ -118,6 +121,28 @@ pub fn install_core(root: &Env) {
     register(root, "re-find", rx::re_find);
     register(root, "re-matches", rx::re_matches);
     register(root, "re-find-from", rx::re_find_from);
+
+    // Atom / stateful prims (Task 5.3, prim/stateful.c). Single-threaded, so
+    // swap!/compare-and-set! are plain read-compute-store (no CAS loop).
+    use stateful as sf;
+    register(root, "atom", sf::atom);
+    register(root, "deref", sf::deref);
+    register(root, "reset!", sf::reset_bang);
+    register(root, "reset-vals!", sf::reset_vals_bang);
+    register(root, "swap!", sf::swap_bang);
+    register(root, "swap-vals!", sf::swap_vals_bang);
+    register(root, "compare-and-set!", sf::compare_and_set_bang);
+    register(root, "atom?", sf::atom_p);
+    register(root, "add-watch", sf::add_watch);
+    register(root, "remove-watch", sf::remove_watch);
+    register(root, "set-validator!", sf::set_validator);
+    register(root, "get-validator", sf::get_validator);
+
+    // Metadata prims (Task 5.3, prim/meta.c). meta/with-meta/vary-meta.
+    use reflection as m;
+    register(root, "meta", m::meta);
+    register(root, "with-meta", m::with_meta);
+    register(root, "vary-meta", m::vary_meta);
 }
 
 /// The eager collection/sequence prims the port implements natively. Split
@@ -159,9 +184,11 @@ pub fn install_eager_seq_prims(root: &Env) {
     register(root, "assoc", c::assoc);
     register(root, "dissoc", c::dissoc);
     register(root, "disj", c::disj);
+    register(root, "pop", c::pop);
     register(root, "keys", c::keys);
     register(root, "vals", c::vals);
     register(root, "merge", c::merge);
+    register(root, "merge-with", c::merge_with);
     register(root, "inc", c::inc);
     register(root, "dec", c::dec);
 }

@@ -239,12 +239,24 @@ pub struct PMap {
     root: Option<Gc<Node>>,
     key_order: PVec, // keys in first-insertion order (for iteration/printing)
     len: usize,
+    // Metadata map (ignored by eq/hash/type); derive-methods copy it forward.
+    pub meta: Option<Gc<PMap>>,
 }
 
 impl PMap {
     /// The empty map.
     pub fn empty() -> PMap {
-        PMap { root: None, key_order: PVec::empty(), len: 0 }
+        PMap { root: None, key_order: PVec::empty(), len: 0, meta: None }
+    }
+
+    /// A copy carrying `meta` (None clears it). Ports `with-meta` on a map.
+    pub fn with_meta(&self, meta: Option<Gc<PMap>>) -> PMap {
+        PMap {
+            root: self.root.clone(),
+            key_order: self.key_order.clone(),
+            len: self.len,
+            meta,
+        }
     }
 
     /// Number of entries.
@@ -281,7 +293,7 @@ impl PMap {
         } else {
             (self.key_order.conj(key), self.len + 1)
         };
-        PMap { root: Some(root), key_order, len }
+        PMap { root: Some(root), key_order, len, meta: self.meta.clone() }
     }
 
     /// Remove `key`, returning a new map. Absent key returns a clone.
@@ -296,12 +308,24 @@ impl PMap {
                 out = out.assoc(k.clone(), v.clone());
             }
         }
+        out.meta = self.meta.clone();
         out
     }
 
     // Cheap structural clone (shares the trie + key_order via Gc/PVec clone).
     fn clone_shallow(&self) -> PMap {
-        PMap { root: self.root.clone(), key_order: self.key_order.clone(), len: self.len }
+        PMap {
+            root: self.root.clone(),
+            key_order: self.key_order.clone(),
+            len: self.len,
+            meta: self.meta.clone(),
+        }
+    }
+
+    /// Public shallow clone, preserving metadata. Used by `merge`/`merge-with`
+    /// to seed the accumulator from the first map so its meta survives.
+    pub fn clone_shallow_pub(&self) -> PMap {
+        self.clone_shallow()
     }
 
     /// Iterate `(key, value)` in insertion order.
@@ -328,12 +352,24 @@ pub struct PSet {
     root: Option<Gc<Node>>,
     order: PVec,
     len: usize,
+    // Metadata map (ignored by eq/hash/type); derive-methods copy it forward.
+    pub meta: Option<Gc<PMap>>,
 }
 
 impl PSet {
     /// The empty set.
     pub fn empty() -> PSet {
-        PSet { root: None, order: PVec::empty(), len: 0 }
+        PSet { root: None, order: PVec::empty(), len: 0, meta: None }
+    }
+
+    /// A copy carrying `meta` (None clears it). Ports `with-meta` on a set.
+    pub fn with_meta(&self, meta: Option<Gc<PMap>>) -> PSet {
+        PSet {
+            root: self.root.clone(),
+            order: self.order.clone(),
+            len: self.len,
+            meta,
+        }
     }
 
     /// Number of elements.
@@ -362,15 +398,15 @@ impl PSet {
         let root = hamt_assoc(self.root.as_ref(), entry, h, 0, &mut replaced);
         if replaced {
             // Already present: order and len unchanged.
-            return PSet { root: Some(root), order: self.order.clone(), len: self.len };
+            return PSet { root: Some(root), order: self.order.clone(), len: self.len, meta: self.meta.clone() };
         }
-        PSet { root: Some(root), order: self.order.conj(elem), len: self.len + 1 }
+        PSet { root: Some(root), order: self.order.conj(elem), len: self.len + 1, meta: self.meta.clone() }
     }
 
     /// Remove `elem`, returning a new set. Rebuilds from survivors.
     pub fn disj(&self, elem: &Value) -> PSet {
         if self.len == 0 || !self.contains(elem) {
-            return PSet { root: self.root.clone(), order: self.order.clone(), len: self.len };
+            return PSet { root: self.root.clone(), order: self.order.clone(), len: self.len, meta: self.meta.clone() };
         }
         let mut out = PSet::empty();
         for e in self.iter() {
@@ -378,6 +414,7 @@ impl PSet {
                 out = out.conj(e.clone());
             }
         }
+        out.meta = self.meta.clone();
         out
     }
 
@@ -484,15 +521,10 @@ mod tests {
         // (= {:a 1 :b 2} {:b 2 :a 1}) => true, but each prints its own order.
         let m1 = PMap::empty().assoc(kw("a"), Value::Int(1)).assoc(kw("b"), Value::Int(2));
         let m2 = PMap::empty().assoc(kw("b"), Value::Int(2)).assoc(kw("a"), Value::Int(1));
-        assert!(eq_val(&Value::Map(Gc::new(PMap {
-            root: m1.root.clone(),
-            key_order: m1.key_order.clone(),
-            len: m1.len,
-        })), &Value::Map(Gc::new(PMap {
-            root: m2.root.clone(),
-            key_order: m2.key_order.clone(),
-            len: m2.len,
-        }))));
+        assert!(eq_val(
+            &Value::Map(Gc::new(m1.clone_shallow_pub())),
+            &Value::Map(Gc::new(m2.clone_shallow_pub()))
+        ));
         assert_eq!(print_str(&Value::Map(Gc::new(m1))), "{:a 1, :b 2}");
         assert_eq!(print_str(&Value::Map(Gc::new(m2))), "{:b 2, :a 1}");
     }

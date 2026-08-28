@@ -655,6 +655,25 @@ pub fn disj(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
 }
 
+/// `(pop coll)`: remove the last element of a vector (or first of a list),
+/// preserving metadata. Throws on empty. Ports `prim_pop` (collections.c).
+pub fn pop(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    match args {
+        [Value::Vector(v)] => match v.pop() {
+            Some(nv) => Ok(Value::Vector(Gc::new(nv))),
+            None => Err(throw_str("Can't pop empty vector")),
+        },
+        // Lists pop from the front (mino: pop on a list = rest).
+        [Value::Cons(cell)] => Ok(cell.1.clone()),
+        [Value::EmptyList] => Err(throw_str("Can't pop empty list")),
+        [other] => Err(throw_str(&format!(
+            "cannot pop: {}",
+            crate::printer::print_str(other)
+        ))),
+        _ => Err(throw_str("pop requires one argument")),
+    }
+}
+
 /// `(keys map)`: keys in insertion order, or nil when empty.
 pub fn keys(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     match &args[0] {
@@ -697,16 +716,59 @@ pub fn merge(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     for a in args {
         match a {
             Value::Nil => {}
-            Value::Map(m) => {
-                let mut cur = acc.unwrap_or_else(PMap::empty);
-                for (k, v) in m.entries() {
-                    cur = cur.assoc(k.clone(), v.clone());
+            Value::Map(m) => match acc.take() {
+                // Seed from the FIRST map (cloning its payload) so its metadata
+                // survives. Matches mino: (merge x y) keeps x's meta.
+                None => acc = Some((**m).clone_shallow_pub()),
+                Some(mut cur) => {
+                    for (k, v) in m.entries() {
+                        cur = cur.assoc(k.clone(), v.clone());
+                    }
+                    acc = Some(cur);
                 }
-                acc = Some(cur);
-            }
+            },
             other => {
                 return Err(throw_str(&format!(
                     "merge expects maps, got: {}",
+                    crate::printer::print_str(other)
+                )))
+            }
+        }
+    }
+    match acc {
+        Some(m) => Ok(Value::Map(Gc::new(m))),
+        None => Ok(Value::Nil),
+    }
+}
+
+/// `(merge-with f & maps)` — merge maps; on key collision, combine with
+/// `(f existing new)`. Keeps the first map's metadata (mino: C prim in
+/// sequences.c). Ports `prim_merge_with`.
+pub fn merge_with(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let Some((f, maps)) = args.split_first() else {
+        return Err(throw_str("merge-with requires a function and maps"));
+    };
+    let mut acc: Option<PMap> = None;
+    for a in maps {
+        match a {
+            Value::Nil => {}
+            Value::Map(m) => match acc.take() {
+                // Seed from the first map's payload so its metadata survives.
+                None => acc = Some((**m).clone_shallow_pub()),
+                Some(mut cur) => {
+                    for (k, v) in m.entries() {
+                        let next = match cur.get(k) {
+                            Some(existing) => apply(it, f, &[existing.clone(), v.clone()])?,
+                            None => v.clone(),
+                        };
+                        cur = cur.assoc(k.clone(), next);
+                    }
+                    acc = Some(cur);
+                }
+            },
+            other => {
+                return Err(throw_str(&format!(
+                    "merge-with expects maps, got: {}",
                     crate::printer::print_str(other)
                 )))
             }

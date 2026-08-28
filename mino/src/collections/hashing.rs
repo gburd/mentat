@@ -117,6 +117,8 @@ fn hash32(v: &Value) -> u32 {
         Value::Recur(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         // Regex: identity hash (Clojure Patterns are never value-equal).
         Value::Regex(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
+        // Atom: identity hash by cell address (atoms are never value-equal).
+        Value::Atom(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
     }
 }
 
@@ -173,6 +175,9 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
             // pointer avoids the unstable `ptr::fn_addr_eq`.)
             x.0 as usize == y.0 as usize
         }
+        // Atoms: identity. Two distinct atoms are never `=`, even with equal
+        // contents; the same atom compares equal to itself.
+        (Value::Atom(x), Value::Atom(y)) => std::ptr::eq(&**x, &**y),
         _ => false,
     }
 }

@@ -45,6 +45,12 @@ pub enum Value {
     // trampolines; it must never escape to user code. `eval_value` (non-tail
     // eval sites) rejects it as "recur must be in tail position".
     Recur(Gc<Vec<Value>>),
+    // A mutable reference cell (`atom`). Holds the current value plus an
+    // optional validator fn and a watches map. Equality/hash are by identity
+    // (Clojure: two distinct atoms are never `=`, even with equal contents).
+    // Ports MINO_ATOM (prim/stateful.c). The port is single-threaded, so
+    // `swap!` is a plain read-compute-store (no CAS loop needed).
+    Atom(Gc<gc::GcCell<crate::prim::stateful::AtomState>>),
     // later phases extend this enum
 }
 

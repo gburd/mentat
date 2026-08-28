@@ -58,11 +58,12 @@ fn arithmetic_corpus_passes() {
 /// Task 2.3 gate: are_test.clj. The `are`/`is`/`thrown?` deftests exercise
 /// `=`, `inc`, `number?`, `nth`, and `thrown?` — all now implemented.
 ///
-/// The three `is-*`/`binding`-based deftests need `let`, `binding`, `atom`,
-/// `try`/`catch`, and `*report-counters*` (Phase 3 let/try, Phase 5 atoms).
-/// They are skipped with rationale; the four `are-*` deftests must pass.
+/// The two `is-*-continues` deftests use atoms (now available, Task 5.3) but
+/// ALSO `binding [*report-counters* ...]` + `*current-test*`/`*testing-contexts*`
+/// — real `clojure.test` dynamic vars set by the framework. Dynamic-var
+/// `binding` is Phase 4, so they stay skipped with rationale.
 const ARE_SKIP: &[&str] = &[
-    // needs let + atom + binding + try/catch + *report-counters* (Phase 3/5).
+    // atom (Task 5.3, done) + binding *report-counters* + try/catch (Phase 4).
     "is-eq-continues-after-throw-in-value",
     "is-truthy-continues-after-throw-in-value",
 ];
@@ -125,10 +126,9 @@ fn binding_corpus_passes() {
 /// Task 3.2 gate: clj_control_test.clj. Now that core.clj is loaded (Task
 /// 4.2), nearly every control-macro deftest passes: when/when-not/cond/condp/
 /// case/if-let/when-let/and/or/not and the simple for-comprehensions all work.
-/// Only two deftests remain skipped, each gated on a later phase:
+/// Task 5.3 (atoms) un-skipped `clj-dotimes` (its counter uses atom/swap!/@).
+/// Only one deftest remains skipped, gated on a later phase:
 const CONTROL_SKIP: &[&str] = &[
-    // `dotimes` body uses atom/swap!/deref for its counter (Phase 5.3 atoms).
-    "clj-dotimes",
     // `for` with chained :let + :when over multiple bindings expands to nested
     // mapcat/lazy-seq comprehension the eager `for` stand-in can't compose
     // (Phase 5 lazy seqs).
@@ -239,4 +239,35 @@ fn regex_corpus_passes() {
     );
     assert!(passed > 0, "no assertions ran");
     assert_eq!(failed, 0, "{failed} regex_test assertions failed");
+}
+
+/// Task 5.3 gate: atom_test.clj. All atom prims (atom/deref/@/reset!/swap!/
+/// swap-vals!/reset-vals!/compare-and-set!/atom?/add-watch/remove-watch/
+/// set-validator!/get-validator) plus `type` returning `:atom` back the file.
+/// The corpus buries most `is` in `let`; the harness now descends into `let`
+/// so those assertions are tallied. No skips — every deftest passes.
+#[test]
+fn atom_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/atom_test.clj"),
+        &[],
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} atom_test assertions failed");
+}
+
+/// Task 5.3 gate: clj_metadata_test.clj. Real metadata now lives on the
+/// collection heap payloads (PVec/PMap/PSet) and is copied forward through
+/// assoc/conj/dissoc/disj/pop/into/merge/merge-with/select-keys/reduce, so
+/// `(meta (op (with-meta coll m) ...))` returns `m`. Metadata does NOT affect
+/// eq/hash/type. Every `is` is buried in a `let`; the harness descends. No
+/// skips — all three deftests (maps/vectors/sets) pass.
+#[test]
+fn clj_metadata_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(env!("MINO_SRC"), "/tests/clj_metadata_test.clj"),
+        &[],
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} clj_metadata_test assertions failed");
 }
