@@ -790,6 +790,11 @@ pub fn seq_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     // (seq? ()) => true, (seq? nil) => false.
     pred(a, |v| matches!(v, Value::Cons(_) | Value::EmptyList))
 }
+pub fn cons_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
+    // cons? is true only for a non-empty cons cell; false for (), nil,
+    // vectors, etc. Ports `prim_cons_p` (reflection.c). Used by ->/->>/case.
+    pred(a, |v| matches!(v, Value::Cons(_)))
+}
 pub fn fn_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Fn(_) | Value::Prim(_)))
 }

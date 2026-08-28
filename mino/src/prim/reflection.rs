@@ -114,6 +114,124 @@ fn one_arg<'a>(args: &'a [Value], name: &str) -> Result<&'a Value, Throw> {
     }
 }
 
+/// `(not x)` — logical negation: true iff x is nil or false. Ports `prim_not`.
+pub fn not(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let v = one_arg(args, "not")?;
+    Ok(Value::Bool(!v.is_truthy()))
+}
+
+/// `(meta x)` — the port does not track value metadata yet, so always nil.
+/// ponytail: metadata untracked; real meta in Phase 5.3 (meta.c).
+pub fn meta(_it: &mut Interp, _args: &[Value]) -> Result<Value, Throw> {
+    Ok(Value::Nil)
+}
+
+/// `(with-meta obj m)` — attach metadata. Untracked, so return `obj` as-is.
+/// ponytail: metadata untracked; real with-meta in Phase 5.3 (meta.c).
+pub fn with_meta(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    match args.first() {
+        Some(v) => Ok(v.clone()),
+        None => Err(throw_classified("eval/arity", "MAR001", "with-meta requires two arguments")),
+    }
+}
+
+/// `(vary-meta obj f & args)` — apply f to obj's metadata. Untracked, so
+/// return `obj` unchanged. ponytail: metadata untracked; real in Phase 5.3.
+pub fn vary_meta(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    match args.first() {
+        Some(v) => Ok(v.clone()),
+        None => Err(throw_classified("eval/arity", "MAR001", "vary-meta requires at least two arguments")),
+    }
+}
+
+/// `(name x)` — the name string of a symbol/keyword, or the string itself.
+/// Ports `prim_name` (reflection.c).
+pub fn name(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let v = one_arg(args, "name")?;
+    let n = match v {
+        Value::Str(s) => (**s).clone(),
+        Value::Sym(s) | Value::Keyword(s) => (*s.name).to_string(),
+        _ => return Err(throw_classified("type", "MTY001", "name: expects a string, symbol, or keyword")),
+    };
+    Ok(Value::Str(Gc::new(n)))
+}
+
+/// `(keyword x)` / `(keyword ns name)` — build a keyword. Ports `prim_keyword`.
+pub fn keyword(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    match args {
+        [Value::Str(s)] => Ok(Value::Keyword(parse_name(s))),
+        [Value::Sym(s)] | [Value::Keyword(s)] => Ok(Value::Keyword(s.clone())),
+        [Value::Str(ns), Value::Str(nm)] => Ok(Value::Keyword(Symbol::namespaced(ns, nm))),
+        [Value::Nil] => Ok(Value::Nil),
+        _ => Err(throw_classified("type", "MTY001", "keyword: bad arguments")),
+    }
+}
+
+/// `(symbol x)` / `(symbol ns name)` — build a symbol. Ports `prim_symbol`.
+pub fn symbol(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    match args {
+        [Value::Str(s)] => Ok(Value::Sym(parse_name(s))),
+        [Value::Sym(s)] | [Value::Keyword(s)] => Ok(Value::Sym(s.clone())),
+        [Value::Str(ns), Value::Str(nm)] => Ok(Value::Sym(Symbol::namespaced(ns, nm))),
+        _ => Err(throw_classified("type", "MTY001", "symbol: bad arguments")),
+    }
+}
+
+/// Split a `"ns/name"` string into a namespaced symbol, else a plain one.
+fn parse_name(s: &str) -> Symbol {
+    match s.rsplit_once('/') {
+        Some((ns, nm)) if !ns.is_empty() && !nm.is_empty() => Symbol::namespaced(ns, nm),
+        _ => Symbol::plain(s),
+    }
+}
+
+/// `(true? x)` — true iff x is the boolean true. Ports `prim_true_p`.
+pub fn true_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    Ok(Value::Bool(matches!(one_arg(args, "true?")?, Value::Bool(true))))
+}
+
+/// `(false? x)` — true iff x is the boolean false. Ports `prim_false_p`.
+pub fn false_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    Ok(Value::Bool(matches!(one_arg(args, "false?")?, Value::Bool(false))))
+}
+
+/// `(some? x)` — true iff x is not nil. Ports `prim_some_p`.
+pub fn some_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    Ok(Value::Bool(!matches!(one_arg(args, "some?")?, Value::Nil)))
+}
+
+/// `(type x)` — a keyword type tag. Ports `tag_kw`/`prim_type` (reflection.c)
+/// for the value kinds the port has. Used by core.clj `coll?`.
+pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let v = one_arg(args, "type")?;
+    let tag = match v {
+        Value::Nil => "nil",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Char(_) => "char",
+        Value::Str(_) => "string",
+        Value::Sym(_) => "symbol",
+        Value::Keyword(_) => "keyword",
+        Value::EmptyList | Value::Cons(_) => "list",
+        Value::Vector(_) => "vector",
+        Value::Map(_) => "map",
+        Value::Set(_) => "set",
+        Value::Fn(c) if c.is_macro => "macro",
+        Value::Fn(_) | Value::Prim(_) => "fn",
+        Value::Var(_) => "var",
+        Value::Recur(_) => "recur",
+    };
+    Ok(Value::Keyword(Symbol::plain(tag)))
+}
+
+/// `(mino-installed? kw)` — whether an optional mino subsystem is present.
+/// The port ships none of the optional host subsystems yet (bignum/net/etc.),
+/// so always false. ponytail: no host subsystems; revisit if a phase adds one.
+pub fn mino_installed_p(_it: &mut Interp, _args: &[Value]) -> Result<Value, Throw> {
+    Ok(Value::Bool(false))
+}
+
 // Runtime gensym counter, distinct from the reader's syntax-quote counter
 // (mino keeps both on S but they never share a name space in practice).
 static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);

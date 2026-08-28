@@ -3,6 +3,7 @@
 pub mod collections;
 pub mod numeric;
 pub mod reflection;
+pub mod string;
 
 use crate::env::Env;
 use crate::symbol::Symbol;
@@ -24,7 +25,71 @@ pub fn install_core(root: &Env) {
     register(root, "<=", numeric::le);
     register(root, ">=", numeric::ge);
 
-    // Collection / sequence prims (Task 2.3, prim/collections.c + sequences.c).
+    install_eager_seq_prims(root);
+    // Type / numeric predicates (reflection.c + numeric.c).
+    use collections as c;
+    register(root, "number?", c::number_p);
+    register(root, "nil?", c::nil_p);
+    register(root, "string?", c::string_p);
+    register(root, "keyword?", c::keyword_p);
+    register(root, "symbol?", c::symbol_p);
+    register(root, "vector?", c::vector_p);
+    register(root, "map?", c::map_p);
+    register(root, "set?", c::set_p);
+    register(root, "list?", c::list_p);
+    register(root, "seq?", c::seq_p);
+    register(root, "cons?", c::cons_p);
+    register(root, "fn?", c::fn_p);
+    register(root, "int?", c::int_p);
+    register(root, "float?", c::float_p);
+    register(root, "boolean?", c::boolean_p);
+    register(root, "char?", c::char_p);
+    register(root, "coll?", c::coll_p);
+    register(root, "even?", c::even_p);
+    register(root, "odd?", c::odd_p);
+    register(root, "zero?", c::zero_p);
+    register(root, "pos?", c::pos_p);
+    register(root, "neg?", c::neg_p);
+
+    // Error / reflection prims (Task 3.2, prim/reflection.c + core.clj
+    // ex-info/ex-message/ex-data).
+    use reflection as r;
+    register(root, "throw", r::throw);
+    register(root, "ex-info", r::ex_info);
+    register(root, "ex-message", r::ex_message);
+    register(root, "ex-data", r::ex_data);
+    register(root, "gensym", r::gensym);
+    register(root, "macroexpand-1", r::macroexpand_1);
+    register(root, "macroexpand", r::macroexpand);
+    register(root, "not", r::not);
+    register(root, "meta", r::meta);
+    register(root, "with-meta", r::with_meta);
+    register(root, "vary-meta", r::vary_meta);
+    register(root, "name", r::name);
+    register(root, "keyword", r::keyword);
+    register(root, "symbol", r::symbol);
+    register(root, "true?", r::true_p);
+    register(root, "false?", r::false_p);
+    register(root, "some?", r::some_p);
+    register(root, "type", r::type_);
+    register(root, "mino-installed?", r::mino_installed_p);
+
+    // String / print prims (Task 5.1 subset core.clj + corpus need).
+    use string as st;
+    register(root, "str", st::str_);
+    register(root, "pr-str", st::pr_str);
+    register(root, "println", st::println_);
+    register(root, "print", st::print_);
+    register(root, "prn", st::prn);
+}
+
+/// The eager collection/sequence prims the port implements natively. Split
+/// out so `Interp` can RE-assert them AFTER core.clj loads: core.clj redefines
+/// `map`/`filter`/`concat`/etc. as LAZY seqs built on machinery the port has
+/// not ported yet (lazy-seq/chunked cons), so those defns load but throw when
+/// called. Re-registering the eager versions makes the working implementation
+/// win. ponytail: eager prims shadow lazy core.clj defns until Phase 5 lazy seqs.
+pub fn install_eager_seq_prims(root: &Env) {
     use collections as c;
     register(root, "list", c::list);
     register(root, "cons", c::cons);
@@ -62,38 +127,4 @@ pub fn install_core(root: &Env) {
     register(root, "merge", c::merge);
     register(root, "inc", c::inc);
     register(root, "dec", c::dec);
-
-    // Type / numeric predicates (reflection.c + numeric.c).
-    register(root, "number?", c::number_p);
-    register(root, "nil?", c::nil_p);
-    register(root, "string?", c::string_p);
-    register(root, "keyword?", c::keyword_p);
-    register(root, "symbol?", c::symbol_p);
-    register(root, "vector?", c::vector_p);
-    register(root, "map?", c::map_p);
-    register(root, "set?", c::set_p);
-    register(root, "list?", c::list_p);
-    register(root, "seq?", c::seq_p);
-    register(root, "fn?", c::fn_p);
-    register(root, "int?", c::int_p);
-    register(root, "float?", c::float_p);
-    register(root, "boolean?", c::boolean_p);
-    register(root, "char?", c::char_p);
-    register(root, "coll?", c::coll_p);
-    register(root, "even?", c::even_p);
-    register(root, "odd?", c::odd_p);
-    register(root, "zero?", c::zero_p);
-    register(root, "pos?", c::pos_p);
-    register(root, "neg?", c::neg_p);
-
-    // Error / reflection prims (Task 3.2, prim/reflection.c + core.clj
-    // ex-info/ex-message/ex-data).
-    use reflection as r;
-    register(root, "throw", r::throw);
-    register(root, "ex-info", r::ex_info);
-    register(root, "ex-message", r::ex_message);
-    register(root, "ex-data", r::ex_data);
-    register(root, "gensym", r::gensym);
-    register(root, "macroexpand-1", r::macroexpand_1);
-    register(root, "macroexpand", r::macroexpand);
 }

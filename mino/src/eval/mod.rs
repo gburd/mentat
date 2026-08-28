@@ -16,13 +16,155 @@ pub mod special;
 
 pub struct Interp {
     pub root: Env,
+    /// Forms from core.clj that failed to read or eval during bootstrap, as
+    /// (form-summary, error-message). Inspected by tests to keep the failure
+    /// set bounded and confined to expected-deferred categories.
+    core_failures: Vec<(String, String)>,
 }
 
 impl Interp {
+    /// A fresh interpreter with primitives installed AND core.clj loaded.
     pub fn new() -> Self {
+        let mut it = Self::new_bare();
+        it.load_core();
+        // core.clj redefines map/filter/concat/etc. as lazy seqs the port
+        // can't run yet; re-assert the eager prims so the working versions win.
+        crate::prim::install_eager_seq_prims(&it.root);
+        it.load_supplement();
+        it
+    }
+
+    /// A bare interpreter: primitives only, no core.clj. Used by low-level
+    /// unit tests that must not depend on the stdlib bootstrap.
+    pub fn new_bare() -> Self {
         let root = Env::root();
         crate::prim::install_core(&root);
-        Interp { root }
+        Interp { root, core_failures: Vec::new() }
+    }
+
+    /// Read and eval mino's bundled `core.clj` (embedded via include_str!) form
+    /// by form into the root env. Ports `install_core_mino` (prim/install.c),
+    /// but resilient: a form that fails to read or eval is recorded in
+    /// `core_failures` and load CONTINUES, so unsupported forms (lazy seqs,
+    /// atoms, multimethods, protocols, records, bignum — later phases) do not
+    /// block the hundreds of control macros / fns that load fine.
+    /// ponytail: resilient load; tighten to abort-on-error once core.clj loads clean.
+    pub fn load_core(&mut self) {
+        let src = include_str!("../../resources/core.clj");
+        let env = self.root.clone();
+        for slot in crate::reader::read_all_resilient(src) {
+            match slot {
+                Err(e) => self
+                    .core_failures
+                    .push(("<unreadable form>".to_string(), format!("read error: {e}"))),
+                Ok(form) => {
+                    if let Err(t) = self.eval(&form, &env) {
+                        let summary = form_summary(&form);
+                        let msg = crate::printer::print_str(&t.0);
+                        self.core_failures.push((summary, msg));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The core.clj bootstrap failures: (form-summary, error). Empty once
+    /// core.clj loads clean; until then bounded to expected-deferred features.
+    pub fn core_load_report(&self) -> &[(String, String)] {
+        &self.core_failures
+    }
+
+    /// Eval a small pure-Clojure supplement defining higher-order and
+    /// collection fns that mino ships as C prims (comp/partial/complement/
+    /// juxt/zipmap/empty/find/some/every?/not-any?) but the port has not
+    /// ported as prims. They compose from prims the port already has, so
+    /// defining them in Clojure is lazier than re-porting the C closure
+    /// builders. Runs after core.clj so it can use its macros/fns.
+    /// ponytail: Clojure-defined stand-ins for mino's C higher-order prims;
+    /// port to native prims only if a corpus test needs exact prim identity.
+    fn load_supplement(&mut self) {
+        const SUPPLEMENT: &str = r#"
+(defn empty [coll]
+  (cond (nil? coll) nil
+        (vector? coll) []
+        (map? coll) {}
+        (set? coll) #{}
+        (or (list? coll) (seq? coll)) ()
+        :else nil))
+(defn comp [& fs]
+  (if (= 0 (count fs))
+    identity
+    (if (= 1 (count fs))
+      (first fs)
+      (fn [& args]
+        (let [rfs (reverse fs)]
+          (reduce (fn [acc g] (g acc))
+                  (apply (first rfs) args)
+                  (rest rfs)))))))
+(defn partial [f & bound]
+  (fn [& args] (apply f (concat bound args))))
+(defn complement [f]
+  (fn [& args] (not (apply f args))))
+(defn juxt [& fs]
+  (fn [& args] (mapv (fn [f] (apply f args)) fs)))
+(defn zipmap [ks vs]
+  (loop [m {} ks (seq ks) vs (seq vs)]
+    (if (and ks vs)
+      (recur (assoc m (first ks) (first vs)) (next ks) (next vs))
+      m)))
+(defn find [m k]
+  (if (and (map? m) (contains? m k)) [k (get m k)] nil))
+(defn some [pred coll]
+  (loop [s (seq coll)]
+    (if s
+      (or (pred (first s)) (recur (next s)))
+      nil)))
+(defn every? [pred coll]
+  (loop [s (seq coll)]
+    (if s
+      (if (pred (first s)) (recur (next s)) false)
+      true)))
+(defn not-any? [pred coll] (not (some pred coll)))
+(defn not-every? [pred coll] (not (every? pred coll)))
+(defn key [entry] (nth entry 0))
+(defn val [entry] (nth entry 1))
+(defn take [n coll]
+  (loop [acc [] s (seq coll) k n]
+    (if (and s (> k 0))
+      (recur (conj acc (first s)) (next s) (dec k))
+      (seq acc))))
+(defn drop [n coll]
+  (loop [s (seq coll) k n]
+    (if (and s (> k 0)) (recur (next s) (dec k)) s)))
+(defn take-while [pred coll]
+  (loop [acc [] s (seq coll)]
+    (if (and s (pred (first s)))
+      (recur (conj acc (first s)) (next s))
+      (seq acc))))
+(defn drop-while [pred coll]
+  (loop [s (seq coll)]
+    (if (and s (pred (first s))) (recur (next s)) s)))
+(defn second [coll] (first (next coll)))
+(defn ffirst [coll] (first (first coll)))
+(defn fnext [coll] (first (next coll)))
+(defn nnext [coll] (next (next coll)))
+(defn nfirst [coll] (next (first coll)))
+(defn last [coll]
+  (loop [s (seq coll)]
+    (if (next s) (recur (next s)) (first s))))
+(defn mapcat [f & colls] (apply concat (apply map f colls)))
+(defn remove [pred coll] (filter (fn [x] (not (pred x))) coll))
+"#;
+        let env = self.root.clone();
+        for slot in crate::reader::read_all_resilient(SUPPLEMENT) {
+            if let Ok(form) = slot {
+                if let Err(t) = self.eval(&form, &env) {
+                    let summary = form_summary(&form);
+                    self.core_failures
+                        .push((summary, crate::printer::print_str(&t.0)));
+                }
+            }
+        }
     }
 
     /// Read ALL forms from `src`, eval each in the root env, return the last.
@@ -117,7 +259,16 @@ impl Interp {
         };
 
         if let Value::Sym(sym) = head {
-            if sym.ns.is_none() {
+            // Special forms dispatch by BARE name. Syntax-quote inside core.clj
+            // macros (when/and/or/->/defn...) qualifies core forms to
+            // `clojure.core/let` etc.; the port has no ns tables, so accept a
+            // `clojure.core` (or `user`) prefix as equivalent to bare so those
+            // expansions still route to the special-form handlers.
+            let is_core_special_ns = matches!(
+                sym.ns.as_deref(),
+                None | Some("clojure.core")
+            );
+            if is_core_special_ns {
                 match &*sym.name {
                     "if" => return self.eval_if(rest, env),
                     "do" => return self.eval_do(rest, env),
@@ -166,6 +317,15 @@ impl Interp {
                         }
                         return Ok(Value::Recur(gc::Gc::new(vals)));
                     }
+                    // Namespace / load machinery. The port has a single flat
+                    // env (no ns tables), so these are no-ops that return nil
+                    // — enough that core.clj's `(in-ns 'clojure.core)` etc. and
+                    // any `(ns ..)`/`(require ..)` load without erroring.
+                    // ponytail: flat-env no-op ns machinery; real ns tables in Phase 4.
+                    "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure"
+                    | "load" | "load-file" | "import" => {
+                        return Ok(Value::Nil);
+                    }
                     _ => {}
                 }
             }
@@ -182,14 +342,10 @@ impl Interp {
         }
 
         // Application: eval the head, then args left-to-right, then apply.
+        // Callability (fn/prim/keyword/symbol/map/set/vector as lookup fns)
+        // is decided in `func::apply`, the single choke point all calls route
+        // through — so the check lives in one place, not here.
         let callee = self.eval_value(head, env)?;
-        if !matches!(callee, Value::Fn(_) | Value::Prim(_)) {
-            return Err(crate::error::throw_classified(
-                "eval/type",
-                "MTY002",
-                &format!("not a function (got {})", type_tag(&callee)),
-            ));
-        }
         let mut args = Vec::new();
         let mut cur = rest;
         while let Value::Cons(cell) = cur {
@@ -400,8 +556,7 @@ impl Default for Interp {
 }
 
 /// Split a cons list into (first?, rest). Returns `(None, Nil)` at the end.
-fn pop(list: &Value) -> (Option<Value>, Value) {
-    match list {
+fn pop(list: &Value) -> (Option<Value>, Value) {    match list {
         Value::Cons(cell) => (Some(cell.0.clone()), cell.1.clone()),
         _ => (None, Value::Nil),
     }
@@ -425,6 +580,24 @@ fn list_from_slice(items: &[Value]) -> Value {
         acc = Value::Cons(gc::Gc::new((e.clone(), acc)));
     }
     acc
+}
+
+/// A short, one-line summary of a core.clj form for the failure report:
+/// `(def-family NAME ...)` or the head symbol, so the failure list is
+/// scannable without printing 40-line macro bodies.
+fn form_summary(form: &Value) -> String {
+    if let Value::Cons(cell) = form {
+        if let Value::Sym(head) = &cell.0 {
+            // For def-family forms, include the defined name.
+            if let Value::Cons(rest) = &cell.1 {
+                if let Value::Sym(name) = &rest.0 {
+                    return format!("({} {} ...)", head.name, name.name);
+                }
+            }
+            return format!("({} ...)", head.name);
+        }
+    }
+    crate::printer::print_str(form)
 }
 
 /// Flatten a seqable value (list/vector/set/nil/empty) into its elements for
@@ -467,6 +640,10 @@ fn is_public_macro_form(name: &str) -> bool {
 
 /// Short type label for a value, matching mino's `type_tag_str` (error.c) for
 /// the values the port has so far. Used in "not a function (got TYPE)".
+pub fn type_tag_of(v: &Value) -> &'static str {
+    type_tag(v)
+}
+
 fn type_tag(v: &Value) -> &'static str {
     match v {
         Value::Nil => "nil",
@@ -491,6 +668,71 @@ fn type_tag(v: &Value) -> &'static str {
 mod tests {
     use super::*;
     use crate::printer::print_str;
+
+    /// core.clj + the Clojure supplement provide the control macros and
+    /// higher-order fns. Each expected value is copied from the mino binary
+    /// oracle (`mino -e '...'`). This is the Task 4.2 end-to-end check.
+    #[test]
+    fn core_macros_work_end_to_end() {
+        let mut it = Interp::new();
+        let ev = |it: &mut Interp, s: &str| print_str(&it.eval_str(s).unwrap());
+        assert_eq!(ev(&mut it, "(when true 1 2)"), "2");
+        assert_eq!(ev(&mut it, "(when-not false :yes)"), ":yes");
+        assert_eq!(ev(&mut it, "(cond false 1 :else 2)"), "2");
+        assert_eq!(ev(&mut it, "(case 2 1 :a 2 :b :c)"), ":b");
+        assert_eq!(ev(&mut it, "(-> 5 inc inc)"), "7");
+        assert_eq!(ev(&mut it, "(->> [1 2 3] (map inc) (reduce +))"), "9");
+        assert_eq!(ev(&mut it, "(if-let [x 5] x :no)"), "5");
+        assert_eq!(ev(&mut it, "(when-let [x 5] x)"), "5");
+        assert_eq!(ev(&mut it, "(and 1 2 3)"), "3");
+        assert_eq!(ev(&mut it, "(or nil false 7)"), "7");
+        assert_eq!(ev(&mut it, "(not nil)"), "true");
+        // for: eager here, but shape matches the binary's lazy seq.
+        assert_eq!(ev(&mut it, "(for [x [1 2 3]] (* x x))"), "(1 4 9)");
+        // defn round-trips.
+        assert_eq!(ev(&mut it, "(defn sq [x] (* x x)) (sq 6)"), "36");
+        // Higher-order fns from the supplement.
+        assert_eq!(ev(&mut it, "((partial + 20) 20)"), "40");
+        assert_eq!(ev(&mut it, "((complement even?) 3)"), "true");
+        assert_eq!(ev(&mut it, "((comp inc inc) 5)"), "7");
+        assert_eq!(ev(&mut it, "((juxt :a :b) {:a 1 :b 2})"), "[1 2]");
+        assert_eq!(ev(&mut it, "(zipmap [:a :b] [1 2])"), "{:a 1, :b 2}");
+        assert_eq!(ev(&mut it, "(empty [1 2])"), "[]");
+        // keyword/symbol/map-as-fn callability.
+        assert_eq!(ev(&mut it, "(:a {:a 1})"), "1");
+        assert_eq!(ev(&mut it, "('inc {'inc 1})"), "1");
+        assert_eq!(ev(&mut it, "({:a 1} :a)"), "1");
+    }
+
+    /// The resilient core.clj load leaves only a BOUNDED set of failures, all
+    /// in genuinely-later-phase feature categories. This keeps the load from
+    /// silently regressing: if a control macro or predicate stops loading, the
+    /// count jumps and this test fails.
+    #[test]
+    fn core_load_failures_bounded_and_deferred() {
+        let it = Interp::new();
+        let fails = it.core_load_report();
+        // Every failure must be one of the deferred categories (Phase 4/5/5.5
+        // vars, lazy seqs, atoms/delays, regex, hex literals, queues, host).
+        let deferred = |msg: &str| {
+            msg.contains("lazy-map-1")            // lazy seqs (Phase 5)
+                || msg.contains("realized?")      // delays (Phase 5.3)
+                || msg.contains("atom")           // atoms (Phase 5.3)
+                || msg.contains("-empty-queue")   // persistent queue (out of scope)
+                || msg.contains("read error: unsupported reader dispatch macro #\"") // regex (Phase 5.2)
+                || msg.contains("read error: unsupported reader dispatch macro #'")  // var-quote (Phase 4)
+                || msg.contains("read error: invalid number: 0x") // hex literal (Phase 5.5)
+        };
+        for (summary, msg) in fails {
+            assert!(deferred(msg), "unexpected core.clj load failure: {summary} => {msg}");
+        }
+        // Bound the count so a regression that drops many defs is caught.
+        assert!(
+            fails.len() <= 12,
+            "core.clj load failures grew to {} (expected <=12 deferred)",
+            fails.len()
+        );
+    }
 
     #[test]
     fn eval_core_forms() {

@@ -105,10 +105,30 @@ pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, T
     match callee {
         Value::Prim(p) => (p.0)(it, args),
         Value::Fn(closure) => apply_closure(it, closure, callee, args),
-        _ => Err(throw_str(&format!(
-            "not callable: {}",
-            crate::printer::print_str(callee)
-        ))),
+        // Keywords and symbols are callable as map-lookup fns:
+        // `(:k m)` / `('s m)` => (get m callee default?). Ports mino's
+        // IFn-on-keyword/symbol behavior (used by juxt :a :b, ('inc m), ...).
+        Value::Keyword(_) | Value::Sym(_) => {
+            let coll = args.first().cloned().unwrap_or(Value::Nil);
+            let default = args.get(1).cloned().unwrap_or(Value::Nil);
+            crate::prim::collections::get(it, &[coll, callee.clone(), default])
+        }
+        // Maps/sets/vectors are callable as lookup fns: `(m k d)`, `(s x)`,
+        // `(v i)`. Ports mino's IFn-on-collection behavior.
+        Value::Map(_) | Value::Set(_) => {
+            let key = args.first().cloned().unwrap_or(Value::Nil);
+            let default = args.get(1).cloned().unwrap_or(Value::Nil);
+            crate::prim::collections::get(it, &[callee.clone(), key, default])
+        }
+        Value::Vector(_) => {
+            let idx = args.first().cloned().unwrap_or(Value::Nil);
+            crate::prim::collections::nth(it, &[callee.clone(), idx])
+        }
+        _ => Err(crate::error::throw_classified(
+            "eval/type",
+            "MTY002",
+            &format!("not a function (got {})", crate::eval::type_tag_of(callee)),
+        )),
     }
 }
 

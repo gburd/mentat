@@ -67,6 +67,95 @@ pub fn read_all(src: &str) -> Result<Vec<Value>, ReadError> {
     }
 }
 
+/// Read every top-level form, but on a read error record it and skip past the
+/// offending form (via byte-level paren balance) so the rest of the file still
+/// reads. Used by the resilient core.clj bootstrap: a handful of forms using
+/// not-yet-ported reader syntax (e.g. `#"regex"`, Phase 5.2) must not block
+/// the hundreds that read fine. Returns each slot as Ok(form) or Err(read err).
+/// ponytail: resilient read; tighten to read_all once core.clj reads clean.
+pub fn read_all_resilient(src: &str) -> Vec<Result<Value, ReadError>> {
+    let bytes = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        // Skip inter-form whitespace/commas/comments.
+        {
+            let mut r = Reader { s: bytes, i, qq: Vec::new() };
+            r.skip_ws();
+            i = r.i;
+        }
+        if i >= bytes.len() {
+            return out;
+        }
+        let mut r = Reader { s: bytes, i, qq: Vec::new() };
+        match r.read_form() {
+            Ok(v) => {
+                i = r.i;
+                out.push(Ok(v));
+            }
+            Err(e) => {
+                // Skip past the whole offending top-level form so the next
+                // form still reads. Balance parens byte-wise from `i`.
+                let next = skip_top_form(bytes, i);
+                i = next;
+                out.push(Err(e));
+            }
+        }
+    }
+}
+
+/// Byte-level scan past one top-level form starting at `b[i]` (already at a
+/// non-whitespace byte). Balances (), [], {} while skipping strings, `\c`
+/// char literals, and `;` comments. Mirrors the corpus harness scanner.
+fn skip_top_form(b: &[u8], mut i: usize) -> usize {
+    let open = b.get(i).copied();
+    match open {
+        Some(b'(') | Some(b'[') | Some(b'{') => {
+            let mut depth = 0i32;
+            while i < b.len() {
+                match b[i] {
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => {
+                        depth -= 1;
+                        i += 1;
+                        if depth == 0 {
+                            return i;
+                        }
+                        continue;
+                    }
+                    b'"' => {
+                        i += 1;
+                        while i < b.len() && b[i] != b'"' {
+                            if b[i] == b'\\' {
+                                i += 1;
+                            }
+                            i += 1;
+                        }
+                        i += 1; // closing quote
+                        continue;
+                    }
+                    b';' => {
+                        while i < b.len() && b[i] != b'\n' {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            i
+        }
+        // Bare atom: run to the next whitespace/delimiter.
+        _ => {
+            while i < b.len() && !is_ws(b[i]) && !matches!(b[i], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
+                i += 1;
+            }
+            i
+        }
+    }
+}
+
 struct Reader<'a> {
     s: &'a [u8],
     i: usize,
@@ -155,6 +244,15 @@ impl<'a> Reader<'a> {
             }
             b'#' => self.read_dispatch(),
             b'\\' => self.read_char_literal(),
+            b'^' => {
+                // `^meta form`: read (and discard) the metadata, return the
+                // target form. The port does not track value metadata yet, so
+                // `^:private`/`^:dynamic`/etc. are read-and-dropped — they do
+                // not change eval semantics for the forms core.clj uses.
+                self.i += 1; // consume '^'
+                let _meta = self.read_form()?;
+                self.read_form()
+            }
             _ => self.read_atom(),
         }
     }
@@ -194,6 +292,28 @@ impl<'a> Reader<'a> {
                     set = set.conj(e);
                 }
                 Ok(Value::Set(Gc::new(set)))
+            }
+            // `#(body)` anon-fn: desugar to `(fn [%1..%N] body)`, normalizing
+            // bare `%` to `%1`. Ports read_anon_fn_form (read.c).
+            Some(b'(') => {
+                self.i += 1; // consume '#'; read_seq consumes '('
+                let items = self.read_seq(b')')?;
+                let body = list_from_vec(items);
+                let (max_arg, has_rest) = scan_percent(&body);
+                let body = normalize_percent(&body);
+                let mut params = Vec::new();
+                for i in 1..=max_arg {
+                    params.push(Value::Sym(Symbol::plain(&format!("%{i}"))));
+                }
+                if has_rest {
+                    params.push(Value::Sym(Symbol::plain("&")));
+                    params.push(Value::Sym(Symbol::plain("%&")));
+                }
+                let pv = crate::collections::vector::PVec::from_vec(params);
+                Ok(cons(
+                    Value::Sym(Symbol::plain("fn")),
+                    cons(Value::Vector(Gc::new(pv)), cons(body, Value::EmptyList)),
+                ))
             }
             Some(c) => Err(ReadError::Malformed(format!(
                 "unsupported reader dispatch macro #{}",
@@ -454,6 +574,71 @@ impl<'a> Reader<'a> {
 
 fn cons(car: Value, cdr: Value) -> Value {
     Value::Cons(Gc::new((car, cdr)))
+}
+
+// Scan an anon-fn body for `%` arg usage. Returns (max positional arg,
+// has-rest). Bare `%` counts as `%1`; `%&` sets has_rest; `%N` sets max.
+// Ports scan_percent_args (read.c).
+fn scan_percent(form: &Value) -> (usize, bool) {
+    let mut max = 0usize;
+    let mut rest = false;
+    scan_percent_walk(form, &mut max, &mut rest);
+    (max, rest)
+}
+
+fn scan_percent_walk(form: &Value, max: &mut usize, rest: &mut bool) {
+    match form {
+        Value::Sym(s) if s.ns.is_none() => {
+            let n = &*s.name;
+            if n == "%" {
+                if *max < 1 {
+                    *max = 1;
+                }
+            } else if n == "%&" {
+                *rest = true;
+            } else if let Some(digits) = n.strip_prefix('%') {
+                if let Ok(k) = digits.parse::<usize>() {
+                    if k > *max {
+                        *max = k;
+                    }
+                }
+            }
+        }
+        Value::Cons(cell) => {
+            scan_percent_walk(&cell.0, max, rest);
+            scan_percent_walk(&cell.1, max, rest);
+        }
+        Value::Vector(v) => {
+            for e in v.iter() {
+                scan_percent_walk(e, max, rest);
+            }
+        }
+        Value::Set(sset) => {
+            for e in sset.iter() {
+                scan_percent_walk(e, max, rest);
+            }
+        }
+        Value::Map(m) => {
+            for (k, val) in m.entries() {
+                scan_percent_walk(k, max, rest);
+                scan_percent_walk(val, max, rest);
+            }
+        }
+        _ => {}
+    }
+}
+
+// Rewrite bare `%` to `%1` throughout an anon-fn body. Ports normalize_percent.
+fn normalize_percent(form: &Value) -> Value {
+    match form {
+        Value::Sym(s) if s.ns.is_none() && &*s.name == "%" => Value::Sym(Symbol::plain("%1")),
+        Value::Cons(cell) => cons(normalize_percent(&cell.0), normalize_percent(&cell.1)),
+        Value::Vector(v) => {
+            let items: Vec<Value> = v.iter().map(normalize_percent).collect();
+            Value::Vector(Gc::new(crate::collections::vector::PVec::from_vec(items)))
+        }
+        other => other.clone(),
+    }
 }
 
 // Build a proper list from a slice; empty -> the empty-list value `()`

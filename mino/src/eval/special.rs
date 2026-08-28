@@ -18,7 +18,19 @@ pub fn eval_def(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
         None => return Err(throw_str("def requires a name")),
     };
     // (def name value): eval and bind. (def name): declaration only.
-    if let Some(value_form) = args.get(1) {
+    // (def name "doc" value): docstring form — the value is the 3rd arg.
+    // The port drops the docstring (var metadata is Phase 5.3).
+    let value_form = match (args.get(1), args.get(2)) {
+        // 3-arg docstring form: (def name "doc" value).
+        (Some(Value::Str(_)), Some(v)) => Some(v),
+        // 2-arg form: (def name value).
+        (Some(v), None) => Some(v),
+        // 3+ args, non-string 2nd: (def name value ...) — take the value.
+        (Some(v), Some(_)) => Some(v),
+        // 1-arg: declaration only.
+        (None, _) => None,
+    };
+    if let Some(value_form) = value_form {
         let value = it.eval(value_form, env)?;
         it.root.set(name.clone(), value);
     }
