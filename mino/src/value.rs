@@ -15,6 +15,12 @@ pub enum Value {
     Sym(crate::symbol::Symbol),
     Keyword(crate::symbol::Symbol),
     Cons(Gc<(Value, Value)>),
+    // Phase 2: replace Vec backing with a persistent vector (32-way trie).
+    Vector(Gc<Vec<Value>>),
+    // Phase 2: replace Vec-of-pairs backing with a HAMT. Insertion order is
+    // preserved for printing until then. (Set dedup on read: not yet — Phase 2.)
+    Map(Gc<Vec<(Value, Value)>>),
+    Set(Gc<Vec<Value>>),
     // later phases extend this enum
 }
 
