@@ -73,7 +73,7 @@ pub fn make_fn(args: &[Value], env: &Env) -> Result<Value, Throw> {
 /// variadic tail (the symbol after `&`).
 fn parse_arity(params: &Value, body: &[Value]) -> Result<Arity, Throw> {
     let items = match params {
-        Value::Vector(v) => (**v).clone(),
+        Value::Vector(v) => v.iter().cloned().collect::<Vec<Value>>(),
         _ => return Err(throw_str("fn parameter list must be a vector")),
     };
     let mut fixed = Vec::new();

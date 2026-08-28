@@ -100,7 +100,9 @@ impl<'a> Reader<'a> {
         let c = self.peek().ok_or(ReadError::Eof)?;
         match c {
             b'(' => self.read_seq(b')').map(list_from_vec),
-            b'[' => self.read_seq(b']').map(|v| Value::Vector(Gc::new(v))),
+            b'[' => self
+                .read_seq(b']')
+                .map(|v| Value::Vector(Gc::new(crate::collections::vector::PVec::from_vec(v)))),
             b'{' => self.read_map(),
             b')' | b']' | b'}' => Err(ReadError::Unexpected(c as char)),
             b'"' => self.read_string(),

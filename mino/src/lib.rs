@@ -5,6 +5,7 @@
 // tripping the non_local_definitions lint. Third-party codegen, not our code.
 #![allow(unknown_lints, non_local_definitions)]
 
+pub mod collections;
 pub mod symbol;
 pub mod value;
 

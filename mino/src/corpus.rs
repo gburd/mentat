@@ -178,7 +178,10 @@ fn substitute(template: &Value, names: &[&crate::symbol::Symbol], vals: &[Value]
             substitute(&cell.1, names, vals),
         ))),
         Value::Vector(items) => Value::Vector(gc::Gc::new(
-            items.iter().map(|e| substitute(e, names, vals)).collect(),
+            items
+                .iter()
+                .map(|e| substitute(e, names, vals))
+                .collect::<crate::collections::vector::PVec>(),
         )),
         other => other.clone(),
     }
