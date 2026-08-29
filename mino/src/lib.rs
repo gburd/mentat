@@ -19,3 +19,11 @@ pub mod prim;
 pub mod store;
 
 pub mod corpus;
+pub mod embed;
+
+// Host-facing re-exports: a downstream crate embeds via `mino_rs::Interpreter`
+// and constructs values/prims with these types without reaching into modules.
+pub use embed::Interpreter;
+pub use eval::Interp;
+pub use error::Throw;
+pub use value::{PrimFn, Value};
