@@ -112,6 +112,9 @@ pub mod query_builder;
 pub mod store;
 pub mod vocabulary;
 
+#[cfg(feature = "mino")]
+pub mod script;
+
 pub use query_builder::QueryBuilder;
 
 pub use conn::Conn;
@@ -119,6 +122,9 @@ pub use conn::Conn;
 pub use mentat_transaction::{CacheAction, CacheDirection, InProgress, Pullable, Queryable};
 
 pub use store::Store;
+
+#[cfg(feature = "mino")]
+pub use script::Interpreter as ScriptInterpreter;
 
 #[cfg(test)]
 mod tests {

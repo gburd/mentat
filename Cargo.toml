@@ -21,6 +21,9 @@ build = "build/version.rs"
 default = ["bundled_sqlite3"]
 bundled_sqlite3 = ["rusqlite/bundled"]
 sqlcipher = ["rusqlite/sqlcipher", "mentat_db/sqlcipher"]
+# Optional pure-Rust mino scripting layer (exposes the `mentat.store` language).
+# OFF by default: pure-Rust Mentat users pay nothing.
+mino = ["dep:mino-rs"]
 
 [workspace]
 members = [
@@ -101,6 +104,12 @@ path = "public-traits"
 
 [dependencies.mentat_transaction]
 path = "transaction"
+
+# Optional: the mino Clojure-dialect interpreter, behind the `mino` feature.
+# Pure-Rust; relative path from this crate to the standalone mino-rs repo.
+[dependencies.mino-rs]
+path = "../../src/mino-rs"
+optional = true
 
 [profile.release]
 opt-level = 3
