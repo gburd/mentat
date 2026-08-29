@@ -24,7 +24,7 @@
             fd
             sqlite
             zed-editor
-            rust-bin.beta.latest.default
+            rust-bin.stable.latest.default
           ];
 
           shellHook = ''
