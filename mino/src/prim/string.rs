@@ -397,7 +397,7 @@ fn build_replacement(
     let n_groups = caps.len() - 1;
     match repl {
         Value::Str(tmpl) => expand_template(tmpl, caps),
-        Value::Fn(_) | Value::Prim(_) => {
+        Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_) => {
             // The match arg mirrors re-find: string (no groups) or
             // [whole g1 ...] (groups).
             let arg = if n_groups == 0 {

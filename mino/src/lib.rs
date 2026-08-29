@@ -27,3 +27,5 @@ pub use embed::Interpreter;
 pub use eval::Interp;
 pub use error::Throw;
 pub use value::{PrimFn, Value};
+pub use symbol::Symbol;
+pub use value::PrimClosure;

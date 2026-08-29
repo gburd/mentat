@@ -301,6 +301,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Set(_) => "set",
         Value::Fn(c) if c.is_macro => "macro",
         Value::Fn(_) | Value::Prim(_) => "fn",
+        Value::PrimClosure(_) => "fn",
         Value::Regex(_) => "regex",
         Value::Var(_) => "var",
         Value::Atom(_) => "atom",

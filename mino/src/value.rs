@@ -35,6 +35,12 @@ pub enum Value {
     // Closures (`fn`) and built-in primitives. Ports MINO_FN / native prim.
     Fn(Gc<Closure>),
     Prim(Prim),
+    // A native primitive that CAN capture host state (a `Box<dyn Fn>`), unlike
+    // `Prim` (a bare fn pointer). This is how a host embeds a stateful engine:
+    // Mentat registers `mentat.store/*` prims closing over an
+    // `Rc<RefCell<mentat::Store>>`. Equality/hash by identity. Holds no *Gc*
+    // pointers (captured state is behind the host's own Rc/RefCell), empty trace.
+    PrimClosure(Gc<PrimClosure>),
     // Arbitrary-precision integer (`42N`, or the auto-promotion result of
     // `+'`/`*'`/etc. on i64 overflow). A distinct tier from Int: prints with
     // an `N` suffix and `type` returns `:bigint`. A BigInt is only produced
@@ -87,6 +93,23 @@ pub struct Prim(pub PrimFn, pub &'static str);
 
 impl Finalize for Prim {}
 unsafe impl Trace for Prim {
+    gc::unsafe_empty_trace!();
+}
+
+/// A native primitive that can capture host state. The boxed closure lets a
+/// host register prims that hold a handle to its own engine (e.g. a
+/// `Rc<RefCell<mentat::Store>>`). The captured state lives behind the host's
+/// own interior-mutability wrapper, not in the GC heap, so the trace is empty.
+pub type PrimClosureFn =
+    dyn Fn(&mut crate::eval::Interp, &[Value]) -> Result<Value, crate::error::Throw>;
+
+pub struct PrimClosure {
+    pub f: Box<PrimClosureFn>,
+    pub name: String,
+}
+
+impl Finalize for PrimClosure {}
+unsafe impl Trace for PrimClosure {
     gc::unsafe_empty_trace!();
 }
 

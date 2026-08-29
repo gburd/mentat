@@ -89,6 +89,9 @@ fn print_into(s: &mut String, v: &Value) {
         Value::Prim(p) => {
             let _ = write!(s, "#<prim {}>", p.1);
         }
+        Value::PrimClosure(p) => {
+            let _ = write!(s, "#<prim {}>", p.name);
+        }
         // def returns a var, printed `#'ns/name`.
         Value::Var(sym) => {
             let _ = write!(s, "#'{sym}");

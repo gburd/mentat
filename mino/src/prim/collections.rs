@@ -887,7 +887,7 @@ pub fn cons_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Cons(_)))
 }
 pub fn fn_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    pred(a, |v| matches!(v, Value::Fn(_) | Value::Prim(_)))
+    pred(a, |v| matches!(v, Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_)))
 }
 pub fn int_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     // int? is the long tier ONLY (not bigint), matching mino's C prim.

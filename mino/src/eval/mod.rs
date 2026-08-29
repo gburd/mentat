@@ -376,6 +376,7 @@ impl Interp {
             | Value::Keyword(_)
             | Value::Fn(_)
             | Value::Prim(_)
+            | Value::PrimClosure(_)
             | Value::Regex(_)
             | Value::Var(_)
             | Value::Atom(_)
@@ -868,6 +869,7 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Map(_) => "map",
         Value::Set(_) => "set",
         Value::Fn(_) | Value::Prim(_) => "fn",
+        Value::PrimClosure(_) => "fn",
         Value::Regex(_) => "regex",
         Value::Var(_) => "var",
         Value::Atom(_) => "atom",

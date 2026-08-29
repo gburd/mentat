@@ -17,7 +17,8 @@ use crate::env::Env;
 use crate::eval::Interp;
 use crate::printer::print_str;
 use crate::symbol::Symbol;
-use crate::value::{Prim, Value};
+use crate::value::{Prim, PrimClosure, Value};
+use gc::Gc;
 
 pub use crate::value::PrimFn;
 
@@ -66,6 +67,24 @@ impl Interpreter {
             _ => Symbol::plain(name),
         };
         self.root().set(sym, Value::Prim(Prim(f, leaked)));
+    }
+
+    /// Register a native primitive that CAN capture host state (a closure),
+    /// unlike [`register_prim`](Interpreter::register_prim) which takes a bare
+    /// fn pointer. This is how a host exposes a *stateful* engine to the
+    /// language: the closure can hold e.g. an `Rc<RefCell<mentat::Store>>` and
+    /// each call reads/mutates it. `name` may be namespaced (`ns/foo`); a
+    /// namespaced name binds a namespaced key, a bare name a bare key.
+    pub fn register_prim_fn<F>(&mut self, name: &str, f: F)
+    where
+        F: Fn(&mut Interp, &[Value]) -> Result<Value, crate::error::Throw> + 'static,
+    {
+        let sym = match name.rsplit_once('/') {
+            Some((ns, n)) if !ns.is_empty() && !n.is_empty() => Symbol::namespaced(ns, n),
+            _ => Symbol::plain(name),
+        };
+        let pc = PrimClosure { f: Box::new(f), name: name.to_string() };
+        self.root().set(sym, Value::PrimClosure(Gc::new(pc)));
     }
 
     /// Register a namespace alias so `alias/foo` resolves to `target/foo`.
@@ -158,5 +177,31 @@ mod tests {
         let mut it = Interpreter::new();
         it.def_global("injected", Value::Int(99));
         assert_eq!(it.eval_to_string("injected").unwrap(), "99");
+    }
+
+    #[test]
+    fn register_prim_fn_captures_host_state() {
+        // The capability the Mentat SQLite bridge needs: a prim closing over
+        // mutable host state. Here a shared counter stands in for a Store.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let counter = Rc::new(RefCell::new(0i64));
+        let mut it = Interpreter::new();
+        let c1 = counter.clone();
+        it.register_prim_fn("host/bump", move |_it, args| {
+            let by = match args.first() {
+                Some(Value::Int(n)) => *n,
+                _ => 1,
+            };
+            *c1.borrow_mut() += by;
+            Ok(Value::Int(*c1.borrow()))
+        });
+        assert_eq!(it.eval_to_string("(host/bump 5)").unwrap(), "5");
+        assert_eq!(it.eval_to_string("(host/bump 3)").unwrap(), "8");
+        // The captured state is visible outside the interpreter too.
+        assert_eq!(*counter.borrow(), 8);
+        // A closure-prim is a fn and callable via higher-order fns.
+        assert_eq!(it.eval_to_string("(fn? host/bump)").unwrap(), "true");
+        assert_eq!(it.eval_to_string("(map host/bump [1 1 1])").unwrap(), "(9 10 11)");
     }
 }

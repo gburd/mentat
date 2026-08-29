@@ -129,6 +129,7 @@ fn hash32(v: &Value) -> u32 {
         // Non-hashable: identity by heap address (default tag 0x0b).
         Value::Fn(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         Value::Prim(p) => hash_identity(fnv_mix(h, 0x0b), p.0 as usize),
+        Value::PrimClosure(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         Value::Var(sym) => fnv_bytes(fnv_mix(h, 0x06), sym.to_string().as_bytes()),
         // Internal recur signal: identity hash; it never enters a real
         // collection, but the match must stay exhaustive.
@@ -207,6 +208,10 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
             // Prim identity: compare the fn pointers. (Casting to a data
             // pointer avoids the unstable `ptr::fn_addr_eq`.)
             x.0 as usize == y.0 as usize
+        }
+        (Value::PrimClosure(x), Value::PrimClosure(y)) => {
+            // Closure-prim identity: same Gc allocation.
+            &**x as *const _ == &**y as *const _
         }
         // Atoms: identity. Two distinct atoms are never `=`, even with equal
         // contents; the same atom compares equal to itself.

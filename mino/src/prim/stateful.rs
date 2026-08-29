@@ -340,7 +340,7 @@ pub fn add_watch(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             "add-watch: first argument must be an atom or ref",
         ));
     };
-    if !matches!(f, Value::Fn(_) | Value::Prim(_)) {
+    if !matches!(f, Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_)) {
         return Err(throw_classified(
             "eval/type",
             "MTY001",
@@ -400,6 +400,7 @@ pub fn set_validator(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     match f {
         Value::Nil => cell.borrow_mut().validator = None,
         Value::Fn(_) | Value::Prim(_) => cell.borrow_mut().validator = Some(f.clone()),
+        Value::PrimClosure(_) => cell.borrow_mut().validator = Some(f.clone()),
         _ => {
             return Err(throw_classified(
                 "eval/type",

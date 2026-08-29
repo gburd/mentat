@@ -104,6 +104,7 @@ fn parse_arity(params: &Value, body: &[Value]) -> Result<Arity, Throw> {
 pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, Throw> {
     match callee {
         Value::Prim(p) => (p.0)(it, args),
+        Value::PrimClosure(p) => (p.f)(it, args),
         Value::Fn(closure) => apply_closure(it, closure, callee, args),
         // Keywords and symbols are callable as map-lookup fns:
         // `(:k m)` / `('s m)` => (get m callee default?). Ports mino's
