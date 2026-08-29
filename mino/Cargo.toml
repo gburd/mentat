@@ -1,6 +1,6 @@
 [package]
 name = "mino-rs"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 description = "Pure-Rust port of the mino Clojure-dialect interpreter (reader, evaluator, persistent collections, core.clj stdlib, EAVT store). Reused by Mentat and pg_mentat."
 license = "MIT"
