@@ -53,6 +53,16 @@ impl Store {
         ip.commit()?;
         Ok(report)
     }
+
+    /// Speculatively transact `transaction` and return its `TxReport` WITHOUT
+    /// committing (Datomic `d/with`). Delegates to [`Conn::transact_speculative`],
+    /// which opens a real SQLite transaction and rolls it back on drop, so the
+    /// store is left unchanged. This is the thin `&mut Store` wrapper the
+    /// scripting layer needs, since `transact_speculative` lives on `Conn` and
+    /// wants both the `Conn` and the `rusqlite::Connection` (both private here).
+    pub fn with_speculative(&mut self, transaction: &str) -> Result<TxReport> {
+        self.conn.transact_speculative(&mut self.sqlite, transaction)
+    }
 }
 
 #[cfg(feature = "sqlcipher")]
@@ -82,6 +92,12 @@ impl Store {
     /// Intended for use from tests.
     pub fn sqlite_mut(&mut self) -> &mut rusqlite::Connection {
         &mut self.sqlite
+    }
+
+    /// A shared borrow of the underlying SQLite connection, for read-only
+    /// helpers (e.g. `mentat_db::debug::datoms`) that only need `&Connection`.
+    pub fn sqlite_ref(&self) -> &rusqlite::Connection {
+        &self.sqlite
     }
 
     #[cfg(test)]
