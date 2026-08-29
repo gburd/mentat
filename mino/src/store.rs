@@ -6,18 +6,27 @@
 //!
 //! A store is an identity cell wrapping the current immutable db value (a
 //! persistent map). `store-commit*` swaps the value and fires watches;
-//! `deref`/`@` reads it. Durability (path/WAL/snapshot/checkpoint) is Phase 7:
-//! here the path handling is stubbed so in-memory stores work and the snapshot
-//! /WAL reads return nil (`store/open` only calls them `(when path ...)`).
+//! `deref`/`@` reads it. Durability uses snapshot + WAL (ADR 11): a durable
+//! store carries a filesystem `path`; the snapshot lives at `<path>` (a 1-byte
+//! `0x00` version header followed by the db value as EDN) and the WAL lives at
+//! `<path>.wal` (line-delimited EDN, one tx-info map per line). `store-commit*`
+//! appends to the WAL before publishing; `store-checkpoint*` writes the
+//! snapshot atomically (temp + rename) and deletes the WAL; `store-close*`
+//! checkpoints then releases. `store/open` (Clojure) reads them back via
+//! `store-read-snapshot*` / `store-read-wal*`.
 
 use crate::collections::map::PMap;
+use crate::collections::vector::PVec;
 use crate::env::Env;
 use crate::error::{throw_classified, Throw};
 use crate::eval::func::apply;
 use crate::eval::Interp;
+use crate::printer::print_str;
+use crate::reader::read_one;
 use crate::symbol::Symbol;
 use crate::value::{Prim, Value};
 use gc::{Finalize, Gc, GcCell, Trace};
+use std::io::Write;
 
 /// The mutable state behind a store handle: the current db value, the optional
 /// durable path (None = in-memory), a monotonic print id, and the watches map
@@ -105,7 +114,19 @@ fn store_commit_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             "store-commit* requires a store connection",
         ));
     };
-    // ponytail: in-memory only; WAL append (the tx-info 3rd arg) is Phase 7.
+    // WAL append before publish (crash safety): if the store is durable and a
+    // non-nil tx-info was supplied, append it as one EDN line + flush before
+    // the in-memory value swap. Ports prim_store_commit's WAL branch.
+    let tx_info = match args {
+        [_, _, ti] if !matches!(ti, Value::Nil) => Some(ti),
+        _ => None,
+    };
+    if let Some(ti) = tx_info {
+        let path = cell.borrow().path.clone();
+        if let Some(path) = path {
+            wal_append(&path, ti)?;
+        }
+    }
     let old_val = cell.borrow().val.clone();
     let watches: Vec<(Value, Value)> = cell
         .borrow()
@@ -143,9 +164,10 @@ fn store_clock_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
 }
 
-/// `(store-checkpoint* conn)` — no-op for in-memory (documented: see
-/// `store-in-memory-checkpoint-noop`). Phase 7 writes the snapshot for durable
-/// stores. Returns nil. Ports `prim_store_checkpoint`.
+/// `(store-checkpoint* conn)` — for a durable store, write the snapshot
+/// atomically (temp file with `0x00` header + EDN, fsync, rename into place)
+/// and delete the WAL. In-memory: no-op. Returns nil. Ports
+/// `prim_store_checkpoint` + `mino_store_checkpoint`.
 fn store_checkpoint_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [conn] = args else {
         return Err(throw_classified(
@@ -154,18 +176,27 @@ fn store_checkpoint_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Thro
             "store-checkpoint* requires one argument",
         ));
     };
-    if as_store(conn).is_none() {
+    let Some(cell) = as_store(conn) else {
         return Err(throw_classified(
             "eval/type",
             "MTY001",
             "store-checkpoint* requires a store connection",
         ));
+    };
+    let (path, val) = {
+        let s = cell.borrow();
+        (s.path.clone(), s.val.clone())
+    };
+    if let Some(path) = path {
+        checkpoint_to_disk(&path, &val)?;
     }
     Ok(Value::Nil)
 }
 
-/// `(store-close* conn)` — no-op close for in-memory (Phase 7 flushes durable).
-/// Returns nil. Idempotent. Ports `prim_store_close`.
+/// `(store-close* conn)` — for a durable store, checkpoint (write snapshot +
+/// delete WAL) then release the path. In-memory: no-op. Idempotent (a second
+/// close finds no path). Returns nil. Ports `prim_store_close` +
+/// `mino_store_close` (which checkpoints before releasing the handle).
 fn store_close_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [conn] = args else {
         return Err(throw_classified(
@@ -174,12 +205,22 @@ fn store_close_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             "store-close* requires one argument",
         ));
     };
-    if as_store(conn).is_none() {
+    let Some(cell) = as_store(conn) else {
         return Err(throw_classified(
             "eval/type",
             "MTY001",
             "store-close* requires a store connection",
         ));
+    };
+    let (path, val) = {
+        let s = cell.borrow();
+        (s.path.clone(), s.val.clone())
+    };
+    if let Some(path) = path {
+        checkpoint_to_disk(&path, &val)?;
+        // Release the path so a second close is a no-op (idempotent), matching
+        // mino_store_close freeing the handle.
+        cell.borrow_mut().path = None;
     }
     Ok(Value::Nil)
 }
@@ -196,9 +237,10 @@ fn store_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     Ok(Value::Bool(matches!(x, Value::Store(_))))
 }
 
-/// `(store-read-snapshot* path)` — in-memory stub: no snapshot file, return
-/// nil. Phase 7 reads + parses the on-disk snapshot. Ports
-/// `prim_store_read_snapshot` (durable read is Phase 7).
+/// `(store-read-snapshot* path)` — read the snapshot at `<path>` if it exists.
+/// The file may carry a 1-byte `0x00` version header (skip it) or be headerless
+/// (v1: parse the whole file as EDN). Returns the parsed db value, or nil if
+/// the file is absent / unparseable. Ports `prim_store_read_snapshot`.
 fn store_read_snapshot_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [path] = args else {
         return Err(throw_classified(
@@ -207,19 +249,33 @@ fn store_read_snapshot_star(_it: &mut Interp, args: &[Value]) -> Result<Value, T
             "store-read-snapshot* requires one argument",
         ));
     };
-    if !matches!(path, Value::Str(_)) {
+    let Value::Str(p) = path else {
         return Err(throw_classified(
             "eval/type",
             "MTY001",
             "store-read-snapshot*: path must be a string",
         ));
+    };
+    let Ok(bytes) = std::fs::read(&**p) else {
+        return Ok(Value::Nil); // no file
+    };
+    // Skip the 1-byte version header (0x00 = EDN text); headerless v1 snapshots
+    // parse the whole file.
+    let body: &[u8] = match bytes.first() {
+        Some(0x00) => &bytes[1..],
+        _ => &bytes,
+    };
+    match std::str::from_utf8(body).ok().and_then(|s| read_one(s).ok()) {
+        Some((db, _)) => Ok(db),
+        None => Ok(Value::Nil), // unparseable snapshot -> nil (start fresh)
     }
-    // ponytail: in-memory stub returns nil (no file); Phase 7 reads EDN snapshot.
-    Ok(Value::Nil)
 }
 
-/// `(store-read-wal* path)` — in-memory stub: no WAL file, return nil. Phase 7
-/// reads + replays the WAL. Ports `prim_store_read_wal`.
+/// `(store-read-wal* path)` — read the WAL at `<path>.wal` if it exists, parse
+/// each line as EDN, and return a vector of tx-info maps. A torn/unparseable
+/// line stops the scan (the malformed trailing line is dropped — torn-write
+/// recovery). Returns nil if the WAL file is absent. Ports
+/// `prim_store_read_wal` / `store_wal_read`.
 fn store_read_wal_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [path] = args else {
         return Err(throw_classified(
@@ -228,15 +284,81 @@ fn store_read_wal_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw>
             "store-read-wal* requires one argument",
         ));
     };
-    if !matches!(path, Value::Str(_)) {
+    let Value::Str(p) = path else {
         return Err(throw_classified(
             "eval/type",
             "MTY001",
             "store-read-wal*: path must be a string",
         ));
+    };
+    let wal_path = format!("{}.wal", &**p);
+    let Ok(text) = std::fs::read_to_string(&wal_path) else {
+        return Ok(Value::Nil); // no WAL file
+    };
+    let mut entries: Vec<Value> = Vec::new();
+    for line in text.split('\n') {
+        let trimmed = line.trim_start_matches([' ', '\t', '\r']);
+        if trimmed.is_empty() {
+            continue;
+        }
+        match read_one(trimmed) {
+            // A well-formed line parses to exactly one form consuming the whole
+            // (trimmed) line. If parsing leaves trailing non-whitespace, the
+            // line is torn (e.g. `GARBAGE{not valid`) — stop and drop the tail,
+            // matching store_wal_read's eval-the-whole-line semantics.
+            Ok((entry, consumed)) if trimmed[consumed..].trim().is_empty() => entries.push(entry),
+            _ => break,
+        }
     }
-    // ponytail: in-memory stub returns nil (no file); Phase 7 replays the WAL.
-    Ok(Value::Nil)
+    Ok(Value::Vector(Gc::new(PVec::from_vec(entries))))
+}
+
+/// Append `tx_info` as one EDN line + newline to `<path>.wal`, flushed to disk
+/// (fsync) before returning. Ports `store_wal_append`.
+fn wal_append(path: &str, tx_info: &Value) -> Result<(), Throw> {
+    let wal_path = format!("{path}.wal");
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&wal_path)
+        .map_err(|_| throw_classified("io", "MIO001", "store: cannot open WAL for append"))?;
+    let mut line = print_str(tx_info);
+    line.push('\n');
+    f.write_all(line.as_bytes())
+        .and_then(|_| f.flush())
+        .and_then(|_| f.sync_all())
+        .map_err(|_| throw_classified("io", "MIO001", "store: WAL flush failed"))
+}
+
+/// Write the db `val` to `<path>` atomically: serialize to `<path>.tmp` (a
+/// `0x00` version header + EDN), fsync, then rename into place; then delete
+/// `<path>.wal`. A crash mid-write leaves a stale `.tmp` and the previous
+/// snapshot intact (the next checkpoint overwrites `.tmp`). Ports
+/// `mino_store_checkpoint`.
+fn checkpoint_to_disk(path: &str, val: &Value) -> Result<(), Throw> {
+    let tmp_path = format!("{path}.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp_path).map_err(|_| {
+            throw_classified("io", "MIO001", "store-checkpoint: cannot open file for writing")
+        })?;
+        let mut buf = Vec::with_capacity(256);
+        buf.push(0x00u8); // STORE_SNAPSHOT_VERSION
+        buf.extend_from_slice(print_str(val).as_bytes());
+        f.write_all(&buf)
+            .and_then(|_| f.flush())
+            .and_then(|_| f.sync_all())
+            .map_err(|_| {
+                let _ = std::fs::remove_file(&tmp_path);
+                throw_classified("io", "MIO001", "store-checkpoint: write failed")
+            })?;
+    }
+    std::fs::rename(&tmp_path, path).map_err(|_| {
+        let _ = std::fs::remove_file(&tmp_path);
+        throw_classified("io", "MIO001", "store-checkpoint: cannot rename snapshot into place")
+    })?;
+    // Delete the WAL — the snapshot captures all state up to :tx.
+    let _ = std::fs::remove_file(format!("{path}.wal"));
+    Ok(())
 }
 
 /// Portable wall-clock epoch-ms. Matches `store_wall_clock_ms` (CLOCK_REALTIME).
@@ -269,12 +391,141 @@ pub fn install(root: &Env) {
     reg("store?", store_p);
     reg("store-read-snapshot*", store_read_snapshot_star);
     reg("store-read-wal*", store_read_wal_star);
+    // Filesystem prims the store test corpus drives durability with. These
+    // port prim/fs.c (file-exists?, mkdir-p, rm-rf) + prim/io.c (spit, slurp).
+    // Registered here because the store tests are their only consumer in the
+    // port; a full fs/io module can lift them out later if other tests need it.
+    reg("file-exists?", fs_file_exists_p);
+    reg("mkdir-p", fs_mkdir_p);
+    reg("rm-rf", fs_rm_rf);
+    reg("spit", io_spit);
+    reg("slurp", io_slurp);
+}
+
+/// `(file-exists? path)` -> bool. Ports `prim_file_exists_p`.
+fn fs_file_exists_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [Value::Str(p)] = args else {
+        return Err(throw_classified(
+            "eval/type",
+            "MTY001",
+            "file-exists?: argument must be a string",
+        ));
+    };
+    Ok(Value::Bool(std::path::Path::new(&**p).exists()))
+}
+
+/// `(mkdir-p path)` -> nil. Creates the directory and all parents. Ports
+/// `prim_mkdir_p`.
+fn fs_mkdir_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [Value::Str(p)] = args else {
+        return Err(throw_classified(
+            "eval/type",
+            "MTY001",
+            "mkdir-p: argument must be a string",
+        ));
+    };
+    std::fs::create_dir_all(&**p)
+        .map_err(|_| throw_classified("host", "MHO001", "mkdir-p: cannot create directory"))?;
+    Ok(Value::Nil)
+}
+
+/// `(rm-rf path)` -> nil. Recursively removes a file or directory; a missing
+/// path is not an error. Ports `prim_rm_rf`.
+fn fs_rm_rf(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [Value::Str(p)] = args else {
+        return Err(throw_classified(
+            "eval/type",
+            "MTY001",
+            "rm-rf: argument must be a string",
+        ));
+    };
+    let path = std::path::Path::new(&**p);
+    let r = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match r {
+        Ok(()) => Ok(Value::Nil),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Nil),
+        Err(_) => Err(throw_classified("host", "MHO001", "rm-rf: cannot remove")),
+    }
+}
+
+/// `(spit path content & opts)` -> nil. Writes `content` to `path`; `:append`
+/// truthy selects append mode. Strings are written verbatim; other values are
+/// printed via pr-str. Ports `prim_spit`.
+fn io_spit(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let (path, content, opts) = match args {
+        [Value::Str(p), content, opts @ ..] => (p, content, opts),
+        [_, _, ..] => {
+            return Err(throw_classified(
+                "eval/type",
+                "MTY001",
+                "spit: first argument must be a string path",
+            ))
+        }
+        _ => {
+            return Err(throw_classified(
+                "eval/arity",
+                "MAR001",
+                "spit requires two arguments",
+            ))
+        }
+    };
+    // Scan trailing key/value option pairs for :append.
+    let mut append = false;
+    let mut i = 0;
+    while i < opts.len() {
+        let Some(v) = opts.get(i + 1) else {
+            return Err(throw_classified(
+                "eval/arity",
+                "MAR001",
+                "spit: options must be key/value pairs",
+            ));
+        };
+        if let Value::Keyword(kw) = &opts[i] {
+            if &*kw.name == "append" {
+                append = v.is_truthy();
+            }
+        }
+        i += 2;
+    }
+    let body = match content {
+        Value::Str(s) => (**s).clone(),
+        other => print_str(other),
+    };
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append)
+        .truncate(!append)
+        .open(&**path)
+        .map_err(|_| throw_classified("host", "MHO001", "spit: cannot open file"))?;
+    f.write_all(body.as_bytes())
+        .map_err(|_| throw_classified("host", "MHO001", "spit: write failed"))?;
+    Ok(Value::Nil)
+}
+
+/// `(slurp path)` -> string of the file contents. Ports `prim_slurp`.
+fn io_slurp(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [Value::Str(p)] = args else {
+        return Err(throw_classified(
+            "eval/type",
+            "MTY001",
+            "slurp: argument must be a string",
+        ));
+    };
+    let s = std::fs::read_to_string(&**p)
+        .map_err(|_| throw_classified("host", "MHO001", "slurp: cannot read file"))?;
+    Ok(Value::Str(Gc::new(s)))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::eval::Interp;
     use crate::printer::print_str;
+    use std::io::Write;
 
     fn eval(src: &str) -> String {
         let mut it = Interp::new();
@@ -362,5 +613,175 @@ mod tests {
         let b = print_str(&it.eval_str("(mino.store/open)").unwrap());
         assert!(a.starts_with("#store[0x"));
         assert_ne!(a, b);
+    }
+
+    // ---- durability (snapshot + WAL), Task 7.1 ---------------------------
+
+    /// A unique temp path under the OS temp dir; dropping it removes the
+    /// snapshot, its `.wal`, and any `.tmp` so no turds survive the test.
+    struct TmpStore(std::path::PathBuf);
+    impl TmpStore {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static N: AtomicU64 = AtomicU64::new(0);
+            let pid = std::process::id();
+            let n = N.fetch_add(1, Ordering::Relaxed);
+            let mut p = std::env::temp_dir();
+            p.push(format!("mino-rs-store-{tag}-{pid}-{n}.db"));
+            let _ = std::fs::remove_file(&p);
+            let _ = std::fs::remove_file(format!("{}.wal", p.display()));
+            let _ = std::fs::remove_file(format!("{}.tmp", p.display()));
+            TmpStore(p)
+        }
+        fn path(&self) -> String {
+            self.0.display().to_string()
+        }
+    }
+    impl Drop for TmpStore {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(format!("{}.wal", self.0.display()));
+            let _ = std::fs::remove_file(format!("{}.tmp", self.0.display()));
+        }
+    }
+
+    /// Run a script on a fresh interpreter (a fresh runtime = a fresh process
+    /// for durability purposes) and return the pr-str of the last value.
+    fn run(script: &str) -> String {
+        let mut it = Interp::new();
+        print_str(&it.eval_str(script).unwrap())
+    }
+
+    #[test]
+    fn wal_survives_reopen_without_checkpoint() {
+        // Transact without checkpoint, then reopen on a fresh runtime: WAL
+        // replay recovers the data (simulates a crash before checkpoint).
+        let t = TmpStore::new("wal-reopen");
+        let p = t.path();
+        run(&format!(
+            "(require (quote mino.store)) \
+             (def c (mino.store/open \"{p}\")) \
+             (mino.store/transact c {{1 {{:name \"Alice\"}}}})"
+        ));
+        assert!(std::path::Path::new(&format!("{p}.wal")).exists(), "WAL written per-tx");
+        let got = run(&format!(
+            "(require (quote mino.store)) \
+             (def db (mino.store/db (mino.store/open \"{p}\"))) \
+             [(mino.store/read db 1 :name) (:tx db)]"
+        ));
+        assert_eq!(got, "[\"Alice\" 1]");
+    }
+
+    #[test]
+    fn checkpoint_writes_snapshot_and_deletes_wal() {
+        let t = TmpStore::new("ckpt");
+        let p = t.path();
+        run(&format!(
+            "(require (quote mino.store)) \
+             (def c (mino.store/open \"{p}\")) \
+             (mino.store/transact c [:db/add 1 :name \"Alice\"]) \
+             (mino.store/checkpoint c)"
+        ));
+        // Snapshot exists with the 0x00 header; WAL is gone.
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(bytes.first(), Some(&0x00), "snapshot has version header");
+        assert!(!std::path::Path::new(&format!("{p}.wal")).exists(), "WAL deleted");
+        // Reopen sees the snapshot value.
+        let got = run(&format!(
+            "(require (quote mino.store)) \
+             (mino.store/read (mino.store/db (mino.store/open \"{p}\")) 1 :name)"
+        ));
+        assert_eq!(got, "\"Alice\"");
+    }
+
+    #[test]
+    fn checkpoint_then_transact_replays_wal_on_snapshot() {
+        let t = TmpStore::new("ckpt-tx");
+        let p = t.path();
+        run(&format!(
+            "(require (quote mino.store)) \
+             (def c (mino.store/open \"{p}\")) \
+             (mino.store/transact c [:db/add 1 :name \"Alice\"]) \
+             (mino.store/checkpoint c) \
+             (mino.store/transact c [:db/add 2 :name \"Bob\"])"
+        ));
+        let got = run(&format!(
+            "(require (quote mino.store)) \
+             (def db (mino.store/db (mino.store/open \"{p}\"))) \
+             [(mino.store/read db 1 :name) (mino.store/read db 2 :name)]"
+        ));
+        assert_eq!(got, "[\"Alice\" \"Bob\"]");
+    }
+
+    #[test]
+    fn torn_final_wal_line_is_skipped() {
+        // A truncated/garbled trailing WAL line must be dropped, not crash the
+        // replay, and the good entries before it must still apply.
+        let t = TmpStore::new("torn");
+        let p = t.path();
+        run(&format!(
+            "(require (quote mino.store)) \
+             (def c (mino.store/open \"{p}\")) \
+             (mino.store/transact c [:db/add 1 :name \"Alice\"])"
+        ));
+        // Append garbage (no newline) to simulate a torn write.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(format!("{p}.wal"))
+                .unwrap();
+            f.write_all(b"GARBAGE{not valid").unwrap();
+        }
+        let got = run(&format!(
+            "(require (quote mino.store)) \
+             (def db (mino.store/db (mino.store/open \"{p}\"))) \
+             [(mino.store/read db 1 :name) (:tx db)]"
+        ));
+        assert_eq!(got, "[\"Alice\" 1]");
+    }
+
+    #[test]
+    fn atomic_snapshot_leaves_no_partial_and_cleans_stale_tmp() {
+        let t = TmpStore::new("atomic");
+        let p = t.path();
+        run(&format!(
+            "(require (quote mino.store)) \
+             (def c (mino.store/open \"{p}\")) \
+             (mino.store/transact c [:db/add 1 :name \"Alice\"]) \
+             (mino.store/checkpoint c)"
+        ));
+        // A stale .tmp left by a hypothetical crashed checkpoint attempt.
+        std::fs::write(format!("{p}.tmp"), b"STALE GARBAGE").unwrap();
+        run(&format!(
+            "(require (quote mino.store)) \
+             (def c (mino.store/open \"{p}\")) \
+             (mino.store/transact c [:db/add 2 :name \"Bob\"]) \
+             (mino.store/checkpoint c)"
+        ));
+        // The rename consumed the .tmp; the canonical snapshot is whole.
+        assert!(!std::path::Path::new(&format!("{p}.tmp")).exists(), "stale .tmp gone");
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(bytes.first(), Some(&0x00));
+        let got = run(&format!(
+            "(require (quote mino.store)) \
+             (def db (mino.store/db (mino.store/open \"{p}\"))) \
+             [(mino.store/read db 1 :name) (mino.store/read db 2 :name)]"
+        ));
+        assert_eq!(got, "[\"Alice\" \"Bob\"]");
+    }
+
+    #[test]
+    fn reads_headerless_v1_snapshot() {
+        // A legacy headerless snapshot (whole file is EDN, no 0x00 byte) still
+        // reads, per store_read_snapshot's backward-compat branch.
+        let t = TmpStore::new("v1");
+        let p = t.path();
+        std::fs::write(&p, b"{:entities {1 {:name \"Zed\"}} :log [] :tx 5}").unwrap();
+        let got = run(&format!(
+            "(require (quote mino.store)) \
+             (def db (mino.store/db (mino.store/open \"{p}\"))) \
+             [(mino.store/read db 1 :name) (:tx db)]"
+        ));
+        assert_eq!(got, "[\"Zed\" 5]");
     }
 }

@@ -117,6 +117,27 @@ fn run_body_form(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, f
                 Err(_) => *failed += 1,
             }
         }
+        Some("try") => {
+            // (try body... (catch ...) (finally cleanup...)): run each body
+            // form as a body form so nested `is` assertions tally, then always
+            // run the `finally` cleanup for effect. The durability deftests
+            // wrap their assertions in a try/finally that rm-rf's the temp dir.
+            let elems = rest_elems(form);
+            let mut finally_clause: Option<Value> = None;
+            for e in &elems {
+                match list_head_raw(e) {
+                    Some("finally") => finally_clause = Some(e.clone()),
+                    // catch clauses: run their handler bodies for effect only.
+                    Some("catch") => {}
+                    _ => run_body_form(it, e, env, passed, failed),
+                }
+            }
+            if let Some(fin) = finally_clause {
+                for body in rest_elems(&fin) {
+                    let _ = it.eval(&body, env);
+                }
+            }
+        }
         // Other forms containing assertions (do/when/if bodies) are eval'd for
         // effect in `env`. Kept deftests in the current gates only bury `is`
         // in `let`/`testing`, so this never loses a tallied assertion.
@@ -423,7 +444,16 @@ fn deftest_name(form_src: &str) -> Option<&str> {
 
 /// Head symbol name of a `(sym ...)` Value list, or None.
 fn list_head(v: &Value) -> Option<&'static str> {
-    // Return an owned-name match by comparing against the interned name.
+    match list_head_raw(v)? {
+        n @ ("is" | "are" | "testing" | "thrown?" | "let" | "let*" | "try") => Some(n),
+        _ => None,
+    }
+}
+
+/// The raw head-symbol name of a list form, or None if the head is not a plain
+/// symbol. Unlike `list_head`, does not filter to a known set — `run_body_form`
+/// uses it to recognize `finally`/`catch` clauses inside `try`.
+fn list_head_raw(v: &Value) -> Option<&'static str> {
     if let Value::Cons(cell) = v {
         if let Value::Sym(s) = &cell.0 {
             return match &*s.name {
@@ -433,6 +463,9 @@ fn list_head(v: &Value) -> Option<&'static str> {
                 "thrown?" => Some("thrown?"),
                 "let" => Some("let"),
                 "let*" => Some("let*"),
+                "try" => Some("try"),
+                "finally" => Some("finally"),
+                "catch" => Some("catch"),
                 _ => None,
             };
         }
