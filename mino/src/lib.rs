@@ -29,3 +29,9 @@ pub use error::Throw;
 pub use value::{PrimFn, Value};
 pub use symbol::Symbol;
 pub use value::PrimClosure;
+
+// A host embedding constructs collection `Value`s (`Value::Str(Gc::new(..))`,
+// `Value::Map(Gc::new(..))`, ...) when bridging its own data back into the
+// language. Re-exported so the host uses `mino_rs::Gc` without depending on
+// the exact `gc` crate version this port pins.
+pub use gc::Gc;
