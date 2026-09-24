@@ -30,7 +30,7 @@ members = [
   "tools/cli",
   "ffi", "core", "core-traits","db", "db-traits", "edn", "public-traits", "query-algebrizer",
   "query-algebrizer-traits", "query-projector", "query-projector-traits","query-pull",
-  "query-sql", "sql", "sql-traits", "transaction"
+  "query-sql", "sql", "sql-traits", "transaction", "mino"
   ]
 
 [build-dependencies]
@@ -106,9 +106,9 @@ path = "public-traits"
 path = "transaction"
 
 # Optional: the mino Clojure-dialect interpreter, behind the `mino` feature.
-# Pure-Rust; relative path from this crate to the standalone mino-rs repo.
+# Maintained in this repo (mino/); upstream mino is archived.
 [dependencies.mino-rs]
-path = "../../src/mino-rs"
+path = "mino"
 optional = true
 
 [profile.release]

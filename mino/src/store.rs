@@ -532,7 +532,7 @@ mod tests {
         print_str(&it.eval_str(src).unwrap())
     }
 
-    // Each expected value confirmed against `~/src/mino/mino -e`.
+    // Each expected value confirmed against the reference mino interpreter (`mino -e`).
 
     #[test]
     fn open_transact_read_map_sugar() {

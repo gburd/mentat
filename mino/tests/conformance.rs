@@ -17,7 +17,7 @@ const SKIP: &[&str] = &[];
 #[test]
 fn arithmetic_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/arithmetic_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/arithmetic_test.clj"),
         SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -40,7 +40,7 @@ const ARE_SKIP: &[&str] = &[
 #[test]
 fn are_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/are_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/are_test.clj"),
         ARE_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -85,7 +85,7 @@ const BINDING_SKIP: &[&str] = &[
 #[test]
 fn binding_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/binding_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/binding_test.clj"),
         BINDING_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -107,7 +107,7 @@ const CONTROL_SKIP: &[&str] = &[
 #[test]
 fn clj_control_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/clj_control_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_control_test.clj"),
         CONTROL_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -131,7 +131,7 @@ const PREDICATES_SKIP: &[&str] = &[
 #[test]
 fn clj_predicates_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/clj_predicates_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_predicates_test.clj"),
         PREDICATES_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -150,7 +150,7 @@ fn clj_predicates_corpus_passes() {
 #[test]
 fn clojure_string_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/clojure_string_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clojure_string_test.clj"),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -163,7 +163,7 @@ fn clojure_string_corpus_passes() {
 #[test]
 fn clj_higher_order_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/clj_higher_order_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_higher_order_test.clj"),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -203,7 +203,7 @@ const REGEX_SKIP: &[&str] = &[
 #[test]
 fn regex_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/regex_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/regex_test.clj"),
         REGEX_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -218,7 +218,7 @@ fn regex_corpus_passes() {
 #[test]
 fn atom_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/atom_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/atom_test.clj"),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -234,7 +234,7 @@ fn atom_corpus_passes() {
 #[test]
 fn clj_metadata_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/clj_metadata_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_metadata_test.clj"),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -248,7 +248,7 @@ fn clj_metadata_corpus_passes() {
 #[test]
 fn clj_math_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/clj_math_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_math_test.clj"),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -266,7 +266,7 @@ fn clj_math_corpus_passes() {
 #[test]
 fn store_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("MINO_SRC"), "/tests/store_test.clj"),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/store_test.clj"),
         &[],
     );
     assert!(passed > 0, "no assertions ran");

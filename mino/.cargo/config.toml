@@ -1,5 +1,0 @@
-# Lets `cargo test` find the mino source tree (the conformance oracle/corpus)
-# without the caller exporting MINO_SRC. Override on the command line if your
-# checkout lives elsewhere: `MINO_SRC=/path cargo test`.
-[env]
-MINO_SRC = "/home/gburd/src/mino"
