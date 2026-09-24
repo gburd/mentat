@@ -60,23 +60,40 @@ with the postgres OS user's privileges. There is also no step or heap limit, so
 the flake, Dockerfile, or release workflow enable it, so shipped artifacts are
 safe. Anyone who builds with `--features script` is not.
 
-**Decision.**
-1. mino-rs gets capability-gated installation, mirroring upstream mino's
-   `MINO_CAP_*` / `mino_install_sandbox` model: `Interpreter::sandboxed()` installs
-   the language, regex, bignum, atoms, and the in-memory store, and **no fs/io
-   prims**. `Interpreter::new()` keeps today's behavior for the CLI and tests.
-2. mino-rs gets a step budget (upstream `MINO_OPT_LIMIT_STEPS`): the evaluator
-   counts eval steps and throws `:eval/limit` past the budget.
-3. Both scripting layers (mentat `script.rs`, pg_mentat `script.rs`) use
-   `sandboxed()`.
-4. pg_mentat ships `REVOKE EXECUTE ON FUNCTION mentat_eval(text) FROM PUBLIC;` in
-   its extension SQL, and caps steps via a GUC `pg_mentat.script_max_steps`
-   (default 10,000,000). Also call `pgrx::check_for_interrupts!()` from a step
-   hook so `pg_cancel_backend` works.
+**Decision (settled 2026-09-24: `mentat_eval` stays open to every role).** No
+`REVOKE`. That makes the sandbox the entire defense, so it must hold against a
+hostile caller, not just a careless one. Three distinct ways a script can hurt the
+server, each needing its own guard:
 
-**Why first.** It is the only item that is an active hazard rather than a
-maintenance cost, and fixing it touches mino-rs, which the refresh (1.13) touches
-anyway.
+| Attack | Guard |
+|---|---|
+| Host access: `slurp`, `spit`, `rm-rf`, `mkdir-p`, `file-exists?`, the store's file-path `open` | **Capability gating.** `Interpreter::sandboxed()` installs the language, regex, bignum, atoms and the in-memory store only. Every prim that touches the host is absent (unbound), not merely refused. |
+| CPU: `(loop [] (recur))` | **Step limit** (upstream `MINO_OPT_LIMIT_STEPS`): counter in `eval`, throws `:eval/limit`. Plus a hook every 4096 steps that calls `pgrx::check_for_interrupts!()` so `statement_timeout` and `pg_cancel_backend` work. |
+| Memory in one step: `(range 100000000000)`, `(apply str (repeat 1e9 "x"))`, `(vec (range …))` — a single prim call that allocates unboundedly, invisible to a step counter | **Allocation budget** (upstream `MINO_OPT_LIMIT_HEAP`): bulk-producing prims (`range`, `repeat`, `str`, `into`, `vec`, `concat`, `mapv`, `apply`, string builders) charge the budget per element and throw `:eval/limit` when exceeded. Charging per element also advances the step counter, so these prims can't dodge the step limit either. |
+| Stack: non-tail recursion `(defn f [n] (inc (f (dec n))))` with n = 10⁶ | **Depth limit.** Verified: today this aborts the process with `fatal runtime error: stack overflow` (SIGABRT). In a Postgres backend that crashes the server into recovery for every connected client. A counter on `Interp` for eval/apply nesting throws `:eval/limit` past `max_depth`; in pg_mentat the hook also calls `pg_sys::stack_is_too_deep()` (exposed by pgrx-pg-sys 0.17) as a second line. |
+
+Limits come from GUCs, all `PGC_SUSET` (a superuser or `ALTER SYSTEM` sets them;
+ordinary roles cannot raise them for their own session):
+
+| GUC | Default |
+|---|---|
+| `pg_mentat.script_max_steps` | 10,000,000 |
+| `pg_mentat.script_max_heap_bytes` | 64 MB |
+| `pg_mentat.script_max_depth` | 2,000 |
+
+`statement_timeout` still applies on top, via the interrupt hook.
+
+What an open `mentat_eval` means for data access: a script runs as the calling
+role through SPI, so it can read and write exactly the pg_mentat stores that role
+can already reach with `mentat_query`/`mentat_transact`. No privilege is gained.
+Do not make `mentat_eval` `SECURITY DEFINER` — that would turn it into a
+privilege escalation.
+
+`Interpreter::new()` keeps full host access for the mino CLI and tests. Both
+scripting layers (mentat `script.rs`, pg_mentat `script.rs`) use `sandboxed()`.
+
+**Why first.** Today's code is the version the decision makes public. It is the
+only item that is an active hazard rather than a maintenance cost.
 
 ## 1.2 `:rules` vs `:with` — the two parsers disagree on what a query means
 
@@ -317,12 +334,38 @@ Taskcluster, cross-compile, grcov, msrv…) — mostly dead. pg_mentat: a Forgej
 PG versions, docker, nix, release, `cargo-deny` via `deny.toml`, and a
 `.gitlab-ci.yml`.
 
-**Decision.** Codeberg is the home, so Forgejo Actions is primary: one
-`.forgejo/workflows/ci.yml` with jobs `fmt`, `clippy`, `deny`, `test-sqlite`,
-`test-pg (matrix 13-18)`, `test-mino`, `nix-build`. Keep pg_mentat's release
-workflow. Delete `.travis.yml`, `.taskcluster.yml`, and mentat's GitHub workflows;
-keep pg_mentat's GitHub ones only if the GitHub mirror stays alive (decide at
-Task 14). Keep `.gitlab-ci.yml` only if a GitLab mirror exists.
+**Decision (settled 2026-09-24).** Codeberg is the only place anyone pushes;
+Codeberg push-mirrors to GitHub (pg_mentat's mirror already does — its `main`
+tips match on both sides). So two CI systems run on every push, each for a
+different job:
+
+- **Forgejo Actions on Codeberg** — the gate. One `.forgejo/workflows/ci.yml`:
+  `fmt`, `clippy`, `deny`, `test-sqlite`, `test-pg (13-18)`, `test-mino`, `test-ffi`,
+  `nix-build`.
+- **GitHub Actions on the mirror** — publishing. It runs whatever is in
+  `.github/workflows/` of the mirrored tree, so that directory is the merged
+  repo's release pipeline. Keep, with paths updated for `crates/pg/pg_mentat`:
+  `release.yml` (on tag: `cargo pgrx package` per PG version → GitHub Release
+  assets), `docs.yml` (mdBook → GitHub Pages), `installcheck.yml`,
+  `docker-test.yml`, `nix-test.yml`. Drop pg_mentat's GitHub `ci.yml` and
+  `audit.yml` — Forgejo's CI is the gate; duplicating it on GitHub only produces a
+  second, occasionally-disagreeing red X.
+- Delete mentat's eight Mozilla-era GitHub workflows (`clippy_check`, `clippy-ng`,
+  `cross_compile`, `grcov` (wants a `COVERALLS_TOKEN` nobody has), `msrv`,
+  `nightly_lints`, `quickstart`, `audit`), `dependabot.yml` (GitHub-side PRs
+  against a mirror can't be merged there), `FUNDING.yml`, `.travis.yml`,
+  `.taskcluster.yml`, and `.gitlab-ci.yml` (no GitLab mirror).
+- The `docs.yml` Pages site will now come from the mentat mirror, so its URL
+  changes from `gburd.github.io/pg_mentat` to `gburd.github.io/mentat`. The
+  mentat GitHub repo still has Mozilla's old `gh-pages` branch; `docs.yml`
+  replaces it.
+- **Verify before Task 14** that `codeberg.org/gregburd/mentat` has a push mirror
+  to `github.com/gburd/mentat`. It isn't mirroring today: GitHub `master` is
+  `e55376e9`, Codeberg `master` is `201ec39d` (Codeberg is ahead), and
+  `mino-scripting`/`v0.14.0` never reached GitHub. `tea` can't read mirror
+  settings with the current token (needs repo admin scope), so check in the
+  Codeberg web UI: *Settings → Repository → Mirror settings → Push mirrors*.
+  Enable *Sync when commits are pushed*.
 
 ## 1.18 Dead weight in mentat
 
@@ -330,8 +373,8 @@ Task 14). Keep `.gitlab-ci.yml` only if a GitLab mirror exists.
 `automation/`, `build/`, `fixtures/`, `NOTES`, `.ignore`, `_/` (a scratch
 `flake.nix`, `mov.edn`, `shell.nix`), `.vscode/`, `docs/` Jekyll site.
 
-**Decision.** Delete `sdks/`, `automation/`, `_/`, `.vscode/`, `NOTES`, `.ignore`,
-`.travis.yml`, `.taskcluster.yml`. **Keep `ffi/`** — a C ABI over the embedded
+**Decision.** Delete `sdks/`, `automation/`, `_/`, `.vscode/`, `NOTES`, `.ignore`
+(and the CI files listed in § 1.17). **Keep `ffi/`** — a C ABI over the embedded
 store is exactly what non-Rust hosts need; build it in CI so it stops rotting.
 Keep `fixtures/` and `build/` if the test suite reads them (check first; delete if
 not). Replace the Jekyll site with pg_mentat's mdBook (`docs/book.toml`) and fold
@@ -425,10 +468,14 @@ pg_mentat has seven stale feature branches from April/May 2026.
 - Tags: pg_mentat's `v1.2.1..v1.6.1` come along (they point into its history).
   mentat's own `v0.*` tags stay. No collisions (checked).
 - Close `origin/pg` (`d7e2b554`): superseded. Close `origin/improv-base`:
-  duplicate of `a48aec6d`. Leave pg_mentat's April branches in the archived
-  pg_mentat repo; don't import them.
-- Archive `codeberg.org/gregburd/pg_mentat` with a README pointer to the merged
-  repo after release.
+  duplicate of `a48aec6d`. Don't import pg_mentat's April branches; they stay
+  in the read-only pg_mentat repo.
+- Default branch stays **`master`** (settled 2026-09-24). pg_mentat's `main`
+  history arrives under `crates/pg/` via the import merge; no `main` branch is
+  created in the merged repo.
+- When 1.7.0 ships you mark both pg_mentat repos (Codeberg and its GitHub mirror)
+  read-only with a message pointing at `mentat` (settled 2026-09-24). Task 14
+  prepares the text and a final pointer commit; the settings change is yours.
 
 **Hygiene note from this review:** computing a merge-base with
 `git fetch ../pg_mentat HEAD:refs/tmp/x` imports that repo's tags. I did that once
@@ -538,20 +585,30 @@ the reconciled front-end against both backends before anything moves.
 
 **Repos:** mino-rs, pg_mentat, mentat.
 **Files:**
-- Modify: `mino-rs/src/embed.rs` (add `Interpreter::sandboxed()`, `set_step_limit`)
+- Modify: `mino-rs/src/embed.rs` (add `Interpreter::sandboxed()`, `set_limits`, `set_check_hook`)
 - Modify: `mino-rs/src/eval/mod.rs` (split `Interp::new` into core + optional
   host installs; step counter checked in `eval`)
 - Modify: `mino-rs/src/store.rs:390-405` (move fs prims to `install_host_fs`)
 - Modify: `pg_mentat/pg_mentat/src/functions/script.rs:79` (use `sandboxed()`,
-  step limit from GUC, interrupt check)
-- Create: `pg_mentat/pg_mentat/sql/script_grants.sql` via `extension_sql!`
+  limits from GUCs, interrupt + stack check)
+- Modify: `pg_mentat/pg_mentat/src/lib.rs` (register the three GUCs in `_PG_init`)
+- Modify: `mino-rs/src/prim/collections.rs:408` (`range`) and the other bulk
+  producers listed in § 1.1 (charge the allocation budget per element)
 - Modify: `mentat/src/script.rs` (use `sandboxed()`)
-- Test: `mino-rs/src/embed.rs` tests; `pg_mentat/src/script_security_tests.rs`
+- Test: `mino-rs/tests/sandbox.rs`; `pg_mentat/src/script_security_tests.rs`
 
-**Interfaces produced:** `Interpreter::sandboxed() -> Interpreter`,
-`Interpreter::set_step_limit(&mut self, Option<u64>)`,
-`Interpreter::set_step_hook(&mut self, Box<dyn FnMut() -> Result<(), Throw>>)`;
-thrown `{:mino/kind :eval/limit}` on budget exhaustion.
+**Interfaces produced:**
+```rust
+pub struct Limits { pub steps: Option<u64>, pub heap_bytes: Option<u64>, pub depth: Option<u32> }
+impl Interpreter {
+    pub fn sandboxed() -> Interpreter;
+    pub fn set_limits(&mut self, limits: Limits);
+    /// Runs every 4096 steps and on every depth increase past depth/2.
+    pub fn set_check_hook(&mut self, hook: Box<dyn FnMut() -> Result<(), Throw>>);
+}
+// On any limit: Throw of {:mino/kind :eval/limit, :mino/data {:limit :steps|:heap|:depth, :value N}}
+// Internal: Interp::charge(&mut self, elements: u64, bytes: u64) -> Result<(), Throw>
+```
 
 - [ ] **Step 1: failing tests in mino-rs**
 ```rust
@@ -565,39 +622,97 @@ fn sandboxed_has_no_filesystem() {
     assert_eq!(it.eval_to_string("(+ 1 2)").unwrap(), "3");
     assert!(it.eval("(mino.store/open)").is_ok()); // in-memory store still there
 }
+fn limited() -> Interpreter {
+    let mut it = Interpreter::sandboxed();
+    it.set_limits(Limits { steps: Some(100_000), heap_bytes: Some(8 << 20), depth: Some(500) });
+    it
+}
 #[test]
 fn step_limit_stops_infinite_loop() {
-    let mut it = Interpreter::sandboxed();
-    it.set_step_limit(Some(100_000));
-    let err = it.eval("(loop [] (recur))").unwrap_err();
-    assert!(err.contains(":eval/limit"), "{err}");
+    let err = limited().eval("(loop [] (recur))").unwrap_err();
+    assert!(err.contains(":eval/limit") && err.contains(":steps"), "{err}");
+}
+#[test]
+fn heap_limit_stops_one_step_allocation() {
+    for bomb in ["(range 100000000000)", "(count (vec (range 100000000)))",
+                 "(apply str (repeat 100000000 \"x\"))"] {
+        let err = limited().eval(bomb).unwrap_err();
+        assert!(err.contains(":eval/limit"), "{bomb}: {err}");
+    }
+}
+#[test]
+fn depth_limit_turns_stack_overflow_into_an_error() {
+    // Today this SIGABRTs the whole process. It must return an error instead.
+    let err = limited()
+        .eval("(defn f [n] (if (zero? n) 0 (inc (f (dec n))))) (f 1000000)")
+        .unwrap_err();
+    assert!(err.contains(":eval/limit") && err.contains(":depth"), "{err}");
+}
+#[test]
+fn limits_leave_ordinary_scripts_alone() {
+    let mut it = limited();
+    assert_eq!(it.eval_to_string("(reduce + (range 1000))").unwrap(), "499500");
+    assert_eq!(it.eval_to_string("(loop [i 0] (if (< i 10000) (recur (inc i)) i))").unwrap(), "10000");
 }
 ```
+  Put these in `mino-rs/tests/sandbox.rs`: each integration test file is its own
+  process, so the depth test's pre-fix SIGABRT fails that file without taking the
+  rest of the suite down with it.
 - [ ] **Step 2:** `cargo test -p mino-rs sandboxed step_limit` → FAIL.
 - [ ] **Step 3:** implement. `Interp::new_bare` + `install_language` (core, regex,
   bignum, atoms, store prims minus file I/O, core.clj, bundled libs) +
   `install_host_fs`. `new()` = both; `sandboxed()` = language only. Store
   `open` with a path must error `:store/backend` under `sandboxed()` (no
   `:file` backend installed). Step counter: a `u64` on `Interp`, incremented at
-  the top of `eval`, compared with `step_limit`; the hook runs every 4096 steps.
+  the top of `eval`; the check hook runs every 4096 steps. Depth: increment on
+  entry to `eval` and `func::apply`, decrement on every exit path (use a guard
+  struct with `Drop` so `?` returns can't skip it). Heap: bulk prims call
+  `it.charge(n, n * size_of::<Value>())` *before* allocating; loops that build
+  output charge in chunks of 1024. Default `Limits` for `sandboxed()`: none —
+  the host chooses; pg_mentat always sets all three.
 - [ ] **Step 4:** pass; full `cargo test` green (112 unit + 12 corpus).
-- [ ] **Step 5: pg_mentat.** `build_interpreter()` uses `sandboxed()`,
-  `set_step_limit(Some(GUC))`, `set_step_hook(|| { pgrx::check_for_interrupts!(); Ok(()) })`.
-  Register GUC `pg_mentat.script_max_steps` (int, default 10_000_000, `PGC_SUSET`).
-  Add:
+- [ ] **Step 5: pg_mentat.** Register the three GUCs from § 1.1 in `_PG_init`
+  (`GucRegistry::define_int_guc`, `GucContext::Suset`). `build_interpreter()`:
 ```rust
-extension_sql!(
-    "REVOKE EXECUTE ON FUNCTION mentat_eval(text) FROM PUBLIC;",
-    name = "revoke_mentat_eval", requires = [mentat_eval]
-);
+let mut it = mino_rs::Interpreter::sandboxed();
+it.set_limits(Limits {
+    steps: Some(SCRIPT_MAX_STEPS.get() as u64),
+    heap_bytes: Some(SCRIPT_MAX_HEAP_BYTES.get() as u64),
+    depth: Some(SCRIPT_MAX_DEPTH.get() as u32),
+});
+it.set_check_hook(Box::new(|| {
+    pgrx::check_for_interrupts!();
+    if unsafe { pgrx::pg_sys::stack_is_too_deep() } {
+        return Err(mino_rs::error::throw_str("mentat_eval: stack depth limit"));
+    }
+    Ok(())
+}));
 ```
-- [ ] **Step 6: pg tests** (`#[pg_test]`, `--features script`):
-  `mentat_eval('(slurp "/etc/passwd")')` errors with unbound symbol;
-  an unprivileged role gets `permission denied for function mentat_eval`;
-  `(loop [] (recur))` errors with `:eval/limit`.
+  No `REVOKE`: `mentat_eval` keeps PostgreSQL's default `EXECUTE` for `PUBLIC`
+  (decision recorded in § 1.1). Not `SECURITY DEFINER`.
+- [ ] **Step 6: pg tests** (`#[pg_test]`, `--features script`), run as an
+  ordinary role created in the test (`CREATE ROLE eval_user LOGIN; SET ROLE eval_user;`):
+  - `mentat_eval('(slurp "/etc/passwd")')` → error containing `unbound symbol`;
+    same for `spit`, `rm-rf`, `mkdir-p`, `(mentat.store/open "/tmp/x")`.
+  - `(loop [] (recur))` → `:eval/limit`; with `statement_timeout = '200ms'` and
+    `pg_mentat.script_max_steps` raised by a superuser to 10¹², the same script
+    ends with `canceling statement due to statement timeout` (proves the
+    interrupt hook).
+  - `(range 100000000000)` → `:eval/limit`.
+  - `(defn f [n] (if (zero? n) 0 (inc (f (dec n))))) (f 1000000)` → `:eval/limit`,
+    and the next statement on the same connection succeeds (proves the backend
+    survived).
+  - `SET pg_mentat.script_max_steps = 1000000000` as `eval_user` →
+    `permission denied to set parameter`.
+  - `eval_user` without `SELECT` on a store's tables gets the same permission
+    error from `mentat_eval` as from `mentat_query` (SPI runs as the caller).
 - [ ] **Step 7:** mentat `script.rs` → `sandboxed()`; its 11 tests stay green.
 - [ ] **Step 8:** commit in each repo; tag **mino-rs 0.1.1**, **pg_mentat 1.6.2**
-  (security fix release, CHANGELOG entry naming the exposure).
+  (security fix release). CHANGELOG entry: names the exposure in 1.6.0–1.6.1
+  builds that enabled `--features script`, states that shipped artifacts didn't,
+  documents the three GUCs, and says `mentat_eval` is intentionally callable by
+  every role. Push both to Codeberg; pg_mentat's push mirror carries 1.6.2 to
+  GitHub (Task 14 is where pg_mentat stops receiving pushes).
 
 ### Task 2: Reconcile the shared front-end (edn, core-traits, core)
 
@@ -749,7 +864,13 @@ git update-ref -d refs/import/pg_mentat
   in the hundreds; `git log --follow crates/pg/pg_mentat/src/functions/query.rs`
   reaches 2025. `diff -r edn crates/pg/_import/edn` is empty (Task 2 made them
   identical) — if not, stop and reconcile before deleting.
-- [ ] **Step 4:** `git rm -r crates/pg/_import`. Commit
+- [ ] **Step 4:** keep what later tasks need, then drop the rest:
+```bash
+git mv crates/pg/_import/.github/workflows crates/pg/github-workflows   # Task 6 Step 3b
+git mv crates/pg/_import/CHANGELOG.md CHANGELOG.pg_mentat.md           # Task 6 Step 5
+git rm -r crates/pg/_import
+```
+  Commit
   `chore: drop pg_mentat's copies of the shared crates (identical to edn/, core/, core-traits/)`.
   Nothing builds yet at this commit's `crates/pg/*` — Task 5 wires it. Note that
   in the commit message so bisect users know to skip it.
@@ -802,18 +923,35 @@ deletions per § 1.17–1.18, `deny.toml`.
   `crates/pg/pg_mentat`; add `devShells.sqlite`, `packages.mentat-cli`,
   `packages.mentatd`. `nix build .#pg_mentat-pg16 .#mentat-cli .#mentatd` all build.
 - [ ] **Step 2:** delete `sdks/ automation/ _/ .vscode/ NOTES .ignore .travis.yml
-  .taskcluster.yml .github/workflows/{audit,clippy_check,clippy-ng,cross_compile,grcov,msrv,nightly_lints,quickstart}.yml`.
+  .taskcluster.yml .gitlab-ci.yml .github/dependabot.yml .github/FUNDING.yml
+  .github/workflows/{audit,clippy_check,clippy-ng,cross_compile,grcov,msrv,nightly_lints,quickstart}.yml`
+  (mentat's) and pg_mentat's `.github/workflows/{ci,audit}.yml`.
   Check `fixtures/` and `build/` for readers (`grep -rn 'fixtures/' crates/`);
   move used ones under the crate that reads them.
-- [ ] **Step 3:** `.forgejo/workflows/ci.yml` jobs: `fmt`, `clippy -D warnings`,
-  `cargo deny check`, `test-sqlite` (`cargo test` + `--features mino`),
-  `test-pg` (matrix pg13–18, `cargo pgrx test`), `test-ffi`, `nix-build`.
+- [ ] **Step 3:** `.forgejo/workflows/ci.yml` (the gate) jobs: `fmt`,
+  `clippy -D warnings`, `cargo deny check`, `test-sqlite` (`cargo test` +
+  `--features mino`), `test-pg` (matrix pg13–18, `cargo pgrx test`), `test-ffi`,
+  `nix-build`.
+- [ ] **Step 3b: GitHub publishing workflows** (run on the mirror). Move
+  `release.yml`, `docs.yml`, `installcheck.yml`, `docker-test.yml`, `nix-test.yml`
+  from `crates/pg/github-workflows/` (parked there by Task 4) to the root
+  `.github/workflows/`; delete the rest of that directory. In each, replace
+  `pg_mentat/` paths with `crates/pg/pg_mentat/`, and make `release.yml` also
+  attach a `mentat-cli` Linux binary. `release.yml` triggers on `tags: ["v*"]`
+  today; the mirror will push `v0.14.0` and pg_mentat's 13 old `v1.2.1..v1.6.1`
+  tags to GitHub, and each would start a release build. Narrow it: keep
+  `tags: ["v*"]` and add a first job step that exits unless the tag is ≥ `v1.7.0`
+  (`sort -V` comparison), or list the pattern `v1.[7-9].*` plus `v[2-9].*`.
+  Alternatively enable the mirror only after the tag import, so the old tags
+  arrive in one push before the workflow file exists on GitHub — but the gate is
+  simpler and survives re-syncs.
 - [ ] **Step 4:** Makefile: targets `test`, `test-pg`, `package-pg PG=16`,
   `install-pg`, plus pg_mentat's `upgrades`/`install-upgrade-scripts`/`smoke`
   (paths updated) and mentat's `outdated`/`fix`.
 - [ ] **Step 5:** docs: mdBook at `docs/` (pg_mentat's `book.toml`), mentat's
   Jekyll pages converted into `docs/src/embedded/`. One README with two quickstarts.
-  CHANGELOG: pg_mentat's file continues; prepend a "1.7.0 — merged repository"
+  CHANGELOG: `CHANGELOG.pg_mentat.md` (parked by Task 4) becomes `CHANGELOG.md`,
+  replacing mentat's; prepend a "1.7.0 — merged repository"
   section and a condensed history of mentat 0.x. Commit.
 
 ### Task 7: `mentat-script` — one scripting layer, two backends
@@ -936,8 +1074,10 @@ a new table source or input shape."
 ### Task 13: Documentation of the combined project
 
 - [ ] One README: what it is, the two targets, `cargo build` vs `cargo pgrx install`,
-  the scripting layer, the security note on `mentat_eval` (superuser-only by
-  default, how to `GRANT`).
+  the scripting layer, and a security section on `mentat_eval`: callable by every
+  role by design; runs sandboxed (no host access) under three superuser-set limits
+  (steps, heap, depth) plus `statement_timeout`; reaches only the stores the
+  caller can already query; must not be made `SECURITY DEFINER`.
 - [ ] `docs/src/architecture.md`: the front-end / backend split, the crate map,
   which features exist on which backend (table from § 1.21, updated).
 - [ ] Update `/tmp/pg_mentat-mino-integration-guide.md`'s successor in
@@ -945,21 +1085,36 @@ a new table source or input shape."
 
 ### Task 14: Release 1.7.0 and retire the pg_mentat repo
 
+- [ ] **Mirror check first** (§ 1.17): confirm the Codeberg → GitHub push mirror
+  exists for `mentat` and syncs on push. Without it, the tag in the next steps
+  won't trigger GitHub's `release.yml` and no extension binaries get built.
 - [ ] Workspace version 1.6.1 → **1.7.0**; CHANGELOG entry lists: merged repository,
   reconciled front-end (with the user-visible grammar changes: `:in` bindings,
   5-place patterns, plain keyword values, `:rules`/`:with [[…]]`/`:in %`),
-  SQLite `cas`/`retractEntity`/history/as-of `q`, mino-rs 0.2.0, the
-  `mentat_eval` lockdown.
-- [ ] Merge `merge/pg-mentat` → `master` (the default branch on Codeberg is
-  `master`; its current tip `216f078d`/`201ec39d` is years old — fast-forward is
-  impossible, so merge with `--no-ff` and a message pointing at this plan).
-- [ ] Annotated tag `v1.7.0`; push branch and tag.
-- [ ] pg_mentat's PGXN/Trunk metadata (`META.json`, `Trunk.toml`) point at the
-  merged repo; publish the extension from there.
+  SQLite `cas`/`retractEntity`/history/as-of `q`, mino-rs 0.2.0, and the
+  sandboxed `mentat_eval` with its three limit GUCs.
+- [ ] Merge `merge/pg-mentat` → `master` (stays the default branch). Its tip
+  `201ec39d` is from 2023, so fast-forward is impossible: `git merge --no-ff`,
+  message pointing at this plan.
+- [ ] Annotated tag `v1.7.0`. Push `master` and the tag to **Codeberg only**:
+  `git push origin master v1.7.0`. Never push to GitHub directly; the mirror
+  carries it.
+- [ ] After the mirror syncs: GitHub `master` equals Codeberg `master`; the
+  GitHub Release for `v1.7.0` has the per-PG-version extension tarballs; the
+  Pages site is up at the new URL.
+- [ ] pg_mentat's PGXN/Trunk metadata (`META.json`, `Trunk.toml`) point at
+  `codeberg.org/gregburd/mentat`; publish the extension from there.
 - [ ] Delete remote branches `pg` (`d7e2b554`, superseded) and `improv-base`
-  (duplicate). Keep `mino-scripting` until 1.7.0 ships, then delete.
-- [ ] pg_mentat repo: final commit replacing README with a pointer; archive it on
-  Codeberg.
+  (duplicate). Delete `mino-scripting` after 1.7.0 ships.
+- [ ] pg_mentat repo, last push: replace README with a pointer and push to its
+  Codeberg `main` (the mirror copies it to GitHub). Suggested text:
+  > **Moved.** pg_mentat now lives in the `mentat` repository, which builds both
+  > the embedded SQLite store and this PostgreSQL extension:
+  > https://codeberg.org/gregburd/mentat (mirror: https://github.com/gburd/mentat).
+  > This repository is read-only. Releases after 1.6.2 are published there.
+  Then you mark both pg_mentat repos read-only. Leave the pg_mentat mirror
+  enabled until the pointer commit shows on GitHub, then turn the mirror off —
+  pushing into an archived GitHub repo fails.
 
 ---
 
@@ -972,16 +1127,26 @@ a new table source or input shape."
 
 **Risk order.** The only step that can lose work is deleting pg_mentat's copies
 of the shared crates (T4 Step 4); it's gated on an empty `diff -r` against the
-canonical copies, which T2 guarantees.
+canonical copies, which T2 guarantees, and it parks the two things later tasks
+need (`.github/workflows`, `CHANGELOG.md`) before deleting.
+
+The one step that is hard to undo is the first push after the mirror is on: it
+sends 13 pg_mentat tags and the new `master` to a public GitHub repo. Do it once,
+at Task 14, with `release.yml` already gated (T6 Step 3b).
 
 **What I'd cut if time is short.** T9 (already marked YAGNI), T12 (the gap is
 documented and test-gated), T13's architecture page. Never cut T1.
 
-**Open questions for you before Task 1.**
-1. Keep the GitHub mirror (and pg_mentat's GitHub workflows)? The plan assumes
-   Codeberg + Forgejo Actions only.
-2. `mentat_eval` default: the plan revokes it from `PUBLIC`. If you want it usable
-   by any role, the sandbox and step limit still make that safe; say so and I'll
-   drop the `REVOKE`.
-3. Default branch for the merged repo: stay `master`, or rename to `main`
-   (pg_mentat's)? The plan keeps `master`.
+**Decisions recorded 2026-09-24.**
+1. Push to Codeberg only; Codeberg mirrors to GitHub. The merged repo is
+   `mentat`. You mark the pg_mentat repos read-only once 1.7.0 ships.
+   → § 1.17, § 1.23, Task 6 Steps 2–3b, Task 14.
+2. `mentat_eval` stays callable by `PUBLIC`, sandboxed and limited.
+   → § 1.1, Task 1. Found while applying this: step limits alone don't cover
+   single-call allocation or deep recursion (the latter crashes the process
+   today), so Task 1 now adds heap and depth limits too.
+3. Default branch stays `master`. → § 1.23, Task 14.
+
+**One thing to check before Task 14:** the mentat Codeberg → GitHub push mirror.
+GitHub's mentat `master` is behind Codeberg's today, and `v0.14.0` and
+`mino-scripting` never arrived, so it's either off or failing.
