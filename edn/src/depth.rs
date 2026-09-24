@@ -90,7 +90,11 @@ fn too_deep(input: &str, offset: usize, max: usize) -> ParseError<LineCol> {
     let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
     let column = offset - before.rfind('\n').map_or(0, |i| i + 1) + 1;
     ParseError {
-        location: LineCol { line, column, offset },
+        location: LineCol {
+            line,
+            column,
+            offset,
+        },
         expected: expected_set(max),
     }
 }

@@ -38,13 +38,19 @@ fn deep_query_is_an_error() {
 fn deep_transaction_is_an_error() {
     let tx = format!("[[:db/add 1 :a/b {}]]", nested("[", "]", 100_000));
     assert_nesting_error(parse::entities(&tx), "entities");
-    assert_nesting_error(parse::entity(&format!("[:db/add 1 :a/b {}]", nested("[", "]", 100_000))), "entity");
+    assert_nesting_error(
+        parse::entity(&format!("[:db/add 1 :a/b {}]", nested("[", "]", 100_000))),
+        "entity",
+    );
 }
 
 #[test]
 fn limit_is_exact() {
     let n = edn::MAX_NESTING;
-    assert!(parse::value(&nested("[", "]", n)).is_ok(), "{n} levels must parse");
+    assert!(
+        parse::value(&nested("[", "]", n)).is_ok(),
+        "{n} levels must parse"
+    );
     assert_nesting_error(parse::value(&nested("[", "]", n + 1)), "one over the limit");
 }
 
@@ -78,5 +84,9 @@ fn limit_holds_on_a_small_stack() {
         .spawn(|| parse::value(&nested("[", "]", edn::MAX_NESTING)).is_ok())
         .unwrap()
         .join();
-    assert_eq!(r.ok(), Some(true), "MAX_NESTING levels overflowed a 1 MB stack");
+    assert_eq!(
+        r.ok(),
+        Some(true),
+        "MAX_NESTING levels overflowed a 1 MB stack"
+    );
 }
