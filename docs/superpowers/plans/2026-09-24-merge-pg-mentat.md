@@ -533,8 +533,9 @@ tree overflows too.** Every recursive owned type needs an iterative `Drop`, or a
 depth cap at construction so no such tree exists.
 
 **Decision.**
-- `edn`: count depth inside the grammar and fail past `MAX_NESTING` (default
-  1,000; far above any real query or transaction, far below the crash point).
+- `edn`: fail past `MAX_NESTING` = **256** before the grammar runs. Measured:
+  ~2.9 KB of stack per level unoptimized, ~470 B in release, so 256 fits a 1 MB
+  stack in a debug build; the deepest query/tx in either test suite nests 5.
   In `peg` that means a depth counter threaded through the recursive rules via a
   parser argument, or a linear bracket prescan before `peg` runs; the prescan is
   simpler and also bounds the `Drop` problem because no deep value is ever built.
@@ -680,7 +681,7 @@ front-end against both backends before anything moves.
 **Files:** `edn/src/lib.rs` (public parse entry points), new `edn/src/depth.rs`
 (prescan), `edn/tests/nesting.rs`; pg_mentat `pg_mentat/src/nesting_tests.rs`.
 
-**Interfaces produced:** `pub const MAX_NESTING: usize = 1000;`
+**Interfaces produced:** `pub const MAX_NESTING: usize = 256;` (measured; see § 1.24)
 `pub fn check_nesting(input: &str, max: usize) -> Result<(), ParseError>` —
 linear, O(1) stack, skips string/char literals and `;` comments. Every public
 `parse::` entry point (`value`, `parse_query`, `entities`, and any other `pub rule`
@@ -716,9 +717,8 @@ fn nested(n: usize) -> String { format!("{}{}", "[".repeat(n), "]".repeat(n)) }
   Run each test binary on a 1 MB stack as well (`RUST_MIN_STACK=1048576`) — the
   cap must hold on small stacks, since PostgreSQL backends often run with
   `max_stack_depth` = 2 MB.
-- [ ] **Step 2:** implement `depth.rs` and wrap the entry points. Check with the
-  grammar that 1,000 levels fits a 1 MB stack in a *debug* build; if it doesn't,
-  lower `MAX_NESTING` until it does and record the measured per-level cost.
+- [x] **Step 2:** implement `depth.rs` and wrap the entry points. (Done: 1,000
+  did not fit a 1 MB debug stack — ~350 levels do — so the limit is 256.)
 - [ ] **Step 3:** all existing `edn` and workspace tests pass. Commit in mentat:
   `fix(edn): cap nesting depth before parsing (stack overflow on deep input)`.
 - [ ] **Step 4: pg_mentat.** Same `edn` change (copy the files). Add
@@ -1320,7 +1320,8 @@ a new table source or input shape."
 # Part 5 — Self-review
 
 **Coverage.** Every item from the diff inventory has a decision and a task:
-1.1→T1, 1.2/1.3/1.4/1.5/1.6/1.7/1.8/1.9/1.10/1.12/1.13→T2, 1.11→T4 (no-op),
+1.1→T1b/T1c, 1.24→T1a/T1b, 1.25→T1b/T5,
+1.2/1.3/1.4/1.5/1.6/1.7/1.8/1.9/1.10/1.12/1.13→T2, 1.11→T4 (no-op),
 1.14/1.15/1.16→T3/T5/T6, 1.17/1.18→T6, 1.19→T7, 1.20→T12, 1.21→T11/T12,
 1.22→T5 (moves, no change), 1.23→T4/T14, Part 2→T8.
 
