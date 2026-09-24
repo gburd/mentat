@@ -13,8 +13,9 @@ one toolchain, one lockfile, one CI.
 in their storage/query backend. Reconcile the three shared crates first (they
 drifted in both directions), then bring pg_mentat's history into the mentat repo
 with `git subtree`-style path rewriting so its 1,258 commits survive, then point
-both backends at the single front-end. `mino-rs` stays a separate repo and gets
-refreshed from upstream mino.
+both backends at the single front-end. `mino-rs` moves into the repo too, as
+`crates/mino` (§ 1.24): upstream mino is archived, so this project maintains the
+interpreter from here on.
 
 **Tech stack:** Rust 1.98 (stable, pinned), edition 2021, pgrx 0.17 (pg13–18),
 rusqlite 0.40 (bundled SQLite), mino-rs, nix flake devShells.
@@ -29,7 +30,15 @@ two working trees on 2026-09-24: `~/ws/mentat` @ `a48aec6d` (branch `pg` /
 - Version: **1.6.1** everywhere (highest across both repos; pg_mentat and mentatd
   are at 1.6.1, mentat at 0.14.0). The first release of the merged repo is **1.7.0**.
 - Toolchain floor `rust-version = "1.88"` (pg_mentat's); pinned toolchain **1.98**.
-- License: Apache-2.0 (both repos already are). mino-rs stays MIT.
+- License: Apache-2.0 (both repos already are). `crates/mino` keeps mino's MIT
+  license file (MIT-licensed code may sit in an Apache-2.0 repo; its `Cargo.toml`
+  says `license = "MIT"`).
+- **No local-filesystem references** anywhere in the repo: no `path =` that
+  leaves the repo, no `/home/...` or `~/src/...` in any `Cargo.toml`,
+  `.cargo/config.toml`, script, or test. Workspace-internal `path =` deps are
+  fine. CI checks this (Task 6).
+- Upstream mino is archived. We find and fix its bugs ourselves; `~/src/mino`
+  is a reference only, never a build or test input.
 - The default `cargo build` at the repo root builds the SQLite side only. It must
   never require `pg_config`, libclang, or a PostgreSQL install.
 - Nothing is lost: every feature present in either copy of a shared crate survives.
@@ -481,6 +490,88 @@ pg_mentat has seven stale feature branches from April/May 2026.
 `git fetch ../pg_mentat HEAD:refs/tmp/x` imports that repo's tags. I did that once
 and cleaned up the 13 leaked tags; use `git fetch --no-tags` in every task below.
 
+## 1.24 Deep nesting crashes the server — in the default build (found 2026-09-24)
+
+**What.** Reproduced on a throwaway PG16 cluster with the installed pg_mentat
+1.6.1, default build, no `script` feature: an unprivileged role runs
+`mentat_query` with a query containing a vector nested 3,000 deep. The backend
+dies with SIGSEGV; the postmaster terminates every server process and runs crash
+recovery. Depth 2,000 returns a parse error. `mentat_transact` crashes the same
+way. The shared `edn` crate's `peg` grammar recurses once per nesting level
+(`vector() = "[" value()* "]"`); pg_mentat's `MAX_EDN_NESTING = 100` check
+(`types/edn.rs:15`) inspects the value *after* `edn::parse::value` returns, and
+`mentat_query`/`mentat_transact` never call it.
+
+mino-rs has the same class of bug on paths an eval-depth limit doesn't cover
+(release build, 8 MB stack): recursive calls ~10⁶; GC marking of live nested
+data ~200k (`gc` 0.5 traces recursively); `pr-str` ~50k; the reader ~50k; `=`
+~100k; `pr-str` of an atom that contains itself, always.
+
+**Can this be fixed by making the recursion a tail call?** Tested, no
+(rustc 1.95, 1 MB stack, depth 10⁶):
+
+| Shape | opt-level 0 | opt-level 3 |
+|---|---|---|
+| Accumulator `f(n-1, acc+1)` — a true tail call | overflows | survives |
+| Parser `[ value* ]` — child pushed into parent `Vec` after the call | overflows | overflows |
+| `1 + f(n-1)` | overflows | survives, but only because LLVM rewrote it into a loop (zero self-calls left in the asm) |
+| Same, with the `+1` chosen by runtime data, as an interpreter does | overflows | overflows |
+
+Rust never guarantees tail calls: they happen at `-O`, not in debug builds,
+and not across `Result`/`?` or `Drop`. Nightly `become` (`explicit_tail_calls`)
+guarantees one, but only when the call *is* the return value. That is never true
+here: a parser needs the child to finish the parent, an evaluator needs
+`(f (dec n))` to compute `(inc …)`, a printer writes the closing `]` after the
+children. Recursion whose result is used can't be a tail call in any language;
+C compilers would face the same limit.
+
+The fix that works, verified in the same harness: an explicit worklist on the
+heap (a `Vec` of partially-built containers) with a depth cap. A 10⁶-deep input
+parses on a 1 MB debug stack; a cap of 1,000 returns an error cleanly. The
+experiment also found a second trap: **the compiler-generated `Drop` of a 10⁶-deep
+tree overflows too.** Every recursive owned type needs an iterative `Drop`, or a
+depth cap at construction so no such tree exists.
+
+**Decision.**
+- `edn`: count depth inside the grammar and fail past `MAX_NESTING` (default
+  1,000; far above any real query or transaction, far below the crash point).
+  In `peg` that means a depth counter threaded through the recursive rules via a
+  parser argument, or a linear bracket prescan before `peg` runs; the prescan is
+  simpler and also bounds the `Drop` problem because no deep value is ever built.
+  Strings, chars and comments must be skipped by the prescan.
+- mino-rs: reader, printer, `=`, `hash`, `compare` get depth caps; the printer
+  gets cycle detection (atoms/vars); GC tracing becomes a worklist (vendor the
+  `gc` crate into the repo and change its `mark`, or replace it — decided in
+  Task 1b after reading its trace code); recursive `Value` drops become iterative.
+- Regression tests at every SQL entry point that parses text: `mentat_query`,
+  `mentat_transact`, `mentat_pull`, `mentat_pull_many`, the `edn` type's input
+  function, `mentat_eval`.
+
+## 1.25 mino-rs moves into this repo
+
+**Decision (2026-09-24).** mino-rs becomes `crates/mino` in the mentat repo, with
+its full history (27 commits, `git filter-repo --to-subdirectory-filter`). The
+`codeberg.org/gregburd/mino-rs` repo gets a pointer README and goes read-only
+with the pg_mentat repos.
+
+What changes:
+- The crate name stays `mino-rs` (library name `mino_rs`), so no `use` line
+  changes. Version continues from the workspace (1.6.1, then 1.7.0); its
+  separate 0.x series ends at v0.1.0.
+- mentat's `path = "../../src/mino-rs"` becomes a workspace path; pg_mentat's
+  `git = ".../mino-rs", tag = "v0.1.0"` goes away when pg_mentat moves in (Task 4).
+  Until then pg_mentat's 1.6.x fixes can't use a workspace path, so its security
+  releases pin the in-repo crate by git: `git = "https://codeberg.org/gregburd/mentat",
+  tag = "…"` (a remote, not a local path).
+- The conformance corpus becomes part of the repo:
+  `crates/mino/tests/corpus/*.clj`, the 12 files the harness gates on (208 KB,
+  MIT), frozen at mino `ead6e160`. `MINO_SRC` and `.cargo/config.toml`'s
+  `/home/gburd/src/mino` go away; tests use `env!("CARGO_MANIFEST_DIR")`.
+  Refreshing to upstream's final `9c65bb50` (Task 8) replaces those files in one
+  commit, so the diff shows what changed.
+- We own the language now. Bugs found in this port are fixed here and recorded
+  in `crates/mino/CHANGELOG.md`; `~/src/mino` is a reference, never an input.
+
 ---
 
 # Part 2 — mino-rs refresh from upstream mino
@@ -525,7 +616,7 @@ lacks. Known new core.clj dependencies: `delay*`, `lazy-keep`, `lazy-map-indexed
 `__transduce-fuse` can be the identity (it's an optimization hook). Resource sizes
 move: core.clj 4141→4244 lines, store.clj 1899→2144, instant.clj 267→315.
 
-Release as **mino-rs 0.2.0**.
+Release as part of the workspace (no separate mino-rs version; § 1.25).
 
 ---
 
@@ -545,6 +636,7 @@ mentat/                              (codeberg.org/gregburd/mentat)
 │   ├── core-traits/                 shared (reconciled)
 │   ├── core/                        shared (reconciled)
 │   ├── script/                      NEW: mentat-script (backend-independent mino glue)
+│   ├── mino/                        the mino-rs interpreter (moved in, § 1.25) + tests/corpus/
 │   ├── sqlite/
 │   │   ├── mentat/                  the `mentat` crate (today's root src/ + tests/)
 │   │   ├── db/ db-traits/ sql/ sql-traits/ transaction/ public-traits/
@@ -576,16 +668,120 @@ names stay identical.
 
 # Part 4 — Tasks
 
-Order: security fix → reconcile shared crates in place (both repos, so each stays
-green) → import history → restructure → shared script crate → mino-rs refresh →
-feature ports → release. Tasks 1–3 happen in the *existing* repos, which proves
-the reconciled front-end against both backends before anything moves.
+Order: crash fix → bring mino in and harden it → open `mentat_eval` →
+reconcile shared crates in place (both repos, so each stays green) → import
+history → restructure → shared script crate → mino refresh → feature ports →
+release. Tasks 1a–3 happen in the *existing* repos, which proves the reconciled
+front-end against both backends before anything moves.
 
-### Task 1: Sandbox and step-limit mino-rs; lock down `mentat_eval`
+### Task 1a: EDN nesting cap — the server crash (§ 1.24)
 
-**Repos:** mino-rs, pg_mentat, mentat.
+**Repos:** mentat (`edn/`), then the identical change in pg_mentat (`edn/`).
+**Files:** `edn/src/lib.rs` (public parse entry points), new `edn/src/depth.rs`
+(prescan), `edn/tests/nesting.rs`; pg_mentat `pg_mentat/src/nesting_tests.rs`.
+
+**Interfaces produced:** `pub const MAX_NESTING: usize = 1000;`
+`pub fn check_nesting(input: &str, max: usize) -> Result<(), ParseError>` —
+linear, O(1) stack, skips string/char literals and `;` comments. Every public
+`parse::` entry point (`value`, `parse_query`, `entities`, and any other `pub rule`
+reachable from outside the crate) is wrapped so it runs `check_nesting` first.
+The error names the depth and the limit.
+
+- [ ] **Step 1: failing tests** (`edn/tests/nesting.rs`, own process so a
+  pre-fix overflow only kills this file):
+```rust
+fn nested(n: usize) -> String { format!("{}{}", "[".repeat(n), "]".repeat(n)) }
+#[test] fn deep_value_is_an_error_not_a_crash() {
+    let e = edn::parse::value(&nested(100_000)).unwrap_err();
+    assert!(e.to_string().contains("nesting"), "{e}");
+}
+#[test] fn deep_query_is_an_error() {
+    let q = format!("[:find ?e :where [?e :a/b {}]]", nested(100_000));
+    assert!(edn::parse::parse_query(&q).is_err());
+}
+#[test] fn deep_tx_is_an_error() { assert!(edn::parse::entities(&nested(100_000)).is_err()); }
+#[test] fn limit_is_exact() {
+    assert!(edn::parse::value(&nested(edn::MAX_NESTING)).is_ok());
+    assert!(edn::parse::value(&nested(edn::MAX_NESTING + 1)).is_err());
+}
+#[test] fn brackets_in_strings_and_comments_dont_count() {
+    let s = format!("[\"{}\" ; {}\n \\[ ]", "[".repeat(5000), "[".repeat(5000));
+    assert!(edn::parse::value(&s).is_ok());
+}
+#[test] fn mixed_delimiters() {
+    let s = format!("{}{}", "[({#{".repeat(300), "}})]".repeat(300)); // 1200 deep
+    assert!(edn::parse::value(&s).is_err());
+}
+```
+  Run each test binary on a 1 MB stack as well (`RUST_MIN_STACK=1048576`) — the
+  cap must hold on small stacks, since PostgreSQL backends often run with
+  `max_stack_depth` = 2 MB.
+- [ ] **Step 2:** implement `depth.rs` and wrap the entry points. Check with the
+  grammar that 1,000 levels fits a 1 MB stack in a *debug* build; if it doesn't,
+  lower `MAX_NESTING` until it does and record the measured per-level cost.
+- [ ] **Step 3:** all existing `edn` and workspace tests pass. Commit in mentat:
+  `fix(edn): cap nesting depth before parsing (stack overflow on deep input)`.
+- [ ] **Step 4: pg_mentat.** Same `edn` change (copy the files). Add
+  `#[pg_test]`s, run as a role created in the test, for `mentat_query`,
+  `mentat_transact`, `mentat_pull`, `mentat_pull_many`, and the `edn` type's input
+  function, each with 100,000-deep input: each returns an ERROR and the next
+  statement on the connection succeeds. Also make `types/edn.rs`'s
+  `MAX_EDN_NESTING` check run *before* parsing by calling `check_nesting` with 100.
+  Repro script for the record (throwaway cluster, not the dev one): `initdb` into a
+  `mktemp -d`, `pg_ctl -o "-p 54399 -k $D -c listen_addresses=''"`,
+  `CREATE EXTENSION pg_mentat; CREATE ROLE nobody LOGIN`, then as `nobody`:
+  `SELECT mentat_query($q$[:find ?e :where [?e :a/b <3000 × [ ]>]]$q$, '{}'::jsonb)`.
+- [ ] **Step 5:** `cargo pgrx test pg13 … pg18` green. Commit, bump to 1.6.2,
+  CHANGELOG entry (disclosure wording per your decision), tag `v1.6.2`, push to
+  Codeberg. Push mentat's commit too.
+
+### Task 1b: Move mino-rs into the repo and harden it (§ 1.1, § 1.24, § 1.25)
+
+**Repo:** mentat (branch `pg`, before the restructure: the crate lands at
+`mino/`, and Task 5 moves it to `crates/mino` with the others).
+
+- [ ] **Step 1: import with history.**
+```bash
+git clone --no-local ~/src/mino-rs /tmp/mino-import && cd /tmp/mino-import
+git filter-repo --to-subdirectory-filter mino --tag-rename 'v:mino-v'
+cd ~/ws/mentat
+git fetch --no-tags /tmp/mino-import main:refs/import/mino
+git merge --allow-unrelated-histories refs/import/mino -m "merge: import mino-rs (27 commits) as mino/"
+git update-ref -d refs/import/mino
+```
+  (`--tag-rename` keeps `v0.1.0` from colliding with mentat's own tags; bring it
+  over explicitly as `mino-v0.1.0` if wanted.)
+- [ ] **Step 2: vendor the corpus.** Copy the 12 gated files from mino
+  `ead6e160` to `mino/tests/corpus/` (`git -C ~/src/mino show ead6e160:tests/<f>`),
+  plus `LICENSE` as `mino/tests/corpus/LICENSE`. Change `tests/conformance.rs` to
+  `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/…")`. Delete
+  `mino/.cargo/config.toml`. Add `mino` to the workspace members; mentat's
+  `mino-rs` dependency becomes `{ path = "mino", optional = true }`. Confirm
+  `grep -rn '/home/\|\.\./\.\./' --include=*.toml .` finds nothing outside
+  intra-workspace paths.
+- [ ] **Step 3:** `cargo test -p mino-rs` — all 112 unit + 12 conformance pass
+  with no environment variables set.
+- [ ] **Step 4:** the hardening below (was "Task 1"): sandbox, step/heap/depth
+  limits, plus the § 1.24 paths — reader/printer/`=`/`hash`/`compare` depth caps,
+  printer cycle detection, iterative GC tracing, iterative `Drop` for deep
+  `Value`s. Each gets a test in `mino/tests/sandbox.rs` (separate process) that
+  crashes today and returns `:eval/limit` (or a reader/printer error) after.
+- [ ] **Step 5:** point `codeberg.org/gregburd/mino-rs`'s README at
+  `mentat/mino` and push that one commit; you mark the repo read-only with the
+  pg_mentat ones.
+
+### Task 1c: Open `mentat_eval` on the hardened interpreter (pg_mentat 1.6.3)
+
+pg_mentat's `script` feature switches from `mino-rs` git tag `v0.1.0` to
+`git = "https://codeberg.org/gregburd/mentat"` at the commit/tag from Task 1b
+(cargo finds the `mino-rs` package inside that workspace), then the pg_mentat
+steps of the hardening task below (GUCs, check hook, tests), released as 1.6.3.
+
+### Hardening details for Tasks 1b/1c (the sandbox and limits)
+
+**Repos:** mentat (`mino/`), pg_mentat.
 **Files:**
-- Modify: `mino-rs/src/embed.rs` (add `Interpreter::sandboxed()`, `set_limits`, `set_check_hook`)
+- Modify: `mino/src/embed.rs` (add `Interpreter::sandboxed()`, `set_limits`, `set_check_hook`)
 - Modify: `mino-rs/src/eval/mod.rs` (split `Interp::new` into core + optional
   host installs; step counter checked in `eval`)
 - Modify: `mino-rs/src/store.rs:390-405` (move fs prims to `install_host_fs`)
@@ -707,12 +903,12 @@ it.set_check_hook(Box::new(|| {
   - `eval_user` without `SELECT` on a store's tables gets the same permission
     error from `mentat_eval` as from `mentat_query` (SPI runs as the caller).
 - [ ] **Step 7:** mentat `script.rs` → `sandboxed()`; its 11 tests stay green.
-- [ ] **Step 8:** commit in each repo; tag **mino-rs 0.1.1**, **pg_mentat 1.6.2**
-  (security fix release). CHANGELOG entry: names the exposure in 1.6.0–1.6.1
+- [ ] **Step 8:** commit. mentat side lands with Task 1b; pg_mentat side is
+  release 1.6.3 (Task 1c). CHANGELOG entry: names the exposure in 1.6.0–1.6.2
   builds that enabled `--features script`, states that shipped artifacts didn't,
   documents the three GUCs, and says `mentat_eval` is intentionally callable by
-  every role. Push both to Codeberg; pg_mentat's push mirror carries 1.6.2 to
-  GitHub (Task 14 is where pg_mentat stops receiving pushes).
+  every role. Push to Codeberg; pg_mentat's push mirror carries it to GitHub
+  (Task 14 is where pg_mentat stops receiving pushes).
 
 ### Task 2: Reconcile the shared front-end (edn, core-traits, core)
 
@@ -888,9 +1084,9 @@ git rm -r crates/pg/_import
 ```toml
 [workspace]
 resolver = "2"
-members = ["crates/edn", "crates/core-traits", "crates/core",
+members = ["crates/edn", "crates/core-traits", "crates/core", "crates/mino", "crates/script",
            "crates/sqlite/*", "crates/pg/pg_mentat", "crates/pg/mentatd"]
-default-members = ["crates/edn", "crates/core-traits", "crates/core",
+default-members = ["crates/edn", "crates/core-traits", "crates/core", "crates/mino", "crates/script",
                    "crates/sqlite/*", "crates/pg/mentatd"]
 
 [workspace.package]
@@ -901,7 +1097,7 @@ license = "Apache-2.0"
 repository = "https://codeberg.org/gregburd/mentat"
 authors = [ …union of both author lists… ]
 
-[workspace.dependencies]   # § 1.13; plus rusqlite 0.40, pgrx 0.17, mino-rs 0.2
+[workspace.dependencies]   # § 1.13; plus rusqlite 0.40, pgrx 0.17; mino-rs = { path = "crates/mino" }
 [workspace.lints.clippy]   # § 1.15
 [profile.release]          # § 1.16
 ```
@@ -977,14 +1173,16 @@ value builders `db_value`, `tx_report_value`, `inst_value`, `uuid_value`, `kw_ns
 - [ ] **Step 5:** delete the duplicated helpers from both `script.rs` files; each
   keeps only its result conversion. Commit.
 
-### Task 8: Refresh mino-rs from upstream mino 9c65bb50 → mino-rs 0.2.0
+### Task 8: Refresh `crates/mino` from upstream mino 9c65bb50
 
-**Repo:** mino-rs. Oracle: `~/src/mino/mino` (rebuilt at `9c65bb50`).
+**Where:** `crates/mino` in this repo. Reference (not an input): `~/src/mino/mino`
+built at `9c65bb50`.
 
 - [ ] **Step 1:** copy upstream `src/core.clj`, `lib/mino/store.clj`,
-  `lib/clojure/{string,set,instant}.clj` over `resources/`; update the corpus gate
-  to the new `tests/*_test.clj` (they're read from `MINO_SRC`, which now points
-  at the newer tree); add `store_backend_test.clj`, `reader_features_test.clj` gates.
+  `lib/clojure/{string,set,instant}.clj` over `resources/`, and upstream's
+  versions of the 12 corpus files over `tests/corpus/` (one commit, so the diff
+  shows what changed upstream); add `store_backend_test.clj` and
+  `reader_features_test.clj` to the corpus and gate them.
 - [ ] **Step 2:** run the corpus; collect failures by category. Implement, each
   with its own commit and an oracle-checked unit test:
   1. `#uuid` → `Value::Uuid(Gc<[u8;16]>)`, `type` → `:uuid`, printer `#uuid "…"`.
@@ -1012,7 +1210,7 @@ value builders `db_value`, `tx_report_value`, `inst_value`, `uuid_value`, `kw_ns
   `crates/script` (values now round-trip for real) and add a test that *writes*
   an instant and a uuid through `transact` and reads them back.
 - [ ] **Step 4:** full corpus green (record pass counts per file in the commit);
-  tag **mino-rs 0.2.0**; bump the workspace dependency.
+  bump nothing — `crates/mino` is versioned with the workspace.
 
 ### Task 9: `mino.store` backends over the real engines (optional, after 8)
 
@@ -1091,7 +1289,8 @@ a new table source or input shape."
 - [ ] Workspace version 1.6.1 → **1.7.0**; CHANGELOG entry lists: merged repository,
   reconciled front-end (with the user-visible grammar changes: `:in` bindings,
   5-place patterns, plain keyword values, `:rules`/`:with [[…]]`/`:in %`),
-  SQLite `cas`/`retractEntity`/history/as-of `q`, mino-rs 0.2.0, and the
+  SQLite `cas`/`retractEntity`/history/as-of `q`, mino moved into the repo and
+  refreshed to upstream's final release, the nesting-depth crash fix, and the
   sandboxed `mentat_eval` with its three limit GUCs.
 - [ ] Merge `merge/pg-mentat` → `master` (stays the default branch). Its tip
   `201ec39d` is from 2023, so fast-forward is impossible: `git merge --no-ff`,
