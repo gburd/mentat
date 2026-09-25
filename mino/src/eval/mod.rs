@@ -491,7 +491,7 @@ impl Interp {
             }
         }
         self.depth += 1;
-        if self.depth % 64 == 0 {
+        if self.depth.is_multiple_of(64) {
             if let Err(t) = self.run_hook() {
                 self.depth -= 1;
                 return Err(t);
@@ -509,7 +509,7 @@ impl Interp {
                 return Err(self.trip_limit("steps", max));
             }
         }
-        if self.steps % 4096 == 0 {
+        if self.steps.is_multiple_of(4096) {
             self.run_hook()?;
         }
         Ok(())
@@ -678,14 +678,14 @@ impl Interp {
         let mut special = true;
         let r = (|| -> Result<Value, Throw> {
             match name {
-                "do" => return self.eval_do(rest, env),
+                "do" => self.eval_do(rest, env),
                 // `(lazy-seq body...)`: the port has no deferred seqs
                 // (Phase 5), so evaluate the body eagerly like an implicit
                 // `do`. Correct for finite seqs (re-seq over a string);
                 // an infinite lazy-seq would not terminate here.
                 // ponytail: eager lazy-seq; real deferral lands in Phase 5.
-                "lazy-seq" => return self.eval_do(rest, env),
-                "quote" => return self.eval_quote(rest),
+                "lazy-seq" => self.eval_do(rest, env),
+                "quote" => self.eval_quote(rest),
                 // `(var sym)` / `#'sym`: return the Var identity for `sym`.
                 // The port has a flat env, so a Var just carries the
                 // symbol; `deref`/call resolve it in root. Ports the `var`
@@ -693,43 +693,43 @@ impl Interp {
                 "var" => {
                     let (arg, _) = pop(rest);
                     let arg = arg.ok_or_else(|| throw_str("var requires one argument"))?;
-                    return match &arg {
+                    match &arg {
                         Value::Sym(s) => Ok(Value::Var(s.clone())),
                         _ => Err(throw_str("var requires a symbol")),
-                    };
+                    }
                 }
                 "def" => {
                     let args = collect(rest);
-                    return special::eval_def(self, &args, env);
+                    special::eval_def(self, &args, env)
                 }
                 "defmacro" => {
                     let args = collect(rest);
-                    return special::eval_defmacro(self, &args, env);
+                    special::eval_defmacro(self, &args, env)
                 }
                 "quasiquote" => {
                     let (arg, _) = pop(rest);
                     let arg = arg.ok_or_else(|| throw_str("quasiquote requires one argument"))?;
-                    return self.quasiquote_expand(&arg, env);
+                    self.quasiquote_expand(&arg, env)
                 }
                 "fn" | "fn*" => {
                     let args = collect(rest);
-                    return special::eval_fn(self, &args, env);
+                    special::eval_fn(self, &args, env)
                 }
                 "let" | "let*" => {
                     let args = collect(rest);
-                    return bindings::eval_let(self, &args, env);
+                    bindings::eval_let(self, &args, env)
                 }
                 "loop" | "loop*" => {
                     let args = collect(rest);
-                    return bindings::eval_loop(self, &args, env);
+                    bindings::eval_loop(self, &args, env)
                 }
                 "try" => {
                     let args = collect(rest);
-                    return control::eval_try(self, &args, env);
+                    control::eval_try(self, &args, env)
                 }
                 "letfn*" => {
                     let args = collect(rest);
-                    return bindings::eval_letfn_star(self, &args, env);
+                    bindings::eval_letfn_star(self, &args, env)
                 }
                 "recur" => {
                     // Eval args at non-tail (they must be values), then
@@ -740,7 +740,7 @@ impl Interp {
                         vals.push(self.eval_value(&cell.0, env)?);
                         cur = &cell.1;
                     }
-                    return Ok(Value::Recur(gc::Gc::new(vals)));
+                    Ok(Value::Recur(gc::Gc::new(vals)))
                 }
                 // Namespace / load machinery. The port has a single flat
                 // env (no ns tables), so these are no-ops that return nil
@@ -749,7 +749,7 @@ impl Interp {
                 // ponytail: flat-env no-op ns machinery; real ns tables in Phase 4.
                 "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure"
                 | "load" | "load-file" | "import" => {
-                    return Ok(Value::Nil);
+                    Ok(Value::Nil)
                 }
                 _ => {
                     special = false;
