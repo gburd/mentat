@@ -62,7 +62,10 @@ fn plain_keyword_value_parses() {
 
 #[test]
 fn reverse_pull_parses() {
-    assert!(parse::parse_query("[:find (pull ?e [:person/_friends]) :where [?e :person/name _]]").is_ok());
+    assert!(
+        parse::parse_query("[:find (pull ?e [:person/_friends]) :where [?e :person/name _]]")
+            .is_ok()
+    );
 }
 
 #[test]

@@ -822,7 +822,14 @@ impl Pattern {
         a: PatternNonValuePlace,
         v: PatternValuePlace,
     ) -> Option<Pattern> {
-        Pattern::new(None, e, a, v, PatternNonValuePlace::Placeholder, PatternNonValuePlace::Placeholder)
+        Pattern::new(
+            None,
+            e,
+            a,
+            v,
+            PatternNonValuePlace::Placeholder,
+            PatternNonValuePlace::Placeholder,
+        )
     }
 
     pub fn new(
