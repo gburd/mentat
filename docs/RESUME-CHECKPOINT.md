@@ -50,7 +50,15 @@ Written 2026-09-25 at ~91% context. Read this + the plan
 - **README** (e348e7bd): EDN/Datalog learning links from /tmp/edn.
 
 ## REMAINING (in order)
-1. **mino deep-data recursion** (plan 1.24 tail; NOT yet done — the background
+1. **mino deep-data recursion** (plan 1.24 tail; IN PROGRESS — background agent
+   2788cfd5 is on it as of 2026-09-25; the reader cap is already applied
+   UNCOMMITTED in mino/src/{depth.rs (MAX_DATA_DEPTH=512),reader.rs (ReadError::TooDeep,
+   depth field + read_form guard),lib.rs (pub mod depth)}; the agent is also
+   editing printer.rs/error.rs/hashing.rs/prim/collections.rs and will commit
+   depth.rs/reader.rs/lib.rs as part of its work. If the agent died: check
+   `git status mino`, its brief covered printer depth-cap+cycle, iterative-or-capped
+   eq_val/hash32/default_cmp, print_str_checked wired to pr-str/str/prn/println/print,
+   and mino/tests/deep_data.rs. Build/test on EC2 only.) Original NOT-done note — the background
    agent for it died with no commits). Fix Rust-stack recursion, all crash in a
    DEBUG build on a 2 MB stack (verified): reader (>=2000 nested `[`), printer
    pr-str (>=2000 nested vec), hash (>=2000), eq (>=20000), compare (>=20000),
