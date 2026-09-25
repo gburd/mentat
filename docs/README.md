@@ -1,18 +1,19 @@
-# Project Mentat Documentation Site
+# mentat documentation
 
-This site is a place to provide the users of Mentat with all the documentation, examples and tutorials required in order to use Mentat inside a project.
+This directory is an [mdBook](https://rust-lang.github.io/mdBook/). It documents
+both storage backends of the merged repository:
 
-This site will contain the following:
+- the **`pg_mentat` PostgreSQL extension** (getting started, Datalog, pull API,
+  time travel, the cookbook, SQL/GUC reference, deployment), and
+- the **embedded (SQLite) `mentat`** store (`src/embedded/`).
 
-- API Documentation for Mentat and it's SDKs.
-- Tutorials for cross compilation of Mentat for other platforms. (Coming)
-- Examples of how to design data for storage in Mentat.
-- Examples of how to use Mentat and it's SDKs. (Coming)
-- Quick Start Guides for installing and using Mentat. (Coming)
+Build it:
 
-# Build and run locally
+```sh
+mdbook build docs      # output in docs/book/
+mdbook serve docs      # live preview
+```
 
-    1. Install [Jekyll](https://jekyllrb.com/docs/installation/)
-    2. `cd docs`
-    3. `bundle exec jekyll serve --incremental`
-    4. open local docs site at http://127.0.0.1:4000/
+Preserved alongside the book (not part of it): `superpowers/` (merge plans),
+`RESUME-CHECKPOINT.md`, `mino-integration-plan.md`, `pg_mentat-port-inventory.md`,
+and `CONTRIBUTING.md`.
