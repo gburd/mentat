@@ -86,9 +86,9 @@ ordinary roles cannot raise them for their own session):
 
 | GUC | Default |
 |---|---|
-| `pg_mentat.script_max_steps` | 10,000,000 |
-| `pg_mentat.script_max_heap_bytes` | 64 MB |
-| `pg_mentat.script_max_depth` | 2,000 |
+| `mentat.script_max_steps` | 10,000,000 |
+| `mentat.script_max_heap_bytes` | 64 MB |
+| `mentat.script_max_depth` | 2,000 |
 
 `statement_timeout` still applies on top, via the interrupt hook.
 
@@ -891,14 +891,14 @@ it.set_check_hook(Box::new(|| {
   - `mentat_eval('(slurp "/etc/passwd")')` → error containing `unbound symbol`;
     same for `spit`, `rm-rf`, `mkdir-p`, `(mentat.store/open "/tmp/x")`.
   - `(loop [] (recur))` → `:eval/limit`; with `statement_timeout = '200ms'` and
-    `pg_mentat.script_max_steps` raised by a superuser to 10¹², the same script
+    `mentat.script_max_steps` raised by a superuser to 10¹², the same script
     ends with `canceling statement due to statement timeout` (proves the
     interrupt hook).
   - `(range 100000000000)` → `:eval/limit`.
   - `(defn f [n] (if (zero? n) 0 (inc (f (dec n))))) (f 1000000)` → `:eval/limit`,
     and the next statement on the same connection succeeds (proves the backend
     survived).
-  - `SET pg_mentat.script_max_steps = 1000000000` as `eval_user` →
+  - `SET mentat.script_max_steps = 1000000000` as `eval_user` →
     `permission denied to set parameter`.
   - `eval_user` without `SELECT` on a store's tables gets the same permission
     error from `mentat_eval` as from `mentat_query` (SPI runs as the caller).
