@@ -6,6 +6,7 @@
 #![allow(unknown_lints, non_local_definitions)]
 
 pub mod collections;
+pub mod depth;
 pub mod symbol;
 pub mod value;
 

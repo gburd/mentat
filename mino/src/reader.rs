@@ -30,6 +30,8 @@ pub enum ReadError {
     Unexpected(char),
     Unterminated(&'static str),
     Malformed(String),
+    /// Nesting deeper than `crate::depth::MAX_DATA_DEPTH`.
+    TooDeep,
 }
 
 impl fmt::Display for ReadError {
@@ -39,6 +41,7 @@ impl fmt::Display for ReadError {
             ReadError::Unexpected(c) => write!(f, "unexpected '{c}'"),
             ReadError::Unterminated(what) => write!(f, "unterminated {what}"),
             ReadError::Malformed(m) => write!(f, "{m}"),
+            ReadError::TooDeep => write!(f, "input nested deeper than {}", crate::depth::MAX_DATA_DEPTH),
         }
     }
 }
@@ -48,7 +51,7 @@ impl std::error::Error for ReadError {}
 /// Read one form. Returns the value and the number of bytes consumed
 /// (leading whitespace/comments up to and including the form).
 pub fn read_one(src: &str) -> Result<(Value, usize), ReadError> {
-    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new() };
+    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new(), depth: 0 };
     r.skip_ws();
     let v = r.read_form()?;
     Ok((v, r.i))
@@ -56,7 +59,7 @@ pub fn read_one(src: &str) -> Result<(Value, usize), ReadError> {
 
 /// Read every form in `src`.
 pub fn read_all(src: &str) -> Result<Vec<Value>, ReadError> {
-    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new() };
+    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new(), depth: 0 };
     let mut out = Vec::new();
     loop {
         r.skip_ws();
@@ -80,14 +83,14 @@ pub fn read_all_resilient(src: &str) -> Vec<Result<Value, ReadError>> {
     loop {
         // Skip inter-form whitespace/commas/comments.
         {
-            let mut r = Reader { s: bytes, i, qq: Vec::new() };
+            let mut r = Reader { s: bytes, i, qq: Vec::new(), depth: 0 };
             r.skip_ws();
             i = r.i;
         }
         if i >= bytes.len() {
             return out;
         }
-        let mut r = Reader { s: bytes, i, qq: Vec::new() };
+        let mut r = Reader { s: bytes, i, qq: Vec::new(), depth: 0 };
         match r.read_form() {
             Ok(v) => {
                 i = r.i;
@@ -161,6 +164,9 @@ struct Reader<'a> {
     i: usize,
     // Active syntax-quote gensym frames (read.c qq_gensym_top chain).
     qq: Vec<QqFrame>,
+    // Current collection nesting, capped at MAX_DATA_DEPTH so untrusted input
+    // cannot overflow the Rust stack via `read_form` -> `read_seq`/`read_map`.
+    depth: usize,
 }
 
 // read.c is_ws: space, tab, newline, CR, and comma-as-whitespace.
@@ -204,6 +210,24 @@ impl<'a> Reader<'a> {
     fn read_form(&mut self) -> Result<Value, ReadError> {
         self.skip_ws();
         let c = self.peek().ok_or(ReadError::Eof)?;
+        // Cap collection nesting so untrusted input can't overflow the stack.
+        // Only openers deepen; a scalar leaves depth unchanged.
+        let opens = matches!(c, b'(' | b'[' | b'{')
+            || (c == b'#' && matches!(self.s.get(self.i + 1), Some(b'{') | Some(b'(')));
+        if opens {
+            self.depth += 1;
+            if self.depth > crate::depth::MAX_DATA_DEPTH {
+                return Err(ReadError::TooDeep);
+            }
+        }
+        let r = self.read_form_inner(c);
+        if opens {
+            self.depth -= 1;
+        }
+        r
+    }
+
+    fn read_form_inner(&mut self, c: u8) -> Result<Value, ReadError> {
         match c {
             b'(' => self.read_seq(b')').map(list_from_vec),
             b'[' => self
