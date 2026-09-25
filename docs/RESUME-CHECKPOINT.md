@@ -84,7 +84,17 @@ Written 2026-09-25 at ~91% context. Read this + the plan
    workspace clippy lints table, release+release-dev profiles, edn/core/core-traits
    opt into lints. Both green on EC2. NOTE: this broke the byte-identical property
    of the 3 shared crates (added [lints] to their Cargo.toml) — Task 4/5 re-handles.
-4. **Task 4-6**: workspace lints (done), release profile (done), pinned toolchain (done); import
+4. **Tasks 4-5 DONE** on branch merge/pg-mentat:
+   - Task 4 (9051419a merge + 1307b091 drop): imported pg_mentat's 1265 commits under
+     crates/pg/, tags v1.2.1..v1.6.2, source byte-identical to canonical edn/core/core-traits.
+   - Task 5 (8c4f9a73 moves + dc861f83 wire): restructured into crates/{edn,core-traits,
+     core,mino,sqlite/*,pg/{pg_mentat,mentatd}}. Single workspace, Cargo.lock committed,
+     workspace.dependencies table added (per-crate .workspace=true conversion DEFERRED).
+     pg_mentat now deps mino-rs via path=../../mino (the HARDENED in-repo mino) -> UNBLOCKS
+     Task 1c. EC2 green: cargo test default, -p mentat --features mino, -p mino-rs (112+12+7+11+9),
+     pgrx pg16 1846, mentatd builds w/o pg_config. fixtures at crates/sqlite/fixtures (workspace
+     exclude); tools/mentatweb stub left in tools/.
+   - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
    restructure into crates/ (Task 5); one flake + CI + delete dead weight (Task 6).
 4. **Task 7**: mentat-script crate (shared scripting layer, ScriptBackend trait).
