@@ -139,7 +139,13 @@ fn bind_vec_destructure(
             }
             i += 1;
             let rest_pat = pats[i].clone();
-            bind_form(it, env, &rest_pat, tail_list(&args[ai.min(args.len())..]), ctx)?;
+            bind_form(
+                it,
+                env,
+                &rest_pat,
+                tail_list(&args[ai.min(args.len())..]),
+                ctx,
+            )?;
             // Optional `:as sym` after the rest binding.
             if i + 1 < plen && kw_is(&pats[i + 1], "as") {
                 if i + 2 >= plen {
@@ -171,9 +177,7 @@ fn bind_vec_destructure(
         // Normal positional slot.
         if ai >= args.len() {
             if ctx == Ctx::Recur {
-                return Err(throw_str(&format!(
-                    "recur expects {plen} args, got {i}"
-                )));
+                return Err(throw_str(&format!("recur expects {plen} args, got {i}")));
             }
             let pat = p.clone();
             bind_form(it, env, &pat, Value::Nil, ctx)?;
@@ -234,7 +238,10 @@ fn bind_map_destructure(
     let mut as_sym: Option<Symbol> = None;
 
     // Snapshot the pattern entries so we can borrow `it` mutably in the loop.
-    let pentries: Vec<(Value, Value)> = pmap.entries().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let pentries: Vec<(Value, Value)> = pmap
+        .entries()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     // Helper closures capture-free: implemented inline below.
     for (pkey, pval) in &pentries {
@@ -248,9 +255,7 @@ fn bind_map_destructure(
             Value::Keyword(k) if k.ns.is_none() && &*k.name == "syms" => {
                 syms_vec = Some(pval.clone())
             }
-            Value::Keyword(k) if k.ns.is_none() && &*k.name == "or" => {
-                or_map = Some(pval.clone())
-            }
+            Value::Keyword(k) if k.ns.is_none() && &*k.name == "or" => or_map = Some(pval.clone()),
             Value::Keyword(k) if k.ns.is_none() && &*k.name == "as" => match pval {
                 Value::Sym(s) => as_sym = Some(s.clone()),
                 _ => return Err(throw_str(":as must be followed by a symbol")),
@@ -365,18 +370,17 @@ pub fn bind_params(
 fn binding_pairs(bindings: &Value, what: &str) -> Result<Vec<(Value, Value)>, Throw> {
     let items: Vec<Value> = match bindings {
         Value::Vector(v) => v.iter().cloned().collect(),
-        _ => {
-            return Err(throw_str(&format!(
-                "{what} requires a vector binding form"
-            )))
-        }
+        _ => return Err(throw_str(&format!("{what} requires a vector binding form"))),
     };
     if items.len() % 2 != 0 {
         return Err(throw_str(&format!(
             "{what} vector bindings must have even number of forms"
         )));
     }
-    Ok(items.chunks(2).map(|c| (c[0].clone(), c[1].clone())).collect())
+    Ok(items
+        .chunks(2)
+        .map(|c| (c[0].clone(), c[1].clone()))
+        .collect())
 }
 
 /// `(let [pat val ...] body...)`: sequential binding (later values see earlier
@@ -480,11 +484,20 @@ mod tests {
     fn seq_and_nested_and_rest_and_as_destructure() {
         let mut it = Interp::new();
         // basic + rest (binary: [1 2 (3 4)]).
-        assert_eq!(ev(&mut it, "(let [[a b & r] [1 2 3 4]] [a b r])"), "[1 2 (3 4)]");
+        assert_eq!(
+            ev(&mut it, "(let [[a b & r] [1 2 3 4]] [a b r])"),
+            "[1 2 (3 4)]"
+        );
         // nested (binary: [1 2 3]).
-        assert_eq!(ev(&mut it, "(let [[a [b c]] [1 [2 3]]] [a b c])"), "[1 2 3]");
+        assert_eq!(
+            ev(&mut it, "(let [[a [b c]] [1 [2 3]]] [a b c])"),
+            "[1 2 3]"
+        );
         // :as binds the whole (binary: [1 2 [1 2 3]]).
-        assert_eq!(ev(&mut it, "(let [[a b :as all] [1 2 3]] [a b all])"), "[1 2 [1 2 3]]");
+        assert_eq!(
+            ev(&mut it, "(let [[a b :as all] [1 2 3]] [a b all])"),
+            "[1 2 [1 2 3]]"
+        );
         // ignore slot (binary: 2).
         assert_eq!(ev(&mut it, "(let [[_ b] [1 2]] b)"), "2");
         // short vector nil-fills (binary: [1 nil nil]).
@@ -500,7 +513,10 @@ mod tests {
     fn map_destructure() {
         let mut it = Interp::new();
         // :keys (binary: [1 2]).
-        assert_eq!(ev(&mut it, "(let [{:keys [x y]} {:x 1 :y 2}] [x y])"), "[1 2]");
+        assert_eq!(
+            ev(&mut it, "(let [{:keys [x y]} {:x 1 :y 2}] [x y])"),
+            "[1 2]"
+        );
         // :keys + :or default when key absent (binary: 9).
         assert_eq!(ev(&mut it, "(let [{:keys [a] :or {a 9}} {}] a)"), "9");
         assert_eq!(ev(&mut it, "(let [{:keys [a] :or {a 9}} {:a 5}] a)"), "5");
@@ -511,9 +527,15 @@ mod tests {
         assert_eq!(ev(&mut it, r#"(let [{:strs [x]} {"x" 5}] x)"#), "5");
         assert_eq!(ev(&mut it, "(let [{:syms [x]} {(quote x) 7}] x)"), "7");
         // :as binds the whole map (binary: [1 {:x 1, :y 2}]).
-        assert_eq!(ev(&mut it, "(let [{:keys [x] :as m} {:x 1 :y 2}] [x m])"), "[1 {:x 1, :y 2}]");
+        assert_eq!(
+            ev(&mut it, "(let [{:keys [x] :as m} {:x 1 :y 2}] [x m])"),
+            "[1 {:x 1, :y 2}]"
+        );
         // nested vector pattern in map value (binary: [1 2]).
-        assert_eq!(ev(&mut it, "(let [{[a b] :pair} {:pair [1 2]}] [a b])"), "[1 2]");
+        assert_eq!(
+            ev(&mut it, "(let [{[a b] :pair} {:pair [1 2]}] [a b])"),
+            "[1 2]"
+        );
         // nested map pattern inside a vector (binary: 9).
         assert_eq!(ev(&mut it, "(let [[{:keys [x]}] [{:x 9}]] x)"), "9");
         // map from nil (binary: nil).
@@ -525,7 +547,10 @@ mod tests {
         let mut it = Interp::new();
         // binary: 10.
         assert_eq!(
-            ev(&mut it, "(loop [i 0 acc 0] (if (< i 5) (recur (inc i) (+ acc i)) acc))"),
+            ev(
+                &mut it,
+                "(loop [i 0 acc 0] (if (< i 5) (recur (inc i) (+ acc i)) acc))"
+            ),
             "10"
         );
     }
@@ -535,7 +560,10 @@ mod tests {
         let mut it = Interp::new();
         // 100k iterations must not overflow the Rust stack (binary: :done).
         assert_eq!(
-            ev(&mut it, "((fn f [n] (if (zero? n) :done (recur (dec n)))) 100000)"),
+            ev(
+                &mut it,
+                "((fn f [n] (if (zero? n) :done (recur (dec n)))) 100000)"
+            ),
             ":done"
         );
     }

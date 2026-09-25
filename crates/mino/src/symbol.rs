@@ -19,12 +19,21 @@ impl Symbol {
         // -> `:`, `(symbol "")` -> the empty symbol, matching mino). The
         // reader rejects a bare `:` itself (MRE008) before reaching here, so
         // this constructor need not.
-        Self { ns: None, name: name.into() }
+        Self {
+            ns: None,
+            name: name.into(),
+        }
     }
 
     pub fn namespaced(ns: &str, name: &str) -> Self {
-        assert!(!ns.is_empty(), "Symbols and keywords cannot have an empty namespace.");
-        Self { ns: Some(ns.into()), name: name.into() }
+        assert!(
+            !ns.is_empty(),
+            "Symbols and keywords cannot have an empty namespace."
+        );
+        Self {
+            ns: Some(ns.into()),
+            name: name.into(),
+        }
     }
 }
 

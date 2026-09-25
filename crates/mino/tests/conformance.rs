@@ -17,7 +17,10 @@ const SKIP: &[&str] = &[];
 #[test]
 fn arithmetic_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/arithmetic_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/arithmetic_test.clj"
+        ),
         SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -107,7 +110,10 @@ const CONTROL_SKIP: &[&str] = &[
 #[test]
 fn clj_control_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_control_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/clj_control_test.clj"
+        ),
         CONTROL_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -131,7 +137,10 @@ const PREDICATES_SKIP: &[&str] = &[
 #[test]
 fn clj_predicates_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_predicates_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/clj_predicates_test.clj"
+        ),
         PREDICATES_SKIP,
     );
     assert!(passed > 0, "no assertions ran");
@@ -150,7 +159,10 @@ fn clj_predicates_corpus_passes() {
 #[test]
 fn clojure_string_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clojure_string_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/clojure_string_test.clj"
+        ),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -163,11 +175,17 @@ fn clojure_string_corpus_passes() {
 #[test]
 fn clj_higher_order_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_higher_order_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/clj_higher_order_test.clj"
+        ),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
-    assert_eq!(failed, 0, "{failed} clj_higher_order_test assertions failed");
+    assert_eq!(
+        failed, 0,
+        "{failed} clj_higher_order_test assertions failed"
+    );
 }
 
 /// Task 5.2 gate: regex_test.clj. The four regex C prims plus core.clj's
@@ -234,7 +252,10 @@ fn atom_corpus_passes() {
 #[test]
 fn clj_metadata_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_metadata_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/clj_metadata_test.clj"
+        ),
         &[],
     );
     assert!(passed > 0, "no assertions ran");
@@ -248,7 +269,10 @@ fn clj_metadata_corpus_passes() {
 #[test]
 fn clj_math_corpus_passes() {
     let (passed, failed) = run_corpus_file(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/corpus/clj_math_test.clj"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/clj_math_test.clj"
+        ),
         &[],
     );
     assert!(passed > 0, "no assertions ran");

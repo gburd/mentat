@@ -87,9 +87,7 @@ fn compile(v: &Value, ctx: &str) -> Result<Regex, Throw> {
     let src = match v {
         Value::Regex(r) => {
             let cached = r.compiled.get_or_init(|| compile_source(&r.source));
-            return cached
-                .clone()
-                .map_err(|_| invalid(ctx));
+            return cached.clone().map_err(|_| invalid(ctx));
         }
         Value::Str(s) => s.as_str(),
         _ => return Err(bad_pattern(ctx)),
@@ -162,7 +160,10 @@ fn read_clamped_uint(b: &[u8], j: &mut usize) -> Option<u32> {
     let start = *j;
     let mut val: u32 = 0;
     while b.get(*j).is_some_and(|c| c.is_ascii_digit()) {
-        val = val.saturating_mul(10).saturating_add((b[*j] - b'0') as u32).min(255);
+        val = val
+            .saturating_mul(10)
+            .saturating_add((b[*j] - b'0') as u32)
+            .min(255);
         *j += 1;
     }
     if *j == start {
@@ -173,7 +174,11 @@ fn read_clamped_uint(b: &[u8], j: &mut usize) -> Option<u32> {
 }
 
 fn invalid(ctx: &str) -> Throw {
-    throw_classified("eval/contract", "MCT001", &format!("{ctx}: invalid regex pattern"))
+    throw_classified(
+        "eval/contract",
+        "MCT001",
+        &format!("{ctx}: invalid regex pattern"),
+    )
 }
 
 fn bad_pattern(ctx: &str) -> Throw {
@@ -364,7 +369,10 @@ mod tests {
     #[test]
     fn re_find_with_groups_returns_vector() {
         // Verified: mino => ["12-34" "12" "34"].
-        assert_eq!(ev(r#"(re-find #"(\d+)-(\d+)" "12-34")"#), "[\"12-34\" \"12\" \"34\"]");
+        assert_eq!(
+            ev(r#"(re-find #"(\d+)-(\d+)" "12-34")"#),
+            "[\"12-34\" \"12\" \"34\"]"
+        );
     }
 
     #[test]
@@ -378,7 +386,10 @@ mod tests {
     #[test]
     fn re_matches_groups_vector() {
         // Verified: mino => ["a/b" "a" "b"].
-        assert_eq!(ev(r#"(re-matches #"(.+)/(.+)" "a/b")"#), "[\"a/b\" \"a\" \"b\"]");
+        assert_eq!(
+            ev(r#"(re-matches #"(.+)/(.+)" "a/b")"#),
+            "[\"a/b\" \"a\" \"b\"]"
+        );
     }
 
     #[test]
@@ -409,31 +420,68 @@ mod tests {
     #[test]
     fn regex_split_and_replace_match_binary() {
         // Verified against the mino binary.
-        assert_eq!(ev("(clojure.string/split \"a1b2c\" #\"\\d\")"), "[\"a\" \"b\" \"c\"]");
-        assert_eq!(ev("(clojure.string/split \"abc\" #\"\")"), "[\"a\" \"b\" \"c\"]");
-        assert_eq!(ev("(clojure.string/split \"abc\" #\"\" 2)"), "[\"a\" \"bc\"]");
-        assert_eq!(ev("(clojure.string/split \"abc\" #\"x*y?\")"), "[\"a\" \"b\" \"c\"]");
-        assert_eq!(ev("(clojure.string/split \",,a,,\" #\",\")"), "[\"\" \"\" \"a\"]");
-        assert_eq!(ev("(clojure.string/split \",,a,,\" #\",\" -1)"),
-                   "[\"\" \"\" \"a\" \"\" \"\"]");
+        assert_eq!(
+            ev("(clojure.string/split \"a1b2c\" #\"\\d\")"),
+            "[\"a\" \"b\" \"c\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \"abc\" #\"\")"),
+            "[\"a\" \"b\" \"c\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \"abc\" #\"\" 2)"),
+            "[\"a\" \"bc\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \"abc\" #\"x*y?\")"),
+            "[\"a\" \"b\" \"c\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \",,a,,\" #\",\")"),
+            "[\"\" \"\" \"a\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \",,a,,\" #\",\" -1)"),
+            "[\"\" \"\" \"a\" \"\" \"\"]"
+        );
         // replace: all matches; $N template; fn replacement; zero-width.
-        assert_eq!(ev("(clojure.string/replace \"a1b2\" #\"\\d\" \"X\")"), "\"aXbX\"");
-        assert_eq!(ev("(clojure.string/replace \"Hello\" #\"(\\w)\" \"[$1]\")"),
-                   "\"[H][e][l][l][o]\"");
-        assert_eq!(ev("(clojure.string/replace \"a1b2\" #\"(\\w)(\\d)\" \"$2$1\")"),
-                   "\"1a2b\"");
-        assert_eq!(ev("(clojure.string/replace \"abc\" #\"x*\" \"-\")"), "\"-a-b-c-\"");
-        assert_eq!(ev("(clojure.string/replace \"a-bb\" #\"\\w+\" (fn [m] (str \"<\" m \">\")))"),
-                   "\"<a>-<bb>\"");
-        assert_eq!(ev("(clojure.string/replace-first \"hello\" #\"l\" \"L\")"), "\"heLlo\"");
-        assert_eq!(ev("(clojure.string/replace-first \"hello\" #\"(l)\" \"[$1]\")"), "\"he[l]lo\"");
+        assert_eq!(
+            ev("(clojure.string/replace \"a1b2\" #\"\\d\" \"X\")"),
+            "\"aXbX\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace \"Hello\" #\"(\\w)\" \"[$1]\")"),
+            "\"[H][e][l][l][o]\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace \"a1b2\" #\"(\\w)(\\d)\" \"$2$1\")"),
+            "\"1a2b\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace \"abc\" #\"x*\" \"-\")"),
+            "\"-a-b-c-\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace \"a-bb\" #\"\\w+\" (fn [m] (str \"<\" m \">\")))"),
+            "\"<a>-<bb>\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace-first \"hello\" #\"l\" \"L\")"),
+            "\"heLlo\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace-first \"hello\" #\"(l)\" \"[$1]\")"),
+            "\"he[l]lo\""
+        );
     }
 
     #[test]
     fn regex_split_missing_group_throws() {
         // $N past the group count throws MCT001 (verified: mino).
         let mut it = Interp::new();
-        assert!(it.eval_str("(clojure.string/replace \"Ax\" #\"A\" \"$1x\")").is_err());
+        assert!(it
+            .eval_str("(clojure.string/replace \"Ax\" #\"A\" \"$1x\")")
+            .is_err());
     }
 
     #[test]

@@ -149,7 +149,11 @@ fn run_body_form(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, f
 
 /// Build a `let`/`let*` child env by sequentially binding its pairs, mirroring
 /// `bindings::eval_let`. Returns the innermost env.
-fn build_let_env(it: &mut Interp, bindings: Option<&Value>, env: &Env) -> Result<Env, crate::error::Throw> {
+fn build_let_env(
+    it: &mut Interp,
+    bindings: Option<&Value>,
+    env: &Env,
+) -> Result<Env, crate::error::Throw> {
     use crate::eval::bindings::{bind_form, Ctx};
     let Some(bindings) = bindings else {
         return Ok(env.child());
@@ -215,7 +219,9 @@ fn run_is(it: &mut Interp, form: &Value, env: &Env, passed: &mut usize, failed: 
         let ops = rest_elems(expr);
         if ops.len() >= 2 {
             match (it.eval(&ops[0], env), it.eval(&ops[1], env)) {
-                (Ok(a), Ok(b)) => tally(crate::collections::hashing::eq_val(&a, &b), passed, failed),
+                (Ok(a), Ok(b)) => {
+                    tally(crate::collections::hashing::eq_val(&a, &b), passed, failed)
+                }
                 _ => *failed += 1,
             }
             return;
@@ -372,8 +378,18 @@ fn scan_form(b: &[u8], mut i: usize) -> usize {
             while i < b.len()
                 && !matches!(
                     b[i],
-                    b' ' | b'\t' | b'\n' | b'\r' | b',' | b'(' | b')' | b'[' | b']' | b'{'
-                        | b'}' | b'"' | b';'
+                    b' ' | b'\t'
+                        | b'\n'
+                        | b'\r'
+                        | b','
+                        | b'('
+                        | b')'
+                        | b'['
+                        | b']'
+                        | b'{'
+                        | b'}'
+                        | b'"'
+                        | b';'
                 )
             {
                 i += 1;
@@ -403,7 +419,7 @@ fn scan_char_literal(b: &[u8], mut i: usize) -> usize {
         return i;
     }
     i += 1; // the char itself (or first letter of a named char)
-    // Named/`uXXXX` literals: consume trailing name chars.
+            // Named/`uXXXX` literals: consume trailing name chars.
     while i < b.len() && (b[i].is_ascii_alphanumeric()) {
         i += 1;
     }

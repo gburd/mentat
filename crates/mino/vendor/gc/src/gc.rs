@@ -279,13 +279,15 @@ impl<T: Trace + ?Sized> GcBox<T> {
         // During a mark pass, queue this box (by the `dyn Trace` pointer to
         // itself that every box in the chain records in its header) instead of
         // tracing into it here. Outside a pass, trace directly as upstream did.
-        let queued = MARK_STACK.with(|s| match (s.borrow_mut().as_mut(), self.header.this.get()) {
-            (Some(stack), Some(this)) => {
-                stack.push(this);
-                true
-            }
-            _ => false,
-        });
+        let queued = MARK_STACK.with(
+            |s| match (s.borrow_mut().as_mut(), self.header.this.get()) {
+                (Some(stack), Some(this)) => {
+                    stack.push(this);
+                    true
+                }
+                _ => false,
+            },
+        );
         if !queued {
             self.data.trace();
         }

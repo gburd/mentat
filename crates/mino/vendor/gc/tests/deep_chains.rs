@@ -62,10 +62,14 @@ fn long_chain_through_gccells() {
         next: GcCell<Option<Gc<Node>>>,
     }
     on_small_stack(|| {
-        let head = Gc::new(Node { next: GcCell::new(None) });
+        let head = Gc::new(Node {
+            next: GcCell::new(None),
+        });
         let mut tail = head.clone();
         for _ in 0..500_000 {
-            let n = Gc::new(Node { next: GcCell::new(None) });
+            let n = Gc::new(Node {
+                next: GcCell::new(None),
+            });
             *tail.next.borrow_mut() = Some(n.clone());
             tail = n;
         }
@@ -97,11 +101,17 @@ fn cycles_are_still_collected() {
             FREED.with(|f| f.set(f.get() + 1));
         }
     }
-    let _ = Node { other: GcCell::new(None) };
+    let _ = Node {
+        other: GcCell::new(None),
+    };
     on_small_stack(|| {
         {
-            let a = Gc::new(Counted { other: GcCell::new(None) });
-            let b = Gc::new(Counted { other: GcCell::new(Some(a.clone())) });
+            let a = Gc::new(Counted {
+                other: GcCell::new(None),
+            });
+            let b = Gc::new(Counted {
+                other: GcCell::new(Some(a.clone())),
+            });
             *a.other.borrow_mut() = Some(b);
         }
         force_collect();

@@ -68,7 +68,9 @@ pub fn ex_message(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     Ok(match ex {
         Value::Map(m) => {
             if m.contains(&kw_ns("mino", "kind")) {
-                m.get(&kw_ns("mino", "message")).cloned().unwrap_or(Value::Nil)
+                m.get(&kw_ns("mino", "message"))
+                    .cloned()
+                    .unwrap_or(Value::Nil)
             } else {
                 m.get(&kw("message")).cloned().unwrap_or(Value::Nil)
             }
@@ -230,7 +232,13 @@ pub fn name(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let n = match v {
         Value::Str(s) => (**s).clone(),
         Value::Sym(s) | Value::Keyword(s) => (*s.name).to_string(),
-        _ => return Err(throw_classified("type", "MTY001", "name: expects a string, symbol, or keyword")),
+        _ => {
+            return Err(throw_classified(
+                "type",
+                "MTY001",
+                "name: expects a string, symbol, or keyword",
+            ))
+        }
     };
     Ok(Value::Str(Gc::new(n)))
 }
@@ -266,12 +274,18 @@ fn parse_name(s: &str) -> Symbol {
 
 /// `(true? x)` — true iff x is the boolean true. Ports `prim_true_p`.
 pub fn true_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    Ok(Value::Bool(matches!(one_arg(args, "true?")?, Value::Bool(true))))
+    Ok(Value::Bool(matches!(
+        one_arg(args, "true?")?,
+        Value::Bool(true)
+    )))
 }
 
 /// `(false? x)` — true iff x is the boolean false. Ports `prim_false_p`.
 pub fn false_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    Ok(Value::Bool(matches!(one_arg(args, "false?")?, Value::Bool(false))))
+    Ok(Value::Bool(matches!(
+        one_arg(args, "false?")?,
+        Value::Bool(false)
+    )))
 }
 
 /// `(some? x)` — true iff x is not nil. Ports `prim_some_p`.
@@ -335,8 +349,20 @@ pub fn gensym(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         [] => "G__".to_string(),
         [Value::Str(s)] => (**s).clone(),
         [Value::Sym(s)] => s.to_string(),
-        [_] => return Err(throw_classified("type", "MTY001", "gensym: prefix must be a string or symbol")),
-        _ => return Err(throw_classified("eval/arity", "MAR001", "gensym takes zero or one argument")),
+        [_] => {
+            return Err(throw_classified(
+                "type",
+                "MTY001",
+                "gensym: prefix must be a string or symbol",
+            ))
+        }
+        _ => {
+            return Err(throw_classified(
+                "eval/arity",
+                "MAR001",
+                "gensym takes zero or one argument",
+            ))
+        }
     };
     let n = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
     Ok(Value::Sym(Symbol::plain(&format!("{prefix}{n}"))))
@@ -351,7 +377,13 @@ pub fn namespace(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             Some(ns) => Value::Str(Gc::new(ns.to_string())),
             None => Value::Nil,
         },
-        _ => return Err(throw_classified("type", "MTY001", "namespace: expects a symbol or keyword")),
+        _ => {
+            return Err(throw_classified(
+                "type",
+                "MTY001",
+                "namespace: expects a symbol or keyword",
+            ))
+        }
     })
 }
 
@@ -383,7 +415,11 @@ pub fn resolve(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         } else {
             Value::Nil
         }),
-        _ => Err(throw_classified("type", "MTY001", "resolve: expects a symbol")),
+        _ => Err(throw_classified(
+            "type",
+            "MTY001",
+            "resolve: expects a symbol",
+        )),
     }
 }
 
@@ -443,12 +479,24 @@ mod tests {
     #[test]
     fn meta_propagates_through_collection_ops() {
         // assoc/conj/into/dissoc/merge/pop keep the collection's metadata.
-        assert_eq!(eval("(meta (assoc (with-meta [1 2 3] {:m 1}) 1 :x))"), "{:m 1}");
+        assert_eq!(
+            eval("(meta (assoc (with-meta [1 2 3] {:m 1}) 1 :x))"),
+            "{:m 1}"
+        );
         assert_eq!(eval("(meta (conj (with-meta [1] {:m 1}) 2))"), "{:m 1}");
         assert_eq!(eval("(meta (into (with-meta [1] {:m 1}) [2 3]))"), "{:m 1}");
-        assert_eq!(eval("(meta (dissoc (with-meta {:a 1 :b 2} {:m 1}) :a))"), "{:m 1}");
-        assert_eq!(eval("(meta (merge (with-meta {:a 1} {:m 1}) {:b 2}))"), "{:m 1}");
-        assert_eq!(eval("(meta (pop (pop (pop (with-meta [1 2 3] {:m 1})))))"), "{:m 1}");
+        assert_eq!(
+            eval("(meta (dissoc (with-meta {:a 1 :b 2} {:m 1}) :a))"),
+            "{:m 1}"
+        );
+        assert_eq!(
+            eval("(meta (merge (with-meta {:a 1} {:m 1}) {:b 2}))"),
+            "{:m 1}"
+        );
+        assert_eq!(
+            eval("(meta (pop (pop (pop (with-meta [1 2 3] {:m 1})))))"),
+            "{:m 1}"
+        );
     }
 
     #[test]

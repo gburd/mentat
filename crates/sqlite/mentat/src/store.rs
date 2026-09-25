@@ -61,7 +61,8 @@ impl Store {
     /// scripting layer needs, since `transact_speculative` lives on `Conn` and
     /// wants both the `Conn` and the `rusqlite::Connection` (both private here).
     pub fn with_speculative(&mut self, transaction: &str) -> Result<TxReport> {
-        self.conn.transact_speculative(&mut self.sqlite, transaction)
+        self.conn
+            .transact_speculative(&mut self.sqlite, transaction)
     }
 }
 

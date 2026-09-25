@@ -130,7 +130,10 @@ pub struct RegexVal {
 
 impl RegexVal {
     pub fn new(source: String) -> Self {
-        Self { source, compiled: std::cell::OnceCell::new() }
+        Self {
+            source,
+            compiled: std::cell::OnceCell::new(),
+        }
     }
 }
 

@@ -96,7 +96,13 @@ fn merge_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, shift: u32) -> Gc<Node>
 
 // Insert/rebind `entry` (hash `h`) into the subtree at `node`. Returns the
 // new subtree and sets `*replaced` when the key was already present.
-fn hamt_assoc(node: Option<&Gc<Node>>, entry: Entry, h: u32, shift: u32, replaced: &mut bool) -> Gc<Node> {
+fn hamt_assoc(
+    node: Option<&Gc<Node>>,
+    entry: Entry,
+    h: u32,
+    shift: u32,
+    replaced: &mut bool,
+) -> Gc<Node> {
     let node = match node {
         None => {
             let i = digit(h, shift);
@@ -116,11 +122,17 @@ fn hamt_assoc(node: Option<&Gc<Node>>, entry: Entry, h: u32, shift: u32, replace
                     let mut new = entries.clone();
                     new[j] = entry;
                     *replaced = true;
-                    return Gc::new(Node::Collision { hash: *hash, entries: new });
+                    return Gc::new(Node::Collision {
+                        hash: *hash,
+                        entries: new,
+                    });
                 }
                 let mut new = entries.clone();
                 new.push(entry);
-                return Gc::new(Node::Collision { hash: *hash, entries: new });
+                return Gc::new(Node::Collision {
+                    hash: *hash,
+                    entries: new,
+                });
             }
             // Different hash: promote the bucket into a bitmap node at this
             // level, then route the new entry.
@@ -136,7 +148,11 @@ fn hamt_assoc(node: Option<&Gc<Node>>, entry: Entry, h: u32, shift: u32, replace
             } else {
                 let bucket = Slot::Child(node.clone());
                 let leaf = Slot::Leaf(entry);
-                let slots = if ib < in_ { vec![bucket, leaf] } else { vec![leaf, bucket] };
+                let slots = if ib < in_ {
+                    vec![bucket, leaf]
+                } else {
+                    vec![leaf, bucket]
+                };
                 Gc::new(Node::Bitmap {
                     bitmap: (1 << ib) | (1 << in_),
                     subnode_mask: 1 << ib,
@@ -144,7 +160,11 @@ fn hamt_assoc(node: Option<&Gc<Node>>, entry: Entry, h: u32, shift: u32, replace
                 })
             }
         }
-        Node::Bitmap { bitmap, subnode_mask, slots } => {
+        Node::Bitmap {
+            bitmap,
+            subnode_mask,
+            slots,
+        } => {
             let i = digit(h, shift);
             let bit = 1u32 << i;
             let phys = popcount(bitmap & (bit - 1)) as usize;
@@ -197,7 +217,12 @@ fn hamt_assoc(node: Option<&Gc<Node>>, entry: Entry, h: u32, shift: u32, replace
 }
 
 // Look up a key; None if absent.
-fn hamt_get<'a>(mut node: Option<&'a Gc<Node>>, key: &Value, h: u32, mut shift: u32) -> Option<&'a Value> {
+fn hamt_get<'a>(
+    mut node: Option<&'a Gc<Node>>,
+    key: &Value,
+    h: u32,
+    mut shift: u32,
+) -> Option<&'a Value> {
     while let Some(n) = node {
         match &**n {
             Node::Collision { hash, entries } => {
@@ -206,7 +231,11 @@ fn hamt_get<'a>(mut node: Option<&'a Gc<Node>>, key: &Value, h: u32, mut shift: 
                 }
                 return entries.iter().find(|e| eq_val(&e.key, key)).map(|e| &e.val);
             }
-            Node::Bitmap { bitmap, subnode_mask, slots } => {
+            Node::Bitmap {
+                bitmap,
+                subnode_mask,
+                slots,
+            } => {
                 let bit = 1u32 << digit(h, shift);
                 if bitmap & bit == 0 {
                     return None;
@@ -246,7 +275,12 @@ pub struct PMap {
 impl PMap {
     /// The empty map.
     pub fn empty() -> PMap {
-        PMap { root: None, key_order: PVec::empty(), len: 0, meta: None }
+        PMap {
+            root: None,
+            key_order: PVec::empty(),
+            len: 0,
+            meta: None,
+        }
     }
 
     /// A copy carrying `meta` (None clears it). Ports `with-meta` on a map.
@@ -286,14 +320,22 @@ impl PMap {
     pub fn assoc(&self, key: Value, val: Value) -> PMap {
         let h = hash_val(&key) as u32;
         let mut replaced = false;
-        let entry = Entry { key: key.clone(), val };
+        let entry = Entry {
+            key: key.clone(),
+            val,
+        };
         let root = hamt_assoc(self.root.as_ref(), entry, h, 0, &mut replaced);
         let (key_order, len) = if replaced {
             (self.key_order.clone(), self.len)
         } else {
             (self.key_order.conj(key), self.len + 1)
         };
-        PMap { root: Some(root), key_order, len, meta: self.meta.clone() }
+        PMap {
+            root: Some(root),
+            key_order,
+            len,
+            meta: self.meta.clone(),
+        }
     }
 
     /// Remove `key`, returning a new map. Absent key returns a clone.
@@ -330,7 +372,9 @@ impl PMap {
 
     /// Iterate `(key, value)` in insertion order.
     pub fn entries(&self) -> impl Iterator<Item = (&Value, &Value)> {
-        self.key_order.iter().map(move |k| (k, self.get(k).unwrap()))
+        self.key_order
+            .iter()
+            .map(move |k| (k, self.get(k).unwrap()))
     }
 
     /// Iterate keys in insertion order.
@@ -359,7 +403,12 @@ pub struct PSet {
 impl PSet {
     /// The empty set.
     pub fn empty() -> PSet {
-        PSet { root: None, order: PVec::empty(), len: 0, meta: None }
+        PSet {
+            root: None,
+            order: PVec::empty(),
+            len: 0,
+            meta: None,
+        }
     }
 
     /// A copy carrying `meta` (None clears it). Ports `with-meta` on a set.
@@ -394,19 +443,37 @@ impl PSet {
     pub fn conj(&self, elem: Value) -> PSet {
         let h = hash_val(&elem) as u32;
         let mut replaced = false;
-        let entry = Entry { key: elem.clone(), val: Value::Bool(true) };
+        let entry = Entry {
+            key: elem.clone(),
+            val: Value::Bool(true),
+        };
         let root = hamt_assoc(self.root.as_ref(), entry, h, 0, &mut replaced);
         if replaced {
             // Already present: order and len unchanged.
-            return PSet { root: Some(root), order: self.order.clone(), len: self.len, meta: self.meta.clone() };
+            return PSet {
+                root: Some(root),
+                order: self.order.clone(),
+                len: self.len,
+                meta: self.meta.clone(),
+            };
         }
-        PSet { root: Some(root), order: self.order.conj(elem), len: self.len + 1, meta: self.meta.clone() }
+        PSet {
+            root: Some(root),
+            order: self.order.conj(elem),
+            len: self.len + 1,
+            meta: self.meta.clone(),
+        }
     }
 
     /// Remove `elem`, returning a new set. Rebuilds from survivors.
     pub fn disj(&self, elem: &Value) -> PSet {
         if self.len == 0 || !self.contains(elem) {
-            return PSet { root: self.root.clone(), order: self.order.clone(), len: self.len, meta: self.meta.clone() };
+            return PSet {
+                root: self.root.clone(),
+                order: self.order.clone(),
+                len: self.len,
+                meta: self.meta.clone(),
+            };
         }
         let mut out = PSet::empty();
         for e in self.iter() {
@@ -461,7 +528,9 @@ mod tests {
 
     #[test]
     fn assoc_is_persistent_and_rebind_keeps_order() {
-        let m = PMap::empty().assoc(kw("a"), Value::Int(1)).assoc(kw("b"), Value::Int(2));
+        let m = PMap::empty()
+            .assoc(kw("a"), Value::Int(1))
+            .assoc(kw("b"), Value::Int(2));
         let m2 = m.assoc(kw("a"), Value::Int(9)); // rebind
         assert!(matches!(m2.get(&kw("a")), Some(Value::Int(9))));
         // Original unchanged.
@@ -499,7 +568,10 @@ mod tests {
     #[test]
     fn set_dedup_and_roundtrip() {
         // `set`/`conj` dedup (mino: (set [1 1 2]) => #{1 2}).
-        let s = PSet::empty().conj(Value::Int(1)).conj(Value::Int(1)).conj(Value::Int(2));
+        let s = PSet::empty()
+            .conj(Value::Int(1))
+            .conj(Value::Int(1))
+            .conj(Value::Int(2));
         assert_eq!(s.count(), 2);
         assert!(s.contains(&Value::Int(1)));
         assert!(s.contains(&Value::Int(2)));
@@ -519,8 +591,12 @@ mod tests {
     #[test]
     fn map_equality_ignores_order() {
         // (= {:a 1 :b 2} {:b 2 :a 1}) => true, but each prints its own order.
-        let m1 = PMap::empty().assoc(kw("a"), Value::Int(1)).assoc(kw("b"), Value::Int(2));
-        let m2 = PMap::empty().assoc(kw("b"), Value::Int(2)).assoc(kw("a"), Value::Int(1));
+        let m1 = PMap::empty()
+            .assoc(kw("a"), Value::Int(1))
+            .assoc(kw("b"), Value::Int(2));
+        let m2 = PMap::empty()
+            .assoc(kw("b"), Value::Int(2))
+            .assoc(kw("a"), Value::Int(1));
         assert!(eq_val(
             &Value::Map(Gc::new(m1.clone_shallow_pub())),
             &Value::Map(Gc::new(m2.clone_shallow_pub()))
@@ -549,9 +625,6 @@ mod tests {
         // 1200595475, (hash "hello") => 886912120 (FNV-1a, low 32 bits).
         assert_eq!(hash_val(&kw("a")), 1080988421);
         assert_eq!(hash_val(&Value::Int(1)), 1200595475);
-        assert_eq!(
-            hash_val(&read_one("\"hello\"").unwrap().0),
-            886912120
-        );
+        assert_eq!(hash_val(&read_one("\"hello\"").unwrap().0), 886912120);
     }
 }

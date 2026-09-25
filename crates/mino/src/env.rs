@@ -155,10 +155,16 @@ mod tests {
         root.set(Symbol::plain("x"), Value::Int(1));
         let child = root.child();
         // inherited from parent
-        assert!(matches!(child.get(&Symbol::plain("x")), Some(Value::Int(1))));
+        assert!(matches!(
+            child.get(&Symbol::plain("x")),
+            Some(Value::Int(1))
+        ));
         // local shadow does not leak to parent
         child.set(Symbol::plain("x"), Value::Int(2));
-        assert!(matches!(child.get(&Symbol::plain("x")), Some(Value::Int(2))));
+        assert!(matches!(
+            child.get(&Symbol::plain("x")),
+            Some(Value::Int(2))
+        ));
         assert!(matches!(root.get(&Symbol::plain("x")), Some(Value::Int(1))));
         // unbound
         assert!(root.get(&Symbol::plain("nope")).is_none());

@@ -689,10 +689,10 @@ pub fn quot(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 fn as_long_bit(v: &Value, op: &str) -> Result<i64, Throw> {
     match v {
         Value::Int(n) => Ok(*n),
-        Value::BigInt(b) => b
-            .0
-            .to_i64()
-            .ok_or_else(|| throw_type(&format!("{op} expects integers"))),
+        Value::BigInt(b) => {
+            b.0.to_i64()
+                .ok_or_else(|| throw_type(&format!("{op} expects integers")))
+        }
         _ => Err(throw_type(&format!("{op} expects integers"))),
     }
 }
@@ -787,10 +787,10 @@ fn extract_int_for_cast(v: &Value, name: &str) -> Result<i64, Throw> {
         Value::Char(c) => Ok(*c as i64),
         Value::Float(d) => float_to_cast_int(*d, name),
         Value::Float32(d) => float_to_cast_int(*d as f64, name),
-        Value::BigInt(b) => b
-            .0
-            .to_i64()
-            .ok_or_else(|| throw_type(&format!("{name}: bigint value out of long range"))),
+        Value::BigInt(b) => {
+            b.0.to_i64()
+                .ok_or_else(|| throw_type(&format!("{name}: bigint value out of long range")))
+        }
         Value::Ratio(r) => {
             let d = r.0.to_f64().unwrap_or(f64::NAN);
             float_to_cast_int(d, name)
@@ -848,7 +848,12 @@ fn narrow_cast(v: &Value, lo: i64, hi: i64, name: &str) -> Result<Value, Throw> 
 }
 
 pub fn int_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    narrow_cast(one_arg(args, "int")?, i32::MIN as i64, i32::MAX as i64, "int")
+    narrow_cast(
+        one_arg(args, "int")?,
+        i32::MIN as i64,
+        i32::MAX as i64,
+        "int",
+    )
 }
 pub fn long_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let v = one_arg(args, "long")?;
@@ -916,9 +921,7 @@ pub fn bigint(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
                 _ => unreachable!(),
             };
             if !d.is_finite() {
-                return Err(throw_type(
-                    "cannot convert non-finite double to bigint",
-                ));
+                return Err(throw_type("cannot convert non-finite double to bigint"));
             }
             use num_traits::FromPrimitive;
             BigInt::from_f64(d.trunc()).ok_or_else(|| throw_type("bigint: failed to convert"))?
@@ -1045,7 +1048,10 @@ fn two_unchecked(args: &[Value], op: &str, lenient: bool) -> Result<(i64, i64), 
         ));
     };
     if lenient {
-        Ok((unchecked_long_lenient(a, op)?, unchecked_long_lenient(b, op)?))
+        Ok((
+            unchecked_long_lenient(a, op)?,
+            unchecked_long_lenient(b, op)?,
+        ))
     } else {
         Ok((unchecked_long(a, op)?, unchecked_long(b, op)?))
     }
@@ -1208,10 +1214,22 @@ mod tests {
     #[test]
     fn primed_promotes() {
         let mut it = Interp::new();
-        assert_eq!(ev(&mut it, "(+' 9223372036854775807 1)"), "9223372036854775808N");
-        assert_eq!(ev(&mut it, "(*' 9223372036854775807 2)"), "18446744073709551614N");
-        assert_eq!(ev(&mut it, "(inc' 9223372036854775807)"), "9223372036854775808N");
-        assert_eq!(ev(&mut it, "(-' -9223372036854775808 1)"), "-9223372036854775809N");
+        assert_eq!(
+            ev(&mut it, "(+' 9223372036854775807 1)"),
+            "9223372036854775808N"
+        );
+        assert_eq!(
+            ev(&mut it, "(*' 9223372036854775807 2)"),
+            "18446744073709551614N"
+        );
+        assert_eq!(
+            ev(&mut it, "(inc' 9223372036854775807)"),
+            "9223372036854775808N"
+        );
+        assert_eq!(
+            ev(&mut it, "(-' -9223372036854775808 1)"),
+            "-9223372036854775809N"
+        );
     }
 
     #[test]
@@ -1250,12 +1268,18 @@ mod tests {
     #[test]
     fn unchecked_wrap_and_bit_shift() {
         let mut it = Interp::new();
-        assert_eq!(ev(&mut it, "(unchecked-add 9223372036854775807 1)"), "-9223372036854775808");
+        assert_eq!(
+            ev(&mut it, "(unchecked-add 9223372036854775807 1)"),
+            "-9223372036854775808"
+        );
         assert_eq!(ev(&mut it, "(unchecked-byte 255)"), "-1");
         assert_eq!(ev(&mut it, "(unchecked-int 2147483648)"), "-2147483648");
         assert_eq!(ev(&mut it, "(bit-shift-left 1 63)"), "-9223372036854775808");
         assert_eq!(ev(&mut it, "(bit-shift-right -1 1)"), "-1"); // sign-preserving
-        assert_eq!(ev(&mut it, "(unsigned-bit-shift-right -1 1)"), "9223372036854775807");
+        assert_eq!(
+            ev(&mut it, "(unsigned-bit-shift-right -1 1)"),
+            "9223372036854775807"
+        );
         assert!(it.eval_str("(bit-shift-left 1 64)").is_err());
     }
 

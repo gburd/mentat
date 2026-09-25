@@ -2,7 +2,10 @@
 
 `gc/` and `gc_derive/` are the `rust-gc` tracing garbage collector,
 <https://github.com/Manishearth/rust-gc>, tag `v0.5.1` (commit `292287d`),
-identical to the `gc 0.5.1` / `gc_derive 0.5.0` crates on crates.io.
+from the `gc 0.5.1` / `gc_derive 0.5.0` crates on crates.io. The source is
+logically identical to upstream except the iterative-marking change documented
+in `CHANGES.md`; it has since been run through `cargo fmt` so the whole
+workspace passes `cargo fmt --check` (whitespace only — no logic change).
 
 License: **Mozilla Public License 2.0** (`LICENSE`, copied from the upstream
 repository; the crates.io package does not include it). The MPL is a file-level

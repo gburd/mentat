@@ -360,7 +360,7 @@ unsafe impl<T: Trace> Trace for VecDeque<T> {
     });
 }
 
-impl<'a, T: ToOwned + ?Sized> Finalize for Cow<'a, T>{}
+impl<'a, T: ToOwned + ?Sized> Finalize for Cow<'a, T> {}
 unsafe impl<'a, T: ToOwned + ?Sized> Trace for Cow<'a, T>
 where
     T::Owned: Trace,

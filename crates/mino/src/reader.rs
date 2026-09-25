@@ -41,7 +41,11 @@ impl fmt::Display for ReadError {
             ReadError::Unexpected(c) => write!(f, "unexpected '{c}'"),
             ReadError::Unterminated(what) => write!(f, "unterminated {what}"),
             ReadError::Malformed(m) => write!(f, "{m}"),
-            ReadError::TooDeep => write!(f, "input nested deeper than {}", crate::depth::MAX_DATA_DEPTH),
+            ReadError::TooDeep => write!(
+                f,
+                "input nested deeper than {}",
+                crate::depth::MAX_DATA_DEPTH
+            ),
         }
     }
 }
@@ -51,7 +55,12 @@ impl std::error::Error for ReadError {}
 /// Read one form. Returns the value and the number of bytes consumed
 /// (leading whitespace/comments up to and including the form).
 pub fn read_one(src: &str) -> Result<(Value, usize), ReadError> {
-    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new(), depth: 0 };
+    let mut r = Reader {
+        s: src.as_bytes(),
+        i: 0,
+        qq: Vec::new(),
+        depth: 0,
+    };
     r.skip_ws();
     let v = r.read_form()?;
     Ok((v, r.i))
@@ -59,7 +68,12 @@ pub fn read_one(src: &str) -> Result<(Value, usize), ReadError> {
 
 /// Read every form in `src`.
 pub fn read_all(src: &str) -> Result<Vec<Value>, ReadError> {
-    let mut r = Reader { s: src.as_bytes(), i: 0, qq: Vec::new(), depth: 0 };
+    let mut r = Reader {
+        s: src.as_bytes(),
+        i: 0,
+        qq: Vec::new(),
+        depth: 0,
+    };
     let mut out = Vec::new();
     loop {
         r.skip_ws();
@@ -83,14 +97,24 @@ pub fn read_all_resilient(src: &str) -> Vec<Result<Value, ReadError>> {
     loop {
         // Skip inter-form whitespace/commas/comments.
         {
-            let mut r = Reader { s: bytes, i, qq: Vec::new(), depth: 0 };
+            let mut r = Reader {
+                s: bytes,
+                i,
+                qq: Vec::new(),
+                depth: 0,
+            };
             r.skip_ws();
             i = r.i;
         }
         if i >= bytes.len() {
             return out;
         }
-        let mut r = Reader { s: bytes, i, qq: Vec::new(), depth: 0 };
+        let mut r = Reader {
+            s: bytes,
+            i,
+            qq: Vec::new(),
+            depth: 0,
+        };
         match r.read_form() {
             Ok(v) => {
                 i = r.i;
@@ -151,7 +175,10 @@ fn skip_top_form(b: &[u8], mut i: usize) -> usize {
         }
         // Bare atom: run to the next whitespace/delimiter.
         _ => {
-            while i < b.len() && !is_ws(b[i]) && !matches!(b[i], b'(' | b')' | b'[' | b']' | b'{' | b'}') {
+            while i < b.len()
+                && !is_ws(b[i])
+                && !matches!(b[i], b'(' | b')' | b'[' | b']' | b'{' | b'}')
+            {
                 i += 1;
             }
             i
@@ -241,7 +268,10 @@ impl<'a> Reader<'a> {
                 // Push a gensym frame for the duration of the quoted form so
                 // `foo#` inside it maps to a per-read auto-gensym (read.c).
                 self.i += 1;
-                self.qq.push(QqFrame { suppress: false, entries: Vec::new() });
+                self.qq.push(QqFrame {
+                    suppress: false,
+                    entries: Vec::new(),
+                });
                 let r = self.wrap_next("quasiquote");
                 self.qq.pop();
                 r
@@ -260,7 +290,10 @@ impl<'a> Reader<'a> {
                 if self.qq.is_empty() {
                     self.wrap_next(name)
                 } else {
-                    self.qq.push(QqFrame { suppress: true, entries: Vec::new() });
+                    self.qq.push(QqFrame {
+                        suppress: true,
+                        entries: Vec::new(),
+                    });
                     let r = self.wrap_next(name);
                     self.qq.pop();
                     r
@@ -397,11 +430,13 @@ impl<'a> Reader<'a> {
             Some(b'#') => {
                 self.i += 2; // consume `##`
                 let start = self.i;
-                while self
-                    .s
-                    .get(self.i)
-                    .is_some_and(|c| !c.is_ascii_whitespace() && !matches!(c, b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' | b'"'))
-                {
+                while self.s.get(self.i).is_some_and(|c| {
+                    !c.is_ascii_whitespace()
+                        && !matches!(
+                            c,
+                            b'(' | b')' | b'[' | b']' | b'{' | b'}' | b',' | b';' | b'"'
+                        )
+                }) {
                     self.i += 1;
                 }
                 let name = std::str::from_utf8(&self.s[start..self.i])
@@ -410,7 +445,9 @@ impl<'a> Reader<'a> {
                     "NaN" => Ok(Value::Float(f64::NAN)),
                     "Inf" => Ok(Value::Float(f64::INFINITY)),
                     "-Inf" => Ok(Value::Float(f64::NEG_INFINITY)),
-                    other => Err(ReadError::Malformed(format!("unknown ## literal: ##{other}"))),
+                    other => Err(ReadError::Malformed(format!(
+                        "unknown ## literal: ##{other}"
+                    ))),
                 }
             }
             // `#'foo` var-quote -> `(var foo)`. Ports read.c's var-quote.
@@ -527,7 +564,9 @@ impl<'a> Reader<'a> {
                 }
                 b'\\' => {
                     self.i += 1;
-                    let e = self.peek().ok_or(ReadError::Unterminated("string literal"))?;
+                    let e = self
+                        .peek()
+                        .ok_or(ReadError::Unterminated("string literal"))?;
                     match e {
                         b'n' => out.push('\n'),
                         b't' => out.push('\t'),
@@ -538,14 +577,9 @@ impl<'a> Reader<'a> {
                         b'"' => out.push('"'),
                         b'u' => {
                             // \uXXXX: exactly four hex digits.
-                            let hex = self
-                                .s
-                                .get(self.i + 1..self.i + 5)
-                                .ok_or_else(|| {
-                                    ReadError::Malformed(
-                                        "\\u escape requires four hex digits".into(),
-                                    )
-                                })?;
+                            let hex = self.s.get(self.i + 1..self.i + 5).ok_or_else(|| {
+                                ReadError::Malformed("\\u escape requires four hex digits".into())
+                            })?;
                             let cp = u32::from_str_radix(
                                 std::str::from_utf8(hex).map_err(|_| {
                                     ReadError::Malformed(
@@ -671,7 +705,11 @@ impl<'a> Reader<'a> {
             return Ok(v);
         }
         let bytes = tok.as_bytes();
-        let d = if bytes[0] == b'+' || bytes[0] == b'-' { 1 } else { 0 };
+        let d = if bytes[0] == b'+' || bytes[0] == b'-' {
+            1
+        } else {
+            0
+        };
         if bytes.get(d).is_some_and(|c| c.is_ascii_digit()) {
             return Err(ReadError::Malformed(format!("invalid number: {tok}")));
         }
@@ -829,9 +867,7 @@ fn parse_symbol(tok: &str) -> Result<Symbol, ReadError> {
         return Ok(Symbol::plain("/"));
     }
     match tok.split_once('/') {
-        Some((ns, name)) if !ns.is_empty() && !name.is_empty() => {
-            Ok(Symbol::namespaced(ns, name))
-        }
+        Some((ns, name)) if !ns.is_empty() && !name.is_empty() => Ok(Symbol::namespaced(ns, name)),
         Some(_) => Err(ReadError::Malformed(format!("malformed name: {tok}"))),
         None => Ok(Symbol::plain(tok)),
     }
@@ -845,7 +881,11 @@ fn parse_symbol(tok: &str) -> Result<Symbol, ReadError> {
 fn try_parse_number(tok: &str) -> Result<Option<Value>, ReadError> {
     // Only tokens beginning with a digit, or sign+digit, are numbers.
     let b = tok.as_bytes();
-    let sign_len = if b.first().is_some_and(|c| *c == b'+' || *c == b'-') { 1 } else { 0 };
+    let sign_len = if b.first().is_some_and(|c| *c == b'+' || *c == b'-') {
+        1
+    } else {
+        0
+    };
     if !b.get(sign_len).is_some_and(|c| c.is_ascii_digit()) {
         return Ok(None);
     }
@@ -860,7 +900,10 @@ fn try_parse_number(tok: &str) -> Result<Option<Value>, ReadError> {
         && !tok.to_ascii_lowercase().starts_with("-0x")
         && !tok.to_ascii_lowercase().starts_with("+0x")
     {
-        return tok.parse::<f64>().map(|f| Some(Value::Float(f))).map_err(|_| malformed());
+        return tok
+            .parse::<f64>()
+            .map(|f| Some(Value::Float(f)))
+            .map_err(|_| malformed());
     }
 
     // Ratio: `num/den`, both integers, den != 0, reduced.
@@ -889,10 +932,7 @@ fn try_parse_number(tok: &str) -> Result<Option<Value>, ReadError> {
             b'-' => ("-", &tok[1..]),
             _ => ("", tok),
         };
-        let r_body = body
-            .to_ascii_lowercase()
-            .find('r')
-            .ok_or_else(malformed)?;
+        let r_body = body.to_ascii_lowercase().find('r').ok_or_else(malformed)?;
         let (base_str, rest) = body.split_at(r_body);
         let digits = &rest[1..]; // skip 'r'
         let base: u32 = base_str.parse().map_err(|_| malformed())?;
@@ -1051,10 +1091,7 @@ mod tests {
     #[test]
     fn whitespace_and_comments() {
         assert_eq!(print_str(&read_one("  , 42 ,").unwrap().0), "42");
-        assert_eq!(
-            print_str(&read_one("; a comment\n:kw").unwrap().0),
-            ":kw"
-        );
+        assert_eq!(print_str(&read_one("; a comment\n:kw").unwrap().0), ":kw");
     }
 
     #[test]

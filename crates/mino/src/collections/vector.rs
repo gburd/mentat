@@ -132,10 +132,7 @@ impl PVec {
                 // Root full at current height (trie holds 1<<(shift+B) elems):
                 // add a level.
                 if trie_count == (1usize << (self.shift + B)) {
-                    let grown = Node::Branch(vec![
-                        root.clone(),
-                        new_path(self.shift, full_tail),
-                    ]);
+                    let grown = Node::Branch(vec![root.clone(), new_path(self.shift, full_tail)]);
                     (Gc::new(grown), self.shift + B)
                 } else {
                     (

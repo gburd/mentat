@@ -85,7 +85,11 @@ fn atom_set(it: &mut Interp, atom: &Value, new_val: Value) -> Result<(), Throw> 
     let cell = atom_cell(atom).unwrap();
     let (old, validator, watches) = {
         let st = cell.borrow();
-        (st.val.clone(), st.validator.clone(), st.watches.clone_shallow_pub())
+        (
+            st.val.clone(),
+            st.validator.clone(),
+            st.watches.clone_shallow_pub(),
+        )
     };
     validate(it, &validator, &new_val)?;
     cell.borrow_mut().val = new_val.clone();
@@ -443,7 +447,9 @@ fn swap_args(cur: Value, extra: &[Value]) -> Vec<Value> {
 
 // A two-element vector `[a b]` (for swap-vals!/reset-vals!).
 fn pair(a: Value, b: Value) -> Value {
-    Value::Vector(Gc::new(crate::collections::vector::PVec::from_vec(vec![a, b])))
+    Value::Vector(Gc::new(crate::collections::vector::PVec::from_vec(vec![
+        a, b,
+    ])))
 }
 
 #[cfg(test)]
@@ -459,9 +465,15 @@ mod tests {
     #[test]
     fn swap_and_reset() {
         // Expected values from `mino -e`.
-        assert_eq!(eval("(let [a (atom 0)] (swap! a inc) (swap! a + 10) @a)"), "11");
+        assert_eq!(
+            eval("(let [a (atom 0)] (swap! a inc) (swap! a + 10) @a)"),
+            "11"
+        );
         assert_eq!(eval("(let [a (atom 0)] (reset! a 42) @a)"), "42");
-        assert_eq!(eval("(let [a (atom [1 2])] (swap! a conj 3) @a)"), "[1 2 3]");
+        assert_eq!(
+            eval("(let [a (atom [1 2])] (swap! a conj 3) @a)"),
+            "[1 2 3]"
+        );
         assert_eq!(eval("(let [a (atom 10)] (swap! a + 5 3) @a)"), "18");
     }
 
@@ -487,7 +499,10 @@ mod tests {
         assert!(it
             .eval_str("(let [a (atom 1 :validator pos?)] (reset! a -1))")
             .is_err());
-        assert_eq!(eval("(let [a (atom 1 :validator pos?)] (swap! a + 5) @a)"), "6");
+        assert_eq!(
+            eval("(let [a (atom 1 :validator pos?)] (swap! a + 5) @a)"),
+            "6"
+        );
     }
 
     #[test]

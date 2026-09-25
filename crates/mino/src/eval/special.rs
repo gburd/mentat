@@ -33,7 +33,9 @@ pub fn eval_def(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
         let value = it.eval(value_form, env)?;
         it.root.set(name.clone(), value);
     }
-    Ok(Value::Var(crate::symbol::Symbol::namespaced("user", &name.name)))
+    Ok(Value::Var(crate::symbol::Symbol::namespaced(
+        "user", &name.name,
+    )))
 }
 
 /// `(fn ...)` / `(fn* ...)`: build a closure over the calling env.

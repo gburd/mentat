@@ -2061,15 +2061,33 @@ fn test_plain_keyword_in_value_place() {
         )
         .expect("data");
     let mut names = |q: &str| -> Vec<String> {
-        let r = store.begin_read().expect("read").q_once(q, None).expect("query").into_coll().expect("coll");
-        let mut v: Vec<String> = r.into_iter().map(|b| b.into_string().expect("string").to_string()).collect();
+        let r = store
+            .begin_read()
+            .expect("read")
+            .q_once(q, None)
+            .expect("query")
+            .into_coll()
+            .expect("coll");
+        let mut v: Vec<String> = r
+            .into_iter()
+            .map(|b| b.into_string().expect("string").to_string())
+            .collect();
         v.sort();
         v
     };
-    assert_eq!(names("[:find [?n ...] :where [?e :task/status :done] [?e :task/name ?n]]"), vec!["write"]);
-    assert_eq!(names("[:find [?n ...] :where [?e :task/status :todo] [?e :task/name ?n]]"), vec!["test"]);
+    assert_eq!(
+        names("[:find [?n ...] :where [?e :task/status :done] [?e :task/name ?n]]"),
+        vec!["write"]
+    );
+    assert_eq!(
+        names("[:find [?n ...] :where [?e :task/status :todo] [?e :task/name ?n]]"),
+        vec!["test"]
+    );
     // Namespaced keyword values still work.
-    assert_eq!(names("[:find [?n ...] :where [?e :task/status :task/blocked] [?e :task/name ?n]]"), vec!["ship"]);
+    assert_eq!(
+        names("[:find [?n ...] :where [?e :task/status :task/blocked] [?e :task/name ?n]]"),
+        vec!["ship"]
+    );
     // A plain keyword nobody stored matches nothing (and is not an error).
     assert!(names("[:find [?n ...] :where [?e :task/status :nope] [?e :task/name ?n]]").is_empty());
 }

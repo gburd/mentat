@@ -153,7 +153,11 @@ impl Default for Interpreter {
 // ---------------------------------------------------------------------------
 
 /// Register `mentat.store/*` prims, each closing over the shared store table.
-fn register_store_prims(inner: &mut mino_rs::Interpreter, stores: &Stores, next_id: &Rc<Cell<i64>>) {
+fn register_store_prims(
+    inner: &mut mino_rs::Interpreter,
+    stores: &Stores,
+    next_id: &Rc<Cell<i64>>,
+) {
     // open: (open) -> conn handle (in-memory), or (open "path") -> file-backed.
     {
         let stores = stores.clone();
@@ -837,7 +841,10 @@ fn tx_report_value(report: &crate::TxReport, db_after: Option<Value>) -> Value {
     }
     let mut m = PMap::empty()
         .assoc(kw_ns("mentat.store", "tx-id"), Value::Int(report.tx_id))
-        .assoc(kw_ns("mentat.store", "tempids"), Value::Map(Gc::new(tempids)));
+        .assoc(
+            kw_ns("mentat.store", "tempids"),
+            Value::Map(Gc::new(tempids)),
+        );
     if let Some(db) = db_after {
         m = m.assoc(kw_ns("mentat.store", "db-after"), db);
     }
@@ -988,8 +995,7 @@ fn kw_ns(ns: &str, name: &str) -> Value {
 
 /// `edn::Value` -> its pretty EDN text (for bigints/symbols and datom keys).
 fn print_edn(v: &edn::Value) -> String {
-    v.to_pretty(200)
-        .unwrap_or_else(|_| format!("{v:?}"))
+    v.to_pretty(200).unwrap_or_else(|_| format!("{v:?}"))
 }
 
 // ---------------------------------------------------------------------------

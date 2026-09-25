@@ -138,9 +138,7 @@ fn with_is_speculative_and_does_not_commit() {
     // Speculatively add Bob via `with`. It returns a map with a db-after and a
     // tx-report at a NEW basis.
     let with_result = it
-        .eval_to_string(
-            "(mentat.store/with (mentat.store/db c) [{:person/name \"Bob\"}])",
-        )
+        .eval_to_string("(mentat.store/with (mentat.store/db c) [{:person/name \"Bob\"}])")
         .expect("with failed");
     assert!(
         with_result.contains(":mentat.store/db-after"),
@@ -174,7 +172,9 @@ fn with_is_speculative_and_does_not_commit() {
     // CRUCIAL: the real store is UNCHANGED. A fresh db off the conn still sees
     // only Alice — Bob was rolled back, never committed.
     let after = it
-        .eval_to_string("(mentat.store/q (mentat.store/db c) '[:find ?n :where [?e :person/name ?n]])")
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) '[:find ?n :where [?e :person/name ?n]])",
+        )
         .unwrap();
     assert_eq!(after, "#{[\"Alice\"]}", "with must not commit");
 }
@@ -207,7 +207,10 @@ fn as_of_and_since_reflect_the_basis() {
         ))
         .expect("as-of datoms failed");
     assert!(as_of_alice.contains("Alice"), "as-of Alice: {as_of_alice}");
-    assert!(!as_of_alice.contains("Bob"), "as-of should exclude Bob: {as_of_alice}");
+    assert!(
+        !as_of_alice.contains("Bob"),
+        "as-of should exclude Bob: {as_of_alice}"
+    );
 
     // `as-of basis_bob`: datoms include both.
     let as_of_bob = it
@@ -215,7 +218,10 @@ fn as_of_and_since_reflect_the_basis() {
             "(mentat.store/datoms (mentat.store/as-of (mentat.store/db c) {basis_bob}))"
         ))
         .expect("as-of bob datoms failed");
-    assert!(as_of_bob.contains("Alice") && as_of_bob.contains("Bob"), "as-of Bob: {as_of_bob}");
+    assert!(
+        as_of_bob.contains("Alice") && as_of_bob.contains("Bob"),
+        "as-of Bob: {as_of_bob}"
+    );
 
     // `since basis_alice`: only datoms asserted AFTER Alice's tx — so Bob, not Alice.
     let since_alice = it
@@ -223,18 +229,34 @@ fn as_of_and_since_reflect_the_basis() {
             "(mentat.store/datoms (mentat.store/since (mentat.store/db c) {basis_alice}))"
         ))
         .expect("since datoms failed");
-    assert!(since_alice.contains("Bob"), "since should include Bob: {since_alice}");
-    assert!(!since_alice.contains("Alice"), "since should exclude Alice: {since_alice}");
+    assert!(
+        since_alice.contains("Bob"),
+        "since should include Bob: {since_alice}"
+    );
+    assert!(
+        !since_alice.contains("Alice"),
+        "since should exclude Alice: {since_alice}"
+    );
 
     // as-of / since return db values.
     let as_of_db = it
-        .eval_to_string(&format!("(mentat.store/as-of (mentat.store/db c) {basis_alice})"))
+        .eval_to_string(&format!(
+            "(mentat.store/as-of (mentat.store/db c) {basis_alice})"
+        ))
         .unwrap();
-    assert!(as_of_db.contains(&format!(":mentat.store/as-of {basis_alice}")), "as-of db: {as_of_db}");
+    assert!(
+        as_of_db.contains(&format!(":mentat.store/as-of {basis_alice}")),
+        "as-of db: {as_of_db}"
+    );
     let since_db = it
-        .eval_to_string(&format!("(mentat.store/since (mentat.store/db c) {basis_alice})"))
+        .eval_to_string(&format!(
+            "(mentat.store/since (mentat.store/db c) {basis_alice})"
+        ))
         .unwrap();
-    assert!(since_db.contains(&format!(":mentat.store/since {basis_alice}")), "since db: {since_db}");
+    assert!(
+        since_db.contains(&format!(":mentat.store/since {basis_alice}")),
+        "since db: {since_db}"
+    );
 }
 
 #[test]
