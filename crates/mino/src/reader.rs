@@ -486,10 +486,32 @@ impl<'a> Reader<'a> {
                         Value::Sym(Symbol::namespaced("clojure.instant", "read-instant-date")),
                         cons(form, Value::EmptyList),
                     ),
-                    "uuid" => cons(
-                        Value::Sym(Symbol::plain("parse-uuid")),
-                        cons(form, Value::EmptyList),
-                    ),
+                    // `#uuid "..."`: parse directly to a UUID value at read time
+                    // (a data reader runs at read time), so `read-string`
+                    // round-trips the literal to a real `Value::Uuid`. An
+                    // invalid string is a read error (the literal is malformed).
+                    "uuid" => match &form {
+                        Value::Str(s) => match uuid::Uuid::parse_str(s) {
+                            Ok(u)
+                                if s.len() == 36
+                                    && s.as_bytes().iter().filter(|&&b| b == b'-').count()
+                                        == 4 =>
+                            {
+                                Value::Uuid(Gc::new(crate::value::UuidVal(*u.as_bytes())))
+                            }
+                            _ => {
+                                return Err(ReadError::Malformed(format!(
+                                    "invalid UUID string: {}",
+                                    &**s
+                                )))
+                            }
+                        },
+                        _ => {
+                            return Err(ReadError::Malformed(
+                                "#uuid literal requires a string".into(),
+                            ))
+                        }
+                    },
                     other => {
                         return Err(ReadError::Malformed(format!(
                             "unsupported reader tag #{other}"

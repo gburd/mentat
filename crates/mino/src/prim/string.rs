@@ -559,6 +559,44 @@ fn uni_lower(c: char) -> char {
     }
 }
 
+/// `(parse-uuid s)` — parse a canonical `8-4-4-4-12` UUID string into a
+/// `Value::Uuid`, or nil if the string is not a valid UUID. Only arity/type
+/// errors throw (a malformed string is nil, matching upstream prim_parse_uuid).
+/// Also backs the `#uuid "..."` reader literal.
+pub fn parse_uuid(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let s = match args {
+        [Value::Str(s)] => s,
+        [_] => {
+            return Err(crate::error::throw_classified(
+                "eval/type",
+                "MTY001",
+                "parse-uuid: argument must be a string",
+            ))
+        }
+        _ => {
+            return Err(crate::error::throw_classified(
+                "eval/arity",
+                "MAR001",
+                "parse-uuid requires one argument",
+            ))
+        }
+    };
+    match uuid::Uuid::parse_str(s) {
+        // Uuid::parse_str is lenient (accepts braces/urn); mino accepts only
+        // the plain hyphenated 36-char form, so re-check the length/shape.
+        Ok(u) if s.len() == 36 && s.as_bytes().iter().filter(|&&b| b == b'-').count() == 4 => {
+            Ok(Value::Uuid(Gc::new(crate::value::UuidVal(*u.as_bytes()))))
+        }
+        _ => Ok(Value::Nil),
+    }
+}
+
+/// Canonical lowercase `8-4-4-4-12` text for the 16 UUID bytes (no `#uuid`
+/// prefix). Used by the printer.
+pub fn uuid_hyphenated(bytes: &[u8; 16]) -> String {
+    uuid::Uuid::from_bytes(*bytes).hyphenated().to_string()
+}
+
 fn one_string<'a>(args: &'a [Value], name: &str) -> Result<&'a str, Throw> {
     match args {
         [v] => {

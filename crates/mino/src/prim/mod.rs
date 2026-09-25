@@ -169,6 +169,8 @@ pub fn install_core(root: &Env) {
     use string as st;
     register(root, "str", st::str_);
     register(root, "pr-str", st::pr_str);
+    register(root, "parse-uuid", st::parse_uuid);
+    register(root, "uuid?", r::uuid_p);
     register(root, "println", st::println_);
     register(root, "print", st::print_);
     register(root, "prn", st::prn);

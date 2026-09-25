@@ -85,6 +85,13 @@ pub enum Value {
     // thunk at most once. Ports MINO_DELAY (prim/stateful.c). Equality/hash by
     // identity.
     Delay(Gc<gc::GcCell<crate::prim::stateful::DelayState>>),
+    // A UUID value (`#uuid "..."`, or the result of `parse-uuid`). Holds the
+    // 16 raw bytes; `type` returns `:uuid`; prints `#uuid "8-4-4-4-12"`
+    // (lowercase) so it round-trips through the reader. Equality/hash are BY
+    // VALUE (two UUIDs with the same bytes are `=`, unlike atoms/stores).
+    // Ports MINO_UUID (prim/string.c + print.c). Holds no Gc pointers, so its
+    // trace is empty.
+    Uuid(Gc<UuidVal>),
     // An EAVT store connection (`mino.store/open`). An identity cell holding
     // the current immutable db value plus a durable path (None = in-memory),
     // a monotonic print id, and a watches map. Equality/hash are by identity
@@ -153,6 +160,14 @@ unsafe impl Trace for RegexVal {
 pub struct BigIntVal(pub num_bigint::BigInt);
 impl Finalize for BigIntVal {}
 unsafe impl Trace for BigIntVal {
+    gc::unsafe_empty_trace!();
+}
+
+/// A UUID value: the 16 raw bytes. No Gc pointers, so its trace is empty.
+/// Equality is by value (the bytes), unlike identity-typed atoms/stores.
+pub struct UuidVal(pub [u8; 16]);
+impl Finalize for UuidVal {}
+unsafe impl Trace for UuidVal {
     gc::unsafe_empty_trace!();
 }
 

@@ -633,6 +633,7 @@ impl Interp {
             | Value::Var(_)
             | Value::Atom(_)
             | Value::Delay(_)
+            | Value::Uuid(_)
             | Value::Store(_) => Ok(form.clone()),
 
             // A `recur` signal only appears here when re-evaluated as data
@@ -1242,6 +1243,7 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Atom(_) => "atom",
         Value::Store(_) => "store",
         Value::Delay(_) => "delay",
+        Value::Uuid(_) => "uuid",
         Value::Recur(_) => "recur",
         Value::TailCall(_) => "tail-call",
     }

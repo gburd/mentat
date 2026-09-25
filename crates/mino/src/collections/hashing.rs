@@ -156,6 +156,14 @@ fn hash32(v: &Value, depth: usize) -> u32 {
         Value::Store(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         // Delay: identity hash by cell address (delays are never value-equal).
         Value::Delay(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
+        // UUID: value hash over the 16 bytes (UUIDs are value-equal).
+        Value::Uuid(gc) => {
+            let mut hh = fnv_mix(h, 0x0c);
+            for b in gc.0 {
+                hh = fnv_mix(hh, b);
+            }
+            hh
+        }
     }
 }
 
@@ -256,6 +264,8 @@ fn eq_step<'a>(a: &'a Value, b: &'a Value, work: &mut Vec<(&'a Value, &'a Value)
         (Value::Store(x), Value::Store(y)) => std::ptr::eq(&**x, &**y),
         // Delays: identity. Two distinct delays are never `=`.
         (Value::Delay(x), Value::Delay(y)) => std::ptr::eq(&**x, &**y),
+        // UUIDs: value equality over the bytes.
+        (Value::Uuid(x), Value::Uuid(y)) => x.0 == y.0,
         _ => false,
     }
 }

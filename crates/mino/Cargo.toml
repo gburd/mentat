@@ -18,6 +18,8 @@ num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"
+# UUID value type (#uuid literals): parse + canonical format only.
+uuid = { workspace = true }
 
 [dev-dependencies]
 # conformance harness runs mino's own .clj corpus; no framework deps

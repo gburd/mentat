@@ -288,6 +288,12 @@ pub fn regex_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     Ok(Value::Bool(matches!(v, Value::Regex(_))))
 }
 
+/// `(uuid? x)` — true iff x is a UUID value. Ports `prim_uuid_p`.
+pub fn uuid_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let v = one_arg(args, "uuid?")?;
+    Ok(Value::Bool(matches!(v, Value::Uuid(_))))
+}
+
 /// `(identical? x y)` — reference identity. In mino's tagged representation a
 /// heap value is identical only to itself (pointer eq) while immediates
 /// (nil/bool/int/char/interned keyword) are identical iff value-equal. The
@@ -337,6 +343,8 @@ fn value_identical(a: &Value, b: &Value) -> bool {
         (Value::Atom(x), Value::Atom(y)) => same(x, y),
         (Value::Store(x), Value::Store(y)) => same(x, y),
         (Value::Delay(x), Value::Delay(y)) => same(x, y),
+        // UUIDs: value identity is fine (they're value-equal by bytes anyway).
+        (Value::Uuid(x), Value::Uuid(y)) => x.0 == y.0,
         // A bare fn pointer prim: identical iff the same fn pointer + name.
         (Value::Prim(x), Value::Prim(y)) => std::ptr::fn_addr_eq(x.0, y.0),
         _ => false,
@@ -361,7 +369,13 @@ pub fn mino_version(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// string. Ports `prim_read_string` over the existing reader; the opts map is
 /// accepted and ignored (the port has no reader-option surface). A read error
 /// throws a classified `:reader` diagnostic.
-pub fn read_string(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+///
+/// Data readers run at read time: the reader already produces a real
+/// `Value::Uuid` for `#uuid`, and `#inst` expands to a
+/// `(clojure.instant/read-instant-date "...")` call which this prim evaluates
+/// so the returned value is the instant map (not the call form), letting the
+/// `#inst` literal round-trip through `pr-str`/`read-string`.
+pub fn read_string(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let s = match args {
         [Value::Str(s)] => s,
         // (read-string opts s): opts is ignored.
@@ -375,13 +389,34 @@ pub fn read_string(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         }
     };
     match crate::reader::read_one(s) {
-        Ok((v, _)) => Ok(v),
+        Ok((v, _)) => {
+            // Run the `#inst` data-reader expansion so the literal reads to its
+            // value (an instant map), matching read-time data-reader semantics.
+            if is_inst_reader_call(&v) {
+                let root = it.root.clone();
+                it.eval(&v, &root)
+            } else {
+                Ok(v)
+            }
+        }
         Err(e) => Err(throw_classified(
             "reader",
             "MRD001",
             &format!("read-string: {e}"),
         )),
     }
+}
+
+/// True if `v` is the `#inst` reader expansion
+/// `(clojure.instant/read-instant-date <str>)`.
+fn is_inst_reader_call(v: &Value) -> bool {
+    if let Value::Cons(cell) = v {
+        if let Value::Sym(s) = &cell.0 {
+            return s.ns.as_deref() == Some("clojure.instant")
+                && &*s.name == "read-instant-date";
+        }
+    }
+    false
 }
 
 /// `(symbol x)` / `(symbol ns name)` — build a symbol. Ports `prim_symbol`.
@@ -451,6 +486,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Atom(_) => "atom",
         Value::Store(_) => "store",
         Value::Delay(_) => "delay",
+        Value::Uuid(_) => "uuid",
         Value::Recur(_) => "recur",
         Value::TailCall(_) => "tail-call",
     };
@@ -589,6 +625,55 @@ mod tests {
     fn eval(src: &str) -> String {
         let mut it = Interp::new();
         print_str(&it.eval_str(src).unwrap())
+    }
+
+    #[test]
+    fn uuid_reads_prints_and_round_trips() {
+        // #uuid reads to a real :uuid value that prints as its literal.
+        assert_eq!(
+            eval(r#"#uuid "12345678-1234-5678-1234-567812345678""#),
+            r#"#uuid "12345678-1234-5678-1234-567812345678""#
+        );
+        assert_eq!(
+            eval(r#"(type #uuid "12345678-1234-5678-1234-567812345678")"#),
+            ":uuid"
+        );
+        assert_eq!(
+            eval(r#"(uuid? #uuid "12345678-1234-5678-1234-567812345678")"#),
+            "true"
+        );
+        // parse-uuid: valid -> value, invalid -> nil (no throw).
+        assert_eq!(
+            eval(r#"(parse-uuid "12345678-1234-5678-1234-567812345678")"#),
+            r#"#uuid "12345678-1234-5678-1234-567812345678""#
+        );
+        assert_eq!(eval(r#"(parse-uuid "nope")"#), "nil");
+        // round-trips through pr-str / read-string with value equality.
+        assert_eq!(
+            eval(
+                r#"(= (read-string (pr-str #uuid "12345678-1234-5678-1234-567812345678")) #uuid "12345678-1234-5678-1234-567812345678")"#
+            ),
+            "true"
+        );
+    }
+
+    #[test]
+    fn inst_prints_as_literal_and_round_trips() {
+        // #inst prints as its #inst "..." literal (not a raw component map).
+        // pr-str yields a string whose printed (escaped) form is:
+        //   "#inst \"2023-01-15T10:30:00.000+00:00\""
+        assert_eq!(
+            eval("(pr-str #inst \"2023-01-15T10:30:00Z\")"),
+            "\"#inst \\\"2023-01-15T10:30:00.000+00:00\\\"\""
+        );
+        assert_eq!(eval("(inst? #inst \"2023-01-15T10:30:00Z\")"), "true");
+        // round-trips through pr-str / read-string.
+        assert_eq!(
+            eval(
+                "(= (read-string (pr-str #inst \"2023-01-15T10:30:00Z\")) #inst \"2023-01-15T10:30:00Z\")"
+            ),
+            "true"
+        );
     }
 
     #[test]

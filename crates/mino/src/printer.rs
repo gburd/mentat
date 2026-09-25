@@ -99,17 +99,24 @@ impl Printer {
                 s.push(']');
             }
             // print.c print_map: pairs separated by ", ", key/val by a space.
+            // A map carrying the `:mino/instant true` metadata marker prints as
+            // its `#inst "..."` reader literal so it round-trips through
+            // pr/read (ports print.c print_instant_literal).
             Value::Map(m) => {
-                s.push('{');
-                for (i, (k, val)) in m.entries().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
+                if let Some(lit) = instant_literal(m) {
+                    s.push_str(&lit);
+                } else {
+                    s.push('{');
+                    for (i, (k, val)) in m.entries().enumerate() {
+                        if i > 0 {
+                            s.push_str(", ");
+                        }
+                        self.print_into(s, k, depth + 1);
+                        s.push(' ');
+                        self.print_into(s, val, depth + 1);
                     }
-                    self.print_into(s, k, depth + 1);
-                    s.push(' ');
-                    self.print_into(s, val, depth + 1);
+                    s.push('}');
                 }
-                s.push('}');
             }
             Value::Set(set) => {
                 s.push_str("#{");
@@ -160,6 +167,13 @@ impl Printer {
             Value::Regex(r) => {
                 s.push_str("#\"");
                 s.push_str(&r.source);
+                s.push('"');
+            }
+            // UUID: `#uuid "8-4-4-4-12"` (canonical lowercase) so it round-trips
+            // through the reader. Ports mino print.c print_uuid.
+            Value::Uuid(u) => {
+                s.push_str("#uuid \"");
+                s.push_str(&crate::prim::string::uuid_hyphenated(&u.0));
                 s.push('"');
             }
             // Atom: `#atom[value]` (mino: `(pr-str (atom 1))` => `#atom[1]`).
@@ -225,6 +239,42 @@ impl Printer {
         }
         s.push(')');
     }
+}
+
+/// If `m` carries the `:mino/instant true` metadata marker, render its
+/// `#inst "YYYY-MM-DDTHH:MM:SS.mmm±HH:MM"` reader literal (ports print.c
+/// print_instant_literal); else None (fall through to the generic map printer).
+/// The component fields mirror clojure.instant/read-instant-date; missing
+/// fields take their documented defaults.
+fn instant_literal(m: &crate::collections::map::PMap) -> Option<String> {
+    use crate::symbol::Symbol;
+    // The marker lives in the map's metadata, not its entries.
+    let meta = m.meta.as_ref()?;
+    let marker = meta.get(&Value::Keyword(Symbol::namespaced("mino", "instant")))?;
+    if !marker.is_truthy() {
+        return None;
+    }
+    let field = |name: &str, dflt: i64| -> i64 {
+        match m.get(&Value::Keyword(Symbol::plain(name))) {
+            Some(Value::Int(n)) => *n,
+            _ => dflt,
+        }
+    };
+    let years = field("years", 1970);
+    let months = field("months", 1);
+    let days = field("days", 1);
+    let hours = field("hours", 0);
+    let minutes = field("minutes", 0);
+    let seconds = field("seconds", 0);
+    let nanos = field("nanoseconds", 0);
+    let osign = field("offset-sign", 1);
+    let ohours = field("offset-hours", 0);
+    let ominutes = field("offset-minutes", 0);
+    let millis = nanos / 1_000_000;
+    Some(format!(
+        "#inst \"{years:04}-{months:02}-{days:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}{sign}{ohours:02}:{ominutes:02}\"",
+        sign = if osign < 0 { '-' } else { '+' },
+    ))
 }
 
 /// print.c print_string_escaped: quote and escape " \ \n \t \r \0.
