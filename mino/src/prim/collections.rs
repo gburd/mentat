@@ -238,7 +238,9 @@ fn conj1(coll: &Value, x: &Value) -> Result<Value, Throw> {
                     if pair.len() != 2 {
                         return Err(throw_str("conj on a map requires a [k v] pair"));
                     }
-                    Ok(Value::Map(Gc::new(m.assoc(pair[0].clone(), pair[1].clone()))))
+                    Ok(Value::Map(Gc::new(
+                        m.assoc(pair[0].clone(), pair[1].clone()),
+                    )))
                 }
             }
         }
@@ -423,12 +425,16 @@ pub fn into(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 pub fn mapv(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let l = map(it, args)?;
-    Ok(Value::Vector(Gc::new(to_vec_charged(it, &l)?.into_iter().collect())))
+    Ok(Value::Vector(Gc::new(
+        to_vec_charged(it, &l)?.into_iter().collect(),
+    )))
 }
 
 pub fn filterv(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let l = filter(it, args)?;
-    Ok(Value::Vector(Gc::new(to_vec_charged(it, &l)?.into_iter().collect())))
+    Ok(Value::Vector(Gc::new(
+        to_vec_charged(it, &l)?.into_iter().collect(),
+    )))
 }
 
 /// `(range)` (infinite: unsupported here), `(range end)`, `(range start end)`,
@@ -572,7 +578,9 @@ fn default_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, Throw> {
         _ => None,
     };
     if let (Some(x), Some(y)) = (as_f(a), as_f(b)) {
-        return x.partial_cmp(&y).ok_or_else(|| throw_str("cannot compare NaN"));
+        return x
+            .partial_cmp(&y)
+            .ok_or_else(|| throw_str("cannot compare NaN"));
     }
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
@@ -962,7 +970,9 @@ pub fn cons_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     pred(a, |v| matches!(v, Value::Cons(_)))
 }
 pub fn fn_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
-    pred(a, |v| matches!(v, Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_)))
+    pred(a, |v| {
+        matches!(v, Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_))
+    })
 }
 pub fn int_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
     // int? is the long tier ONLY (not bigint), matching mino's C prim.
@@ -1021,7 +1031,12 @@ pub fn odd_p(_it: &mut Interp, a: &[Value]) -> Result<Value, Throw> {
 // zero?/pos?/neg? accept the whole numeric tower (numeric.c). The int and
 // float closures cover Int/Float; BigInt and Ratio dispatch on their sign,
 // Float32 on its double value.
-fn num_pred(args: &[Value], fi: fn(i64) -> bool, ff: fn(f64) -> bool, ctx: &str) -> Result<Value, Throw> {
+fn num_pred(
+    args: &[Value],
+    fi: fn(i64) -> bool,
+    ff: fn(f64) -> bool,
+    ctx: &str,
+) -> Result<Value, Throw> {
     use num_traits::Signed;
     // Map a sign (-1/0/1) through the int predicate (which only tests the
     // sign for pos?/neg?/zero?).
@@ -1031,11 +1046,23 @@ fn num_pred(args: &[Value], fi: fn(i64) -> bool, ff: fn(f64) -> bool, ctx: &str)
         Some(Value::Float(x)) => Ok(bool_v(ff(*x))),
         Some(Value::Float32(x)) => Ok(bool_v(ff(*x as f64))),
         Some(Value::BigInt(b)) => {
-            let s = if b.0.is_positive() { 1 } else if b.0.is_negative() { -1 } else { 0 };
+            let s = if b.0.is_positive() {
+                1
+            } else if b.0.is_negative() {
+                -1
+            } else {
+                0
+            };
             Ok(bool_v(by_sign(s)))
         }
         Some(Value::Ratio(r)) => {
-            let s = if r.0.is_positive() { 1 } else if r.0.is_negative() { -1 } else { 0 };
+            let s = if r.0.is_positive() {
+                1
+            } else if r.0.is_negative() {
+                -1
+            } else {
+                0
+            };
             Ok(bool_v(by_sign(s)))
         }
         Some(other) => Err(throw_str(&format!(
@@ -1168,7 +1195,10 @@ mod tests {
     fn sort_and_concat() {
         assert_eq!(ev("(sort [3 1 2])"), "(1 2 3)");
         assert_eq!(ev("(sort > [1 3 2])"), "(3 2 1)");
-        assert_eq!(ev("(sort-by count [\"aaa\" \"a\" \"aa\"])"), "(\"a\" \"aa\" \"aaa\")");
+        assert_eq!(
+            ev("(sort-by count [\"aaa\" \"a\" \"aa\"])"),
+            "(\"a\" \"aa\" \"aaa\")"
+        );
         assert_eq!(ev("(concat [1 2] [3 4])"), "(1 2 3 4)");
         assert_eq!(ev("(concat (list 1) [2] nil)"), "(1 2)");
     }

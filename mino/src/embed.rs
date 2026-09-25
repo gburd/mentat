@@ -20,8 +20,8 @@ use crate::symbol::Symbol;
 use crate::value::{Prim, PrimClosure, Value};
 use gc::Gc;
 
-pub use crate::value::PrimFn;
 use crate::error::Throw;
+pub use crate::value::PrimFn;
 
 /// Resource limits for one top-level eval. `None` = unlimited. The budget
 /// (steps, heap) resets at each top-level [`Interpreter::eval`]; exceeding
@@ -85,7 +85,9 @@ impl Interpreter {
     /// output is captured (read it with [`take_output`](Interpreter::take_output)).
     /// No limits are set; the host decides via [`set_limits`](Interpreter::set_limits).
     pub fn sandboxed() -> Self {
-        Interpreter { it: Interp::new_sandboxed() }
+        Interpreter {
+            it: Interp::new_sandboxed(),
+        }
     }
 
     /// Set the resource limits applied to each subsequent top-level eval.
@@ -152,7 +154,10 @@ impl Interpreter {
             Some((ns, n)) if !ns.is_empty() && !n.is_empty() => Symbol::namespaced(ns, n),
             _ => Symbol::plain(name),
         };
-        let pc = PrimClosure { f: Box::new(f), name: name.to_string() };
+        let pc = PrimClosure {
+            f: Box::new(f),
+            name: name.to_string(),
+        };
         self.root().set(sym, Value::PrimClosure(Gc::new(pc)));
     }
 
@@ -229,10 +234,7 @@ mod tests {
 
     #[test]
     fn register_prim_host_echo() {
-        fn host_echo(
-            _it: &mut Interp,
-            args: &[Value],
-        ) -> Result<Value, crate::error::Throw> {
+        fn host_echo(_it: &mut Interp, args: &[Value]) -> Result<Value, crate::error::Throw> {
             Ok(args.first().cloned().unwrap_or(Value::Nil))
         }
         let mut it = Interpreter::new();
@@ -271,6 +273,9 @@ mod tests {
         assert_eq!(*counter.borrow(), 8);
         // A closure-prim is a fn and callable via higher-order fns.
         assert_eq!(it.eval_to_string("(fn? host/bump)").unwrap(), "true");
-        assert_eq!(it.eval_to_string("(map host/bump [1 1 1])").unwrap(), "(9 10 11)");
+        assert_eq!(
+            it.eval_to_string("(map host/bump [1 1 1])").unwrap(),
+            "(9 10 11)"
+        );
     }
 }

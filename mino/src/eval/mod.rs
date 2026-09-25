@@ -134,10 +134,12 @@ impl Interp {
         // resolves via the bare fallback. `replace-first` also gets a qualified
         // copy so `str/replace-first` reaches it.
         if let Some(v) = self.root.get(&Symbol::plain("reverse")) {
-            self.root.set(Symbol::namespaced("clojure.string", "reverse"), v);
+            self.root
+                .set(Symbol::namespaced("clojure.string", "reverse"), v);
         }
         if let Some(v) = self.root.get(&Symbol::plain("replace")) {
-            self.root.set(Symbol::namespaced("clojure.string", "replace"), v);
+            self.root
+                .set(Symbol::namespaced("clojure.string", "replace"), v);
         }
         if let Some(v) = self.root.get(&Symbol::plain("replace-first")) {
             self.root
@@ -185,9 +187,18 @@ impl Interp {
         // let set.clj overwrite, then move set's public fns to `clojure.set/X`
         // (reached by the `set/X` alias) and restore the shadowed bare names.
         const SET_FNS: &[&str] = &[
-            "union", "intersection", "difference", "select", "project",
-            "rename-keys", "rename", "index", "map-invert", "join",
-            "subset?", "superset?",
+            "union",
+            "intersection",
+            "difference",
+            "select",
+            "project",
+            "rename-keys",
+            "rename",
+            "index",
+            "map-invert",
+            "join",
+            "subset?",
+            "superset?",
         ];
         let shadowed: Vec<(&str, Option<Value>)> = SET_FNS
             .iter()
@@ -674,7 +685,12 @@ impl Interp {
     /// The special forms other than `if`. `None` = not a special form. Out of
     /// line so its many temporaries stay off the hot call path's stack.
     #[inline(never)]
-    fn eval_special(&mut self, name: &str, rest: &Value, env: &Env) -> Option<Result<Value, Throw>> {
+    fn eval_special(
+        &mut self,
+        name: &str,
+        rest: &Value,
+        env: &Env,
+    ) -> Option<Result<Value, Throw>> {
         let mut special = true;
         let r = (|| -> Result<Value, Throw> {
             match name {
@@ -747,10 +763,8 @@ impl Interp {
                 // — enough that core.clj's `(in-ns 'clojure.core)` etc. and
                 // any `(ns ..)`/`(require ..)` load without erroring.
                 // ponytail: flat-env no-op ns machinery; real ns tables in Phase 4.
-                "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure"
-                | "load" | "load-file" | "import" => {
-                    Ok(Value::Nil)
-                }
+                "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure" | "load"
+                | "load-file" | "import" => Ok(Value::Nil),
                 _ => {
                     special = false;
                     Ok(Value::Nil)
@@ -765,8 +779,12 @@ impl Interp {
     fn eval_if(&mut self, args: &Value, env: &Env) -> Result<Value, Throw> {
         // Walk the arg list by reference: this frame is on every recursive
         // path, so no clones/temporaries beyond the test value.
-        let Value::Cons(c1) = args else { return Err(if_too_few()) };
-        let Value::Cons(c2) = &c1.1 else { return Err(if_too_few()) };
+        let Value::Cons(c1) = args else {
+            return Err(if_too_few());
+        };
+        let Value::Cons(c2) = &c1.1 else {
+            return Err(if_too_few());
+        };
         // Condition is a value (non-tail); branches are tail positions and
         // may legitimately produce a `recur` signal, so use plain `eval`.
         if self.eval_value(&c1.0, env)?.is_truthy() {
@@ -977,7 +995,8 @@ fn unbound(sym: &Symbol) -> Throw {
 }
 
 /// Split a cons list into (first?, rest). Returns `(None, Nil)` at the end.
-fn pop(list: &Value) -> (Option<Value>, Value) {    match list {
+fn pop(list: &Value) -> (Option<Value>, Value) {
+    match list {
         Value::Cons(cell) => (Some(cell.0.clone()), cell.1.clone()),
         _ => (None, Value::Nil),
     }
@@ -1040,10 +1059,27 @@ fn seqable_to_vec(v: &Value) -> Vec<Value> {
 fn is_true_special_form(name: &str) -> bool {
     matches!(
         name,
-        "if" | "do" | "def" | "quote" | "quasiquote" | "unquote"
-            | "unquote-splicing" | "var" | "recur" | "try" | "catch"
-            | "finally" | "throw" | "let*" | "fn*" | "loop*" | "letfn*"
-            | "monitor-enter" | "monitor-exit" | "new" | "." | "set!"
+        "if" | "do"
+            | "def"
+            | "quote"
+            | "quasiquote"
+            | "unquote"
+            | "unquote-splicing"
+            | "var"
+            | "recur"
+            | "try"
+            | "catch"
+            | "finally"
+            | "throw"
+            | "let*"
+            | "fn*"
+            | "loop*"
+            | "letfn*"
+            | "monitor-enter"
+            | "monitor-exit"
+            | "new"
+            | "."
+            | "set!"
     )
 }
 
@@ -1054,8 +1090,16 @@ fn is_true_special_form(name: &str) -> bool {
 fn is_public_macro_form(name: &str) -> bool {
     matches!(
         name,
-        "fn" | "let" | "loop" | "lazy-seq" | "binding" | "declare"
-            | "defmacro" | "ns" | "when" | "and" | "or"
+        "fn" | "let"
+            | "loop"
+            | "lazy-seq"
+            | "binding"
+            | "declare"
+            | "defmacro"
+            | "ns"
+            | "when"
+            | "and"
+            | "or"
     )
 }
 
@@ -1156,7 +1200,10 @@ mod tests {
                 || msg.contains("read error: invalid number: 0x") // hex literal (Phase 5.5)
         };
         for (summary, msg) in fails {
-            assert!(deferred(msg), "unexpected core.clj load failure: {summary} => {msg}");
+            assert!(
+                deferred(msg),
+                "unexpected core.clj load failure: {summary} => {msg}"
+            );
         }
         // Bound the count so a regression that drops many defs is caught.
         assert!(

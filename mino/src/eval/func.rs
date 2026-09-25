@@ -235,7 +235,8 @@ mod tests {
         assert_eq!(print_str(&it.eval_str("(+ 1 2 3)").unwrap()), "6");
         it.eval_str("(def inc (fn [x] (+ x 1)))").unwrap();
         assert_eq!(print_str(&it.eval_str("(inc 41)").unwrap()), "42");
-        it.eval_str("(def add (fn ([a] a) ([a b] (+ a b))))").unwrap();
+        it.eval_str("(def add (fn ([a] a) ([a b] (+ a b))))")
+            .unwrap();
         assert_eq!(print_str(&it.eval_str("(add 5)").unwrap()), "5");
         assert_eq!(print_str(&it.eval_str("(add 5 6)").unwrap()), "11");
     }
@@ -249,7 +250,10 @@ mod tests {
             "(2 3)"
         );
         // oracle: empty rest reads as nil
-        assert_eq!(print_str(&it.eval_str("((fn [a & r] r) 1)").unwrap()), "nil");
+        assert_eq!(
+            print_str(&it.eval_str("((fn [a & r] r) 1)").unwrap()),
+            "nil"
+        );
     }
 
     #[test]

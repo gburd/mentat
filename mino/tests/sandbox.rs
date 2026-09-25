@@ -57,15 +57,24 @@ fn sandboxed_captures_print() {
 #[test]
 fn step_limit_stops_infinite_loop() {
     let mut it = Interpreter::sandboxed();
-    it.set_limits(Limits { steps: Some(100_000), ..Default::default() });
+    it.set_limits(Limits {
+        steps: Some(100_000),
+        ..Default::default()
+    });
     assert_limit(&err_of(&mut it, "(loop [] (recur))"), ":steps");
 }
 
 #[test]
 fn limit_cannot_be_caught() {
     let mut it = Interpreter::sandboxed();
-    it.set_limits(Limits { steps: Some(100_000), ..Default::default() });
-    let e = err_of(&mut it, "(loop [] (try (loop [] (recur)) (catch e nil)) (recur))");
+    it.set_limits(Limits {
+        steps: Some(100_000),
+        ..Default::default()
+    });
+    let e = err_of(
+        &mut it,
+        "(loop [] (try (loop [] (recur)) (catch e nil)) (recur))",
+    );
     assert_limit(&e, ":steps");
     let e = err_of(&mut it, "(try (loop [] (recur)) (catch e :caught))");
     assert!(!e.contains(":caught"));
@@ -78,10 +87,16 @@ fn limits_reset_per_top_level_eval() {
     // Calibrate: count how many steps a fixed loop takes, then budget so each
     // run uses ~60% of it.
     let src = "(loop [i 0] (if (< i 2000) (recur (inc i)) i))";
-    it.set_limits(Limits { steps: Some(u64::MAX), ..Default::default() });
+    it.set_limits(Limits {
+        steps: Some(u64::MAX),
+        ..Default::default()
+    });
     it.eval(src).unwrap();
     let used = it.interp().steps;
-    it.set_limits(Limits { steps: Some(used * 10 / 6), ..Default::default() });
+    it.set_limits(Limits {
+        steps: Some(used * 10 / 6),
+        ..Default::default()
+    });
     assert_eq!(it.eval_to_string(src).unwrap(), "2000");
     assert_eq!(it.eval_to_string(src).unwrap(), "2000");
 }
@@ -101,7 +116,10 @@ fn check_hook_can_abort() {
             Ok(())
         }
     }));
-    let e = err_of(&mut it, "(loop [i 0] (if (< i 10000000) (recur (inc i)) i))");
+    let e = err_of(
+        &mut it,
+        "(loop [i 0] (if (< i 10000000) (recur (inc i)) i))",
+    );
     assert!(e.contains("cancelled by host"), "{e}");
     calls.set(0);
     let e = err_of(&mut it, "(try (loop [] (recur)) (catch e :caught))");
@@ -111,7 +129,10 @@ fn check_hook_can_abort() {
 #[test]
 fn heap_limit_stops_one_step_allocation() {
     let mut it = Interpreter::sandboxed();
-    it.set_limits(Limits { heap_bytes: Some(8 * MB), ..Default::default() });
+    it.set_limits(Limits {
+        heap_bytes: Some(8 * MB),
+        ..Default::default()
+    });
     for src in [
         "(range 100000000000)",
         "(count (vec (range 100000000)))",
@@ -120,7 +141,11 @@ fn heap_limit_stops_one_step_allocation() {
         let t = Instant::now();
         let e = err_of(&mut it, src);
         assert_limit(&e, ":heap");
-        assert!(t.elapsed() < Duration::from_secs(2), "{src} took {:?}", t.elapsed());
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "{src} took {:?}",
+            t.elapsed()
+        );
     }
 }
 
@@ -130,7 +155,10 @@ fn depth_limit_turns_eval_recursion_into_an_error() {
         .stack_size(1024 * 1024)
         .spawn(|| {
             let mut it = Interpreter::sandboxed();
-            it.set_limits(Limits { depth: Some(500), ..Default::default() });
+            it.set_limits(Limits {
+                depth: Some(500),
+                ..Default::default()
+            });
             it.eval_to_string("(defn f [n] (if (zero? n) 0 (inc (f (dec n))))) (f 1000000)")
         })
         .unwrap();
@@ -142,14 +170,23 @@ fn depth_limit_turns_eval_recursion_into_an_error() {
 #[test]
 fn limits_leave_ordinary_scripts_alone() {
     let mut it = Interpreter::sandboxed();
-    it.set_limits(Limits { steps: Some(100_000), heap_bytes: Some(8 * MB), depth: Some(500) });
-    assert_eq!(it.eval_to_string("(reduce + (range 1000))").unwrap(), "499500");
+    it.set_limits(Limits {
+        steps: Some(100_000),
+        heap_bytes: Some(8 * MB),
+        depth: Some(500),
+    });
     assert_eq!(
-        it.eval_to_string("(loop [i 0] (if (< i 10000) (recur (inc i)) i))").unwrap(),
+        it.eval_to_string("(reduce + (range 1000))").unwrap(),
+        "499500"
+    );
+    assert_eq!(
+        it.eval_to_string("(loop [i 0] (if (< i 10000) (recur (inc i)) i))")
+            .unwrap(),
         "10000"
     );
     assert_eq!(
-        it.eval_to_string("(defn g [n] (if (zero? n) 0 (inc (g (dec n))))) (g 100)").unwrap(),
+        it.eval_to_string("(defn g [n] (if (zero? n) 0 (inc (g (dec n))))) (g 100)")
+            .unwrap(),
         "100"
     );
 }
@@ -164,7 +201,8 @@ fn new_still_has_host_access() {
 fn new_has_no_limits_by_default() {
     let mut it = Interpreter::new();
     assert_eq!(
-        it.eval_to_string("(loop [i 0] (if (< i 5000000) (recur (inc i)) i))").unwrap(),
+        it.eval_to_string("(loop [i 0] (if (< i 5000000) (recur (inc i)) i))")
+            .unwrap(),
         "5000000"
     );
 }

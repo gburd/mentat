@@ -13,9 +13,9 @@
 //!     is discarded — the try/catch result or the propagating throw stands;
 //!   * a re-throw from the catch handler propagates after `finally` runs.
 
+use crate::env::Env;
 use crate::error::{normalize_exception, throw_classified, Throw};
 use crate::eval::Interp;
-use crate::env::Env;
 use crate::value::Value;
 
 /// The partitioned shape of a `(try body... [catch e handler...]
@@ -120,9 +120,11 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
 /// into that error.
 fn no_recur(r: Result<Value, Throw>) -> Result<Value, Throw> {
     match r {
-        Ok(Value::Recur(_)) => {
-            Err(throw_classified("syntax", "MSY001", "cannot recur across try"))
-        }
+        Ok(Value::Recur(_)) => Err(throw_classified(
+            "syntax",
+            "MSY001",
+            "cannot recur across try",
+        )),
         other => other,
     }
 }
@@ -181,7 +183,10 @@ mod tests {
         assert_eq!(ev(&mut it, "(try (throw \"x\") (catch e 42))"), "42");
         // A thrown keyword is normalized: caught as a diagnostic map whose
         // :mino/data is the keyword and :mino/message is "uncaught...".
-        assert_eq!(ev(&mut it, "(try (throw :boom) (catch e (ex-data e)))"), ":boom");
+        assert_eq!(
+            ev(&mut it, "(try (throw :boom) (catch e (ex-data e)))"),
+            ":boom"
+        );
         // A thrown string: message is the string.
         assert_eq!(
             ev(&mut it, "(try (throw \"boom\") (catch e (ex-message e)))"),
@@ -193,14 +198,23 @@ mod tests {
     fn ex_info_roundtrip() {
         let mut it = Interp::new();
         // ex-info builds {:message :data}.
-        assert_eq!(ev(&mut it, "(ex-info \"boom\" {:a 1})"), "{:message \"boom\", :data {:a 1}}");
+        assert_eq!(
+            ev(&mut it, "(ex-info \"boom\" {:a 1})"),
+            "{:message \"boom\", :data {:a 1}}"
+        );
         // Thrown + caught: ex-message/ex-data unwrap through the diagnostic.
         assert_eq!(
-            ev(&mut it, "(try (throw (ex-info \"boom\" {:a 1})) (catch e (ex-message e)))"),
+            ev(
+                &mut it,
+                "(try (throw (ex-info \"boom\" {:a 1})) (catch e (ex-message e)))"
+            ),
             "\"boom\""
         );
         assert_eq!(
-            ev(&mut it, "(try (throw (ex-info \"boom\" {:a 1})) (catch e (ex-data e)))"),
+            ev(
+                &mut it,
+                "(try (throw (ex-info \"boom\" {:a 1})) (catch e (ex-data e)))"
+            ),
             "{:a 1}"
         );
         // Directly (not thrown) on the ex-info map.
@@ -219,7 +233,10 @@ mod tests {
         assert_eq!(ev(&mut it, "m1"), ":ran");
         // Throw+catch path: finally still runs.
         it.eval_str("(def m2 :init)").unwrap();
-        ev(&mut it, "(try (throw \"x\") (catch e :caught) (finally (def m2 :ran)))");
+        ev(
+            &mut it,
+            "(try (throw \"x\") (catch e :caught) (finally (def m2 :ran)))",
+        );
         assert_eq!(ev(&mut it, "m2"), ":ran");
     }
 
@@ -228,12 +245,18 @@ mod tests {
         let mut it = Interp::new();
         // Nested try: inner catch handles, outer never fires.
         assert_eq!(
-            ev(&mut it, "(try (try (throw \"inner\") (catch e (ex-message e))) (catch e2 \"outer\"))"),
+            ev(
+                &mut it,
+                "(try (try (throw \"inner\") (catch e (ex-message e))) (catch e2 \"outer\"))"
+            ),
             "\"inner\""
         );
         // Rethrow from a catch propagates to the enclosing try.
         assert_eq!(
-            ev(&mut it, "(try (try (throw \"a\") (catch e (throw \"b\"))) (catch e2 (ex-message e2)))"),
+            ev(
+                &mut it,
+                "(try (try (throw \"a\") (catch e (throw \"b\"))) (catch e2 (ex-message e2)))"
+            ),
             "\"b\""
         );
     }

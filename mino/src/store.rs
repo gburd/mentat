@@ -153,7 +153,11 @@ fn store_commit_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     cell.borrow_mut().val = new_db.clone();
     // Fire watches (fn key store old new), mirroring store_notify_watches.
     for (key, f) in &watches {
-        apply(it, f, &[key.clone(), conn.clone(), old_val.clone(), new_db.clone()])?;
+        apply(
+            it,
+            f,
+            &[key.clone(), conn.clone(), old_val.clone(), new_db.clone()],
+        )?;
     }
     Ok(new_db.clone())
 }
@@ -284,7 +288,10 @@ fn store_read_snapshot_star(it: &mut Interp, args: &[Value]) -> Result<Value, Th
         Some(0x00) => &bytes[1..],
         _ => &bytes,
     };
-    match std::str::from_utf8(body).ok().and_then(|s| read_one(s).ok()) {
+    match std::str::from_utf8(body)
+        .ok()
+        .and_then(|s| read_one(s).ok())
+    {
         Some((db, _)) => Ok(db),
         None => Ok(Value::Nil), // unparseable snapshot -> nil (start fresh)
     }
@@ -359,7 +366,11 @@ fn checkpoint_to_disk(path: &str, val: &Value) -> Result<(), Throw> {
     let tmp_path = format!("{path}.tmp");
     {
         let mut f = std::fs::File::create(&tmp_path).map_err(|_| {
-            throw_classified("io", "MIO001", "store-checkpoint: cannot open file for writing")
+            throw_classified(
+                "io",
+                "MIO001",
+                "store-checkpoint: cannot open file for writing",
+            )
         })?;
         let mut buf = Vec::with_capacity(256);
         buf.push(0x00u8); // STORE_SNAPSHOT_VERSION
@@ -374,7 +385,11 @@ fn checkpoint_to_disk(path: &str, val: &Value) -> Result<(), Throw> {
     }
     std::fs::rename(&tmp_path, path).map_err(|_| {
         let _ = std::fs::remove_file(&tmp_path);
-        throw_classified("io", "MIO001", "store-checkpoint: cannot rename snapshot into place")
+        throw_classified(
+            "io",
+            "MIO001",
+            "store-checkpoint: cannot rename snapshot into place",
+        )
     })?;
     // Delete the WAL — the snapshot captures all state up to :tx.
     let _ = std::fs::remove_file(format!("{path}.wal"));
@@ -691,7 +706,10 @@ mod tests {
              (def c (mino.store/open \"{p}\")) \
              (mino.store/transact c {{1 {{:name \"Alice\"}}}})"
         ));
-        assert!(std::path::Path::new(&format!("{p}.wal")).exists(), "WAL written per-tx");
+        assert!(
+            std::path::Path::new(&format!("{p}.wal")).exists(),
+            "WAL written per-tx"
+        );
         let got = run(&format!(
             "(require (quote mino.store)) \
              (def db (mino.store/db (mino.store/open \"{p}\"))) \
@@ -713,7 +731,10 @@ mod tests {
         // Snapshot exists with the 0x00 header; WAL is gone.
         let bytes = std::fs::read(&p).unwrap();
         assert_eq!(bytes.first(), Some(&0x00), "snapshot has version header");
-        assert!(!std::path::Path::new(&format!("{p}.wal")).exists(), "WAL deleted");
+        assert!(
+            !std::path::Path::new(&format!("{p}.wal")).exists(),
+            "WAL deleted"
+        );
         // Reopen sees the snapshot value.
         let got = run(&format!(
             "(require (quote mino.store)) \
@@ -787,7 +808,10 @@ mod tests {
              (mino.store/checkpoint c)"
         ));
         // The rename consumed the .tmp; the canonical snapshot is whole.
-        assert!(!std::path::Path::new(&format!("{p}.tmp")).exists(), "stale .tmp gone");
+        assert!(
+            !std::path::Path::new(&format!("{p}.tmp")).exists(),
+            "stale .tmp gone"
+        );
         let bytes = std::fs::read(&p).unwrap();
         assert_eq!(bytes.first(), Some(&0x00));
         let got = run(&format!(

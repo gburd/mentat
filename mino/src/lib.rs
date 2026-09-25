@@ -24,11 +24,11 @@ pub mod embed;
 // Host-facing re-exports: a downstream crate embeds via `mino_rs::Interpreter`
 // and constructs values/prims with these types without reaching into modules.
 pub use embed::{Interpreter, Limits};
-pub use eval::Interp;
 pub use error::Throw;
-pub use value::{PrimFn, Value};
+pub use eval::Interp;
 pub use symbol::Symbol;
 pub use value::PrimClosure;
+pub use value::{PrimFn, Value};
 
 // A host embedding constructs collection `Value`s (`Value::Str(Gc::new(..))`,
 // `Value::Map(Gc::new(..))`, ...) when bridging its own data back into the

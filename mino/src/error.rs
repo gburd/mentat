@@ -120,7 +120,10 @@ pub fn normalize_exception(ex: &Value) -> Value {
             (msg, ex.clone())
         }
         Value::Nil => ("uncaught exception: nil".to_string(), Value::Nil),
-        other => (format!("uncaught exception: {}", print_str(other)), other.clone()),
+        other => (
+            format!("uncaught exception: {}", print_str(other)),
+            other.clone(),
+        ),
     };
     diag_map("user", "MUS001", &msg, data)
 }

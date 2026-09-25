@@ -297,16 +297,24 @@ fn str_replace(it: &mut Interp, args: &[Value], first_only: bool) -> Result<Valu
     };
     let r = match &args[2] {
         Value::Str(r) => r.as_str(),
-        _ => return Err(throw_str(
-            "str-replace: replacement must be a string when match is a string",
-        )),
+        _ => {
+            return Err(throw_str(
+                "str-replace: replacement must be a string when match is a string",
+            ))
+        }
     };
     if m.is_empty() {
         return Ok(Value::Str(Gc::new(s.to_string())));
     }
     // Output size is known exactly: charge it before building.
-    let hits = if first_only { s.contains(m) as u64 } else { s.matches(m).count() as u64 };
-    let grow = (r.len() as u64).saturating_sub(m.len() as u64).saturating_mul(hits);
+    let hits = if first_only {
+        s.contains(m) as u64
+    } else {
+        s.matches(m).count() as u64
+    };
+    let grow = (r.len() as u64)
+        .saturating_sub(m.len() as u64)
+        .saturating_mul(hits);
     it.charge(0, (s.len() as u64).saturating_add(grow))?;
     let out = if first_only {
         s.replacen(m, r, 1)
@@ -336,7 +344,10 @@ fn regex_split(s: &str, pat: &Value, limit: i64) -> Result<Value, Throw> {
         if limit > 0 && pieces.len() as i64 + 1 == limit {
             break;
         }
-        let m = match re.find_from_pos(s, search).map_err(|_| throw_str("split: regex error"))? {
+        let m = match re
+            .find_from_pos(s, search)
+            .map_err(|_| throw_str("split: regex error"))?
+        {
             Some(m) => m,
             None => break,
         };
@@ -392,7 +403,10 @@ fn regex_replace(
     let mut last_end = 0usize;
     let mut search = 0usize;
     loop {
-        let m = match re.captures_from_pos(s, search).map_err(|_| throw_str("replace: regex error"))? {
+        let m = match re
+            .captures_from_pos(s, search)
+            .map_err(|_| throw_str("replace: regex error"))?
+        {
             Some(caps) => caps,
             None => break,
         };
@@ -456,7 +470,9 @@ fn build_replacement(
             arg_to_str(&mut buf, &result);
             Ok(buf)
         }
-        _ => Err(throw_str("replace: replacement must be a string or function")),
+        _ => Err(throw_str(
+            "replace: replacement must be a string or function",
+        )),
     }
 }
 
@@ -526,7 +542,9 @@ fn ascii_lower(c: char) -> char {
 
 fn one_string<'a>(args: &'a [Value], name: &str) -> Result<&'a str, Throw> {
     match args {
-        [v] => as_str(v, name).map_err(|_| throw_str(&format!("{name} requires one string argument"))),
+        [v] => {
+            as_str(v, name).map_err(|_| throw_str(&format!("{name} requires one string argument")))
+        }
         _ => Err(throw_str(&format!("{name} requires one string argument"))),
     }
 }
@@ -534,8 +552,10 @@ fn one_string<'a>(args: &'a [Value], name: &str) -> Result<&'a str, Throw> {
 fn two_strings<'a>(args: &'a [Value], name: &str) -> Result<(&'a str, &'a str), Throw> {
     match args {
         [a, b] => Ok((
-            as_str(a, name).map_err(|_| throw_str(&format!("{name} requires two string arguments")))?,
-            as_str(b, name).map_err(|_| throw_str(&format!("{name} requires two string arguments")))?,
+            as_str(a, name)
+                .map_err(|_| throw_str(&format!("{name} requires two string arguments")))?,
+            as_str(b, name)
+                .map_err(|_| throw_str(&format!("{name} requires two string arguments")))?,
         )),
         _ => Err(throw_str(&format!("{name} requires two string arguments"))),
     }
@@ -559,9 +579,7 @@ fn seq_items(v: &Value) -> Result<Vec<Value>, Throw> {
         Value::Str(s) => Ok(s.chars().map(Value::Char).collect()),
         Value::Map(m) => Ok(m
             .entries()
-            .map(|(k, val)| {
-                Value::Vector(Gc::new(PVec::from_vec(vec![k.clone(), val.clone()])))
-            })
+            .map(|(k, val)| Value::Vector(Gc::new(PVec::from_vec(vec![k.clone(), val.clone()]))))
             .collect()),
         other => Err(throw_str(&format!(
             "don't know how to create seq from: {}",
@@ -643,22 +661,52 @@ mod tests {
         assert_eq!(ev("(clojure.string/lower-case \"ABC\")"), "\"abc\"");
         assert_eq!(ev("(clojure.string/trim \"  x \")"), "\"x\"");
         assert_eq!(ev("(clojure.string/includes? \"hello\" \"ell\")"), "true");
-        assert_eq!(ev("(clojure.string/starts-with? \"hello\" \"hel\")"), "true");
+        assert_eq!(
+            ev("(clojure.string/starts-with? \"hello\" \"hel\")"),
+            "true"
+        );
         assert_eq!(ev("(clojure.string/ends-with? \"hello\" \"llo\")"), "true");
         assert_eq!(ev("(clojure.string/join \", \" [1 2 3])"), "\"1, 2, 3\"");
-        assert_eq!(ev("(clojure.string/replace \"aaa\" \"a\" \"b\")"), "\"bbb\"");
-        assert_eq!(ev("(clojure.string/replace \"a.b.c\" \".\" \"\")"), "\"abc\"");
-        assert_eq!(ev("(clojure.string/replace-first \"a.b.c\" \".\" \"!\")"), "\"a!b.c\"");
+        assert_eq!(
+            ev("(clojure.string/replace \"aaa\" \"a\" \"b\")"),
+            "\"bbb\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace \"a.b.c\" \".\" \"\")"),
+            "\"abc\""
+        );
+        assert_eq!(
+            ev("(clojure.string/replace-first \"a.b.c\" \".\" \"!\")"),
+            "\"a!b.c\""
+        );
     }
 
     #[test]
     fn split_edge_cases_match_binary() {
-        assert_eq!(ev("(clojure.string/split \"a,b,c\" \",\")"), "[\"a\" \"b\" \"c\"]");
-        assert_eq!(ev("(clojure.string/split \",,a,,\" \",\" 0)"), "[\"\" \"\" \"a\"]");
-        assert_eq!(ev("(clojure.string/split \",,a,,\" \",\" -1)"), "[\"\" \"\" \"a\" \"\" \"\"]");
-        assert_eq!(ev("(clojure.string/split \"abc\" \"\")"), "[\"a\" \"b\" \"c\"]");
-        assert_eq!(ev("(clojure.string/split \"hél\" \"\")"), "[\"h\" \"é\" \"l\"]");
-        assert_eq!(ev("(clojure.string/split \"abc\" \"\" 2)"), "[\"a\" \"bc\"]");
+        assert_eq!(
+            ev("(clojure.string/split \"a,b,c\" \",\")"),
+            "[\"a\" \"b\" \"c\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \",,a,,\" \",\" 0)"),
+            "[\"\" \"\" \"a\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \",,a,,\" \",\" -1)"),
+            "[\"\" \"\" \"a\" \"\" \"\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \"abc\" \"\")"),
+            "[\"a\" \"b\" \"c\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \"hél\" \"\")"),
+            "[\"h\" \"é\" \"l\"]"
+        );
+        assert_eq!(
+            ev("(clojure.string/split \"abc\" \"\" 2)"),
+            "[\"a\" \"bc\"]"
+        );
     }
 
     #[test]
@@ -667,7 +715,10 @@ mod tests {
         assert_eq!(ev("(clojure.string/blank? \"  \")"), "true");
         assert_eq!(ev("(clojure.string/blank? nil)"), "true");
         assert_eq!(ev("(clojure.string/blank? \"x\")"), "false");
-        assert_eq!(ev("(clojure.string/capitalize \"hello WORLD\")"), "\"Hello world\"");
+        assert_eq!(
+            ev("(clojure.string/capitalize \"hello WORLD\")"),
+            "\"Hello world\""
+        );
         assert_eq!(ev("(clojure.string/capitalize 1)"), "\"1\"");
         assert_eq!(ev("(clojure.string/upper-case nil)"), "\"\"");
         assert_eq!(ev("(clojure.string/reverse \"a-test\")"), "\"tset-a\"");
@@ -675,7 +726,10 @@ mod tests {
         assert_eq!(ev("(clojure.string/trimr \" x  \")"), "\" x\"");
         assert_eq!(ev("(clojure.string/index-of \"hello\" \"ll\")"), "2");
         assert_eq!(ev("(clojure.string/last-index-of \"hello\" \"l\")"), "3");
-        assert_eq!(ev("(clojure.string/re-quote-replacement \"a$1\\\\b\")"), "\"a\\\\$1\\\\\\\\b\"");
+        assert_eq!(
+            ev("(clojure.string/re-quote-replacement \"a$1\\\\b\")"),
+            "\"a\\\\$1\\\\\\\\b\""
+        );
     }
 
     #[test]
@@ -684,17 +738,23 @@ mod tests {
         // collided names (reverse/replace) reach the string versions while
         // bare `reverse`/`replace` stay clojure.core's collection fns.
         assert_eq!(ev("(str/blank? \"  \")"), "true");
-        assert_eq!(ev("(str/replace \"hello world\" \" \" \"-\")"), "\"hello-world\"");
+        assert_eq!(
+            ev("(str/replace \"hello world\" \" \" \"-\")"),
+            "\"hello-world\""
+        );
         assert_eq!(ev("(str/replace \"abc\" \\b \\X)"), "\"aXc\""); // char match
         assert_eq!(ev("(str/replace \"abc\" \\b \"X\")"), "\"aXc\"");
         assert_eq!(ev("(str/replace-first \"a.b.c\" \".\" \"!\")"), "\"a!b.c\"");
         assert_eq!(ev("(str/replace-first \"abc\" \\b \"X\")"), "\"aXc\"");
         assert_eq!(ev("(str/reverse \"hello\")"), "\"olleh\"");
         assert_eq!(ev("(str/join \", \" [1 2 3])"), "\"1, 2, 3\"");
-        assert_eq!(ev("(str/escape \"abc\" {\\a \"A_A\" \\c \"C_C\"})"), "\"A_AbC_C\"");
+        assert_eq!(
+            ev("(str/escape \"abc\" {\\a \"A_A\" \\c \"C_C\"})"),
+            "\"A_AbC_C\""
+        );
         assert_eq!(ev("(str/trim-newline \"ab\n\n\")"), "\"ab\"");
         assert_eq!(ev("(str/starts-with? nil \"x\")"), "false"); // as-str coerces
-        // clojure.core collection reverse/replace are NOT shadowed.
+                                                                 // clojure.core collection reverse/replace are NOT shadowed.
         assert_eq!(ev("(reverse [1 2 3])"), "(3 2 1)");
         assert_eq!(ev("(replace {1 :a} [1 2 1])"), "[:a 2 :a]");
     }

@@ -49,7 +49,11 @@ pub fn install_core(root: &Env) {
     register(root, "bit-not", numeric::bit_not);
     register(root, "bit-shift-left", numeric::bit_shift_left);
     register(root, "bit-shift-right", numeric::bit_shift_right);
-    register(root, "unsigned-bit-shift-right", numeric::unsigned_bit_shift_right);
+    register(
+        root,
+        "unsigned-bit-shift-right",
+        numeric::unsigned_bit_shift_right,
+    );
     // Coercions (numeric_coerce.c + bignum.c + ratio.c).
     register(root, "int", numeric::int_);
     register(root, "long", numeric::long_);
@@ -79,12 +83,24 @@ pub fn install_core(root: &Env) {
     register(root, "unchecked-float", numeric::unchecked_float_cast);
     register(root, "unchecked-double", numeric::unchecked_double_cast);
     register(root, "unchecked-add-int", numeric::unchecked_add_int);
-    register(root, "unchecked-subtract-int", numeric::unchecked_subtract_int);
-    register(root, "unchecked-multiply-int", numeric::unchecked_multiply_int);
+    register(
+        root,
+        "unchecked-subtract-int",
+        numeric::unchecked_subtract_int,
+    );
+    register(
+        root,
+        "unchecked-multiply-int",
+        numeric::unchecked_multiply_int,
+    );
     register(root, "unchecked-inc-int", numeric::unchecked_inc_int);
     register(root, "unchecked-dec-int", numeric::unchecked_dec_int);
     register(root, "unchecked-negate-int", numeric::unchecked_negate_int);
-    register(root, "unchecked-remainder-int", numeric::unchecked_remainder_int);
+    register(
+        root,
+        "unchecked-remainder-int",
+        numeric::unchecked_remainder_int,
+    );
     register(root, "unchecked-divide-int", numeric::quot);
     // Tier predicates.
     register(root, "bigint?", numeric::bigint_p);
@@ -210,7 +226,8 @@ pub fn install_core(root: &Env) {
 /// called. Re-registering the eager versions makes the working implementation
 /// win. ponytail: eager prims shadow lazy core.clj defns until Phase 5 lazy seqs.
 pub fn install_eager_seq_prims(root: &Env) {
-    use collections as c;    register(root, "list", c::list);
+    use collections as c;
+    register(root, "list", c::list);
     register(root, "cons", c::cons);
     register(root, "first", c::first);
     register(root, "rest", c::rest);
