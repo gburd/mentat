@@ -40,3 +40,6 @@ path = "../../core"
 
 [dev-dependencies.mentat_query_projector]
 path = "../query-projector"
+
+[lints]
+workspace = true

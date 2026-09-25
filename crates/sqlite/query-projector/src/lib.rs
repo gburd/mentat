@@ -140,12 +140,13 @@ impl QueryOutput {
                 QueryResults::Scalar(val)
             }
             FindScalar(Element::Aggregate(ref _agg)) => {
-                // TODO: static aggregates.
-                unimplemented!();
+                // `is_fully_bound` reports aggregates as never fully bound, so a
+                // fully-unit-bound query never carries one here.
+                unreachable!("aggregate in a fully-bound scalar find: rejected by is_fully_bound")
             }
             FindScalar(Element::Pull(ref _pull)) => {
-                // TODO: static pull.
-                unimplemented!();
+                // Pull expressions are never fully bound, so they never reach here.
+                unreachable!("pull in a fully-bound scalar find: rejected by is_fully_bound")
             }
             FindTuple(ref elements) => {
                 let values = elements
@@ -178,15 +179,12 @@ impl QueryOutput {
                 QueryResults::Coll(vec![val])
             }
             FindColl(Element::Pull(ref _pull)) => {
-                // TODO: static pull.
-                unimplemented!();
+                // Pull expressions are never fully bound, so they never reach here.
+                unreachable!("pull in a fully-bound coll find: rejected by is_fully_bound")
             }
             FindColl(Element::Aggregate(ref _agg)) => {
-                // Does it even make sense to write
-                // [:find [(max ?x) ...] :where [_ :foo/bar ?x]]
-                // ?
-                // TODO
-                unimplemented!();
+                // Aggregates are never fully bound, so they never reach here.
+                unreachable!("aggregate in a fully-bound coll find: rejected by is_fully_bound")
             }
             FindRel(ref elements) => {
                 let width = elements.len();

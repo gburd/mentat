@@ -45,3 +45,6 @@ path = "../query-sql"
 
 [dev-dependencies.mentat_sql]
 path = "../sql"
+
+[lints]
+workspace = true
