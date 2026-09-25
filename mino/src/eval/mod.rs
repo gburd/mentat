@@ -559,6 +559,20 @@ impl Interp {
             Value::EmptyList => Ok(form.clone()),
 
             // Collection literals evaluate their elements (Clojure semantics:
+            // `[a b]` => a vector of the *values* of a and b). Out of line so
+            // their temporaries stay off the recursive eval path's stack.
+            Value::Vector(_) | Value::Map(_) | Value::Set(_) => self.eval_coll_literal(form, env),
+
+            Value::Sym(sym) => env.get(sym).ok_or_else(|| unbound(sym)),
+
+            Value::Cons(_) => self.eval_list(form, env),
+        }
+    }
+
+    #[inline(never)]
+    fn eval_coll_literal(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+        match form {
+            // Collection literals evaluate their elements (Clojure semantics:
             // `[a b]` => a vector of the *values* of a and b).
             Value::Vector(v) => {
                 let mut out = crate::collections::vector::PVec::empty();
@@ -584,15 +598,7 @@ impl Interp {
                 Ok(Value::Set(gc::Gc::new(out)))
             }
 
-            Value::Sym(sym) => env.get(sym).ok_or_else(|| {
-                crate::error::throw_classified(
-                    "name",
-                    "MNS001",
-                    &format!("unbound symbol: {sym}"),
-                )
-            }),
-
-            Value::Cons(_) => self.eval_list(form, env),
+            _ => unreachable!("eval_coll_literal on a non-collection"),
         }
     }
 
@@ -600,106 +606,32 @@ impl Interp {
     /// (`Value::Recur`) here is an error ("recur must be in tail position").
     /// Ports mino's `eval_value`.
     pub fn eval_value(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
-        let v = self.eval(form, env)?;
-        if matches!(v, Value::Recur(_)) {
-            return Err(throw_str("recur must be in tail position"));
+        match self.eval(form, env) {
+            Ok(Value::Recur(_)) => Err(recur_not_tail()),
+            r => r,
         }
-        Ok(v)
     }
 
     fn eval_list(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
-        let (head, rest) = match form {
-            Value::Cons(cell) => (&cell.0, &cell.1),
-            _ => unreachable!("eval_list called on non-cons"),
+        let Value::Cons(cell) = form else {
+            unreachable!("eval_list called on non-cons")
         };
+        let (head, rest) = (&cell.0, &cell.1);
 
+        // Special forms dispatch by BARE name. Syntax-quote inside core.clj
+        // macros (when/and/or/->/defn...) qualifies core forms to
+        // `clojure.core/let` etc.; the port has no ns tables, so accept a
+        // `clojure.core` prefix as equivalent to bare so those expansions
+        // still route to the special-form handlers. `if` is checked inline
+        // (it is on nearly every recursive path); the rest dispatch in
+        // `eval_special`, kept out of line to keep this frame small.
         if let Value::Sym(sym) = head {
-            // Special forms dispatch by BARE name. Syntax-quote inside core.clj
-            // macros (when/and/or/->/defn...) qualifies core forms to
-            // `clojure.core/let` etc.; the port has no ns tables, so accept a
-            // `clojure.core` (or `user`) prefix as equivalent to bare so those
-            // expansions still route to the special-form handlers.
-            let is_core_special_ns = matches!(
-                sym.ns.as_deref(),
-                None | Some("clojure.core")
-            );
-            if is_core_special_ns {
-                match &*sym.name {
-                    "if" => return self.eval_if(rest, env),
-                    "do" => return self.eval_do(rest, env),
-                    // `(lazy-seq body...)`: the port has no deferred seqs
-                    // (Phase 5), so evaluate the body eagerly like an implicit
-                    // `do`. Correct for finite seqs (re-seq over a string);
-                    // an infinite lazy-seq would not terminate here.
-                    // ponytail: eager lazy-seq; real deferral lands in Phase 5.
-                    "lazy-seq" => return self.eval_do(rest, env),
-                    "quote" => return self.eval_quote(rest),
-                    // `(var sym)` / `#'sym`: return the Var identity for `sym`.
-                    // The port has a flat env, so a Var just carries the
-                    // symbol; `deref`/call resolve it in root. Ports the `var`
-                    // special form.
-                    "var" => {
-                        let (arg, _) = pop(rest);
-                        let arg = arg.ok_or_else(|| throw_str("var requires one argument"))?;
-                        return match &arg {
-                            Value::Sym(s) => Ok(Value::Var(s.clone())),
-                            _ => Err(throw_str("var requires a symbol")),
-                        };
-                    }
-                    "def" => {
-                        let args = collect(rest);
-                        return special::eval_def(self, &args, env);
-                    }
-                    "defmacro" => {
-                        let args = collect(rest);
-                        return special::eval_defmacro(self, &args, env);
-                    }
-                    "quasiquote" => {
-                        let (arg, _) = pop(rest);
-                        let arg = arg.ok_or_else(|| throw_str("quasiquote requires one argument"))?;
-                        return self.quasiquote_expand(&arg, env);
-                    }
-                    "fn" | "fn*" => {
-                        let args = collect(rest);
-                        return special::eval_fn(self, &args, env);
-                    }
-                    "let" | "let*" => {
-                        let args = collect(rest);
-                        return bindings::eval_let(self, &args, env);
-                    }
-                    "loop" | "loop*" => {
-                        let args = collect(rest);
-                        return bindings::eval_loop(self, &args, env);
-                    }
-                    "try" => {
-                        let args = collect(rest);
-                        return control::eval_try(self, &args, env);
-                    }
-                    "letfn*" => {
-                        let args = collect(rest);
-                        return bindings::eval_letfn_star(self, &args, env);
-                    }
-                    "recur" => {
-                        // Eval args at non-tail (they must be values), then
-                        // return the recur signal for the loop/fn trampoline.
-                        let mut vals = Vec::new();
-                        let mut cur = rest;
-                        while let Value::Cons(cell) = cur {
-                            vals.push(self.eval_value(&cell.0, env)?);
-                            cur = &cell.1;
-                        }
-                        return Ok(Value::Recur(gc::Gc::new(vals)));
-                    }
-                    // Namespace / load machinery. The port has a single flat
-                    // env (no ns tables), so these are no-ops that return nil
-                    // — enough that core.clj's `(in-ns 'clojure.core)` etc. and
-                    // any `(ns ..)`/`(require ..)` load without erroring.
-                    // ponytail: flat-env no-op ns machinery; real ns tables in Phase 4.
-                    "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure"
-                    | "load" | "load-file" | "import" => {
-                        return Ok(Value::Nil);
-                    }
-                    _ => {}
+            if matches!(sym.ns.as_deref(), None | Some("clojure.core")) {
+                if &*sym.name == "if" {
+                    return self.eval_if(rest, env);
+                }
+                if let Some(r) = self.eval_special(&sym.name, rest, env) {
+                    return r;
                 }
             }
         }
@@ -709,9 +641,8 @@ impl Interp {
         // (the repeat-until-not-a-macro loop) falls out naturally: the
         // expansion is re-eval'd, and if its head is another macro this same
         // check fires again. Ports macroexpand1 + the eval-time dispatch.
-        let (expanded, did_expand) = self.macroexpand1_flagged(form)?;
-        if did_expand {
-            return self.eval(&expanded, env);
+        if let Some(r) = self.eval_macro_call(form, env) {
+            return r;
         }
 
         // Application: eval the head, then args left-to-right, then apply.
@@ -728,24 +659,122 @@ impl Interp {
         func::apply(self, &callee, &args)
     }
 
+    /// If `form`'s head is a macro, expand once and eval the expansion.
+    /// Out of line so a plain call's frame does not carry the expansion
+    /// temporaries.
+    #[inline(never)]
+    fn eval_macro_call(&mut self, form: &Value, env: &Env) -> Option<Result<Value, Throw>> {
+        match self.macroexpand1_flagged(form) {
+            Err(t) => Some(Err(t)),
+            Ok((expanded, true)) => Some(self.eval(&expanded, env)),
+            Ok((_, false)) => None,
+        }
+    }
+
+    /// The special forms other than `if`. `None` = not a special form. Out of
+    /// line so its many temporaries stay off the hot call path's stack.
+    #[inline(never)]
+    fn eval_special(&mut self, name: &str, rest: &Value, env: &Env) -> Option<Result<Value, Throw>> {
+        let mut special = true;
+        let r = (|| -> Result<Value, Throw> {
+            match name {
+                "do" => return self.eval_do(rest, env),
+                // `(lazy-seq body...)`: the port has no deferred seqs
+                // (Phase 5), so evaluate the body eagerly like an implicit
+                // `do`. Correct for finite seqs (re-seq over a string);
+                // an infinite lazy-seq would not terminate here.
+                // ponytail: eager lazy-seq; real deferral lands in Phase 5.
+                "lazy-seq" => return self.eval_do(rest, env),
+                "quote" => return self.eval_quote(rest),
+                // `(var sym)` / `#'sym`: return the Var identity for `sym`.
+                // The port has a flat env, so a Var just carries the
+                // symbol; `deref`/call resolve it in root. Ports the `var`
+                // special form.
+                "var" => {
+                    let (arg, _) = pop(rest);
+                    let arg = arg.ok_or_else(|| throw_str("var requires one argument"))?;
+                    return match &arg {
+                        Value::Sym(s) => Ok(Value::Var(s.clone())),
+                        _ => Err(throw_str("var requires a symbol")),
+                    };
+                }
+                "def" => {
+                    let args = collect(rest);
+                    return special::eval_def(self, &args, env);
+                }
+                "defmacro" => {
+                    let args = collect(rest);
+                    return special::eval_defmacro(self, &args, env);
+                }
+                "quasiquote" => {
+                    let (arg, _) = pop(rest);
+                    let arg = arg.ok_or_else(|| throw_str("quasiquote requires one argument"))?;
+                    return self.quasiquote_expand(&arg, env);
+                }
+                "fn" | "fn*" => {
+                    let args = collect(rest);
+                    return special::eval_fn(self, &args, env);
+                }
+                "let" | "let*" => {
+                    let args = collect(rest);
+                    return bindings::eval_let(self, &args, env);
+                }
+                "loop" | "loop*" => {
+                    let args = collect(rest);
+                    return bindings::eval_loop(self, &args, env);
+                }
+                "try" => {
+                    let args = collect(rest);
+                    return control::eval_try(self, &args, env);
+                }
+                "letfn*" => {
+                    let args = collect(rest);
+                    return bindings::eval_letfn_star(self, &args, env);
+                }
+                "recur" => {
+                    // Eval args at non-tail (they must be values), then
+                    // return the recur signal for the loop/fn trampoline.
+                    let mut vals = Vec::new();
+                    let mut cur = rest;
+                    while let Value::Cons(cell) = cur {
+                        vals.push(self.eval_value(&cell.0, env)?);
+                        cur = &cell.1;
+                    }
+                    return Ok(Value::Recur(gc::Gc::new(vals)));
+                }
+                // Namespace / load machinery. The port has a single flat
+                // env (no ns tables), so these are no-ops that return nil
+                // — enough that core.clj's `(in-ns 'clojure.core)` etc. and
+                // any `(ns ..)`/`(require ..)` load without erroring.
+                // ponytail: flat-env no-op ns machinery; real ns tables in Phase 4.
+                "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure"
+                | "load" | "load-file" | "import" => {
+                    return Ok(Value::Nil);
+                }
+                _ => {
+                    special = false;
+                    Ok(Value::Nil)
+                }
+            }
+        })();
+        special.then_some(r)
+    }
+
     /// `(if cond then else?)`: eval cond, then-branch when truthy else
     /// else-branch; a missing else yields nil.
     fn eval_if(&mut self, args: &Value, env: &Env) -> Result<Value, Throw> {
-        let (cond, tail) = pop(args);
-        let cond = cond.ok_or_else(|| throw_str("if: too few forms"))?;
-        let (then_form, tail) = pop(&tail);
-        let then_form = then_form.ok_or_else(|| throw_str("if: too few forms"))?;
-        let (else_form, _) = pop(&tail);
-
+        // Walk the arg list by reference: this frame is on every recursive
+        // path, so no clones/temporaries beyond the test value.
+        let Value::Cons(c1) = args else { return Err(if_too_few()) };
+        let Value::Cons(c2) = &c1.1 else { return Err(if_too_few()) };
         // Condition is a value (non-tail); branches are tail positions and
         // may legitimately produce a `recur` signal, so use plain `eval`.
-        if self.eval_value(&cond, env)?.is_truthy() {
-            self.eval(&then_form, env)
+        if self.eval_value(&c1.0, env)?.is_truthy() {
+            self.eval(&c2.0, env)
+        } else if let Value::Cons(c3) = &c2.1 {
+            self.eval(&c3.0, env)
         } else {
-            match else_form {
-                Some(e) => self.eval(&e, env),
-                None => Ok(Value::Nil),
-            }
+            Ok(Value::Nil)
         }
     }
 
@@ -926,6 +955,25 @@ impl Default for Interp {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cold]
+#[inline(never)]
+fn if_too_few() -> Throw {
+    throw_str("if: too few forms")
+}
+
+#[cold]
+#[inline(never)]
+fn recur_not_tail() -> Throw {
+    throw_str("recur must be in tail position")
+}
+
+/// The "unbound symbol" error, out of line (cold path).
+#[cold]
+#[inline(never)]
+fn unbound(sym: &Symbol) -> Throw {
+    crate::error::throw_classified("name", "MNS001", &format!("unbound symbol: {sym}"))
 }
 
 /// Split a cons list into (first?, rest). Returns `(None, Nil)` at the end.

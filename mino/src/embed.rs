@@ -34,18 +34,34 @@ use crate::error::Throw;
 ///   `into`, `concat`, `str`, print capture, ...), cumulative per eval.
 /// * `depth` — nesting of eval + fn-application frames. This is what turns
 ///   runaway non-tail recursion into an error instead of a Rust stack
-///   overflow (which aborts the whole process). See [`STACK_BYTES_PER_LEVEL`]
-///   for choosing a value that fits your thread's stack.
+///   overflow (which aborts the whole process).
+///
+/// # Choosing `depth`
+///
+/// Measured on x86_64 (rustc 1.9x), bisecting the largest `depth` that
+/// still returns a limit error instead of overflowing, per thread stack size:
+///
+/// | build   | simple fn `(inc (f (dec n)))` | worst seen (destructuring + let + try + macro) |
+/// |---------|-------------------------------|-----------------------------------------------|
+/// | debug   | ~1.95 KB per depth unit       | ~3.2 KB per depth unit                        |
+/// | release | ~0.32 KB per depth unit       | ~0.74 KB per depth unit                       |
+///
+/// One user-level recursive call costs ~4 depth units (eval of the call,
+/// apply, the body's `if`, the enclosing call it is an argument of), i.e.
+/// ~7.8 KB (debug) / ~1.3 KB (release) of stack per mino call level.
+///
+/// Recommended safe `depth` (worst case with ~2x headroom for the host's
+/// own frames): **2 MB stack: 300 debug / 1400 release; 8 MB stack: 1000
+/// debug / 5000 release.** [`Interpreter::sandboxed`] sets no limits.
+///
+/// Out of scope here: deeply nested *data* (reader, printer, `=`, GC drop)
+/// still recurses without a depth check.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Limits {
     pub steps: Option<u64>,
     pub heap_bytes: Option<u64>,
     pub depth: Option<u32>,
 }
-
-/// Measured Rust stack consumed per unit of [`Limits::depth`]
-/// (filled in by measurement; see CHANGELOG).
-pub const STACK_BYTES_PER_LEVEL: () = ();
 
 /// An embedded mino interpreter.
 ///

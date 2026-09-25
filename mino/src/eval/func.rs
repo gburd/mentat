@@ -100,12 +100,26 @@ fn parse_arity(params: &Value, body: &[Value]) -> Result<Arity, Throw> {
     })
 }
 
-/// Apply a callable to already-evaluated `args`.
+/// Apply a callable to already-evaluated `args`. One depth level per call,
+/// restored on every return path; a `recur` loop inside the callee iterates
+/// at this same level (the trampoline is a Rust loop, not a nested apply).
 pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, Throw> {
-    match callee {
+    it.enter_frame()?;
+    let r = match callee {
         Value::Prim(p) => (p.0)(it, args),
         Value::PrimClosure(p) => (p.f)(it, args),
         Value::Fn(closure) => apply_closure(it, closure, callee, args),
+        _ => apply_other(it, callee, args),
+    };
+    it.depth -= 1;
+    r
+}
+
+/// The non-fn callables (keyword/symbol/collection lookups, vars), out of
+/// line so their temporaries stay off the fn-call frame.
+#[inline(never)]
+fn apply_other(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, Throw> {
+    match callee {
         // Keywords and symbols are callable as map-lookup fns:
         // `(:k m)` / `('s m)` => (get m callee default?). Ports mino's
         // IFn-on-keyword/symbol behavior (used by juxt :a :b, ('inc m), ...).
@@ -161,12 +175,7 @@ fn apply_closure(
                 .iter()
                 .find(|a| a.variadic && args.len() >= a.fixed)
         })
-        .ok_or_else(|| {
-            throw_str(&format!(
-                "wrong number of args ({}) passed to fn",
-                args.len()
-            ))
-        })?;
+        .ok_or_else(|| wrong_arity(args.len()))?;
 
     // Recur trampoline: bind params, run the body; if the body produced a
     // `Recur` signal, rebind this arity's params to the new args and iterate
@@ -196,6 +205,12 @@ fn apply_closure(
             _ => return Ok(result),
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn wrong_arity(n: usize) -> Throw {
+    throw_str(&format!("wrong number of args ({n}) passed to fn"))
 }
 
 /// Collect a proper cons list into a Vec (stops at nil / improper tail).
