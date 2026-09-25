@@ -175,17 +175,21 @@ pub fn char_at(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
 }
 
-/// `(clojure.string/upper-case s)`: ASCII-uppercase. Requires a string (the
+/// `(clojure.string/upper-case s)`: 1:1 Unicode uppercase (ADR 31). Requires a
+/// string. Maps each codepoint through Rust's Unicode uppercase, keeping only
+/// the 1:1 mappings (a codepoint whose uppercase is a single codepoint); a
+/// codepoint whose full uppercase expands to several (e.g. `ß`->`SS`) is left
+/// unchanged, matching mino's 1:1 generated tables.
 /// nil/number coercion is added by the clojure.string wrapper via `as-str`).
 pub fn upper_case(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let s = one_string(args, "upper-case")?;
-    Ok(Value::Str(Gc::new(s.chars().map(ascii_upper).collect())))
+    Ok(Value::Str(Gc::new(s.chars().map(uni_upper).collect())))
 }
 
-/// `(clojure.string/lower-case s)`: ASCII-lowercase.
+/// `(clojure.string/lower-case s)`: 1:1 Unicode lowercase (ADR 31).
 pub fn lower_case(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let s = one_string(args, "lower-case")?;
-    Ok(Value::Str(Gc::new(s.chars().map(ascii_lower).collect())))
+    Ok(Value::Str(Gc::new(s.chars().map(uni_lower).collect())))
 }
 
 /// `(clojure.string/trim s)`: strip leading+trailing ASCII whitespace. mino
@@ -535,11 +539,24 @@ fn throw_str_mct(msg: &str) -> Throw {
     crate::error::throw_classified("eval/contract", "MCT001", msg)
 }
 
-fn ascii_upper(c: char) -> char {
-    c.to_ascii_uppercase()
+/// 1:1 Unicode uppercase of one codepoint (ADR 31). Uses `char::to_uppercase`
+/// but keeps only the 1:1 mappings: a codepoint whose full uppercase expands to
+/// more than one char (e.g. `ß`->`SS`) is left unchanged, matching mino's
+/// generated 1:1 case tables.
+fn uni_upper(c: char) -> char {
+    let mut up = c.to_uppercase();
+    match (up.next(), up.next()) {
+        (Some(u), None) => u,
+        _ => c,
+    }
 }
-fn ascii_lower(c: char) -> char {
-    c.to_ascii_lowercase()
+/// 1:1 Unicode lowercase of one codepoint (ADR 31); see `uni_upper`.
+fn uni_lower(c: char) -> char {
+    let mut lo = c.to_lowercase();
+    match (lo.next(), lo.next()) {
+        (Some(l), None) => l,
+        _ => c,
+    }
 }
 
 fn one_string<'a>(args: &'a [Value], name: &str) -> Result<&'a str, Throw> {

@@ -355,6 +355,11 @@ fn fold(args: &[Value], op: Op, ident: i64, name: &str, strict: bool) -> Result<
     if args.is_empty() {
         return Ok(Value::Int(ident));
     }
+    // Canon 1-arity + and * are a bare number cast that passes nil through:
+    // (+ nil), (* nil), (+' nil), (*' nil) are all nil (upstream tower_reduce).
+    if args.len() == 1 && matches!(op, Op::Add | Op::Mul) && matches!(args[0], Value::Nil) {
+        return Ok(Value::Nil);
+    }
     let mut acc = Acc::seed(&as_num(&args[0], name)?);
     for v in &args[1..] {
         acc.apply(&as_num(v, name)?, op, strict)?;
@@ -708,17 +713,33 @@ fn two_longs(args: &[Value], op: &str) -> Result<(i64, i64), Throw> {
     Ok((as_long_bit(a, op)?, as_long_bit(b, op)?))
 }
 
+/// Shared variadic fold for the two-operand bitwise prims: folds `op`
+/// left-to-right across every argument. Per the JVM arglists
+/// (`[x y] [x y & more]`), zero or one argument is an arity error
+/// (upstream numeric_bit.c `bit_fold`).
+fn bit_fold(args: &[Value], name: &str, op: fn(i64, i64) -> i64) -> Result<Value, Throw> {
+    if args.len() < 2 {
+        return Err(throw_classified(
+            "eval/arity",
+            "MAR001",
+            &format!("{name} requires at least two arguments"),
+        ));
+    }
+    let mut acc = as_long_bit(&args[0], name)?;
+    for v in &args[1..] {
+        acc = op(acc, as_long_bit(v, name)?);
+    }
+    Ok(Value::Int(acc))
+}
+
 pub fn bit_and(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    let (a, b) = two_longs(args, "bit-and")?;
-    Ok(Value::Int(a & b))
+    bit_fold(args, "bit-and", |a, b| a & b)
 }
 pub fn bit_or(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    let (a, b) = two_longs(args, "bit-or")?;
-    Ok(Value::Int(a | b))
+    bit_fold(args, "bit-or", |a, b| a | b)
 }
 pub fn bit_xor(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    let (a, b) = two_longs(args, "bit-xor")?;
-    Ok(Value::Int(a ^ b))
+    bit_fold(args, "bit-xor", |a, b| a ^ b)
 }
 pub fn bit_not(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [v] = args else {
