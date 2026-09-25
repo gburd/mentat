@@ -9,7 +9,7 @@
 // specific language governing permissions and limitations under the License.
 
 extern crate chrono;
-extern crate enum_set;
+extern crate enumset;
 extern crate indexmap;
 extern crate ordered_float;
 #[macro_use]
@@ -37,7 +37,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use indexmap::IndexMap;
 
-use enum_set::EnumSet;
+use enumset::{EnumSet, EnumSetType};
 
 use ordered_float::OrderedFloat;
 
@@ -82,20 +82,20 @@ impl From<KnownEntid> for Entid {
 }
 
 impl<V: TransactableValueMarker> From<KnownEntid> for EntityPlace<V> {
-    fn from(val: KnownEntid) -> Self {
-        EntityPlace::Entid(EntidOrIdent::Entid(val.0))
+    fn from(value: KnownEntid) -> Self {
+        Self::Entid(EntidOrIdent::Entid(value.0))
     }
 }
 
 impl From<KnownEntid> for AttributePlace {
-    fn from(val: KnownEntid) -> Self {
-        AttributePlace::Entid(EntidOrIdent::Entid(val.0))
+    fn from(value: KnownEntid) -> Self {
+        Self::Entid(EntidOrIdent::Entid(value.0))
     }
 }
 
 impl<V: TransactableValueMarker> From<KnownEntid> for ValuePlace<V> {
-    fn from(val: KnownEntid) -> Self {
-        ValuePlace::Entid(EntidOrIdent::Entid(val.0))
+    fn from(value: KnownEntid) -> Self {
+        Self::Entid(EntidOrIdent::Entid(value.0))
     }
 }
 
@@ -271,7 +271,7 @@ impl Default for Attribute {
 
 /// The attribute of each Mentat assertion has a :db/valueType constraining the value to a
 /// particular set.  Mentat recognizes the following :db/valueType values.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
+#[derive(EnumSetType, Debug, Hash, Ord, PartialOrd)]
 #[repr(u32)]
 pub enum ValueType {
     Ref,
@@ -299,16 +299,6 @@ impl ValueType {
         s.insert(ValueType::Uuid);
         s.insert(ValueType::Bytes);
         s
-    }
-}
-
-impl ::enum_set::CLike for ValueType {
-    fn to_u32(&self) -> u32 {
-        *self as u32
-    }
-
-    unsafe fn from_u32(v: u32) -> ValueType {
-        ::std::mem::transmute(v)
     }
 }
 
@@ -437,7 +427,7 @@ impl TypedValue {
     /// provided type is `None`.
     #[inline]
     pub fn is_congruent_with<T: Into<Option<ValueType>>>(&self, t: T) -> bool {
-        t.into().map_or(true, |x| self.matches_type(x))
+        t.into().is_none_or(|x| self.matches_type(x))
     }
 
     #[inline]
@@ -718,11 +708,15 @@ trait MicrosecondPrecision {
 impl MicrosecondPrecision for DateTime<Utc> {
     fn microsecond_precision(self) -> DateTime<Utc> {
         let nanoseconds = self.nanosecond();
-        if nanoseconds % 1000 == 0 {
+        if nanoseconds.is_multiple_of(1000) {
             return self;
         }
         let microseconds = nanoseconds / 1000;
         let truncated = microseconds * 1000;
+        #[expect(
+            clippy::expect_used,
+            reason = "timestamp truncation to microseconds should always produce valid values"
+        )]
         self.with_nanosecond(truncated).expect("valid timestamp")
     }
 }
@@ -867,7 +861,7 @@ impl Binding {
     /// provided type is `None`.
     #[inline]
     pub fn is_congruent_with<T: Into<Option<ValueType>>>(&self, t: T) -> bool {
-        t.into().map_or(true, |x| self.matches_type(x))
+        t.into().is_none_or(|x| self.matches_type(x))
     }
 
     #[inline]
