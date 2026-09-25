@@ -311,7 +311,7 @@ fn table_for_computed(computed: ComputedTable, alias: TableAlias) -> TableOrSubq
                         // Each arm simply turns into a subquery.
                         // The SQL translation will stuff "UNION" between each arm.
                         let projection = Projection::Columns(columns);
-                        cc_to_select_query(projection, cc, false, vec![], None, Limit::None)
+                        cc_to_select_query(projection, cc, false, vec![], None, Limit::Unlimited)
                   }).collect(),
                 alias)
         }
@@ -333,7 +333,7 @@ fn empty_query() -> SelectQuery {
         group_by: vec![],
         constraints: vec![],
         order: vec![],
-        limit: Limit::None,
+        limit: Limit::Unlimited,
     }
 }
 
@@ -394,7 +394,7 @@ pub fn cc_to_exists(cc: ConjoiningClauses) -> SelectQuery {
         // In this case we can produce a very simple query that returns no results.
         empty_query()
     } else {
-        cc_to_select_query(Projection::One, cc, false, vec![], None, Limit::None)
+        cc_to_select_query(Projection::One, cc, false, vec![], None, Limit::Unlimited)
     }
 }
 
@@ -409,7 +409,7 @@ fn re_project(mut inner: SelectQuery, projection: Projection) -> SelectQuery {
     let order_by = inner.order;
     inner.order = vec![];
     let limit = inner.limit;
-    inner.limit = Limit::None;
+    inner.limit = Limit::Unlimited;
 
     use self::Projection::*;
 
@@ -455,7 +455,7 @@ fn re_project(mut inner: SelectQuery, projection: Projection) -> SelectQuery {
         constraints: vec![],
         group_by,
         order: match &limit {
-            &Limit::None => vec![],
+            &Limit::Unlimited => vec![],
             &Limit::Fixed(_) | &Limit::Variable(_) => order_by.clone(),
         },
         limit,
@@ -470,7 +470,7 @@ fn re_project(mut inner: SelectQuery, projection: Projection) -> SelectQuery {
         constraints: nullable,
         group_by: vec![],
         order: order_by,
-        limit: Limit::None, // Any limiting comes from the internal query.
+        limit: Limit::Unlimited, // Any limiting comes from the internal query.
     }
 }
 

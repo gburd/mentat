@@ -616,7 +616,7 @@ impl QueryFragment for SelectQuery {
         }
 
         match self.limit {
-            Limit::None => (),
+            Limit::Unlimited => (),
             Limit::Fixed(limit) => {
                 // Guaranteed to be non-negative: u64.
                 out.push_sql(" LIMIT ");
@@ -863,7 +863,7 @@ mod tests {
             ],
             group_by: vec![],
             order: vec![],
-            limit: Limit::None,
+            limit: Limit::Unlimited,
         };
 
         let SQLQuery { sql, args } = query.to_sql_query().unwrap();

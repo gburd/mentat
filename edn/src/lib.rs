@@ -76,10 +76,10 @@ pub type ParseError = peg::error::ParseError<peg::str::LineCol>;
 peg::parser!(grammar grammar() for str {
 
     pub rule nil() -> SpannedValue = "nil" { SpannedValue::Nil }
-    pub rule nan() -> SpannedValue = "#f" whitespace()+ "NaN" { SpannedValue::Float(OrderedFloat(std::f64::NAN)) }
+    pub rule nan() -> SpannedValue = "#f" whitespace()+ "NaN" { SpannedValue::Float(OrderedFloat(f64::NAN)) }
 
     pub rule infinity() -> SpannedValue = "#f" whitespace()+ s:$(sign()) "Infinity"
-        { SpannedValue::Float(OrderedFloat(if s == "+" { std::f64::INFINITY } else { std::f64::NEG_INFINITY })) }
+        { SpannedValue::Float(OrderedFloat(if s == "+" { f64::INFINITY } else { f64::NEG_INFINITY })) }
 
     pub rule boolean() -> SpannedValue
         = "true"  { SpannedValue::Boolean(true) }

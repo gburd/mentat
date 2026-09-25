@@ -121,7 +121,7 @@ impl NamespaceableName {
         if let Some(stripped) = name.strip_prefix('_') {
             Self::new(self.namespace(), stripped)
         } else {
-            Self::new(self.namespace(), format!("_{}", name))
+            Self::new(self.namespace(), format!("_{name}"))
         }
     }
 
