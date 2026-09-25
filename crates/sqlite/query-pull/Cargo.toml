@@ -29,3 +29,6 @@ path = "../db"
 
 [dependencies.db_traits]
 path = "../db-traits"
+
+[lints]
+workspace = true

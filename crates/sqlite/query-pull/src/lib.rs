@@ -10,52 +10,52 @@
 
 #![allow(dead_code)]
 
-///! A pull expression is a function.
-///!
-///! Its inputs are a store, a schema, and a set of bindings.
-///!
-///! Its output is a map whose keys are the input bindings and whose values are
-///! appropriate structured values to represent the pull expression.
-///!
-///! For example, the pull expression:
-///!
-///! ```edn
-///! (pull ?person [:person/name
-///!                :person/tattoo
-///!                {:person/friend [*]}])`
-///! ```
-///!
-///! will return values shaped like:
-///!
-///! ```edn
-///! {:person/name "Alice"                            ; Single-valued attribute
-///!                                                  ; Absence: Alice has no tattoos.
-///!  :person/friend [                                ; Multi-valued attribute.
-///!    {:person/name "Bob"                           ; Nesting and wildcard.
-///!     :person/pet ["Harrison", "Hoppy"]}]}
-///! ```
-///!
-///! There will be one such value for each input binding.
-///!
-///! We fetch layers of a pull expression iteratively: all attributes at the same
-///! 'level' can be fetched at the same time and accumulated into maps.
-///!
-///! Those maps are wrapped in `Rc` for two reasons:
-///! - They might occur multiple times when projected from a `:find` query.
-///! - They might refer to each other (consider recursion).
-///!
-///! A nested or recursive pull expression consumes values produced by earlier stages
-///! (the recursion with a smaller recursion limit and a growing 'seen' list),
-///! generating another layer of mappings.
-///!
-///! For example, you can imagine the nesting in the earlier pull expression being
-///! decomposed into two chained expressions:
-///!
-///! ```edn
-///! (pull
-///!     (pull ?person [:person/friend])
-///      [*]))
-///! ```
+//! A pull expression is a function.
+//!
+//! Its inputs are a store, a schema, and a set of bindings.
+//!
+//! Its output is a map whose keys are the input bindings and whose values are
+//! appropriate structured values to represent the pull expression.
+//!
+//! For example, the pull expression:
+//!
+//! ```edn
+//! (pull ?person [:person/name
+//!                :person/tattoo
+//!                {:person/friend [*]}])`
+//! ```
+//!
+//! will return values shaped like:
+//!
+//! ```edn
+//! {:person/name "Alice"                            ; Single-valued attribute
+//!                                                  ; Absence: Alice has no tattoos.
+//!  :person/friend [                                ; Multi-valued attribute.
+//!    {:person/name "Bob"                           ; Nesting and wildcard.
+//!     :person/pet ["Harrison", "Hoppy"]}]}
+//! ```
+//!
+//! There will be one such value for each input binding.
+//!
+//! We fetch layers of a pull expression iteratively: all attributes at the same
+//! 'level' can be fetched at the same time and accumulated into maps.
+//!
+//! Those maps are wrapped in `Rc` for two reasons:
+//! - They might occur multiple times when projected from a `:find` query.
+//! - They might refer to each other (consider recursion).
+//!
+//! A nested or recursive pull expression consumes values produced by earlier stages
+//! (the recursion with a smaller recursion limit and a growing 'seen' list),
+//! generating another layer of mappings.
+//!
+//! For example, you can imagine the nesting in the earlier pull expression being
+//! decomposed into two chained expressions:
+//!
+//! ```edn
+//! (pull
+//!     (pull ?person [:person/friend])
+//!      [*]))
+//! ```
 extern crate rusqlite;
 
 extern crate core_traits;
