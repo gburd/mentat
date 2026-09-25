@@ -1,0 +1,142 @@
+# .github/workflows/release.yml
+#
+# Build and publish release artifacts when a version tag (v*) is pushed.
+# Produces per-PG-version tarballs containing the compiled extension
+# (.so, .control, .sql) and attaches them to a GitHub Release.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PGRX_VERSION: "0.17.0"
+  RUST_TOOLCHAIN: "1.90.0"
+
+jobs:
+  build:
+    name: Build pg${{ matrix.pg_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [15, 16, 17]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL ${{ matrix.pg_version }}
+        run: |
+          # The default runner apt repos only carry one PG major; add PGDG so
+          # pg15/16/17 are all installable.
+          sudo apt-get install -y --no-install-recommends curl ca-certificates gnupg lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              postgresql-${{ matrix.pg_version }} \
+              postgresql-server-dev-${{ matrix.pg_version }} \
+              postgresql-client-${{ matrix.pg_version }} \
+              libpq-dev build-essential pkg-config libclang-dev clang
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-pg${{ matrix.pg_version }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-pg${{ matrix.pg_version }}-${{ runner.os }}-
+
+      - name: Install cargo-pgrx ${{ env.PGRX_VERSION }}
+        run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+
+      - name: pgrx init (system PG${{ matrix.pg_version }})
+        run: |
+          cargo pgrx init --pg${{ matrix.pg_version }} \
+            $(command -v /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config || which pg_config)
+
+      - name: cargo pgrx package
+        working-directory: pg_mentat
+        run: |
+          cargo pgrx package --no-default-features \
+            --features pg${{ matrix.pg_version }} \
+            --pg-config /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+      - name: Create release tarball
+        run: |
+          # cargo pgrx package writes to the WORKSPACE target dir, which is at
+          # the repo root (target/), not pg_mentat/target/, even though the
+          # package command runs with working-directory: pg_mentat.
+          STAGING="pg_mentat-pg${{ matrix.pg_version }}"
+          mkdir -p "${STAGING}"
+
+          # Copy the compiled extension files from the pgrx package output.
+          find target -name "pg_mentat.so" -path "*release*" -exec cp {} "${STAGING}/" \;
+          find target -name "pg_mentat--*.sql" -exec cp {} "${STAGING}/" \; 2>/dev/null || true
+          find target -name "pg_mentat.control" -exec cp {} "${STAGING}/" \; 2>/dev/null || true
+
+          # Fall back to the source control file if the packaged one wasn't found.
+          if [ ! -f "${STAGING}/pg_mentat.control" ]; then
+            cp pg_mentat/pg_mentat.control "${STAGING}/"
+          fi
+
+          # Fail loud if the shared library is missing (empty tarball is useless).
+          if [ ! -f "${STAGING}/pg_mentat.so" ]; then
+            echo "ERROR: pg_mentat.so not found under target/ after packaging" >&2
+            find target -name 'pg_mentat.so' 2>/dev/null || true
+            exit 1
+          fi
+
+          tar czf "pg_mentat-pg${{ matrix.pg_version }}.tar.gz" "${STAGING}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg_mentat-pg${{ matrix.pg_version }}
+          path: pg_mentat-pg${{ matrix.pg_version }}.tar.gz
+          retention-days: 5
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Gather tarballs
+        run: |
+          mkdir -p release-assets
+          find artifacts -name "*.tar.gz" -exec mv {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*.tar.gz
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

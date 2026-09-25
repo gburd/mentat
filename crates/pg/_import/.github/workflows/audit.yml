@@ -1,0 +1,40 @@
+name: Security audit
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+  pull_request:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9  # master
+        with:
+          toolchain: stable
+      - run: cargo install cargo-audit
+      - name: cargo audit
+        # The two ignored advisories are informational "unmaintained" notices
+        # for crates pulled in only by pgrx 0.17; nothing to patch here.
+        # Everything patchable is fixed in Cargo.lock. Keep in step with
+        # deny.toml.
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2021-0127
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979  # v2.0.15
+

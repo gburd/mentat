@@ -1,0 +1,98 @@
+[package]
+name = "pg_mentat"
+version = "1.6.2"
+edition = "2021"
+authors = ["Greg Burd <greg@burd.me>"]
+license = "Apache-2.0"
+repository = "https://github.com/gburd/pg_mentat"
+homepage = "https://github.com/gburd/pg_mentat"
+description = "Datomic-compatible Datalog query engine for PostgreSQL"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "pgrx_embed_pg_mentat"
+path = "./src/bin/pgrx_embed.rs"
+
+[features]
+default = ["pg16"]
+# Optional Datomic-in-Clojure scripting surface (the `mentat.store/*` language),
+# embedding the pure-Rust mino-rs interpreter. Default off; a build without it
+# pulls nothing and pays nothing.
+script = ["dep:mino-rs"]
+pg13 = ["pgrx/pg13", "pgrx-tests/pg13"]
+pg14 = ["pgrx/pg14", "pgrx-tests/pg14"]
+pg15 = ["pgrx/pg15", "pgrx-tests/pg15"]
+pg16 = ["pgrx/pg16", "pgrx-tests/pg16"]
+pg17 = ["pgrx/pg17", "pgrx-tests/pg17"]
+pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
+pg_test = []
+
+[dependencies]
+pgrx = "0.17.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ciborium = "0.2"
+hex = "0.4"
+tracing = "0.1"
+uuid = "1"
+ordered-float = "5.1.0"
+chrono = "0.4"
+
+lru = "0.18"
+parking_lot = "0.12"
+
+# Optional: the mino Clojure-dialect interpreter, behind the `script` feature.
+# Pure-Rust, single-threaded, no FFI/threads/global state -- safe to embed in
+# a Postgres backend (build -> eval -> drop within one function call).
+mino-rs = { git = "https://codeberg.org/gregburd/mino-rs", tag = "v0.1.0", optional = true }
+
+# Mentat dependencies
+edn = { path = "../edn", features = ["serde_support"] }
+core_traits = { path = "../core-traits" }
+mentat_core = { path = "../core" }
+
+[dev-dependencies]
+pgrx-tests = "0.17.0"
+
+# Release profile is specified at workspace root (Cargo.toml).
+
+[lints.clippy]
+# Panic prevention (to be promoted to deny as code is cleaned up)
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
+panic_in_result_fn = "allow"
+unimplemented = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Temporarily allowed (pre-existing, non-safety, to be fixed incrementally)
+type_complexity = "allow"
+needless_borrow = "allow"
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow"
+unnecessary_wraps = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+get_first = "allow"
+collapsible_match = "allow"
+collapsible_else_if = "allow"
+single_match = "allow"
+cloned_ref_to_slice_refs = "allow"
+unnecessary_cast = "allow"
+collapsible_str_replace = "allow"
+needless_range_loop = "allow"
+manual_strip = "allow"
+unnecessary_map_or = "allow"
+useless_format = "allow"
