@@ -205,8 +205,10 @@ impl ConjoiningClauses {
                 }
             }
 
-            // This isn't implemented yet.
-            FnArg::Constant(NonIntegerConstant::BigInteger(_)) => unimplemented!(),
+            // Bigint constants aren't supported in `ground` yet (#280).
+            FnArg::Constant(NonIntegerConstant::BigInteger(_)) => {
+                bail!(AlgebrizerError::UnsupportedBigInteger)
+            }
 
             // These don't make sense here.
             FnArg::Vector(_) | FnArg::SrcVar(_) => bail!(AlgebrizerError::InvalidGroundConstant),

@@ -22,7 +22,10 @@ use mentat_core::{Cloned, HasSchema, Schema};
 
 use mentat_core::counter::RcCounter;
 
-use edn::query::{Element, FindSpec, Keyword, PatternNonValuePlace, Pull, Variable, WhereClause};
+use edn::query::{
+    Element, FindSpec, Keyword, NonIntegerConstant, Pattern, PatternNonValuePlace,
+    PatternValuePlace, Pull, Variable, WhereClause,
+};
 
 use query_algebrizer_traits::errors::{AlgebrizerError, Result};
 
@@ -434,20 +437,15 @@ impl ConjoiningClauses {
                 Column::Fulltext(FulltextColumn::Rowid)
                 | Column::Fulltext(FulltextColumn::Text) => {
                     // We never expose `rowid` via queries.  We do expose `text`, but only
-                    // indirectly, by joining against `datoms`.  Therefore, these are meaningless.
-                    unimplemented!()
+                    // indirectly, by joining against `datoms`.  A fulltext value var is
+                    // therefore never itself value-bound, so this arm is never reached.
+                    unreachable!("fulltext rowid/text columns are never value-bound to a variable")
                 }
 
                 Column::Fixed(DatomsColumn::ValueTypeTag) => {
-                    // I'm pretty sure this is meaningless right now, because we will never bind
-                    // a type tag to a variable -- there's no syntax for doing so.
-                    // In the future we might expose a way to do so, perhaps something like:
-                    // ```
-                    // [:find ?x
-                    //  :where [?x _ ?y]
-                    //         [(= (typeof ?y) :db.valueType/double)]]
-                    // ```
-                    unimplemented!();
+                    // There is no query syntax that binds a variable to a value-type tag
+                    // column, so a bound value for this column can never occur.
+                    unreachable!("value-type-tag columns cannot be bound to a variable: no syntax")
                 }
 
                 // TODO: recognize when the valueType might be a ref and also translate entids there.
@@ -756,7 +754,6 @@ impl ConjoiningClauses {
         if self.empty_because.is_some() {
             return;
         }
-        println!("CC known empty: {:?}.", &why); // TODO: proper logging.
         self.empty_because = Some(why);
     }
 
@@ -1089,6 +1086,17 @@ impl ConjoiningClauses {
     }
 }
 
+/// Reject the parts of a parsed pattern that the SQLite engine cannot yet handle,
+/// so a query that parses but hits an unsupported shape returns a typed error
+/// instead of panicking during evolution. Currently: bigint constants in the value
+/// place (#280).
+pub(crate) fn reject_unsupported_pattern(pattern: &Pattern) -> Result<()> {
+    if let PatternValuePlace::Constant(NonIntegerConstant::BigInteger(_)) = pattern.value {
+        bail!(AlgebrizerError::UnsupportedBigInteger);
+    }
+    Ok(())
+}
+
 impl ConjoiningClauses {
     fn apply_evolved_patterns(
         &mut self,
@@ -1097,7 +1105,7 @@ impl ConjoiningClauses {
     ) -> Result<()> {
         while let Some(pattern) = patterns.pop_front() {
             match self.evolve_pattern(known, pattern) {
-                PlaceOrEmpty::Place(re_evolved) => self.apply_pattern(known, re_evolved),
+                PlaceOrEmpty::Place(re_evolved) => self.apply_pattern(known, re_evolved)?,
                 PlaceOrEmpty::Empty(because) => {
                     self.mark_known_empty(because);
                     patterns.clear();
@@ -1150,13 +1158,16 @@ impl ConjoiningClauses {
                 continue;
             }
             match clause {
-                WhereClause::Pattern(p) => match self.make_evolved_pattern(known, p) {
-                    PlaceOrEmpty::Place(evolved) => patterns.push_back(evolved),
-                    PlaceOrEmpty::Empty(because) => {
-                        self.mark_known_empty(because);
-                        return Ok(());
+                WhereClause::Pattern(p) => {
+                    reject_unsupported_pattern(&p)?;
+                    match self.make_evolved_pattern(known, p) {
+                        PlaceOrEmpty::Place(evolved) => patterns.push_back(evolved),
+                        PlaceOrEmpty::Empty(because) => {
+                            self.mark_known_empty(because);
+                            return Ok(());
+                        }
                     }
-                },
+                }
                 _ => {
                     if !patterns.is_empty() {
                         self.apply_evolved_patterns(known, patterns)?;
@@ -1180,8 +1191,9 @@ impl ConjoiningClauses {
                 if p.added != PatternNonValuePlace::Placeholder {
                     bail!(AlgebrizerError::UnsupportedHistoryPattern);
                 }
+                reject_unsupported_pattern(&p)?;
                 match self.make_evolved_pattern(known, p) {
-                    PlaceOrEmpty::Place(evolved) => self.apply_pattern(known, evolved),
+                    PlaceOrEmpty::Place(evolved) => self.apply_pattern(known, evolved)?,
                     PlaceOrEmpty::Empty(because) => self.mark_known_empty(because),
                 }
                 Ok(())

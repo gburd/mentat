@@ -20,6 +20,8 @@ use edn::query::{
 
 use crate::clauses::ConjoiningClauses;
 
+use query_algebrizer_traits::errors::{AlgebrizerError, Result};
+
 use crate::types::{
     ColumnConstraint, DatomsColumn, EmptyBecause, EvolvedNonValuePlace, EvolvedPattern,
     EvolvedValuePlace, PlaceOrEmpty, SourceAlias,
@@ -29,7 +31,11 @@ use crate::Known;
 
 pub fn into_typed_value(nic: NonIntegerConstant) -> TypedValue {
     match nic {
-        NonIntegerConstant::BigInteger(_) => unimplemented!(), // TODO(gburd): #280.
+        // Bigint value constants are rejected before evolution by
+        // `reject_unsupported_pattern` (#280), so this arm is never reached.
+        NonIntegerConstant::BigInteger(_) => {
+            unreachable!("bigint pattern value constants are rejected before evolution (#280)")
+        }
         NonIntegerConstant::Boolean(v) => TypedValue::Boolean(v),
         NonIntegerConstant::Float(v) => TypedValue::Double(v),
         NonIntegerConstant::Text(v) => v.into(),
@@ -657,18 +663,24 @@ impl ConjoiningClauses {
         use self::PlaceOrEmpty::*;
         match self.make_evolved_pattern(known, pattern) {
             Empty(e) => self.mark_known_empty(e),
-            Place(p) => self.apply_pattern(known, p),
+            Place(p) => self
+                .apply_pattern(known, p)
+                .expect("apply_pattern in test helper"),
         };
     }
 
-    pub(crate) fn apply_pattern(&mut self, known: Known, pattern: EvolvedPattern) {
+    pub(crate) fn apply_pattern(&mut self, known: Known, pattern: EvolvedPattern) -> Result<()> {
         // For now we only support the default source.
         if pattern.source != SrcVar::DefaultSrc {
-            unimplemented!();
+            let name = match pattern.source {
+                SrcVar::NamedSrc(ref n) => n.clone(),
+                SrcVar::DefaultSrc => "$".to_string(),
+            };
+            bail!(AlgebrizerError::UnsupportedSource(name));
         }
 
         if self.attempt_cache_lookup(known, &pattern) {
-            return;
+            return Ok(());
         }
 
         if let Some(alias) = self.alias_table(known.schema, &pattern) {
@@ -680,6 +692,7 @@ impl ConjoiningClauses {
             // We know we cannot return a result, so we short-circuit here.
             self.mark_known_empty(EmptyBecause::AttributeLookupFailed);
         }
+        Ok(())
     }
 }
 
@@ -1112,8 +1125,6 @@ mod testing {
 
         // Finally, expand column bindings to get the overlaps for ?x.
         cc.expand_column_bindings();
-
-        println!("{:#?}", cc);
 
         let d0_e = QualifiedAlias::new("datoms00".to_string(), DatomsColumn::Entity);
         let d0_a = QualifiedAlias::new("datoms00".to_string(), DatomsColumn::Attribute);

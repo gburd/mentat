@@ -54,7 +54,7 @@ impl ConjoiningClauses {
         let alias = self.next_alias_for_table(table);
 
         // Stitch the computed table into column_bindings, so we get cross-linking.
-        for (name, ty) in names.iter().zip(types.into_iter()) {
+        for (name, ty) in names.iter().zip(types) {
             self.constrain_var_to_type(name.clone(), ty);
             self.bind_column_to_var(
                 schema,
@@ -151,7 +151,7 @@ impl ConjoiningClauses {
                     // Number of arguments don't match the number of values. TODO: better error message.
                     bail!(AlgebrizerError::GroundBindingsMismatch)
                 }
-                for (place, arg) in places.into_iter().zip(children.into_iter()) {
+                for (place, arg) in places.into_iter().zip(children) {
                     self.apply_ground_place(schema, place, arg)? // TODO: short-circuit on impossible.
                 }
                 Ok(())

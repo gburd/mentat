@@ -85,6 +85,16 @@ impl ConjoiningClauses {
         // Simple optimization. Empty `or` clauses disappear. Unit `or` clauses
         // are equivalent to just the inner clause.
 
+        // Reject unsupported pattern shapes (e.g. bigint value constants) up front,
+        // so an `or` arm that parses but can't be algebrized returns a typed error
+        // rather than panicking during deconstruction. `And` arms are re-checked when
+        // they flow through `apply_clauses`.
+        for clause in &or_join.clauses {
+            if let OrWhereClause::Clause(WhereClause::Pattern(ref p)) = clause {
+                super::reject_unsupported_pattern(p)?;
+            }
+        }
+
         // Pre-cache mentioned variables. We use these in a few places.
         or_join.mentioned_variables();
 
@@ -297,7 +307,7 @@ impl ConjoiningClauses {
                         self.mark_known_empty(e);
                     }
                     PlaceOrEmpty::Place(pattern) => {
-                        self.apply_pattern(known, pattern);
+                        self.apply_pattern(known, pattern)?;
                     }
                 };
                 Ok(())

@@ -49,7 +49,6 @@ fn test_empty_known() {
                 known_type.into_keyword().name(),
                 required
             );
-            println!("Query: {}", q);
             let cc = alg(known, &q);
             // It should only be empty if the known type and our requirement differ.
             assert_eq!(

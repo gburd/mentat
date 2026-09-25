@@ -175,41 +175,4 @@ impl ConjoiningClauses {
         // In the future, we might handle instants specially.
         self.resolve_ref_argument(schema, function, position, arg)
     }
-
-    /// Take a function argument and turn it into a `QueryValue` suitable for use in a concrete
-    /// constraint.
-    #[allow(dead_code)]
-    fn resolve_argument(&self, arg: FnArg) -> Result<QueryValue> {
-        use self::FnArg::*;
-        match arg {
-            FnArg::Variable(var) => match self.bound_value(&var) {
-                Some(v) => Ok(QueryValue::TypedValue(v)),
-                None => self
-                    .column_bindings
-                    .get(&var)
-                    .and_then(|cols| cols.first().map(|col| QueryValue::Column(col.clone())))
-                    .ok_or_else(|| AlgebrizerError::UnboundVariable(var.name())),
-            },
-            EntidOrInteger(i) => Ok(QueryValue::PrimitiveLong(i)),
-            IdentOrKeyword(_) => unimplemented!(), // TODO
-            Constant(NonIntegerConstant::Boolean(val)) => {
-                Ok(QueryValue::TypedValue(TypedValue::Boolean(val)))
-            }
-            Constant(NonIntegerConstant::Float(f)) => {
-                Ok(QueryValue::TypedValue(TypedValue::Double(f)))
-            }
-            Constant(NonIntegerConstant::Text(s)) => {
-                Ok(QueryValue::TypedValue(TypedValue::typed_string(s.as_str())))
-            }
-            Constant(NonIntegerConstant::Uuid(u)) => {
-                Ok(QueryValue::TypedValue(TypedValue::Uuid(u)))
-            }
-            Constant(NonIntegerConstant::Instant(u)) => {
-                Ok(QueryValue::TypedValue(TypedValue::Instant(u)))
-            }
-            Constant(NonIntegerConstant::BigInteger(_)) => unimplemented!(),
-            SrcVar(_) => unimplemented!(),
-            Vector(_) => unimplemented!(), // TODO
-        }
-    }
 }

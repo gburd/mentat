@@ -76,6 +76,7 @@ impl ConjoiningClauses {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod testing {
     use std::collections::BTreeSet;
 

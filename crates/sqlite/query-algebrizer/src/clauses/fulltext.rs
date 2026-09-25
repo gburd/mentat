@@ -140,7 +140,6 @@ impl ConjoiningClauses {
 
         if !attribute.fulltext {
             // We can never get results from a non-fulltext attribute!
-            println!("Can't run fulltext on non-fulltext attribute {}.", a);
             self.mark_known_empty(EmptyBecause::NonFulltextAttribute(a));
             return Ok(());
         }
@@ -260,6 +259,17 @@ impl ConjoiningClauses {
             self.constrain_var_to_type(var.clone(), ValueType::String);
             if self.is_known_empty() {
                 return Ok(());
+            }
+
+            // The fulltext text column is only exposed indirectly, so we can't
+            // substitute an already-bound value into it. Reject that shape with a
+            // typed error rather than panicking downstream. (An as-yet-unprovided
+            // `:in` variable is fine; only an already-materialized value is not.)
+            if self.value_bindings.contains_key(var) {
+                bail!(AlgebrizerError::InvalidBinding(
+                    var.name(),
+                    BindingError::UnexpectedBinding
+                ));
             }
 
             self.bind_column_to_var(
