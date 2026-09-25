@@ -84,7 +84,7 @@ Written 2026-09-25 at ~91% context. Read this + the plan
    workspace clippy lints table, release+release-dev profiles, edn/core/core-traits
    opt into lints. Both green on EC2. NOTE: this broke the byte-identical property
    of the 3 shared crates (added [lints] to their Cargo.toml) — Task 4/5 re-handles.
-4. **Tasks 4-5 DONE** on branch merge/pg-mentat:
+4. **Tasks 3-6 DONE** on branch merge/pg-mentat (single unified workspace):
    - Task 4 (9051419a merge + 1307b091 drop): imported pg_mentat's 1265 commits under
      crates/pg/, tags v1.2.1..v1.6.2, source byte-identical to canonical edn/core/core-traits.
    - Task 5 (8c4f9a73 moves + dc861f83 wire): restructured into crates/{edn,core-traits,
@@ -94,6 +94,17 @@ Written 2026-09-25 at ~91% context. Read this + the plan
      Task 1c. EC2 green: cargo test default, -p mentat --features mino, -p mino-rs (112+12+7+11+9),
      pgrx pg16 1846, mentatd builds w/o pg_config. fixtures at crates/sqlite/fixtures (workspace
      exclude); tools/mentatweb stub left in tools/.
+   - Task 6 (cd207eb3 flake, f0844f54 delete dead weight, 0ec7d223 forgejo gate,
+     30751bb6 github publish workflows, d6176259 Makefile, 8c4b37b7 CHANGELOG,
+     43c6fb58 mdBook, cd030488 fmt): one flake.nix (pgrx + sqlite devShells,
+     packages mentat-cli/mentatd/pg_mentat-pg{14-18}, rust 1.90, nix flake check
+     passed on floki), deleted sdks/automation/_/vscode/dead-CI, .forgejo/ci.yml
+     gate + .github publish workflows (release.yml gated >=v1.7.0 + mentat-cli
+     binary), root Makefile, CHANGELOG.md canonical (was pg_mentat's), one mdBook
+     at docs/ (Jekyll dropped, superpowers/RESUME preserved). cargo fmt --all
+     clean workspace-wide (vendored gc reformatted, VENDORED.md notes it).
+   - EC2 GREEN after all: cargo test default, -p mentat --features mino,
+     -p mino-rs (112+12+7+11+9), pgrx pg16 1846, fmt --check clean, mentatd builds.
    - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
    restructure into crates/ (Task 5); one flake + CI + delete dead weight (Task 6).
