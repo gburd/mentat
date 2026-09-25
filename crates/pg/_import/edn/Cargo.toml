@@ -12,7 +12,7 @@ readme = "./README.md"
 
 [dependencies]
 chrono = "0.4"
-itertools = "0.14.0"
+itertools = "0.15"
 num = "0.4.3"
 ordered-float = "5.1.0"
 pretty = "0.12.5"

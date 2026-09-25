@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -332,9 +332,7 @@ fn test_bytes() {
 
     assert_eq!(
         self::bytes("#bytes 010203050403022a").unwrap(),
-        Value::Bytes(bytes::Bytes::copy_from_slice(&vec!(
-            1, 2, 3, 5, 4, 3, 2, 42
-        )))
+        Value::Bytes(bytes::Bytes::copy_from_slice(&[1, 2, 3, 5, 4, 3, 2, 42]))
     );
     let data =
         r#"[ { :test/instant #inst "2018-01-01T11:00:00Z" :test/bytes #bytes 010203050403022a } ]"#;
@@ -619,9 +617,7 @@ fn test_value() {
     );
     assert_eq!(
         value("#bytes 010203050403022a").unwrap(),
-        Bytes(bytes::Bytes::copy_from_slice(&vec!(
-            1, 2, 3, 5, 4, 3, 2, 42
-        )))
+        Bytes(bytes::Bytes::copy_from_slice(&[1, 2, 3, 5, 4, 3, 2, 42]))
     );
 }
 
@@ -1536,7 +1532,7 @@ macro_rules! def_test_into_type {
 }
 
 #[test]
-#[allow(clippy::float_cmp, clippy::unit_cmp)]
+#[cfg_attr(clippy, allow(clippy::float_cmp, clippy::unit_cmp))]
 fn test_is_and_as_type_helper_functions() {
     let max_i64 = i64::max_value().to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
@@ -1595,7 +1591,7 @@ fn test_is_and_as_type_helper_functions() {
         if i == 0 {
             assert_eq!(value.as_nil().unwrap(), ())
         } else {
-            assert!(!value.as_nil().is_some())
+            assert!(value.as_nil().is_none())
         }
 
         // These return copied values, not references.

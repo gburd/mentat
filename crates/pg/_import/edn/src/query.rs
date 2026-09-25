@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -295,7 +295,7 @@ impl From<Keyword> for PatternNonValuePlace {
 
 impl PatternNonValuePlace {
     // I think we'll want move variants, so let's leave these here for now.
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     fn into_pattern_value_place(self) -> PatternValuePlace {
         match self {
             PatternNonValuePlace::Placeholder => PatternValuePlace::Placeholder,
@@ -414,7 +414,7 @@ impl FromValue<PatternValuePlace> for PatternValuePlace {
 
 impl PatternValuePlace {
     // I think we'll want move variants, so let's leave these here for now.
-    #[expect(dead_code)]
+    #[allow(dead_code)]
     fn into_pattern_non_value_place(self) -> Option<PatternNonValuePlace> {
         match self {
             PatternValuePlace::Placeholder => Some(PatternNonValuePlace::Placeholder),
@@ -467,6 +467,11 @@ pub enum PullConcreteAttribute {
 pub struct NamedPullAttribute {
     pub attribute: PullConcreteAttribute,
     pub alias: Option<Rc<Keyword>>,
+    /// True for a reverse-reference pull like `:person/_friends`. When set,
+    /// `attribute` holds the *forward* ident (used for schema lookup) and the
+    /// pull walks the VAET index to find entities that refer to each pulled
+    /// entity via that attribute. Ported from pg_mentat's reverse pull.
+    pub reverse: bool,
 }
 
 impl From<PullConcreteAttribute> for NamedPullAttribute {
@@ -474,6 +479,7 @@ impl From<PullConcreteAttribute> for NamedPullAttribute {
         NamedPullAttribute {
             attribute: a,
             alias: None,
+            reverse: false,
         }
     }
 }
@@ -498,10 +504,17 @@ impl std::fmt::Display for PullConcreteAttribute {
 
 impl std::fmt::Display for NamedPullAttribute {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let attr = &self.attribute;
         if let Some(ref alias) = self.alias {
-            write!(f, "{} :as {}", self.attribute, alias)
+            if self.reverse {
+                write!(f, "_{} :as {}", attr, alias)
+            } else {
+                write!(f, "{} :as {}", attr, alias)
+            }
+        } else if self.reverse {
+            write!(f, "_{}", attr)
         } else {
-            write!(f, "{}", self.attribute)
+            write!(f, "{}", attr)
         }
     }
 }
@@ -590,8 +603,11 @@ pub enum Limit {
     Variable(Variable),
 }
 
+/// The `:offset` clause of a find query: skip N leading results.
+/// Ported from pg_mentat for pagination support.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Offset {
+    /// No offset: start from the first result.
     Unlimited,
     Fixed(u64),
     Variable(Variable),
@@ -795,8 +811,8 @@ pub struct Pattern {
     pub attribute: PatternNonValuePlace,
     pub value: PatternValuePlace,
     pub tx: PatternNonValuePlace,
-    /// Optional 5th element for history queries: the `added` flag.
-    /// Used in patterns like `[?e ?a ?v ?tx ?added]`.
+    /// The `added` flag, a 5th pattern place for history queries:
+    /// `[?e ?a ?v ?tx ?added]`. Placeholder in an ordinary 4-place pattern.
     pub added: PatternNonValuePlace,
 }
 
@@ -950,14 +966,16 @@ pub struct TypeAnnotation {
     pub variable: Variable,
 }
 
-/// A rule invocation in a query, e.g., `(ancestor ?person ?ancestor)`
+#[allow(dead_code)]
+/// A rule invocation in a query, e.g., `(ancestor ?person ?ancestor)`.
+/// Ported from pg_mentat to support named and recursive rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuleInvocation {
     pub name: PlainSymbol,
     pub args: Vec<FnArg>,
 }
 
-/// A single rule clause: head + body
+/// A single rule clause: head + body.
 /// Example: `[(ancestor ?p ?a) [?p :parent ?a]]`
 /// Or recursive: `[(ancestor ?p ?a) [?p :parent ?x] (ancestor ?x ?a)]`
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -966,8 +984,8 @@ pub struct RuleClause {
     pub body: Vec<WhereClause>,
 }
 
-/// A named rule with one or more clauses
-/// Rules with multiple clauses represent alternatives (like OR)
+/// A named rule with one or more clauses.
+/// Rules with multiple clauses represent alternatives (like OR).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rule {
     pub name: PlainSymbol,
@@ -985,6 +1003,7 @@ pub enum WhereClause {
     TypeAnnotation(TypeAnnotation),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Eq, PartialEq)]
 pub struct ParsedQuery {
     pub find_spec: FindSpec,
@@ -1004,12 +1023,14 @@ pub struct ParsedQuery {
 pub(crate) enum QueryPart {
     FindSpec(FindSpec),
     WithVars(Vec<Variable>),
-    #[expect(
-        dead_code,
-        reason = "Kept for backward compat; parser now emits InBindings"
-    )]
+    #[allow(dead_code)]
     InVars(Vec<Variable>),
     InBindings(Vec<Binding>),
+    // `$` / `$named` source vars from `:in`. Previously nothing populated
+    // ParsedQuery.in_sources; the grammar now routes source vars here so a
+    // `:in $ [?a ...]` binding list is not polluted with `$` (which is not a
+    // Variable and would shift positional inputs).
+    InSources(Vec<SrcVar>),
     Limit(Limit),
     Offset(Offset),
     WhereClauses(Vec<WhereClause>),
@@ -1017,7 +1038,6 @@ pub(crate) enum QueryPart {
     Distinct,
     Rules(Vec<Rule>),
 }
-
 /// A `ParsedQuery` represents a parsed but potentially invalid query to the query algebrizer.
 /// Such a query is syntactically valid but might be semantically invalid, for example because
 /// constraints on the set of variables are not respected.
@@ -1032,6 +1052,7 @@ impl ParsedQuery {
         let mut with: Option<Vec<Variable>> = None;
         let mut in_vars: Option<Vec<Variable>> = None;
         let mut in_bindings: Option<Vec<Binding>> = None;
+        let mut in_sources: Option<Vec<SrcVar>> = None;
         let mut limit: Option<Limit> = None;
         let mut offset: Option<Offset> = None;
         let mut where_clauses: Option<Vec<WhereClause>> = None;
@@ -1064,6 +1085,12 @@ impl ParsedQuery {
                         return Err("find query has repeated :in");
                     }
                     in_bindings = Some(x)
+                }
+                QueryPart::InSources(x) => {
+                    if in_sources.is_some() {
+                        return Err("find query has repeated :in");
+                    }
+                    in_sources = Some(x)
                 }
                 QueryPart::Limit(x) => {
                     if limit.is_some() {
@@ -1104,10 +1131,9 @@ impl ParsedQuery {
         // If we got InBindings, derive in_vars from the scalar bindings
         // for backward compatibility with existing code that uses in_vars.
         let final_in_bindings = in_bindings.unwrap_or_default();
-        let final_in_vars = if in_vars.is_some() {
-            in_vars.unwrap_or_default()
+        let final_in_vars = if let Some(v) = in_vars {
+            v
         } else {
-            // Extract scalar variables from binding forms
             final_in_bindings
                 .iter()
                 .filter_map(|b| match b {
@@ -1123,7 +1149,7 @@ impl ParsedQuery {
             with: with.unwrap_or_default(),
             in_vars: final_in_vars,
             in_bindings: final_in_bindings,
-            in_sources: BTreeSet::default(),
+            in_sources: in_sources.unwrap_or_default().into_iter().collect(),
             limit: limit.unwrap_or(Limit::Unlimited),
             offset: offset.unwrap_or(Offset::Unlimited),
             where_clauses: where_clauses.ok_or("expected :where")?,

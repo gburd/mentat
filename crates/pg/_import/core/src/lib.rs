@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -332,7 +332,7 @@ mod test {
     :db/cardinality :db.cardinality/one
     :db/unique :db.unique/identity
     :db/isComponent true }, ]"#;
-        let expected_value = edn::parse::value(&expected_output)
+        let expected_value = edn::parse::value(expected_output)
             .expect("to be able to parse")
             .without_spans();
         assert_eq!(expected_value, value);

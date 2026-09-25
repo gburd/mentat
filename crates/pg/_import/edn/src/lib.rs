@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -16,14 +16,12 @@ extern crate num;
 extern crate ordered_float;
 extern crate peg;
 extern crate pretty;
-extern crate uuid;
-
 #[cfg(feature = "serde_support")]
 extern crate serde;
-
 #[cfg(feature = "serde_support")]
 #[macro_use]
 extern crate serde_derive;
+extern crate uuid;
 
 pub mod depth;
 pub use crate::depth::{check_nesting, MAX_NESTING};
@@ -74,6 +72,13 @@ use crate::query::FromValue;
 // TODO: Support discard
 
 pub type ParseError = peg::error::ParseError<peg::str::LineCol>;
+
+/// One item of an `:in` clause: a source var (`$`, `$named`) or a binding form.
+/// The grammar partitions these into `in_sources` and `in_bindings`.
+enum InItem {
+    Source(query::SrcVar),
+    Binding(query::Binding),
+}
 
 peg::parser!(grammar grammar() for str {
 
@@ -372,6 +377,18 @@ peg::parser!(grammar grammar() for str {
 
     rule pull_attribute() -> query::PullAttributeSpec
         = __ "*" __ { query::PullAttributeSpec::Wildcard }
+        / __ k:raw_backward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
+            // Reverse pull, e.g. `:person/_friends`. Store the *forward* ident
+            // (k.to_reversed()) for schema lookup and mark it reverse.
+            let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k.to_reversed()));
+            let alias = alias.map(::std::rc::Rc::new);
+            query::PullAttributeSpec::Attribute(
+                query::NamedPullAttribute {
+                    attribute,
+                    alias,
+                    reverse: true,
+                })
+        }
         / __ k:raw_forward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
             let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k));
             let alias = alias.map(::std::rc::Rc::new);
@@ -379,6 +396,7 @@ peg::parser!(grammar grammar() for str {
                 query::NamedPullAttribute {
                     attribute,
                     alias,
+                    reverse: false,
                 })
         }
 
@@ -521,10 +539,23 @@ peg::parser!(grammar grammar() for str {
                 })
         }
 
+    rule where_clause() -> query::WhereClause
+        // Right now we only support patterns and predicates. See #239 for more.
+        = pattern()
+        / or_join_clause()
+        / or_clause()
+        / not_join_clause()
+        / not_clause()
+        / type_annotation()
+        / pred()
+        / where_fn()
+        / rule_invocation()
+
+    // A rule invocation in a query body, e.g. `(ancestor ?x ?y)`. Ported from
+    // pg_mentat. Only matches names that are NOT reserved clause keywords
+    // (those are handled by their own rules above).
     rule rule_invocation() -> query::WhereClause
         = __ "(" __ n:$(symbol_name()) args:fn_arg()+ ")" __ {?
-            // Only match rule invocations: names that are NOT reserved keywords
-            // (or, not, and, or-join, not-join are handled by their own rules)
             let name = n.to_string();
             if name == "or" || name == "not" || name == "and"
                 || name == "or-join" || name == "not-join"
@@ -538,18 +569,6 @@ peg::parser!(grammar grammar() for str {
                 }))
             }
         }
-
-    rule where_clause() -> query::WhereClause
-        // Right now we only support patterns and predicates. See #239 for more.
-        = pattern()
-        / or_join_clause()
-        / or_clause()
-        / not_join_clause()
-        / not_clause()
-        / type_annotation()
-        / pred()
-        / where_fn()
-        / rule_invocation()
 
     // A rule head: (rule-name ?arg1 ?arg2)
     rule rule_head() -> query::RuleInvocation
@@ -566,10 +585,9 @@ peg::parser!(grammar grammar() for str {
             query::RuleClause { head, body }
         }
 
-    // A set of rule clauses: [clause1 clause2 ...]
+    // A set of rule clauses: [clause1 clause2 ...], grouped by rule name.
     rule rule_definitions() -> Vec<query::Rule>
         = __ "[" clauses:rule_clause()+ "]" __ {
-            // Group clauses by rule name
             let mut rule_map: std::collections::BTreeMap<String, Vec<query::RuleClause>> =
                 std::collections::BTreeMap::new();
             for clause in clauses {
@@ -584,19 +602,45 @@ peg::parser!(grammar grammar() for str {
             }).collect()
         }
 
-    rule query_part() -> query::QueryPart
-        = __ ":find" fs:find_spec() { query::QueryPart::FindSpec(fs) }
-        / __ ":in" in_bindings:binding()+ { query::QueryPart::InBindings(in_bindings) }
-        / __ ":limit" l:limit() { query::QueryPart::Limit(l) }
-        / __ ":offset" o:offset() { query::QueryPart::Offset(o) }
-        / __ ":order" os:order()+ { query::QueryPart::Order(os) }
-        / __ ":where" ws:where_clause()+ { query::QueryPart::WhereClauses(ws) }
-        / __ ":with" rules:rule_definitions() { query::QueryPart::Rules(rules) }
-        / __ ":with" with_vars:variable()+ { query::QueryPart::WithVars(with_vars) }
-        / __ ":distinct" { query::QueryPart::Distinct }
+    rule query_part() -> Vec<query::QueryPart>
+        = __ ":find" fs:find_spec() { vec![query::QueryPart::FindSpec(fs)] }
+        / __ ":in" parts:in_clause() { parts }
+        / __ ":limit" l:limit() { vec![query::QueryPart::Limit(l)] }
+        / __ ":offset" o:offset() { vec![query::QueryPart::Offset(o)] }
+        / __ ":order" os:order()+ { vec![query::QueryPart::Order(os)] }
+        / __ ":where" ws:where_clause()+ { vec![query::QueryPart::WhereClauses(ws)] }
+        / __ ":rules" rules:rule_definitions() { vec![query::QueryPart::Rules(rules)] }
+        / __ ":with" rules:rule_definitions() { vec![query::QueryPart::Rules(rules)] }
+        / __ ":with" with_vars:variable()+ { vec![query::QueryPart::WithVars(with_vars)] }
+        / __ ":distinct" { vec![query::QueryPart::Distinct] }
+
+    // `:in` accepts source vars (`$`, `$named`) and binding forms, in any mix.
+    // Sources go to InSources, everything else to InBindings; the scalar
+    // bindings are later derived into in_vars. Emits up to two parts.
+    rule in_clause() -> Vec<query::QueryPart>
+        = items:in_item()+ {
+            let mut sources = Vec::new();
+            let mut bindings = Vec::new();
+            for item in items {
+                match item {
+                    InItem::Source(s) => sources.push(s),
+                    InItem::Binding(b) => bindings.push(b),
+                }
+            }
+            let mut parts = Vec::new();
+            if !sources.is_empty() { parts.push(query::QueryPart::InSources(sources)); }
+            parts.push(query::QueryPart::InBindings(bindings));
+            parts
+        }
+
+    // A source var if it starts with `$`, else a binding. `src_var()` accepts
+    // any symbol, so try it only on `$`-led input to avoid swallowing `?vars`.
+    rule in_item() -> InItem
+        = __ &"$" s:src_var() { InItem::Source(s) }
+        / b:binding() { InItem::Binding(b) }
 
     pub rule parse_query() -> query::ParsedQuery
-        = __ "[" qps:query_part()+ "]" __ {? query::ParsedQuery::from_parts(qps) }
+        = __ "[" qps:query_part()+ "]" __ {? query::ParsedQuery::from_parts(qps.into_iter().flatten().collect()) }
 
     rule variable() -> query::Variable
         = v:value() {? query::Variable::from_value(&v).ok_or("expected variable") }

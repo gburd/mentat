@@ -1,4 +1,4 @@
-// Copyright 2016 Mozilla
+// Copyright 2016-2018 Mozilla
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 // this file except in compliance with the License. You may obtain a copy of the
@@ -143,7 +143,7 @@ mod test {
         let string = "$";
         let data = parse::value(string).unwrap().without_spans();
 
-        assert_eq!(data.write_pretty(40, &mut Vec::new()).is_ok(), true);
+        assert!(data.write_pretty(40, &mut Vec::new()).is_ok());
     }
 
     #[test]
