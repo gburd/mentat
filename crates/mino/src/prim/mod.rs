@@ -205,6 +205,8 @@ pub fn install_core(root: &Env) {
     use stateful as sf;
     register(root, "atom", sf::atom);
     register(root, "deref", sf::deref);
+    register(root, "delay*", sf::delay_star);
+    register(root, "realized?", sf::realized_p);
     register(root, "reset!", sf::reset_bang);
     register(root, "reset-vals!", sf::reset_vals_bang);
     register(root, "swap!", sf::swap_bang);
@@ -246,6 +248,11 @@ pub fn install_eager_seq_prims(root: &Env) {
     register(root, "reverse", c::reverse);
     register(root, "map", c::map);
     register(root, "filter", c::filter);
+    register(root, "lazy-keep", c::lazy_keep);
+    register(root, "lazy-remove", c::lazy_remove);
+    register(root, "lazy-map-indexed", c::lazy_map_indexed);
+    register(root, "rerun-seq", c::rerun_seq);
+    register(root, "__transduce-fuse", c::transduce_fuse);
     register(root, "reduce", c::reduce);
     register(root, "apply", c::apply_prim);
     register(root, "into", c::into);

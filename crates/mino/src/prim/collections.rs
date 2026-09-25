@@ -371,6 +371,79 @@ pub fn filter(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     Ok(list_of(&out))
 }
 
+/// `(lazy-keep f coll)` — eager `keep`: map `f` over `coll`, dropping nil
+/// results. core.clj's `keep` calls this as its 2-arity body. EAGER, same
+/// stance as the port's `map`/`filter` (lazy seqs are Phase 5).
+pub fn lazy_keep(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [f, coll] = args else {
+        return Err(throw_str("lazy-keep requires a function and a coll"));
+    };
+    let f = f.clone();
+    let mut out = Vec::new();
+    for x in to_vec(coll)? {
+        let v = apply(it, &f, std::slice::from_ref(&x))?;
+        if !matches!(v, Value::Nil) {
+            out.push(v);
+        }
+    }
+    Ok(list_of(&out))
+}
+
+/// `(lazy-remove pred coll)` — eager `remove`: keep items for which `pred` is
+/// falsy. core.clj's `remove` 2-arity body. EAGER.
+pub fn lazy_remove(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [pred, coll] = args else {
+        return Err(throw_str("lazy-remove requires a predicate and a coll"));
+    };
+    let pred = pred.clone();
+    let mut out = Vec::new();
+    for x in to_vec(coll)? {
+        if !apply(it, &pred, std::slice::from_ref(&x))?.is_truthy() {
+            out.push(x);
+        }
+    }
+    Ok(list_of(&out))
+}
+
+/// `(lazy-map-indexed f coll)` — eager `map-indexed`: call `(f index item)`
+/// for each item, index from 0. core.clj's `map-indexed` 2-arity body. EAGER.
+pub fn lazy_map_indexed(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [f, coll] = args else {
+        return Err(throw_str("lazy-map-indexed requires a function and a coll"));
+    };
+    let f = f.clone();
+    let items = to_vec(coll)?;
+    it.charge_values(items.len())?;
+    let mut out = Vec::with_capacity(items.len());
+    for (i, x) in items.into_iter().enumerate() {
+        out.push(apply(it, &f, &[Value::Int(i as i64), x])?);
+    }
+    Ok(list_of(&out))
+}
+
+/// `(rerun-seq thunk)` — realize a re-runnable seq by calling `thunk` once and
+/// returning its result. In mino this returns a seq that re-runs the thunk on
+/// each traversal; the port's seqs are eager, so realizing it once is
+/// equivalent for a single traversal. Used by core.clj's `sequence`.
+pub fn rerun_seq(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [thunk] = args else {
+        return Err(throw_str("rerun-seq requires a thunk"));
+    };
+    apply(it, thunk, &[])
+}
+
+/// `(__transduce-fuse stages f init coll)` — an optimization hook mino uses to
+/// fuse transducer stages (ADR 65). The port has no fusion path, so it always
+/// declines: return the sentinel `:mino.fusion/no-fuse`, which makes core.clj's
+/// `transduce` fall back to the plain (unfused) reduce
+/// (`(not (identical? result :mino.fusion/no-fuse))` is then false).
+pub fn transduce_fuse(_it: &mut Interp, _args: &[Value]) -> Result<Value, Throw> {
+    Ok(Value::Keyword(crate::symbol::Symbol::namespaced(
+        "mino.fusion",
+        "no-fuse",
+    )))
+}
+
 /// `(reduce f coll)` / `(reduce f init coll)`. No-init on empty calls `(f)`;
 /// no-init on non-empty seeds with the first element.
 pub fn reduce(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
