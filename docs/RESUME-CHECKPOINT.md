@@ -79,7 +79,12 @@ Written 2026-09-25 at ~91% context. Read this + the plan
    +check_hook(check_for_interrupts + stack_is_too_deep). NO REVOKE (user: leave
    open). Tests as ordinary role. Then tag pg_mentat 1.6.3 (deps + reconcile +
    1c all ship together), push to codeberg.
-3. **Task 3-6**: workspace lints, release profile, pinned toolchain; import
+3. **Task 3 DONE** (mentat 5406c30a, pg_mentat 3cf4a75): toolchain pinned 1.90
+   (plan wanted 1.98, EC2 has 1.90 — ponytail note in both rust-toolchain.toml),
+   workspace clippy lints table, release+release-dev profiles, edn/core/core-traits
+   opt into lints. Both green on EC2. NOTE: this broke the byte-identical property
+   of the 3 shared crates (added [lints] to their Cargo.toml) — Task 4/5 re-handles.
+4. **Task 4-6**: workspace lints (done), release profile (done), pinned toolchain (done); import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
    restructure into crates/ (Task 5); one flake + CI + delete dead weight (Task 6).
 4. **Task 7**: mentat-script crate (shared scripting layer, ScriptBackend trait).
