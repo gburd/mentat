@@ -83,11 +83,11 @@ jobs:
           cargo pgrx init --pg16 "$(which pg_config)"
 
       - name: cargo build (pg16)
-        working-directory: pg_mentat
+        working-directory: crates/pg/pg_mentat
         run: cargo build --no-default-features --features pg16
 
       - name: cargo pgrx install (pg16)
-        working-directory: pg_mentat
+        working-directory: crates/pg/pg_mentat
         run: |
           sudo -E env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
               cargo pgrx install --no-default-features --features pg16 \
@@ -100,4 +100,4 @@ jobs:
           PGPORT: "5432"
           PGUSER: "postgres"
           PGPASSWORD: "postgres"
-        run: bash scripts/smoke.sh
+        run: bash scripts/pg/smoke.sh

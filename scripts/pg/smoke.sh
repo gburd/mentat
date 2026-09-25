@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# scripts/smoke.sh — install pg_mentat and run the smoke-test SQL.
+# scripts/pg/smoke.sh — install pg_mentat and run the smoke-test SQL.
 #
 # Usage:
-#   bash scripts/smoke.sh            # use pgrx-managed PG 16 at ~/.pgrx/data-16
-#   PG_HOST=/tmp PG_PORT=5432 bash scripts/smoke.sh   # existing server
-#   CI=1 bash scripts/smoke.sh       # CI mode (expects PGHOST/PGPORT in env)
+#   bash scripts/pg/smoke.sh            # use pgrx-managed PG 16 at ~/.pgrx/data-16
+#   PG_HOST=/tmp PG_PORT=5432 bash scripts/pg/smoke.sh   # existing server
+#   CI=1 bash scripts/pg/smoke.sh       # CI mode (expects PGHOST/PGPORT in env)
 #
 # Exits 0 on PASS and non-zero on FAIL. Prints a single summary line either way.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SMOKE_SQL="${REPO_ROOT}/pg_mentat/tests/smoke.sql"
+# scripts/pg/ -> repo root is two levels up.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SMOKE_SQL="${REPO_ROOT}/crates/pg/pg_mentat/tests/smoke.sql"
 
 if [[ ! -f "${SMOKE_SQL}" ]]; then
     echo "smoke: expected ${SMOKE_SQL} to exist" >&2
@@ -76,7 +77,7 @@ else
     # CARGO_HOME to a read-only store path, which breaks `cargo pgrx install`;
     # local contributors typically override to $HOME/.cargo_pg_mentat).
     (
-        cd "${REPO_ROOT}/pg_mentat"
+        cd "${REPO_ROOT}/crates/pg/pg_mentat"
         CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo_pg_mentat}" \
         cargo pgrx install \
             --no-default-features --features "${PG_VERSION}" \

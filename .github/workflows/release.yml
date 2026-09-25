@@ -21,8 +21,35 @@ env:
   RUST_TOOLCHAIN: "1.90.0"
 
 jobs:
+  # The mirror will replay v0.14.0 and pg_mentat's old v1.2.1..v1.6.1 tags to
+  # GitHub; each would otherwise start a release build. Gate: only tags
+  # >= v1.7.0 (the first merged-repo release) proceed.
+  gate:
+    name: gate tag >= v1.7.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag: ${TAG}"
+          case "${TAG}" in
+            v0.*|v1.[0-6].*|v1.[0-6])
+              echo "::notice::${TAG} is a pre-merge tag; skipping release build."
+              exit 1
+              ;;
+          esac
+          # Belt-and-suspenders numeric check: TAG must sort >= v1.7.0.
+          MIN="v1.7.0"
+          LOWEST="$(printf '%s\n%s\n' "${TAG}" "${MIN}" | sort -V | head -1)"
+          if [ "${LOWEST}" != "${MIN}" ] && [ "${TAG}" != "${MIN}" ]; then
+            echo "::notice::${TAG} sorts below ${MIN}; skipping."
+            exit 1
+          fi
+          echo "${TAG} >= ${MIN}: proceeding."
+
   build:
     name: Build pg${{ matrix.pg_version }}
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -74,7 +101,7 @@ jobs:
             $(command -v /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config || which pg_config)
 
       - name: cargo pgrx package
-        working-directory: pg_mentat
+        working-directory: crates/pg/pg_mentat
         run: |
           cargo pgrx package --no-default-features \
             --features pg${{ matrix.pg_version }} \
@@ -95,7 +122,7 @@ jobs:
 
           # Fall back to the source control file if the packaged one wasn't found.
           if [ ! -f "${STAGING}/pg_mentat.control" ]; then
-            cp pg_mentat/pg_mentat.control "${STAGING}/"
+            cp crates/pg/pg_mentat/pg_mentat.control "${STAGING}/"
           fi
 
           # Fail loud if the shared library is missing (empty tarball is useless).
@@ -114,9 +141,59 @@ jobs:
           path: pg_mentat-pg${{ matrix.pg_version }}.tar.gz
           retention-days: 5
 
+  # Build the embedded SQLite CLI (crates/sqlite/cli) as a plain Linux binary,
+  # attached to the release alongside the per-PG extension tarballs.
+  build-cli:
+    name: Build mentat-cli (Linux x86_64)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential pkg-config libsqlite3-dev libssl-dev
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-cli-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-cli-${{ runner.os }}-
+
+      - name: Build mentat-cli
+        run: cargo build --release --locked -p mentat_cli
+
+      - name: Package CLI tarball
+        run: |
+          BIN="$(ls target/release/mentat_cli target/release/mentat-cli 2>/dev/null | head -1)"
+          if [ -z "${BIN}" ]; then echo "ERROR: mentat-cli binary not found" >&2; exit 1; fi
+          STAGING="mentat-cli-linux-x86_64"
+          mkdir -p "${STAGING}"
+          cp "${BIN}" "${STAGING}/mentat-cli"
+          tar czf "mentat-cli-linux-x86_64.tar.gz" "${STAGING}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mentat-cli-linux-x86_64
+          path: mentat-cli-linux-x86_64.tar.gz
+          retention-days: 5
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, build-cli]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

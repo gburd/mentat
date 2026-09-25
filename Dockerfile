@@ -29,9 +29,9 @@ RUN cargo install --locked cargo-pgrx --version '~0.17'
 # Initialize pgrx with the system PostgreSQL 16
 RUN cargo pgrx init --pg16 /usr/bin/pg_config
 
-# Copy the full source tree
-COPY . /build/pg_mentat
-WORKDIR /build/pg_mentat/pg_mentat
+# Copy the full workspace, then build the extension crate.
+COPY . /build
+WORKDIR /build/crates/pg/pg_mentat
 
 # Build and install the extension into the system PostgreSQL directories
 RUN cargo pgrx install --release --pg-config /usr/bin/pg_config

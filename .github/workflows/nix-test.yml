@@ -54,7 +54,7 @@ jobs:
             cargo pgrx init --pg16 download
 
             echo "=== Running tests ==="
-            (cd pg_mentat && cargo pgrx test --no-default-features --features pg16 pg16)
+            (cd crates/pg/pg_mentat && cargo pgrx test --no-default-features --features pg16 pg16)
           '
 
       - name: Generate test report
@@ -73,7 +73,7 @@ jobs:
         with:
           name: nix-test-failure-logs
           path: |
-            pg_mentat/target/pgrx-test-data-*/
+            crates/pg/pg_mentat/target/pgrx-test-data-*/
           retention-days: 7
 
   build-package:
@@ -112,7 +112,7 @@ jobs:
         run: |
           echo "## Build Outputs" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          find pg_mentat/target -name "pg_mentat.so" -o -name "*.control" -o -name "*.sql" 2>/dev/null | sort >> "$GITHUB_STEP_SUMMARY"
+          find crates/pg/pg_mentat/target -name "pg_mentat.so" -o -name "*.control" -o -name "*.sql" 2>/dev/null | sort >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload extension artifact
@@ -120,7 +120,7 @@ jobs:
         with:
           name: pg_mentat-extension
           path: |
-            pg_mentat/target/release/pg_mentat-pg16/
+            crates/pg/pg_mentat/target/release/pg_mentat-pg16/
           retention-days: 30
 
   lint:
