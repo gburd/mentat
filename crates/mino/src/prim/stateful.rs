@@ -41,6 +41,94 @@ fn atom_cell(v: &Value) -> Option<&Gc<GcCell<AtomState>>> {
     }
 }
 
+/// The three states of a `delay`. Ports MINO_DELAY's `state` field.
+#[derive(Trace, Finalize, Clone)]
+pub enum DelayCell {
+    /// Not yet forced: holds the no-arg thunk fn.
+    Pending(Value),
+    /// Forced successfully: holds the cached value.
+    Realized(Value),
+    /// Forcing threw: holds the diagnostic, rethrown on every later force.
+    Failed(Value),
+}
+
+/// The mutable interior of a delay. Ports the `as.delay` union arm.
+#[derive(Trace, Finalize)]
+pub struct DelayState {
+    pub cell: DelayCell,
+}
+
+/// `(delay* thunk)` — build a pending delay over a no-arg fn. core.clj's
+/// `delay` macro expands to `(delay* (fn [] body...))`. Ports
+/// `prim_delay_star`.
+pub fn delay_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [fn_val] = args else {
+        return Err(throw_classified(
+            "eval/arity",
+            "MAR001",
+            "delay* requires one argument",
+        ));
+    };
+    if !matches!(
+        fn_val,
+        Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_)
+    ) {
+        return Err(throw_classified(
+            "eval/type",
+            "MTY001",
+            "delay*: argument must be a fn of no arguments",
+        ));
+    }
+    Ok(Value::Delay(Gc::new(GcCell::new(DelayState {
+        cell: DelayCell::Pending(fn_val.clone()),
+    }))))
+}
+
+/// Force a delay: run its thunk at most once, caching the value; a thrown
+/// diagnostic is cached and rethrown on every later force. Ports `delay_force`.
+/// Called by `deref` on a `Value::Delay`.
+pub fn force_delay(it: &mut Interp, cell: &Gc<GcCell<DelayState>>) -> Result<Value, Throw> {
+    // Read the current state without holding the borrow across the thunk call.
+    // Match by reference and clone the payload out (DelayCell is Finalize/Drop,
+    // so it can't be moved out of by value).
+    let thunk = {
+        let st = cell.borrow();
+        match &st.cell {
+            DelayCell::Realized(v) => return Ok(v.clone()),
+            DelayCell::Failed(t) => return Err(Throw(t.clone())),
+            DelayCell::Pending(thunk) => thunk.clone(),
+        }
+    };
+    match apply(it, &thunk, &[]) {
+        Ok(v) => {
+            cell.borrow_mut().cell = DelayCell::Realized(v.clone());
+            Ok(v)
+        }
+        Err(Throw(t)) => {
+            cell.borrow_mut().cell = DelayCell::Failed(t.clone());
+            Err(Throw(t))
+        }
+    }
+}
+
+/// `(realized? x)` — true iff a delay has been forced (realized or failed).
+/// Ports `prim_realized_p` for the delay case; other ref types are always
+/// treated as realized in the port (no blocking refs).
+pub fn realized_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [x] = args else {
+        return Err(throw_classified(
+            "eval/arity",
+            "MAR001",
+            "realized? requires one argument",
+        ));
+    };
+    Ok(Value::Bool(match x {
+        Value::Delay(cell) => !matches!(cell.borrow().cell, DelayCell::Pending(_)),
+        // atoms/other refs are always realized.
+        _ => true,
+    }))
+}
+
 /// Validate `new_val` against the atom's validator. `Ok(())` on success, an
 /// error Throw if the validator returns falsy or itself throws. Ports
 /// `atom_validate`.
@@ -168,6 +256,7 @@ pub fn deref(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         [a] => match a {
             Value::Atom(cell) => Ok(cell.borrow().val.clone()),
             Value::Store(cell) => Ok(crate::store::store_deref(cell)),
+            Value::Delay(cell) => force_delay(it, cell),
             // Deref a Var to its current root value (`@#'x`, `@(resolve 's)`).
             Value::Var(sym) => Ok(it.var_value(sym).unwrap_or(Value::Nil)),
             _ => Err(throw_classified(
@@ -337,13 +426,6 @@ pub fn add_watch(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             ))
         }
     };
-    let Some(cell) = atom_cell(a) else {
-        return Err(throw_classified(
-            "eval/type",
-            "MTY001",
-            "add-watch: first argument must be an atom or ref",
-        ));
-    };
     if !matches!(f, Value::Fn(_) | Value::Prim(_) | Value::PrimClosure(_)) {
         return Err(throw_classified(
             "eval/type",
@@ -351,9 +433,25 @@ pub fn add_watch(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             "add-watch: watch fn must be a fn",
         ));
     }
-    let mut st = cell.borrow_mut();
-    st.watches = st.watches.assoc(key.clone(), f.clone());
-    Ok(a.clone())
+    match a {
+        Value::Atom(cell) => {
+            let mut st = cell.borrow_mut();
+            st.watches = st.watches.assoc(key.clone(), f.clone());
+            Ok(a.clone())
+        }
+        // Stores register with the same watch table as atoms: add-watch on a
+        // conn fires (fn key conn old new) on every transact via store-commit*.
+        Value::Store(cell) => {
+            let mut st = cell.borrow_mut();
+            st.watches = st.watches.assoc(key.clone(), f.clone());
+            Ok(a.clone())
+        }
+        _ => Err(throw_classified(
+            "eval/type",
+            "MTY001",
+            "add-watch: first argument must be an atom or ref",
+        )),
+    }
 }
 
 /// `(remove-watch atom key)` — unregister a watch. Ports `prim_remove_watch`.
@@ -368,16 +466,23 @@ pub fn remove_watch(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             ))
         }
     };
-    let Some(cell) = atom_cell(a) else {
-        return Err(throw_classified(
+    match a {
+        Value::Atom(cell) => {
+            let mut st = cell.borrow_mut();
+            st.watches = st.watches.dissoc(key);
+            Ok(a.clone())
+        }
+        Value::Store(cell) => {
+            let mut st = cell.borrow_mut();
+            st.watches = st.watches.dissoc(key);
+            Ok(a.clone())
+        }
+        _ => Err(throw_classified(
             "eval/type",
             "MTY001",
             "remove-watch: first argument must be an atom or ref",
-        ));
-    };
-    let mut st = cell.borrow_mut();
-    st.watches = st.watches.dissoc(key);
-    Ok(a.clone())
+        )),
+    }
 }
 
 /// `(set-validator! atom fn)` — set or clear (nil) the validator. mino installs

@@ -142,6 +142,18 @@ impl Printer {
             // MINO_RECUR having only a diagnostic print form).
             Value::Recur(_) => s.push_str("#<recur>"),
             Value::TailCall(_) => s.push_str("#<tail-call>"),
+            // Delay: `#<delay:pending|realized|failed>` — state only, no
+            // payload (printing must not force). Mirrors mino's print.c.
+            Value::Delay(cell) => {
+                let st = match cell.borrow().cell {
+                    crate::prim::stateful::DelayCell::Pending(_) => "pending",
+                    crate::prim::stateful::DelayCell::Realized(_) => "realized",
+                    crate::prim::stateful::DelayCell::Failed(_) => "failed",
+                };
+                s.push_str("#<delay:");
+                s.push_str(st);
+                s.push('>');
+            }
             // pr-str form: `#"source"` with the source printed verbatim (the
             // reader stored it raw, no escape processing). Verified: mino
             // `(pr-str #"a\d+")` => `#"a\d+"`.

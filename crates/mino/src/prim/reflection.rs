@@ -395,6 +395,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Var(_) => "var",
         Value::Atom(_) => "atom",
         Value::Store(_) => "store",
+        Value::Delay(_) => "delay",
         Value::Recur(_) => "recur",
         Value::TailCall(_) => "tail-call",
     };

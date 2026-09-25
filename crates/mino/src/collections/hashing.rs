@@ -154,6 +154,8 @@ fn hash32(v: &Value, depth: usize) -> u32 {
         Value::Atom(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         // Store: identity hash by cell address (stores are never value-equal).
         Value::Store(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
+        // Delay: identity hash by cell address (delays are never value-equal).
+        Value::Delay(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
     }
 }
 
@@ -252,6 +254,8 @@ fn eq_step<'a>(a: &'a Value, b: &'a Value, work: &mut Vec<(&'a Value, &'a Value)
         // Stores: identity. Two distinct stores are never `=` (matches mino:
         // `(= a a)` true, `(= a (open))` false).
         (Value::Store(x), Value::Store(y)) => std::ptr::eq(&**x, &**y),
+        // Delays: identity. Two distinct delays are never `=`.
+        (Value::Delay(x), Value::Delay(y)) => std::ptr::eq(&**x, &**y),
         _ => false,
     }
 }

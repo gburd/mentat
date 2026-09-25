@@ -79,6 +79,12 @@ pub enum Value {
     // Ports MINO_ATOM (prim/stateful.c). The port is single-threaded, so
     // `swap!` is a plain read-compute-store (no CAS loop needed).
     Atom(Gc<gc::GcCell<crate::prim::stateful::AtomState>>),
+    // A lazy thunk (`delay`). Holds a no-arg fn plus a cached state: pending,
+    // realized (the value), or failed (the thrown diagnostic, rethrown on
+    // every later force). `type` returns `:delay`; `deref`/`force` run the
+    // thunk at most once. Ports MINO_DELAY (prim/stateful.c). Equality/hash by
+    // identity.
+    Delay(Gc<gc::GcCell<crate::prim::stateful::DelayState>>),
     // An EAVT store connection (`mino.store/open`). An identity cell holding
     // the current immutable db value plus a durable path (None = in-memory),
     // a monotonic print id, and a watches map. Equality/hash are by identity
