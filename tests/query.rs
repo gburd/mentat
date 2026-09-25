@@ -2040,3 +2040,36 @@ fn test_recursive_rule_errors_cleanly() {
     // Multi-clause (and recursive) => rejected, but as an error, not a panic.
     assert!(res.is_err(), "recursive/multi-clause rule should error");
 }
+
+// A plain (non-namespaced) keyword in a pattern's value place is a keyword
+// constant, as in Datomic: `[?e :task/status :done]`. The shared `edn` grammar
+// used to reject plain keywords there; pg_mentat accepted them.
+#[test]
+fn test_plain_keyword_in_value_place() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :task/status :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+               {:db/ident :task/name   :db/valueType :db.type/string  :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(
+            r#"[{:task/name "write" :task/status :done}
+               {:task/name "test"  :task/status :todo}
+               {:task/name "ship"  :task/status :task/blocked}]"#,
+        )
+        .expect("data");
+    let mut names = |q: &str| -> Vec<String> {
+        let r = store.begin_read().expect("read").q_once(q, None).expect("query").into_coll().expect("coll");
+        let mut v: Vec<String> = r.into_iter().map(|b| b.into_string().expect("string").to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names("[:find [?n ...] :where [?e :task/status :done] [?e :task/name ?n]]"), vec!["write"]);
+    assert_eq!(names("[:find [?n ...] :where [?e :task/status :todo] [?e :task/name ?n]]"), vec!["test"]);
+    // Namespaced keyword values still work.
+    assert_eq!(names("[:find [?n ...] :where [?e :task/status :task/blocked] [?e :task/name ?n]]"), vec!["ship"]);
+    // A plain keyword nobody stored matches nothing (and is not an error).
+    assert!(names("[:find [?n ...] :where [?e :task/status :nope] [?e :task/name ?n]]").is_empty());
+}
