@@ -153,6 +153,10 @@ pub fn install_core(root: &Env) {
     register(root, "not", r::not);
     register(root, "name", r::name);
     register(root, "keyword", r::keyword);
+    register(root, "find-keyword", r::find_keyword);
+    register(root, "regex?", r::regex_p);
+    register(root, "mino-version", r::mino_version);
+    register(root, "read-string", r::read_string);
     register(root, "symbol", r::symbol);
     register(root, "true?", r::true_p);
     register(root, "false?", r::false_p);

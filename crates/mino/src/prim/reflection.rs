@@ -250,7 +250,82 @@ pub fn keyword(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         [Value::Sym(s)] | [Value::Keyword(s)] => Ok(Value::Keyword(s.clone())),
         [Value::Str(ns), Value::Str(nm)] => Ok(Value::Keyword(Symbol::namespaced(ns, nm))),
         [Value::Nil] => Ok(Value::Nil),
+        // Canon's 1-arity keyword is a cond over string/keyword/symbol with no
+        // else branch: any other type yields nil, not a throw (upstream
+        // prim_keyword). `(keyword 42)` => nil.
+        [_] => Ok(Value::Nil),
+        // 2-arity with a nil namespace / bad shapes still error like upstream.
+        [Value::Nil, Value::Str(nm)] => Ok(Value::Keyword(parse_name(nm))),
         _ => Err(throw_classified("type", "MTY001", "keyword: bad arguments")),
+    }
+}
+
+/// `(find-keyword name)` / `(find-keyword ns name)` — a lookup-only probe over
+/// the keyword table. The port does not intern keywords (every keyword is
+/// equal by value), so this returns the keyword a string names and nil for any
+/// non-string input, matching upstream's strings-only contract. Ports
+/// `prim_find_keyword`.
+pub fn find_keyword(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    match args {
+        [Value::Str(s)] => Ok(Value::Keyword(parse_name(s))),
+        [Value::Str(ns), Value::Str(nm)] => Ok(Value::Keyword(Symbol::namespaced(ns, nm))),
+        [Value::Nil, Value::Str(nm)] => Ok(Value::Keyword(parse_name(nm))),
+        // Non-string input: nil (never interns, never throws).
+        [_] | [_, _] => Ok(Value::Nil),
+        _ => Err(throw_classified(
+            "eval/arity",
+            "MAR001",
+            "find-keyword requires one or two arguments",
+        )),
+    }
+}
+
+/// `(regex? x)` — true iff x is a compiled regex value. A native prim in mino
+/// (reflection.c `prim_regex_p`); the refreshed core.clj's `vec` calls it
+/// eagerly, so it must be bound. Ports `prim_regex_p`.
+pub fn regex_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let v = one_arg(args, "regex?")?;
+    Ok(Value::Bool(matches!(v, Value::Regex(_))))
+}
+
+/// `(mino-version)` — the runtime version string. core.clj's `*mino-version*`
+/// decoder parses this into a CalVer map. The port reports the archived mino
+/// release it tracks. Ports `prim_mino_version`.
+pub fn mino_version(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    if !args.is_empty() {
+        return Err(throw_classified(
+            "eval/arity",
+            "MAR001",
+            "mino-version takes no arguments",
+        ));
+    }
+    Ok(Value::Str(Gc::new("0.2.0".to_string())))
+}
+
+/// `(read-string s)` / `(read-string opts s)` — read the FIRST form from an EDN
+/// string. Ports `prim_read_string` over the existing reader; the opts map is
+/// accepted and ignored (the port has no reader-option surface). A read error
+/// throws a classified `:reader` diagnostic.
+pub fn read_string(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let s = match args {
+        [Value::Str(s)] => s,
+        // (read-string opts s): opts is ignored.
+        [_opts, Value::Str(s)] => s,
+        _ => {
+            return Err(throw_classified(
+                "eval/type",
+                "MTY001",
+                "read-string: argument must be a string",
+            ))
+        }
+    };
+    match crate::reader::read_one(s) {
+        Ok((v, _)) => Ok(v),
+        Err(e) => Err(throw_classified(
+            "reader",
+            "MRD001",
+            &format!("read-string: {e}"),
+        )),
     }
 }
 

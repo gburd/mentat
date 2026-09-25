@@ -14,8 +14,15 @@
 (def ^:private prim-starts-with? starts-with?)
 (def ^:private prim-ends-with?   ends-with?)
 (def ^:private prim-includes?    includes?)
-(def ^:private prim-replace      replace)
-(def ^:private prim-replace-first replace-first)
+;; PORT DIVERGENCE (mino-rs): the C `clojure.string/replace` /
+;; `clojure.string/replace-first` prims are namespace-scoped in mino, so
+;; upstream captures them as bare `replace`/`replace-first`. The Rust port has
+;; a FLAT namespace, where bare `replace` is `clojure.core/replace` (the
+;; collection op), so the port registers the string prims under the private
+;; names `-string-replace` / `-string-replace-first` (see prim/mod.rs). Bind
+;; those here instead of the bare names.
+(def ^:private prim-replace      -string-replace)
+(def ^:private prim-replace-first -string-replace-first)
 (def ^:private prim-trim         trim)
 
 (defn- assert-string [s]
