@@ -10,6 +10,7 @@
 //! so they never actually collide as the *same* key. `hash` may collide;
 //! `eq` is the source of truth.
 
+use crate::depth::MAX_DATA_DEPTH;
 use crate::value::Value;
 
 const FNV_OFFSET: u32 = 2166136261;
@@ -60,11 +61,23 @@ fn hash_identity(h: u32, p: usize) -> u32 {
 /// Hash a value, compatible with [`eq_val`]. Ports `hash_val`. Returns u64
 /// (the HAMT only uses the low 32 bits, matching mino's `uint32_t`).
 pub fn hash_val(v: &Value) -> u64 {
-    hash32(v) as u64
+    hash32(v, 0) as u64
 }
 
-fn hash32(v: &Value) -> u32 {
+// A fixed sentinel folded in place of any subtree deeper than
+// `MAX_DATA_DEPTH`. Two equal-shaped deep values still hash the same because
+// both stop here and fold the identical byte; `eq` remains the source of
+// truth (past the cap `eq` may report distinct deep subtrees unequal, so at
+// worst two genuinely-equal >512-deep values land in different buckets and
+// `eq` still separates them correctly).
+const DEEP_SENTINEL: u8 = 0xDE;
+
+fn hash32(v: &Value, depth: usize) -> u32 {
     let h = FNV_OFFSET;
+    if depth > MAX_DATA_DEPTH {
+        // Stop descending: fold one sentinel byte for the whole subtree.
+        return fnv_mix(h, DEEP_SENTINEL);
+    }
     match v {
         Value::Nil => fnv_mix(h, 0x01),
         Value::Bool(b) => fnv_mix(fnv_mix(h, 0x02), if *b { 1 } else { 0 }),
@@ -107,13 +120,13 @@ fn hash32(v: &Value) -> u32 {
         // Sequentials (cons list, vector, empty-list) share tag 0x09 so
         // (= '(1 2) [1 2]) and (= () []). The empty list hashes as the empty
         // sequential.
-        Value::EmptyList | Value::Cons(_) | Value::Vector(_) => hash_sequential(v),
+        Value::EmptyList | Value::Cons(_) | Value::Vector(_) => hash_sequential(v, depth),
         // Maps: order-insensitive XOR-fold of per-entry hashes.
         Value::Map(m) => {
             let mut acc: u32 = 0;
             for (k, val) in m.entries() {
-                let hk = hash32(k);
-                let hv = hash32(val);
+                let hk = hash32(k, depth + 1);
+                let hv = hash32(val, depth + 1);
                 acc ^= hk ^ hv.wrapping_mul(2654435761);
             }
             hash_u32_bytes(fnv_mix(h, 0x0a), acc)
@@ -122,7 +135,7 @@ fn hash32(v: &Value) -> u32 {
         Value::Set(set) => {
             let mut acc: u32 = 0;
             for e in set.iter() {
-                acc ^= hash32(e);
+                acc ^= hash32(e, depth + 1);
             }
             hash_u32_bytes(fnv_mix(h, 0x0d), acc)
         }
@@ -145,20 +158,22 @@ fn hash32(v: &Value) -> u32 {
 }
 
 // hash_sequential: unified scheme for cons chains + vectors (tag 0x09), so
-// equal content across representations hashes equal.
-fn hash_sequential(v: &Value) -> u32 {
+// equal content across representations hashes equal. `depth` is the nesting
+// of this sequential itself; each element hashes at `depth + 1` and stops
+// descending past `MAX_DATA_DEPTH` (see `DEEP_SENTINEL`).
+fn hash_sequential(v: &Value, depth: usize) -> u32 {
     let mut h = fnv_mix(FNV_OFFSET, 0x09);
     let mut cur = v;
     loop {
         match cur {
             Value::Vector(vec) => {
                 for e in vec.iter() {
-                    h = hash_u32_bytes(h, hash32(e));
+                    h = hash_u32_bytes(h, hash32(e, depth + 1));
                 }
                 break;
             }
             Value::Cons(cell) => {
-                h = hash_u32_bytes(h, hash32(&cell.0));
+                h = hash_u32_bytes(h, hash32(&cell.0, depth + 1));
                 cur = &cell.1;
             }
             _ => break, // EmptyList / nil terminator (or improper tail: stop)
@@ -171,7 +186,24 @@ fn hash_sequential(v: &Value) -> u32 {
 /// `(= 1 1.0)` is FALSE (distinct value classes); strings/symbols/keywords
 /// compare by content; collections compare structurally (maps/sets ignore
 /// insertion order).
+///
+/// Iterative (explicit `Vec` worklist of `(&Value, &Value)` pairs) so deeply
+/// nested data compares in constant Rust stack: any mismatch returns `false`,
+/// an empty worklist returns `true`. No depth cap and no wrong answers.
 pub fn eq_val(a: &Value, b: &Value) -> bool {
+    let mut work: Vec<(&Value, &Value)> = vec![(a, b)];
+    while let Some((a, b)) = work.pop() {
+        if !eq_step(a, b, &mut work) {
+            return false;
+        }
+    }
+    true
+}
+
+// Compare one pair. Scalars decide immediately; sequentials/maps/sets push
+// their children onto `work` and return `true` (deferring the real decision
+// to those child comparisons). Returns `false` on any definite mismatch.
+fn eq_step<'a>(a: &'a Value, b: &'a Value, work: &mut Vec<(&'a Value, &'a Value)>) -> bool {
     match (a, b) {
         (Value::Nil, Value::Nil) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
@@ -200,8 +232,8 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
         (
             Value::EmptyList | Value::Cons(_) | Value::Vector(_),
             Value::EmptyList | Value::Cons(_) | Value::Vector(_),
-        ) => eq_sequential(a, b),
-        (Value::Map(x), Value::Map(y)) => eq_map(x, y),
+        ) => push_sequential(a, b, work),
+        (Value::Map(x), Value::Map(y)) => push_map(x, y, work),
         (Value::Set(x), Value::Set(y)) => eq_set(x, y),
         // Callables: identity. Distinct allocations are never `=`.
         (Value::Fn(x), Value::Fn(y)) => Gc_ptr_eq_fn(x, y),
@@ -226,22 +258,23 @@ pub fn eq_val(a: &Value, b: &Value) -> bool {
 
 // gc::Gc has no ptr_eq; compare the referent addresses.
 #[allow(non_snake_case)]
-fn Gc_ptr_eq_fn(x: &gc::Gc<crate::eval::func::Closure>, y: &gc::Gc<crate::eval::func::Closure>) -> bool {
+fn Gc_ptr_eq_fn(
+    x: &gc::Gc<crate::eval::func::Closure>,
+    y: &gc::Gc<crate::eval::func::Closure>,
+) -> bool {
     std::ptr::eq(&**x, &**y)
 }
 
-// Iterate two sequentials (cons list or vector) in lockstep.
-fn eq_sequential(a: &Value, b: &Value) -> bool {
+// Push the element pairs of two sequentials (cons list or vector) onto the
+// worklist in lockstep. Returns `false` immediately if the lengths differ;
+// otherwise defers element comparison to the worklist.
+fn push_sequential<'a>(a: &'a Value, b: &'a Value, work: &mut Vec<(&'a Value, &'a Value)>) -> bool {
     let mut ia = SeqCursor::new(a);
     let mut ib = SeqCursor::new(b);
     loop {
         match (ia.next(), ib.next()) {
             (None, None) => return true,
-            (Some(x), Some(y)) => {
-                if !eq_val(x, y) {
-                    return false;
-                }
-            }
+            (Some(x), Some(y)) => work.push((x, y)),
             _ => return false,
         }
     }
@@ -284,14 +317,21 @@ impl<'a> SeqCursor<'a> {
 }
 
 // Same-key-set, same-values; order-independent (Clojure map equality).
-fn eq_map(a: &crate::collections::map::PMap, b: &crate::collections::map::PMap) -> bool {
+// Key lookup uses `get` (iterative `eq_val` internally); each matched
+// value pair is pushed onto the worklist so deep map values stay off the
+// Rust stack too.
+fn push_map<'a>(
+    a: &'a crate::collections::map::PMap,
+    b: &'a crate::collections::map::PMap,
+    work: &mut Vec<(&'a Value, &'a Value)>,
+) -> bool {
     if a.count() != b.count() {
         return false;
     }
     for (k, av) in a.entries() {
         match b.get(k) {
-            Some(bv) if eq_val(av, bv) => {}
-            _ => return false,
+            Some(bv) => work.push((av, bv)),
+            None => return false,
         }
     }
     true

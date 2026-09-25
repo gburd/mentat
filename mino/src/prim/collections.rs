@@ -562,9 +562,18 @@ pub fn hash_set(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 // A total ordering over the numeric/string/char/kw tiers used by `sort`.
 // Ports the default comparator: numeric by magnitude, strings/chars/keywords
-// lexicographically. Mixed uncomparable types -> error.
+// lexicographically. Mixed uncomparable types -> error. `cmp_at` threads the
+// nesting depth so deeply nested vectors don't overflow the Rust stack: past
+// `MAX_DATA_DEPTH` it throws `:eval/limit`-style rather than recursing.
 fn default_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, Throw> {
+    cmp_at(a, b, 0)
+}
+
+fn cmp_at(a: &Value, b: &Value, depth: usize) -> Result<std::cmp::Ordering, Throw> {
     use std::cmp::Ordering;
+    if depth > crate::depth::MAX_DATA_DEPTH {
+        return Err(throw_str("compare: nesting too deep"));
+    }
     // nil sorts before everything (Clojure: (compare nil x) < 0, (compare x nil) > 0).
     match (a, b) {
         (Value::Nil, Value::Nil) => return Ok(Ordering::Equal),
@@ -594,7 +603,7 @@ fn default_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, Throw> {
                 return Ok(x.len().cmp(&y.len()));
             }
             for i in 0..x.len() {
-                let ord = default_cmp(x.nth(i).unwrap(), y.nth(i).unwrap())?;
+                let ord = cmp_at(x.nth(i).unwrap(), y.nth(i).unwrap(), depth + 1)?;
                 if ord != Ordering::Equal {
                     return Ok(ord);
                 }

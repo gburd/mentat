@@ -3,6 +3,38 @@
 ## Unreleased
 
 ### Fixed
+- **Deeply nested data no longer overflows the Rust stack when read,
+  printed, hashed, compared for equality, or ordered.** Every walk over a
+  `Value` tree used Rust stack proportional to the nesting, so a value nested
+  a few thousand deep (e.g. built by `(loop [x nil i 0] (if (< i N) (recur
+  [x] (inc i)) x))`) aborted the process on a 2 MB debug stack. Untrusted
+  callers (`mentat_eval`) could crash the host with such data. Now all five
+  paths are bounded by `depth::MAX_DATA_DEPTH` (512) or made iterative:
+  - **reader** (`read_form`): reading past the cap (e.g. 100000 nested `[`)
+    now returns `ReadError::TooDeep` instead of recursing to overflow.
+  - **printer** (`pr-str`/`str`/`prn`/`println`/`print`): before, printing a
+    deep value overflowed the stack. Now `print_into` is depth-bounded — a
+    subtree past the cap prints the literal marker `#<nesting too deep>` —
+    and cycles are detected: a self-referencing atom `(reset! a a)` prints
+    `#atom[#<cycle>]` instead of looping forever. The infallible `print_str`
+    keeps the marker (used by `Display`/error paths); the user-facing print
+    prims call a new fallible `print_str_checked`, so a script printing
+    over-deep data gets a `:eval/limit` throw (`{:limit :nesting}`) rather
+    than a silently truncated string.
+  - **hash** (`hash_val`): before, `(hash x)` on a deep value overflowed via
+    `hash32`→`hash_sequential`→`hash32`. Now `hash32` threads a depth and, past
+    the cap, folds one fixed sentinel byte for the whole subtree (so equal-
+    shaped deep values still hash alike; `eq` remains the source of truth).
+  - **eq** (`eq_val`): before, `(= x x)` on a deep value overflowed via
+    `eq_val`→`eq_sequential`→`eq_val`. Now `eq_val` is iterative (an explicit
+    `Vec` worklist of value pairs) with no depth cap and no wrong answers:
+    sequentials and map values push their children, sets compare via the
+    (now-iterative) `contains`, any mismatch returns `false`.
+  - **compare** (`compare`/`default_cmp`): before, `(compare x x)` on nested
+    vectors overflowed via `default_cmp` recursion. Now `default_cmp` threads
+    a depth (`cmp_at`) and, past the cap, throws `"compare: nesting too
+    deep"` instead of recursing. Ordinary data compares exactly as before.
+
 - **Tail calls no longer grow the stack.** A call to a fn in tail position
   now returns an internal `TailCall` signal that the caller's apply loop runs,
   as upstream mino does (`MINO_TAIL_CALL`). Before, only `recur` did this, so

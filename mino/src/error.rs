@@ -72,6 +72,19 @@ pub fn throw_classified(kind: &str, code: &str, msg: &str) -> Throw {
     Throw(diag_map(kind, code, msg, Value::Nil))
 }
 
+/// A `:eval/limit` throw for data nested deeper than
+/// [`crate::depth::MAX_DATA_DEPTH`] while printing. Data is `{:limit :nesting}`
+/// so a `catch`/`ex-data` can tell it apart from the step/heap/depth budgets.
+pub fn throw_nesting_limit() -> Throw {
+    let data = PMap::empty().assoc(kw("limit"), kw("nesting"));
+    Throw(diag_map(
+        "eval/limit",
+        "MLM001",
+        "print: data nested too deep",
+        Value::Map(Gc::new(data)),
+    ))
+}
+
 /// The payload of a tripped resource limit (steps/heap/depth, or a host
 /// check-hook abort): `{:mino/kind :eval/limit :mino/code "MLM001"
 /// :mino/message MSG :mino/data {:limit :WHICH :value N}}`. Matches upstream

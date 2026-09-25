@@ -4,7 +4,7 @@
 
 use crate::error::Throw;
 use crate::eval::Interp;
-use crate::printer::print_str;
+use crate::printer::{print_str, print_str_checked};
 use crate::value::Value;
 use gc::Gc;
 
@@ -18,7 +18,7 @@ pub fn str_(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     it.charge(0, known)?;
     let mut out = String::with_capacity(known as usize);
     for a in args {
-        arg_to_str(&mut out, a);
+        arg_to_str(&mut out, a)?;
     }
     it.charge(0, (out.len() as u64).saturating_sub(known))?;
     Ok(Value::Str(Gc::new(out)))
@@ -34,15 +34,17 @@ fn str_bytes<'a>(vals: impl Iterator<Item = &'a Value>) -> u64 {
 }
 
 /// Append one arg's `str` form: strings raw, nil nothing, char raw, else pr.
-fn arg_to_str(out: &mut String, a: &Value) {
+/// Errors (`:eval/limit`) if a printed subtree nests too deep.
+fn arg_to_str(out: &mut String, a: &Value) -> Result<(), Throw> {
     match a {
         Value::Str(s) => out.push_str(s),
         Value::Nil => {}
         Value::Char(c) => out.push(*c),
         // (str #"a\d+") => the pattern source, unescaped (verified: mino).
         Value::Regex(r) => out.push_str(&r.source),
-        other => out.push_str(&print_str(other)),
+        other => out.push_str(&print_str_checked(other)?),
     }
+    Ok(())
 }
 
 /// `(pr-str & xs)`: readable form of each arg, space-separated. Ports
@@ -53,7 +55,7 @@ pub fn pr_str(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         if i > 0 {
             out.push(' ');
         }
-        out.push_str(&print_str(a));
+        out.push_str(&print_str_checked(a)?);
     }
     Ok(Value::Str(Gc::new(out)))
 }
@@ -66,7 +68,7 @@ pub fn println_(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         if i > 0 {
             out.push(' ');
         }
-        arg_to_str(&mut out, a);
+        arg_to_str(&mut out, a)?;
     }
     out.push('\n');
     emit(it, &out)
@@ -96,7 +98,7 @@ pub fn prn(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         if i > 0 {
             out.push(' ');
         }
-        out.push_str(&print_str(a));
+        out.push_str(&print_str_checked(a)?);
     }
     out.push('\n');
     emit(it, &out)
@@ -109,7 +111,7 @@ pub fn print_(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         if i > 0 {
             out.push(' ');
         }
-        arg_to_str(&mut out, a);
+        arg_to_str(&mut out, a)?;
     }
     emit(it, &out)
 }
@@ -236,7 +238,7 @@ pub fn join(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         if !first {
             out.push_str(sep);
         }
-        arg_to_str(&mut out, item);
+        arg_to_str(&mut out, item)?;
         first = false;
     }
     it.charge(0, (out.len() as u64).saturating_sub(known))?;
@@ -467,7 +469,7 @@ fn build_replacement(
             };
             let result = apply(it, repl, &[arg])?;
             let mut buf = String::new();
-            arg_to_str(&mut buf, &result);
+            arg_to_str(&mut buf, &result)?;
             Ok(buf)
         }
         _ => Err(throw_str(
