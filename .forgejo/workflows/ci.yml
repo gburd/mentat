@@ -1,7 +1,18 @@
-# Forgejo/Codeberg CI — mirrors .github/workflows/ci.yml logic.
+# Forgejo/Codeberg CI — THE GATE (plan §1.17).
 #
-# Forgejo Actions uses a syntax nearly identical to GitHub Actions.
-# This workflow runs on Codeberg's hosted runners (or self-hosted).
+# Codeberg is the only place anyone pushes; it push-mirrors to GitHub. This
+# Forgejo workflow is the correctness gate; GitHub Actions on the mirror only
+# publishes (.github/workflows/). Jobs:
+#   fmt          cargo fmt --check
+#   clippy       -D warnings on the linted crates
+#   deny         cargo deny check
+#   test-sqlite  cargo test (default members) + cargo test -p mentat --features mino
+#   test-pg      matrix pg13..pg18, cargo pgrx test
+#   test-mino    cargo test -p mino-rs
+#   test-ffi     build + test crates/sqlite/ffi
+#   nix-build    flake builds the SQLite CLI + one extension
+#
+# Forgejo Actions syntax is nearly identical to GitHub Actions.
 
 name: ci
 
@@ -20,94 +31,37 @@ env:
   RUST_TOOLCHAIN: "1.90.0"
 
 jobs:
-  build-and-install:
-    name: build + CREATE EXTENSION (pg16)
+  # --- SQLite / shared front-end: no postgres, no clang required ---------
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install PostgreSQL 16
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-              postgresql-16 postgresql-server-dev-16 postgresql-client-16 \
-              libpq-dev build-essential pkg-config libclang-dev clang
-
-      - name: Start PostgreSQL
-        run: |
-          sudo systemctl enable --now postgresql
-          sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';"
-          PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file;")
-          echo "local all all trust"              | sudo tee -a "$PG_HBA" >/dev/null
-          echo "host  all all 127.0.0.1/32 trust" | sudo tee -a "$PG_HBA" >/dev/null
-          sudo systemctl restart postgresql
-
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }} --component rustfmt
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ci-build-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ci-build-${{ runner.os }}-
-
-      - name: Install cargo-pgrx
-        run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
-
-      - name: pgrx init
-        run: cargo pgrx init --pg16 "$(which pg_config)"
-
-      - name: cargo build
-        working-directory: pg_mentat
-        run: cargo build --no-default-features --features pg16
-
-      - name: cargo pgrx install
-        working-directory: pg_mentat
-        run: |
-          sudo -E env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
-              cargo pgrx install --no-default-features --features pg16 \
-                --pg-config "$(which pg_config)"
-
-      - name: Smoke test
-        env:
-          PGHOST: "localhost"
-          PGPORT: "5432"
-          PGUSER: "postgres"
-          PGPASSWORD: "postgres"
-        run: |
-          psql -c "CREATE EXTENSION pg_mentat;"
-          psql -c "SELECT mentat_transact('[{:db/ident :test/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');"
-          psql -c "SELECT mentat_transact('[{:test/name \"hello\"}]');"
-          psql -c "SELECT mentat_query('[:find ?n :where [?e :test/name ?n]]', '{}');"
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
 
   clippy:
-    name: clippy (pg16)
+    name: clippy (-D warnings)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              postgresql-server-dev-16 libpq-dev build-essential \
-              pkg-config libclang-dev clang
-
+              build-essential pkg-config libsqlite3-dev libssl-dev
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }} --component clippy
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }} --component clippy
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -117,37 +71,43 @@ jobs:
             target
           key: ci-clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ci-clippy-${{ runner.os }}-
-
-      - name: Install cargo-pgrx
-        run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
-
-      - name: pgrx init
-        run: cargo pgrx init --pg16 "$(which pg_config)"
-
+      # Lint the SQLite side + shared front-end + mino (default members). The
+      # pgrx crate's clippy runs in test-pg where pg_config/pgrx are set up.
       - name: cargo clippy
-        working-directory: pg_mentat
-        run: cargo clippy --no-default-features --features pg16 -- -D warnings
+        run: cargo clippy --workspace --exclude pg_mentat -- -D warnings
 
-  test:
-    name: cargo pgrx test pg16
+  deny:
+    name: cargo deny
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+      - name: cargo deny check
+        run: cargo deny check
 
+  test-sqlite:
+    name: test-sqlite (+ mino feature)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              postgresql-server-dev-16 libpq-dev build-essential \
-              pkg-config libclang-dev clang
-
+              build-essential pkg-config libsqlite3-dev libssl-dev
       - name: Install Rust
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -155,18 +115,121 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ci-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ci-test-${{ runner.os }}-
+          key: ci-sqlite-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ci-sqlite-${{ runner.os }}-
+      # Default members = the SQLite side + shared front-end + mino + mentatd;
+      # never touches pg_config/libclang.
+      - name: cargo test (default members)
+        run: cargo test
+      - name: cargo test -p mentat --features mino
+        run: cargo test -p mentat --features mino
 
+  test-mino:
+    name: test-mino
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-mino-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ci-mino-${{ runner.os }}-
+      - name: cargo test -p mino-rs
+        run: cargo test -p mino-rs
+
+  test-ffi:
+    name: test-ffi (C ABI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential pkg-config libsqlite3-dev libssl-dev
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-ffi-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ci-ffi-${{ runner.os }}-
+      - name: build + test crates/sqlite/ffi
+        run: |
+          cargo build -p mentat_ffi
+          cargo test -p mentat_ffi
+
+  # --- PostgreSQL extension: needs pgrx + a per-major PostgreSQL ---------
+  test-pg:
+    name: test-pg (pg${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [13, 14, 15, 16, 17, 18]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential pkg-config libpq-dev libclang-dev clang \
+              libreadline-dev zlib1g-dev flex bison
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-pg${{ matrix.pg }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ci-pg${{ matrix.pg }}-${{ runner.os }}-
       - name: Install cargo-pgrx
         run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
-
-      - name: pgrx init
-        # pgrx-managed PG (user-owned ~/.pgrx); a system pg_config puts the
-        # lib dir under root ownership and `cargo pgrx test` fails to copy
-        # the .so there.
-        run: cargo pgrx init --pg16 download
-
+      - name: pgrx init (download PG${{ matrix.pg }})
+        # A pgrx-managed PG (user-owned ~/.pgrx) so `cargo pgrx test` can copy
+        # the .so into its lib dir without root.
+        run: cargo pgrx init --pg${{ matrix.pg }} download
       - name: cargo pgrx test
-        working-directory: pg_mentat
-        run: cargo pgrx test --no-default-features --features pg16 pg16
+        working-directory: crates/pg/pg_mentat
+        run: cargo pgrx test --no-default-features --features pg${{ matrix.pg }} pg${{ matrix.pg }}
+
+  # --- Nix flake: builds the SQLite CLI + one extension major -----------
+  nix-build:
+    name: nix-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build mentat-cli + one extension
+        # __noChroot derivations fetch crates from the network; relaxed sandbox.
+        run: |
+          nix build --option sandbox relaxed .#mentat-cli .#mentatd .#pg_mentat-pg16
