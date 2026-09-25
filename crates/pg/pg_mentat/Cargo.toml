@@ -40,7 +40,7 @@ uuid = "1"
 ordered-float = "5.1.0"
 chrono = "0.4"
 
-lru = "0.12"
+lru = "0.18"
 parking_lot = "0.12"
 
 # Optional: the mino Clojure-dialect interpreter, behind the `script` feature.

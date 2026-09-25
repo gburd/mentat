@@ -6,15 +6,13 @@
 
 [advisories]
 version = 2
-# Mirror .cargo/audit.toml: actively-patchable advisories are fixed in
-# Cargo.lock (tokio-postgres 0.7.18 / postgres-protocol 0.6.12 close
-# RUSTSEC-2026-0178/0179/0180). The rest have no clean fix on the current
-# graph and are deliberately accepted; revisit on upstream updates.
+# Keep in step with .github/workflows/audit.yml. Everything patchable is
+# fixed in Cargo.lock (1.6.3: h2 0.4.19, rustls 0.23.45, lru 0.18,
+# prometheus 0.14 -> protobuf 3.7). What remains comes only through pgrx 0.17
+# and cannot be fixed here; revisit when pgrx updates.
 ignore = [
-    "RUSTSEC-2024-0437",  # protobuf 2.x recursion crash; pinned by prometheus 0.13
-    "RUSTSEC-2024-0436",  # paste unmaintained (informational); via pgrx 0.17
+    "RUSTSEC-2024-0436",  # paste unmaintained (informational); proc-macro via pgrx-tests 0.17
     "RUSTSEC-2021-0127",  # serde_cbor unmaintained (informational); via pgrx 0.17
-    "RUSTSEC-2026-0002",  # lru 0.12 IterMut unsoundness; IterMut path unused
 ]
 
 [licenses]

@@ -37,10 +37,10 @@ toml = "0.8.20"
 edn = { path = "../edn" }
 
 # Caching
-lru = "0.12"
+lru = "0.18"
 
 # Metrics
-prometheus = "0.13"
+prometheus = "0.14"
 lazy_static = "1.5"
 
 # Streaming
