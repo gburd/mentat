@@ -83,6 +83,12 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
     // 1. Body.
     let mut result = no_recur(it.eval_implicit_do(&clauses.body, env));
 
+    // A tripped resource limit is uncatchable: skip catch AND finally (any
+    // eval would re-trip immediately) and propagate it as-is.
+    if let Some(p) = &it.tripped {
+        return Err(Throw(p.clone()));
+    }
+
     // 2. Catch: run the handler if the body threw.
     if clauses.has_catch {
         if let Err(Throw(raw)) = result {
@@ -94,6 +100,10 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
             // A re-throw here propagates (after finally, below).
             result = no_recur(it.eval_implicit_do(&clauses.catch_body, &local));
         }
+    }
+
+    if let Some(p) = &it.tripped {
+        return Err(Throw(p.clone()));
     }
 
     // 3. Finally: run unconditionally; value discarded, errors in it propagate.

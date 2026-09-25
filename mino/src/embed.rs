@@ -21,6 +21,31 @@ use crate::value::{Prim, PrimClosure, Value};
 use gc::Gc;
 
 pub use crate::value::PrimFn;
+use crate::error::Throw;
+
+/// Resource limits for one top-level eval. `None` = unlimited. The budget
+/// (steps, heap) resets at each top-level [`Interpreter::eval`]; exceeding
+/// any limit aborts that eval with an UNCATCHABLE
+/// `{:mino/kind :eval/limit :mino/code "MLM001" :mino/data {:limit :steps|:heap|:depth ..}}`
+/// (a `try`/`catch` inside the script cannot swallow it).
+///
+/// * `steps` — eval steps, plus one per element produced by a bulk prim.
+/// * `heap_bytes` — bytes charged BEFORE bulk allocations (`range`, `vec`,
+///   `into`, `concat`, `str`, print capture, ...), cumulative per eval.
+/// * `depth` — nesting of eval + fn-application frames. This is what turns
+///   runaway non-tail recursion into an error instead of a Rust stack
+///   overflow (which aborts the whole process). See [`STACK_BYTES_PER_LEVEL`]
+///   for choosing a value that fits your thread's stack.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Limits {
+    pub steps: Option<u64>,
+    pub heap_bytes: Option<u64>,
+    pub depth: Option<u32>,
+}
+
+/// Measured Rust stack consumed per unit of [`Limits::depth`]
+/// (filled in by measurement; see CHANGELOG).
+pub const STACK_BYTES_PER_LEVEL: () = ();
 
 /// An embedded mino interpreter.
 ///
@@ -36,6 +61,34 @@ impl Interpreter {
     /// (incl. `mino.store`) loaded.
     pub fn new() -> Self {
         Interpreter { it: Interp::new() }
+    }
+
+    /// A fresh interpreter with NO host access: the filesystem prims
+    /// (`slurp`, `spit`, `rm-rf`, `mkdir-p`, `file-exists?`) are unbound,
+    /// durable (path) `mino.store/open` throws, and `print`/`println`/`prn`
+    /// output is captured (read it with [`take_output`](Interpreter::take_output)).
+    /// No limits are set; the host decides via [`set_limits`](Interpreter::set_limits).
+    pub fn sandboxed() -> Self {
+        Interpreter { it: Interp::new_sandboxed() }
+    }
+
+    /// Set the resource limits applied to each subsequent top-level eval.
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.it.limits = limits;
+    }
+
+    /// Called every 4096 eval steps and each time eval depth crosses a
+    /// multiple of 64. Returning Err aborts the current top-level eval with
+    /// that Throw's message (uncatchable, like a limit). Use it for host
+    /// cancellation / wall-clock timeouts.
+    pub fn set_check_hook(&mut self, hook: Box<dyn FnMut() -> Result<(), Throw>>) {
+        self.it.check_hook = Some(hook);
+    }
+
+    /// Sandboxed interpreters capture print output instead of writing stdout.
+    /// Returns and clears it (always `""` for a non-sandboxed interpreter).
+    pub fn take_output(&mut self) -> String {
+        self.it.out.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Eval a source string (one or more forms) and return the value of the

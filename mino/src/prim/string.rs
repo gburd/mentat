@@ -47,7 +47,7 @@ pub fn pr_str(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 /// `(println & xs)`: print the `str` forms space-separated + newline, return
 /// nil. Output goes to stdout (io.c). Kept minimal for corpus use.
-pub fn println_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn println_(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let mut out = String::new();
     for (i, a) in args.iter().enumerate() {
         if i > 0 {
@@ -55,12 +55,29 @@ pub fn println_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         }
         arg_to_str(&mut out, a);
     }
-    println!("{out}");
+    out.push('\n');
+    emit(it, &out)
+}
+
+/// Write print output: captured into `it.out` (charged to the heap budget)
+/// when the interpreter captures output, else stdout.
+fn emit(it: &mut Interp, s: &str) -> Result<Value, Throw> {
+    if it.out.is_some() {
+        it.charge(0, s.len() as u64)?;
+        if let Some(o) = it.out.as_mut() {
+            o.push_str(s);
+        }
+    } else {
+        use std::io::Write;
+        let mut so = std::io::stdout().lock();
+        let _ = so.write_all(s.as_bytes());
+        let _ = so.flush();
+    }
     Ok(Value::Nil)
 }
 
 /// `(prn & xs)`: print the readable forms space-separated + newline, nil.
-pub fn prn(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn prn(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let mut out = String::new();
     for (i, a) in args.iter().enumerate() {
         if i > 0 {
@@ -68,12 +85,12 @@ pub fn prn(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         }
         out.push_str(&print_str(a));
     }
-    println!("{out}");
-    Ok(Value::Nil)
+    out.push('\n');
+    emit(it, &out)
 }
 
 /// `(print & xs)`: like println without the trailing newline.
-pub fn print_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn print_(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let mut out = String::new();
     for (i, a) in args.iter().enumerate() {
         if i > 0 {
@@ -81,8 +98,7 @@ pub fn print_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         }
         arg_to_str(&mut out, a);
     }
-    print!("{out}");
-    Ok(Value::Nil)
+    emit(it, &out)
 }
 
 // ---------------------------------------------------------------------------

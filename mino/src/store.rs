@@ -53,6 +53,18 @@ pub struct StoreState {
 /// `deref`, `=` (identity), `type`, and printing all dispatch correctly.
 pub type StoreCell = Gc<GcCell<StoreState>>;
 
+/// Refuse a disk-touching store op in a sandboxed interpreter.
+fn deny_in_sandbox(it: &Interp, what: &str) -> Result<(), Throw> {
+    if it.sandboxed {
+        return Err(throw_classified(
+            "eval/contract",
+            "MCT001",
+            &format!("{what}: durable (on-disk) stores are disabled in a sandboxed interpreter"),
+        ));
+    }
+    Ok(())
+}
+
 fn as_store(v: &Value) -> Option<&StoreCell> {
     match v {
         Value::Store(cell) => Some(cell),
@@ -83,6 +95,9 @@ fn store_open_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
             ))
         }
     };
+    if path.is_some() {
+        deny_in_sandbox(it, "store-open*")?;
+    }
     it.next_store_id += 1;
     let id = it.next_store_id;
     Ok(Value::Store(Gc::new(GcCell::new(StoreState {
@@ -124,6 +139,7 @@ fn store_commit_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     if let Some(ti) = tx_info {
         let path = cell.borrow().path.clone();
         if let Some(path) = path {
+            deny_in_sandbox(it, "store-commit*")?;
             wal_append(&path, ti)?;
         }
     }
@@ -168,7 +184,7 @@ fn store_clock_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// atomically (temp file with `0x00` header + EDN, fsync, rename into place)
 /// and delete the WAL. In-memory: no-op. Returns nil. Ports
 /// `prim_store_checkpoint` + `mino_store_checkpoint`.
-fn store_checkpoint_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+fn store_checkpoint_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [conn] = args else {
         return Err(throw_classified(
             "eval/arity",
@@ -188,6 +204,7 @@ fn store_checkpoint_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Thro
         (s.path.clone(), s.val.clone())
     };
     if let Some(path) = path {
+        deny_in_sandbox(it, "store-checkpoint*")?;
         checkpoint_to_disk(&path, &val)?;
     }
     Ok(Value::Nil)
@@ -197,7 +214,7 @@ fn store_checkpoint_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Thro
 /// delete WAL) then release the path. In-memory: no-op. Idempotent (a second
 /// close finds no path). Returns nil. Ports `prim_store_close` +
 /// `mino_store_close` (which checkpoints before releasing the handle).
-fn store_close_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+fn store_close_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let [conn] = args else {
         return Err(throw_classified(
             "eval/arity",
@@ -217,6 +234,7 @@ fn store_close_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         (s.path.clone(), s.val.clone())
     };
     if let Some(path) = path {
+        deny_in_sandbox(it, "store-close*")?;
         checkpoint_to_disk(&path, &val)?;
         // Release the path so a second close is a no-op (idempotent), matching
         // mino_store_close freeing the handle.
@@ -241,7 +259,8 @@ fn store_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// The file may carry a 1-byte `0x00` version header (skip it) or be headerless
 /// (v1: parse the whole file as EDN). Returns the parsed db value, or nil if
 /// the file is absent / unparseable. Ports `prim_store_read_snapshot`.
-fn store_read_snapshot_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+fn store_read_snapshot_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    deny_in_sandbox(it, "store-read-snapshot*")?;
     let [path] = args else {
         return Err(throw_classified(
             "eval/arity",
@@ -276,7 +295,8 @@ fn store_read_snapshot_star(_it: &mut Interp, args: &[Value]) -> Result<Value, T
 /// line stops the scan (the malformed trailing line is dropped — torn-write
 /// recovery). Returns nil if the WAL file is absent. Ports
 /// `prim_store_read_wal` / `store_wal_read`.
-fn store_read_wal_star(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+fn store_read_wal_star(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    deny_in_sandbox(it, "store-read-wal*")?;
     let [path] = args else {
         return Err(throw_classified(
             "eval/arity",
@@ -391,6 +411,14 @@ pub fn install(root: &Env) {
     reg("store?", store_p);
     reg("store-read-snapshot*", store_read_snapshot_star);
     reg("store-read-wal*", store_read_wal_star);
+}
+
+/// Register the host filesystem prims. NOT installed in a sandboxed
+/// interpreter, so there they are unbound symbols.
+pub fn install_host_fs(root: &Env) {
+    let reg = |name: &'static str, f: crate::value::PrimFn| {
+        root.set(Symbol::plain(name), Value::Prim(Prim(f, name)));
+    };
     // Filesystem prims the store test corpus drives durability with. These
     // port prim/fs.c (file-exists?, mkdir-p, rm-rf) + prim/io.c (spit, slurp).
     // Registered here because the store tests are their only consumer in the

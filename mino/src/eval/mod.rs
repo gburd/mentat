@@ -3,6 +3,7 @@
 //! Task 1.1 scope: self-eval, symbol lookup, and those three special forms.
 //! Fn application (Task 1.2) and the rest of the special forms land later.
 
+use crate::embed::Limits;
 use crate::env::Env;
 use crate::error::{throw_str, Throw};
 use crate::reader::read_all;
@@ -23,12 +24,44 @@ pub struct Interp {
     /// Monotonic per-interpreter store id, incremented by `store-open*` for the
     /// `#store[0xN VAL]` print. Mirrors `mino_state.next_store_id`.
     pub next_store_id: u64,
+    /// Resource limits; all `None` (the default) means unlimited. Set by the
+    /// host via [`crate::embed::Interpreter::set_limits`].
+    pub limits: Limits,
+    /// Eval steps (plus elements charged by bulk prims) used by the current
+    /// top-level eval. Reset at each top-level `eval_str`.
+    pub steps: u64,
+    /// Current nesting of `eval` + `func::apply` frames.
+    pub depth: u32,
+    /// Bytes charged against `limits.heap_bytes` by the current top-level eval
+    /// (cumulative allocation, not live size, like upstream mino's GC count).
+    pub heap: u64,
+    /// Host hook run every 4096 steps and at each 64th depth level.
+    pub(crate) check_hook: Option<Box<dyn FnMut() -> Result<(), Throw>>>,
+    /// No host access: fs prims unbound, durable store refused.
+    pub sandboxed: bool,
+    /// Captured print output (`Some` for sandboxed interpreters).
+    pub out: Option<String>,
+    /// The payload of a tripped limit. While set, every eval step and every
+    /// `try` re-raises it (uncatchable) until the top-level eval returns.
+    pub(crate) tripped: Option<Value>,
 }
 
 impl Interp {
     /// A fresh interpreter with primitives installed AND core.clj loaded.
     pub fn new() -> Self {
-        let mut it = Self::new_bare();
+        Self::with_host(true)
+    }
+
+    /// Like [`Interp::new`] but with no host access: the fs prims
+    /// (`file-exists?`, `mkdir-p`, `rm-rf`, `spit`, `slurp`) are not bound,
+    /// durable (path) stores are refused, and print output is captured in
+    /// `out` instead of going to stdout.
+    pub fn new_sandboxed() -> Self {
+        Self::with_host(false)
+    }
+
+    fn with_host(host: bool) -> Self {
+        let mut it = Self::bare(host);
         it.load_core();
         // core.clj redefines map/filter/concat/etc. as lazy seqs the port
         // can't run yet; re-assert the eager prims so the working versions win.
@@ -42,10 +75,29 @@ impl Interp {
     /// A bare interpreter: primitives only, no core.clj. Used by low-level
     /// unit tests that must not depend on the stdlib bootstrap.
     pub fn new_bare() -> Self {
+        Self::bare(true)
+    }
+
+    fn bare(host: bool) -> Self {
         let root = Env::root();
         crate::prim::install_core(&root);
         crate::store::install(&root);
-        Interp { root, core_failures: Vec::new(), next_store_id: 0 }
+        if host {
+            crate::store::install_host_fs(&root);
+        }
+        Interp {
+            root,
+            core_failures: Vec::new(),
+            next_store_id: 0,
+            limits: Limits::default(),
+            steps: 0,
+            depth: 0,
+            heap: 0,
+            check_hook: None,
+            sandboxed: !host,
+            out: if host { None } else { Some(String::new()) },
+            tripped: None,
+        }
     }
 
     /// Load the bundled `lib/clojure/string.clj` verbatim (copied to
@@ -351,17 +403,131 @@ impl Interp {
 
     /// Read ALL forms from `src`, eval each in the root env, return the last.
     /// Empty input yields `Nil` (mirrors mino's load/eval-string semantics).
+    /// At top level (not re-entered from a prim) this starts a fresh
+    /// step/heap budget and clears a previous limit trip.
     pub fn eval_str(&mut self, src: &str) -> Result<Value, Throw> {
+        if self.depth == 0 {
+            self.steps = 0;
+            self.heap = 0;
+            self.tripped = None;
+        }
         let forms = read_all(src).map_err(|e| throw_str(&format!("read error: {e:?}")))?;
         let mut last = Value::Nil;
         let env = self.root.clone();
         for form in &forms {
             last = self.eval(form, &env)?;
         }
-        Ok(last)
+        // Safety net: a trip swallowed by some prim still fails the eval.
+        match &self.tripped {
+            Some(p) => Err(Throw(p.clone())),
+            None => Ok(last),
+        }
     }
 
+    /// Record a limit trip and return its (uncatchable) throw.
+    fn trip(&mut self, payload: Value) -> Throw {
+        self.tripped = Some(payload.clone());
+        Throw(payload)
+    }
+
+    fn trip_limit(&mut self, which: &str, value: u64) -> Throw {
+        let msg = format!("{which} limit exceeded");
+        self.trip(crate::error::limit_diag(&msg, which, value))
+    }
+
+    /// Run the host check hook; an `Err` becomes an uncatchable limit trip
+    /// carrying the hook's message.
+    fn run_hook(&mut self) -> Result<(), Throw> {
+        let Some(hook) = self.check_hook.as_mut() else {
+            return Ok(());
+        };
+        match hook() {
+            Ok(()) => Ok(()),
+            Err(t) => {
+                let msg = crate::error::message_of(&t.0);
+                let steps = self.steps;
+                Err(self.trip(crate::error::limit_diag(&msg, "hook", steps)))
+            }
+        }
+    }
+
+    /// Charge `elements` against the step budget and `bytes` against the heap
+    /// budget BEFORE a bulk allocation, so an argument-driven size (`(range
+    /// 1e11)`) fails up front instead of allocating.
+    pub(crate) fn charge(&mut self, elements: u64, bytes: u64) -> Result<(), Throw> {
+        if let Some(p) = &self.tripped {
+            return Err(Throw(p.clone()));
+        }
+        self.steps = self.steps.saturating_add(elements);
+        self.heap = self.heap.saturating_add(bytes);
+        if let Some(max) = self.limits.heap_bytes {
+            if self.heap > max {
+                return Err(self.trip_limit("heap", max));
+            }
+        }
+        if let Some(max) = self.limits.steps {
+            if self.steps > max {
+                return Err(self.trip_limit("steps", max));
+            }
+        }
+        Ok(())
+    }
+
+    /// Charge `n` elements of `Value` (steps + `n * size_of::<Value>()` bytes).
+    pub(crate) fn charge_values(&mut self, n: usize) -> Result<(), Throw> {
+        let n = n as u64;
+        self.charge(n, n.saturating_mul(std::mem::size_of::<Value>() as u64))
+    }
+
+    /// Enter one eval/apply frame: re-raise a prior trip, enforce the depth
+    /// limit, and run the hook at each 64th level. Pair with `self.depth -= 1`.
+    pub(crate) fn enter_frame(&mut self) -> Result<(), Throw> {
+        if let Some(p) = &self.tripped {
+            return Err(Throw(p.clone()));
+        }
+        if let Some(max) = self.limits.depth {
+            if self.depth >= max {
+                return Err(self.trip_limit("depth", max as u64));
+            }
+        }
+        self.depth += 1;
+        if self.depth % 64 == 0 {
+            if let Err(t) = self.run_hook() {
+                self.depth -= 1;
+                return Err(t);
+            }
+        }
+        Ok(())
+    }
+
+    /// One eval step: count it, enforce the step limit, run the hook every
+    /// 4096 steps.
+    fn step(&mut self) -> Result<(), Throw> {
+        self.steps += 1;
+        if let Some(max) = self.limits.steps {
+            if self.steps > max {
+                return Err(self.trip_limit("steps", max));
+            }
+        }
+        if self.steps % 4096 == 0 {
+            self.run_hook()?;
+        }
+        Ok(())
+    }
+
+    /// Evaluate `form` in `env`. Every call is one step and one depth level
+    /// (the guard below restores `depth` on every return path).
     pub fn eval(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+        self.enter_frame()?;
+        let r = match self.step() {
+            Ok(()) => self.eval_form(form, env),
+            Err(t) => Err(t),
+        };
+        self.depth -= 1;
+        r
+    }
+
+    fn eval_form(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
         match form {
             // Self-evaluating: scalars plus already-built fns/prims/vars.
             Value::Nil

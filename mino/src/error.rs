@@ -72,6 +72,28 @@ pub fn throw_classified(kind: &str, code: &str, msg: &str) -> Throw {
     Throw(diag_map(kind, code, msg, Value::Nil))
 }
 
+/// The payload of a tripped resource limit (steps/heap/depth, or a host
+/// check-hook abort): `{:mino/kind :eval/limit :mino/code "MLM001"
+/// :mino/message MSG :mino/data {:limit :WHICH :value N}}`. Matches upstream
+/// mino's diag kind "limit" / code MLM001.
+pub fn limit_diag(msg: &str, which: &str, value: u64) -> Value {
+    let data = PMap::empty()
+        .assoc(kw("limit"), kw(which))
+        .assoc(kw("value"), Value::Int(value.min(i64::MAX as u64) as i64));
+    diag_map("eval/limit", "MLM001", msg, Value::Map(Gc::new(data)))
+}
+
+/// The `:mino/message` a catch clause would see for this thrown value.
+pub fn message_of(ex: &Value) -> String {
+    match &normalize_exception(ex) {
+        Value::Map(m) => match m.get(&kw_ns("mino", "message")) {
+            Some(Value::Str(s)) => (**s).clone(),
+            _ => print_str(ex),
+        },
+        _ => print_str(ex),
+    }
+}
+
 /// Normalize a raw thrown value into the diagnostic map a `catch` binding
 /// sees. Ports `normalize_exception` in eval/control.c:
 ///   * a map already carrying `:mino/kind` passes through unchanged;
