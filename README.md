@@ -9,6 +9,21 @@ This project was started by Mozilla, but [is no longer being developed or active
 
 [Documentation](https://docs.rs/mentat)
 
+## New to EDN or Datalog?
+
+Mentat speaks [EDN](https://github.com/edn-format/edn) (Clojure's data
+notation) and answers questions in Datalog, the query language Datomic made
+popular. If you know nothing about EDN or Datalog, you owe it to yourself to
+dig into these resources and expand your thinking beyond relational and beyond
+SQL:
+
+- [Learn Datalog Today](https://github.com/jonase/learndatalogtoday) — an
+  interactive, exercise-driven Datalog tutorial.
+- [An introduction to Datalog](https://blogit.michelin.io/an-introduction-to-datalog/)
+  — a short, readable overview from Michelin's engineering blog.
+- [Datalog: Biting the Silver Bullet](https://www.youtube.com/watch?v=dQWcD2_FzAU)
+  — Norbert Wójtowicz at GeeCON 2018.
+
 ---
 
 ## Motivation
