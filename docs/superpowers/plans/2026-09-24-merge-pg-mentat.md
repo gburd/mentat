@@ -139,7 +139,10 @@ and add tests for all three spellings.
 query engine consumes `in_bindings` (`functions/query.rs:891,1190`); mentat's
 algebrizer does not.
 
-**Decision.** Take pg_mentat's grammar: `:in` parses to `InBindings`, and
+**Decision.** Take pg_mentat's grammar, extended to accept source vars: `:in` parses as
+`(src_var | binding)+` — `$`/`$name` go to the existing (previously always
+empty) `ParsedQuery.in_sources`, everything else to `InBindings` (found during
+Task 2: neither grammar accepted `$` in `:in`), and
 `ParsedQuery::in_vars` stays derived from the scalar bindings (pg_mentat already
 does this, `query.rs:1104-1118`), so mentat's algebrizer keeps working unchanged
 for scalar inputs. Then teach mentat's algebrizer `BindColl`/`BindTuple`/`BindRel`
@@ -941,8 +944,11 @@ and fix pg_mentat's call sites. Both must pass their full suites.
 ```rust
 use edn::parse;
 #[test] fn in_bindings() {
+    // `$`/`$name` are sources (in_sources), not bindings: `$` can't be a
+    // Variable, and counting it as one would shift pg_mentat's positional
+    // `inputs`. Neither grammar accepted `:in $ ...` before this change.
     let q = parse::parse_query("[:find ?x :in $ [?a ...] :where [?x :foo/bar ?a]]").unwrap();
-    assert_eq!(q.in_bindings.len(), 2);
+    assert_eq!((q.in_bindings.len(), q.in_sources.len()), (1, 1));
 }
 #[test] fn five_place_pattern() {
     let q = parse::parse_query("[:find ?e :where [?e ?a ?v ?tx ?added]]").unwrap();
