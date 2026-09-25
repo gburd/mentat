@@ -280,11 +280,11 @@ fn q_against_non_current_basis_errors_honestly() {
 }
 
 /// The inst/uuid representation the layer emits round-trips through the mino
-/// reader/printer: `read_one(pr-str v) == v`. This is the honest round-trip
-/// this mino-rs port supports (it has no `#uuid`/`read-string`; a `#inst`
-/// literal reads to a calendar map, and `#uuid` cannot eval at all). The layer
-/// emits the exact cons form the reader itself produces from each literal, so
-/// the printed form re-reads identically.
+/// reader/printer: `read_one(pr-str v) == v`. Since the mino refresh (upstream
+/// 9c65bb50) `#uuid` reads to a real UUID value and prints back as `#uuid "…"`;
+/// `#inst` reads to an instant component map that prints as the
+/// `clojure.instant/read-instant-date` constructor form (which re-reads
+/// identically). Both round-trip stably.
 #[test]
 fn inst_and_uuid_representations_round_trip_through_the_reader() {
     use mino_rs::printer::print_str;
@@ -311,7 +311,7 @@ fn inst_and_uuid_representations_round_trip_through_the_reader() {
     let (uuid, _) = read_one(r#"#uuid "12345678-1234-5678-1234-567812345678""#).unwrap();
     assert_eq!(
         print_str(&uuid),
-        "(parse-uuid \"12345678-1234-5678-1234-567812345678\")"
+        "#uuid \"12345678-1234-5678-1234-567812345678\""
     );
 }
 
