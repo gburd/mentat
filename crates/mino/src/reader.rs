@@ -1135,4 +1135,21 @@ mod tests {
             assert!(printed.contains('.'), "{printed} lost its decimal point");
         }
     }
+
+    // ponytail: BigDec tier deferred. The `1.5M` bigdec literal, the
+    // `Value::BigDec` tier, and the numeric-tower contagion for `M` values are
+    // NOT ported. The gated 12+2 corpus files (arithmetic_test etc.) do not use
+    // `M` literals — the whole corpus is green without BigDec — and the port's
+    // core.clj `bigdec`/`with-precision` fns only reference `M` inside a
+    // docstring, so core.clj loads clean. Add `Value::BigDec` over a pure-Rust
+    // decimal (e.g. `bigdecimal`) with tower contagion matching mino's
+    // `bigdec.c` when a downstream consumer needs `M` arithmetic; until then a
+    // `1.5M` literal is a read error (below), matching the pre-refresh port.
+    #[test]
+    #[ignore = "BigDec tier not ported (not exercised by the gated corpus); see ponytail note"]
+    fn bigdec_literal_reads() {
+        // When BigDec lands, `1.5M` should read to a :bigdec value that prints
+        // `1.5M` and round-trips. Today it is a read error.
+        assert!(read_one("1.5M").is_err());
+    }
 }
