@@ -1,7 +1,6 @@
 [package]
 name = "mentat_transaction"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [features]
@@ -14,16 +13,16 @@ version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
-path = "../edn"
+path = "../../edn"
 
 [dependencies.public_traits]
 path = "../public-traits"
 
 [dependencies.mentat_core]
-path = "../core"
+path = "../../core"
 
 [dependencies.core_traits]
-path = "../core-traits"
+path = "../../core-traits"
 
 [dependencies.mentat_db]
 path = "../db"

@@ -40,7 +40,7 @@ version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.mentat]
-path = "../.."
+path = "../mentat"
 default-features = false
 
 [dependencies.edn]
@@ -50,4 +50,4 @@ path = "../../edn"
 path = "../../core-traits"
 
 [dependencies.mentat_db]
-path = "../../db"
+path = "../db"

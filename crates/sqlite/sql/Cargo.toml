@@ -1,24 +1,23 @@
 [package]
 name = "mentat_sql"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [features]
 sqlcipher = ["rusqlite/sqlcipher"]
 
 [dependencies]
-ordered-float = "~5.0"
+ordered-float = "5.3"
 
 [dependencies.rusqlite]
 version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.core_traits]
-path = "../core-traits"
+path = "../../core-traits"
 
 [dependencies.mentat_core]
-path = "../core"
+path = "../../core"
 
 [dependencies.sql_traits]
 path = "../sql-traits"

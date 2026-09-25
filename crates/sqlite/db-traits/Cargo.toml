@@ -1,7 +1,6 @@
 [package]
 name = "db_traits"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [lib]
@@ -15,10 +14,10 @@ sqlcipher = ["rusqlite/sqlcipher"]
 thiserror = "~2.0"
 
 [dependencies.edn]
-path = "../edn"
+path = "../../edn"
 
 [dependencies.core_traits]
-path = "../core-traits"
+path = "../../core-traits"
 
 [dependencies.rusqlite]
 version = "~0.40"

@@ -1,0 +1,88 @@
+[package]
+edition.workspace = true
+name = "mentat"
+version.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build/version.rs"
+
+[features]
+default = ["bundled_sqlite3"]
+bundled_sqlite3 = ["rusqlite/bundled"]
+sqlcipher = ["rusqlite/sqlcipher", "mentat_db/sqlcipher"]
+# Optional pure-Rust mino scripting layer (exposes the `mentat.store` language).
+# OFF by default: pure-Rust Mentat users pay nothing.
+mino = ["dep:mino-rs"]
+
+[build-dependencies]
+rustc_version = "~0.4"
+
+[dev-dependencies]
+assert_approx_eq = "~1"
+
+[dependencies]
+chrono = "~0.4"
+lazy_static = "~1.5"
+time = "0.3.36"
+log = "~0.4"
+uuid = { version = "~1.25", features = ["v4", "serde"] }
+
+[dependencies.rusqlite]
+version = "~0.40"
+features = ["limits", "bundled"]
+
+[dependencies.edn]
+path = "../../edn"
+
+[dependencies.core_traits]
+path = "../../core-traits"
+
+[dependencies.mentat_core]
+path = "../../core"
+
+[dependencies.mentat_sql]
+path = "../sql"
+
+[dependencies.mentat_db]
+path = "../db"
+
+[dependencies.db_traits]
+path = "../db-traits"
+
+[dependencies.mentat_query_algebrizer]
+path = "../query-algebrizer"
+
+[dependencies.query_algebrizer_traits]
+path = "../query-algebrizer-traits"
+
+[dependencies.mentat_query_projector]
+path = "../query-projector"
+
+[dependencies.query_projector_traits]
+path = "../query-projector-traits"
+
+[dependencies.mentat_query_pull]
+path = "../query-pull"
+
+[dependencies.query_pull_traits]
+path = "../query-pull-traits"
+
+[dependencies.mentat_query_sql]
+path = "../query-sql"
+
+[dependencies.sql_traits]
+path = "../sql-traits"
+
+[dependencies.public_traits]
+path = "../public-traits"
+
+[dependencies.mentat_transaction]
+path = "../transaction"
+
+# Optional: the mino Clojure-dialect interpreter, behind the `mino` feature.
+# Maintained in this repo (crates/mino/); upstream mino is archived.
+[dependencies.mino-rs]
+path = "../../mino"
+optional = true

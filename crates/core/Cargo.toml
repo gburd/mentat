@@ -1,14 +1,13 @@
 [package]
 name = "mentat_core"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [dependencies]
 chrono = { version = "~0.4", features = ["serde"] }
 enumset = "1.1"
 indexmap = "~2.14"
-ordered-float = { version = "~5.0", features = ["serde"] }
+ordered-float = { version = "5.3", features = ["serde"] }
 uuid = { version = "~1.25", features = ["v4", "serde"] }
 
 [dependencies.core_traits]

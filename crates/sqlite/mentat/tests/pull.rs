@@ -26,7 +26,7 @@ use mentat::{
 };
 
 fn fixture_path(rest: &str) -> PathBuf {
-    let fixtures = Path::new("fixtures/");
+    let fixtures = Path::new("../fixtures/");
     fixtures.join(Path::new(rest))
 }
 

@@ -1,7 +1,6 @@
 [package]
 name = "mentat_query_sql"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [dependencies.rusqlite]
@@ -9,13 +8,13 @@ version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
-path = "../edn"
+path = "../../edn"
 
 [dependencies.core_traits]
-path = "../core-traits"
+path = "../../core-traits"
 
 [dependencies.mentat_core]
-path = "../core"
+path = "../../core"
 
 [dependencies.mentat_sql]
 path = "../sql"

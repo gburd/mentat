@@ -17,5 +17,5 @@ bundled_sqlite3 = ["mentat/bundled_sqlite3"]
 libc = "~0.2"
 
 [dependencies.mentat]
-path = "../"
+path = "../mentat"
 default-features = false

@@ -22,7 +22,6 @@
 docs/vendor/
 /.lein-*
 /.nrepl-port
-Cargo.lock
 /checkouts/
 /classes/
 /node_modules/

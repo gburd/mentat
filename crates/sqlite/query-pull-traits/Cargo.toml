@@ -1,7 +1,6 @@
 [package]
 name = "query_pull_traits"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [lib]
@@ -12,7 +11,7 @@ path = "lib.rs"
 thiserror = "~2.0"
 
 [dependencies.core_traits]
-path = "../core-traits"
+path = "../../core-traits"
 
 [dependencies.db_traits]
 path = "../db-traits"

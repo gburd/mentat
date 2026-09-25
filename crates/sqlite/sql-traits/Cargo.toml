@@ -1,7 +1,6 @@
 [package]
 name = "sql_traits"
 version = "0.0.2"
-workspace = ".."
 edition = "2021"
 
 [lib]

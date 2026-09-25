@@ -250,7 +250,7 @@ mod tests {
     use core_traits::attribute::Unique;
 
     fn fixture_path(rest: &str) -> PathBuf {
-        let fixtures = Path::new("fixtures/");
+        let fixtures = Path::new("../fixtures/");
         fixtures.join(Path::new(rest))
     }
 
