@@ -70,7 +70,9 @@ Written 2026-09-25 at ~91% context. Read this + the plan
          off-by-default until the merged repo ships, so there is NO live exposure
          to race — nothing forces 1c before the merge. RECOMMENDED: option (c),
          i.e. do Tasks 3-5 (merge) first, then 1c falls out.
-   Ask the user, or proceed with (c). The 1c mechanics themselves (below) are ready: to PUBLIC on the hardened interpreter, pg_mentat
+   RESOLVED 2026-09-25: user chose merge-first. Doing Tasks 3-6 (merge) then
+   Task 1c falls out when pg_mentat's mino-rs dep becomes a workspace path.
+   The 1c mechanics themselves (below) are ready: to PUBLIC on the hardened interpreter, pg_mentat
    1.6.3. GUCs mentat.script_max_{steps,heap_bytes,depth} (PGC_SUSET) in
    _PG_init (pg_mentat/src/planner/hooks.rs has the define_int_guc pattern);
    pg_mentat/src/functions/script.rs build_interpreter() -> sandboxed()+limits
