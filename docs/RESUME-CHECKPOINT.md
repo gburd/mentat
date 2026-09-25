@@ -108,9 +108,23 @@ Written 2026-09-25 at ~91% context. Read this + the plan
    - **Task 1c DONE** (5d7db9e5 + 2b534591): mentat_eval sandboxed() + 3 SUSET GUCs
      (script_max_steps/heap_bytes/depth) + check hook; 7 security pg_tests; 1884 pg16
      with 'script', 1846 without. NO REVOKE, not SECURITY DEFINER.
-   - IN FLIGHT: Task 7 (mentat-script crate), Task 8 (mino refresh) dispatched parallel.
-   - TODO: Task 10 (SQLite unimplemented!->errors), 11 (cas/retractEntity), 12 (history/asof q),
-     13 (README/docs), 14 (release 1.7.0 + retire pg_mentat). Then benchmark + prod-readiness.
+   - **Task 8 DONE** (f1bf4213..8a3d9345, 11 commits): mino refreshed to upstream 9c65bb50.
+     #uuid->Value::Uuid + prints #uuid"..", #inst prints constructor form, read-string,
+     classed/keyword catch, regex lookahead, delay type, store backend seam (byte-identical
+     file format), new core.clj prims. Corpus 14/14 green. BigDec DEFERRED (ponytail note +
+     #[ignore]d test bigdec_literal_reads in reader.rs). uuid dep added.
+   - **Task 10 DONE** (faff7919 algebrizer, 4f4b6761 projector, 8b807064 db, 4f6d8d9c pull,
+     da65b3c9 edn test clippy): 15 unimplemented!()/todo! sites -> typed errors (new
+     AlgebrizerError::UnsupportedBigInteger/UnsupportedSource, DbErrorKind::NotYetImplemented)
+     or justified unreachable!(); dead resolve_argument fn deleted; found+guarded a genuinely
+     reachable fulltext arm. [lints] workspace=true on query-algebrizer(-traits), query-projector
+     (-traits), db(-traits), query-pull(-traits). edn test files clippy-clean.
+   - **Combined green** (a543c311): workspace 77 binaries, mino 116+14+7+11+9, pgrx pg16 1846.
+     Fixed 1 stale mentat test (inst/uuid round-trip now real values).
+   - TODO: Task 7 (mentat-script crate - can now drop inst/uuid workaround),
+     11 (SQLite cas/retractEntity), 12 (SQLite history/asof q + coll bindings -> removes
+     UnsupportedHistoryPattern/UnsupportedInputBinding gates), 13 (README/docs),
+     14 (release 1.7.0 + retire pg_mentat). Then benchmark + prod-readiness.
    - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
    restructure into crates/ (Task 5); one flake + CI + delete dead weight (Task 6).
