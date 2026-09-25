@@ -366,7 +366,7 @@ fn test_inst() {
 fn test_bigint() {
     use self::Value::*;
 
-    let max_i64 = i64::max_value().to_bigint().unwrap();
+    let max_i64 = i64::MAX.to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
 
     assert_eq!(bigint("0N").unwrap(), BigInteger(Zero::zero()));
@@ -382,7 +382,7 @@ fn test_bigint() {
 
 #[test]
 fn test_span_bigint() {
-    let max_i64 = i64::max_value().to_bigint().unwrap();
+    let max_i64 = i64::MAX.to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
 
     assert_eq!(
@@ -564,7 +564,7 @@ fn test_span_keyword() {
 fn test_value() {
     use self::Value::*;
 
-    let max_i64 = i64::max_value().to_bigint().unwrap();
+    let max_i64 = i64::MAX.to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
 
     assert_eq!(value("nil").unwrap(), Nil);
@@ -623,7 +623,7 @@ fn test_value() {
 
 #[test]
 fn test_span_value() {
-    let max_i64 = i64::max_value().to_bigint().unwrap();
+    let max_i64 = i64::MAX.to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
 
     assert_eq!(
@@ -748,7 +748,7 @@ fn test_span_value() {
 fn test_vector() {
     use self::Value::*;
 
-    let max_i64 = i64::max_value().to_bigint().unwrap();
+    let max_i64 = i64::MAX.to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
 
     let test = "[]";
@@ -1532,9 +1532,9 @@ macro_rules! def_test_into_type {
 }
 
 #[test]
-#[cfg_attr(clippy, allow(clippy::float_cmp, clippy::unit_cmp))]
+#[allow(clippy::float_cmp, clippy::unit_cmp)]
 fn test_is_and_as_type_helper_functions() {
-    let max_i64 = i64::max_value().to_bigint().unwrap();
+    let max_i64 = i64::MAX.to_bigint().unwrap();
     let bigger = &max_i64 * &max_i64;
 
     let values = [
