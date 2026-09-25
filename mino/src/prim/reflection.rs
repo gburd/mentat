@@ -307,6 +307,7 @@ pub fn type_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         Value::Atom(_) => "atom",
         Value::Store(_) => "store",
         Value::Recur(_) => "recur",
+        Value::TailCall(_) => "tail-call",
     };
     Ok(Value::Keyword(Symbol::plain(tag)))
 }

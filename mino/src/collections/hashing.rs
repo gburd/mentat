@@ -134,6 +134,7 @@ fn hash32(v: &Value) -> u32 {
         // Internal recur signal: identity hash; it never enters a real
         // collection, but the match must stay exhaustive.
         Value::Recur(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
+        Value::TailCall(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         // Regex: identity hash (Clojure Patterns are never value-equal).
         Value::Regex(gc) => hash_identity(fnv_mix(h, 0x0b), &**gc as *const _ as usize),
         // Atom: identity hash by cell address (atoms are never value-equal).

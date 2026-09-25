@@ -566,7 +566,7 @@ impl Interp {
             // (it never occurs in source); pass it through so the loop/fn
             // trampoline sees it. Non-tail eval sites use `eval_value`, which
             // rejects it.
-            Value::Recur(_) => Ok(form.clone()),
+            Value::Recur(_) | Value::TailCall(_) => Ok(form.clone()),
 
             // The empty list self-evaluates to itself (Clojure: `()` => `()`),
             // it is NOT an empty call.
@@ -1136,6 +1136,7 @@ fn type_tag(v: &Value) -> &'static str {
         Value::Atom(_) => "atom",
         Value::Store(_) => "store",
         Value::Recur(_) => "recur",
+        Value::TailCall(_) => "tail-call",
     }
 }
 

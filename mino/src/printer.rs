@@ -99,6 +99,7 @@ fn print_into(s: &mut String, v: &Value) {
         // Internal recur signal; never printed in normal use (matches mino's
         // MINO_RECUR having only a diagnostic print form).
         Value::Recur(_) => s.push_str("#<recur>"),
+        Value::TailCall(_) => s.push_str("#<tail-call>"),
         // pr-str form: `#"source"` with the source printed verbatim (the
         // reader stored it raw, no escape processing). Verified: mino
         // `(pr-str #"a\d+")` => `#"a\d+"`.

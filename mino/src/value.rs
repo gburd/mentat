@@ -68,6 +68,11 @@ pub enum Value {
     // trampolines; it must never escape to user code. `eval_value` (non-tail
     // eval sites) rejects it as "recur must be in tail position".
     Recur(Gc<Vec<Value>>),
+    // Internal tail-call signal (mirrors mino's MINO_TAIL_CALL): a call to a
+    // user fn in tail position returns (callee, evaluated args) instead of
+    // nesting a Rust frame; `apply_closure` loops on it, and non-tail eval
+    // sites (`eval_value`/`eval_force`) run it to completion. Never escapes.
+    TailCall(Gc<(Value, Vec<Value>)>),
     // A mutable reference cell (`atom`). Holds the current value plus an
     // optional validator fn and a watches map. Equality/hash are by identity
     // (Clojure: two distinct atoms are never `=`, even with equal contents).
