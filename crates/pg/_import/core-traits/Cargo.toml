@@ -23,3 +23,6 @@ bytes = { version = "1.0.1", features = ["serde"] }
 [dependencies.edn]
 path = "../edn"
 features = ["serde_support"]
+
+[lints]
+workspace = true

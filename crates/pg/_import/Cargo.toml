@@ -71,3 +71,8 @@ useless_format = "allow"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+
+[profile.release-dev]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
