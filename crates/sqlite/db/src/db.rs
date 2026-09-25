@@ -14,7 +14,7 @@ use db_traits::errors::ResultExt;
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::iter::{once, repeat};
+use std::iter::once;
 use std::ops::Range;
 use std::path::Path;
 
@@ -959,7 +959,6 @@ impl MentatStoring for rusqlite::Connection {
             let mut stmt = self.prepare_cached(s.as_str())?;
             stmt.execute(params_from_iter(&params))
                 .context(DbErrorKind::NonFtsInsertionIntoTempSearchTableFailed)
-                .map_err(|e| e.into())
                 .map(|_c| ())
         }).collect::<Result<Vec<()>>>();
 
@@ -1072,7 +1071,7 @@ impl MentatStoring for rusqlite::Connection {
             assert!(bindings_per_statement * datom_count < max_vars, "Too many values: {} * {} >= {}", bindings_per_statement, datom_count, max_vars);
             let inner = "(?, ?, (SELECT rowid FROM fulltext_values WHERE searchid = ?), ?, ?, ?)".to_string();
             // Like "(?, ?, (SELECT rowid FROM fulltext_values WHERE searchid = ?), ?, ?, ?), (?, ?, (SELECT rowid FROM fulltext_values WHERE searchid = ?), ?, ?, ?)".
-            let fts_values: String = repeat(inner).take(datom_count).join(", ");
+            let fts_values: String = std::iter::repeat_n(inner, datom_count).join(", ");
             let s: String = if search_type == SearchType::Exact {
                 format!("INSERT INTO temp.exact_searches (e0, a0, v0, value_type_tag0, added0, flags0) VALUES {}", fts_values)
             } else {
@@ -1082,7 +1081,6 @@ impl MentatStoring for rusqlite::Connection {
             // TODO: consider ensuring we inserted the expected number of rows.
             let mut stmt = self.prepare_cached(s.as_str())?;
             stmt.execute(params_from_iter(&params)).context(DbErrorKind::FtsInsertionIntoTempSearchTableFailed)
-                .map_err(|e| e.into())
                 .map(|_c| ())
         }).collect::<Result<Vec<()>>>();
 
@@ -1917,8 +1915,8 @@ mod tests {
         );
         let attribute = conn.schema.attribute_for_entid(100).unwrap().clone();
         assert_eq!(attribute.value_type, ValueType::Long);
-        assert_eq!(attribute.multival, true);
-        assert_eq!(attribute.fulltext, false);
+        assert!(attribute.multival);
+        assert!(!attribute.fulltext);
 
         assert_matches!(
             conn.last_transaction(),
@@ -1937,8 +1935,8 @@ mod tests {
         // Let's check we actually have the schema characteristics we expect.
         let attribute = conn.schema.attribute_for_entid(100).unwrap().clone();
         assert_eq!(attribute.value_type, ValueType::Long);
-        assert_eq!(attribute.multival, true);
-        assert_eq!(attribute.fulltext, false);
+        assert!(attribute.multival);
+        assert!(!attribute.fulltext);
 
         // Let's check that we can use the freshly installed attribute.
         assert_transact!(
@@ -2030,8 +2028,8 @@ mod tests {
         // Let's check we actually have the schema characteristics we expect.
         let attribute = conn.schema.attribute_for_entid(100).unwrap().clone();
         assert_eq!(attribute.value_type, ValueType::Keyword);
-        assert_eq!(attribute.multival, true);
-        assert_eq!(attribute.fulltext, false);
+        assert!(attribute.multival);
+        assert!(!attribute.fulltext);
 
         // Let's check that we can use the freshly altered attribute's new characteristic.
         assert_transact!(
@@ -2117,11 +2115,10 @@ mod tests {
             100
         );
         // Ident map no longer contains the old ident.
-        assert!(conn
+        assert!(!conn
             .schema
             .ident_map
-            .get(&to_namespaced_keyword(":name/Ivan").unwrap())
-            .is_none());
+            .contains_key(&to_namespaced_keyword(":name/Ivan").unwrap()));
 
         // We can re-purpose an old ident.
         assert_transact!(conn, "[[:db/add 101 :db/ident :name/Ivan]]");
@@ -2166,12 +2163,11 @@ mod tests {
         // We can retract an existing :db/ident.
         assert_transact!(conn, "[[:db/retract :name/Petr :db/ident :name/Petr]]");
         // It's really gone.
-        assert!(conn.schema.entid_map.get(&100).is_none());
-        assert!(conn
+        assert!(!conn.schema.entid_map.contains_key(&100));
+        assert!(!conn
             .schema
             .ident_map
-            .get(&to_namespaced_keyword(":name/Petr").unwrap())
-            .is_none());
+            .contains_key(&to_namespaced_keyword(":name/Petr").unwrap()));
     }
 
     #[test]
@@ -2366,8 +2362,8 @@ mod tests {
             .cloned()
             .expect(":test/fulltext");
         assert_eq!(fulltext.value_type, ValueType::String);
-        assert_eq!(fulltext.fulltext, true);
-        assert_eq!(fulltext.multival, false);
+        assert!(fulltext.fulltext);
+        assert!(!fulltext.multival);
         assert_eq!(fulltext.unique, Some(attribute::Unique::Identity));
 
         let other = conn
@@ -2376,8 +2372,8 @@ mod tests {
             .cloned()
             .expect(":test/other");
         assert_eq!(other.value_type, ValueType::String);
-        assert_eq!(other.fulltext, true);
-        assert_eq!(other.multival, false);
+        assert!(other.fulltext);
+        assert!(!other.multival);
         assert_eq!(other.unique, None);
 
         // We can add fulltext indexed datoms.
@@ -3250,14 +3246,12 @@ mod tests {
 
         let mut conn = TestConn::default();
 
-        let mut terms = vec![];
-
-        terms.push(Term::AddOrRetract(
+        let mut terms = vec![Term::AddOrRetract(
             OpType::Add,
             Left(KnownEntid(200)),
             entids::DB_IDENT,
             Left(TypedValue::typed_string("test")),
-        ));
+        )];
         terms.push(Term::AddOrRetract(
             OpType::Retract,
             Left(KnownEntid(100)),

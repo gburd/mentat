@@ -12,7 +12,6 @@
 #![allow(unused_macros)]
 
 /// Low-level functions for testing.
-
 // Macro to parse a `Borrow<str>` to an `edn::Value` and assert the given `edn::Value` `matches`
 // against it.
 //

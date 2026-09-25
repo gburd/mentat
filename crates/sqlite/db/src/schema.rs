@@ -108,11 +108,12 @@ impl AttributeBuilder {
     /// Make a new AttributeBuilder from an existing Attribute. This is important to allow
     /// retraction. Only attributes that we allow to change are duplicated here.
     pub fn modify_attribute(attribute: &Attribute) -> Self {
-        let mut ab = AttributeBuilder::default();
-        ab.multival = Some(attribute.multival);
-        ab.unique = Some(attribute.unique);
-        ab.component = Some(attribute.component);
-        ab
+        AttributeBuilder {
+            multival: Some(attribute.multival),
+            unique: Some(attribute.unique),
+            component: Some(attribute.component),
+            ..AttributeBuilder::default()
+        }
     }
 
     pub fn value_type(&mut self, value_type: ValueType) -> &mut Self {

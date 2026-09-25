@@ -137,6 +137,7 @@ impl DB {
 pub type AVPair = (Entid, TypedValue);
 
 /// Used to represent assertions and retractions.
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) type EAV = (Entid, Entid, TypedValue);
 
 /// Map [a v] pairs to existing entids.

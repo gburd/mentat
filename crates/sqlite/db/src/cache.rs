@@ -8,44 +8,44 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-///! An implementation of attribute caching.
-///! Attribute caching means storing the entities and values for a given attribute, in the current
-///! state of the world, in one or both directions (forward or reverse).
-///!
-///! One might use a reverse cache to implement fast in-memory lookup of unique identities. One
-///! might use a forward cache to implement fast in-memory lookup of common properties.
-///!
-///! These caches are specialized wrappers around maps. We have four: single/multi forward, and
-///! unique/non-unique reverse. There are traits to provide access.
-///!
-///! A little tower of functions allows for multiple caches to be updated when provided with a
-///! single SQLite cursor over `(a, e, v)`s, sorted appropriately.
-///!
-///! Much of the complexity in this module is to support copy-on-write.
-///!
-///! When a transaction begins, we expect:
-///!
-///! - Existing references to the `Conn`'s attribute cache to still be valid.
-///! - Isolation to be preserved: that cache will return the same answers until the transaction
-///!   commits and a fresh reference to the cache is obtained.
-///! - Assertions and retractions within the transaction to be reflected in the cache.
-///!   - Retractions apply first, then assertions.
-///! - No writes = limited memory allocation for the cache.
-///! - New attributes can be cached, and existing attributes uncached, during the transaction.
-///!   These changes are isolated, too.
-///!
-///! All of this means that we need a decent copy-on-write layer that can represent retractions.
-///!
-///! This is `InProgressSQLiteAttributeCache`. It listens for committed transactions, and handles
-///! changes to the cached attribute set, maintaining a reference back to the stable cache. When
-///! necessary it copies and modifies. Retractions are modeled via a `None` option.
-///!
-///! When we're done, we take each of the four caches, and each cached attribute that changed, and
-///! absorbe them back into the stable cache. This uses `Arc::make_mut`, so if nobody is looking at
-///! the old cache, we modify it in place.
-///!
-///! Most of the tests for this module are actually in `conn.rs`, where we can set up transactions
-///! and test the external API.
+//! An implementation of attribute caching.
+//! Attribute caching means storing the entities and values for a given attribute, in the current
+//! state of the world, in one or both directions (forward or reverse).
+//!
+//! One might use a reverse cache to implement fast in-memory lookup of unique identities. One
+//! might use a forward cache to implement fast in-memory lookup of common properties.
+//!
+//! These caches are specialized wrappers around maps. We have four: single/multi forward, and
+//! unique/non-unique reverse. There are traits to provide access.
+//!
+//! A little tower of functions allows for multiple caches to be updated when provided with a
+//! single SQLite cursor over `(a, e, v)`s, sorted appropriately.
+//!
+//! Much of the complexity in this module is to support copy-on-write.
+//!
+//! When a transaction begins, we expect:
+//!
+//! - Existing references to the `Conn`'s attribute cache to still be valid.
+//! - Isolation to be preserved: that cache will return the same answers until the transaction
+//!   commits and a fresh reference to the cache is obtained.
+//! - Assertions and retractions within the transaction to be reflected in the cache.
+//!   - Retractions apply first, then assertions.
+//! - No writes = limited memory allocation for the cache.
+//! - New attributes can be cached, and existing attributes uncached, during the transaction.
+//!   These changes are isolated, too.
+//!
+//! All of this means that we need a decent copy-on-write layer that can represent retractions.
+//!
+//! This is `InProgressSQLiteAttributeCache`. It listens for committed transactions, and handles
+//! changes to the cached attribute set, maintaining a reference back to the stable cache. When
+//! necessary it copies and modifies. Retractions are modeled via a `None` option.
+//!
+//! When we're done, we take each of the four caches, and each cached attribute that changed, and
+//! absorbe them back into the stable cache. This uses `Arc::make_mut`, so if nobody is looking at
+//! the old cache, we modify it in place.
+//!
+//! Most of the tests for this module are actually in `conn.rs`, where we can set up transactions
+//! and test the external API.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use std::collections::btree_map::Entry;
@@ -292,7 +292,7 @@ impl RemoveFromCache for SingleValAttributeCache {
                     None => {}                  // Already removed.
                     Some(ref r) if r == v => {} // We removed it!
                     r => {
-                        eprintln!(
+                        log::warn!(
                             "Cache inconsistency: should be ({}, {:?}), was ({}, {:?}).",
                             e, v, e, r
                         );
@@ -360,13 +360,13 @@ impl RemoveFromCache for MultiValAttributeCache {
         if let Some(vec) = self.e_vs.get_mut(&e) {
             let removed = vec.remove_every(v);
             if removed == 0 {
-                eprintln!(
+                log::warn!(
                     "Cache inconsistency: tried to remove ({}, {:?}), was not present.",
                     e, v
                 );
             }
         } else {
-            eprintln!(
+            log::warn!(
                 "Cache inconsistency: tried to remove ({}, {:?}), was empty.",
                 e, v
             );
@@ -417,7 +417,7 @@ impl RemoveFromCache for UniqueReverseAttributeCache {
                     None => {}              // Already removed.
                     Some(r) if r == e => {} // We removed it!
                     r => {
-                        eprintln!(
+                        log::warn!(
                             "Cache inconsistency: should be ({}, {:?}), was ({}, {:?}).",
                             e, v, e, r
                         );
@@ -477,13 +477,13 @@ impl RemoveFromCache for NonUniqueReverseAttributeCache {
         if let Some(vec) = self.v_es.get_mut(v) {
             let removed = vec.remove(&e);
             if !removed {
-                eprintln!(
+                log::warn!(
                     "Cache inconsistency: tried to remove ({}, {:?}), was not present.",
                     e, v
                 );
             }
         } else {
-            eprintln!(
+            log::warn!(
                 "Cache inconsistency: tried to remove ({}, {:?}), was empty.",
                 e, v
             );
@@ -1456,10 +1456,11 @@ impl SQLiteAttributeCache {
     }
 
     fn make_override(&self) -> AttributeCaches {
-        let mut new = AttributeCaches::default();
-        new.forward_cached_attributes = self.inner.forward_cached_attributes.clone();
-        new.reverse_cached_attributes = self.inner.reverse_cached_attributes.clone();
-        new
+        AttributeCaches {
+            forward_cached_attributes: self.inner.forward_cached_attributes.clone(),
+            reverse_cached_attributes: self.inner.reverse_cached_attributes.clone(),
+            ..Default::default()
+        }
     }
 
     pub fn register_forward<U>(
@@ -1893,11 +1894,11 @@ impl InProgressSQLiteAttributeCache {
             .or_else(|| self.inner.value_pairs(schema, a))
     }
 
-    pub fn commit_to(self, destination: &mut SQLiteAttributeCache) {
+    pub fn commit_to(self, destination: &mut SQLiteAttributeCache) -> Result<()> {
         // If the destination is empty, great: just take `overlay`.
         if !destination.has_cached_attributes() {
             destination.inner = Arc::new(self.overlay);
-            return;
+            return Ok(());
         }
 
         // If we have exclusive write access to the destination cache, update it in place.
@@ -1915,15 +1916,18 @@ impl InProgressSQLiteAttributeCache {
 
             // Now replace each attribute's entry with `overlay`.
             dest.absorb(self.overlay);
-            return;
+            return Ok(());
         }
 
-        // If we don't, populate `self.overlay` with whatever we didn't overwrite,
-        // and then shim it into `destination.`
-        // We haven't implemented this because it does not currently occur.
-        // TODO: do this! Then do this:
-        // destination.inner = Arc::new(self.overlay);
-        unimplemented!();
+        // If we don't have exclusive access, we'd need to populate `self.overlay` with
+        // whatever we didn't overwrite and then shim it into `destination`. That merge
+        // isn't implemented because a shared destination cache does not currently occur
+        // (the `Conn` holds the only other `Arc`, and we've dropped ours). Return a typed
+        // error rather than panicking if that ever changes.
+        // TODO: implement the merge, then `destination.inner = Arc::new(self.overlay)`.
+        bail!(DbErrorKind::NotYetImplemented(
+            "merging an attribute cache into a shared destination cache".to_string()
+        ))
     }
 }
 

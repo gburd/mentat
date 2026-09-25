@@ -122,7 +122,7 @@ lazy_static! {
             (
                 ns_keyword!("db.part", "tx"),
                 TX0,
-                i64::max_value(),
+                i64::MAX,
                 TX0,
                 false,
             ),

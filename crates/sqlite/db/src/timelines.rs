@@ -795,7 +795,7 @@ mod tests {
         )
         .expect("moved timeline");
         update_conn(&mut conn, &new_schema, &new_partition_map);
-        assert_eq!(true, new_schema.is_some());
+        assert!(new_schema.is_some());
         assert_eq!(bootstrap::bootstrap_schema(), conn.schema);
         assert_eq!(partition_map_after_bootstrap, conn.partition_map);
         assert_matches!(conn.datoms(), "[]");
@@ -853,7 +853,7 @@ mod tests {
         update_conn(&mut conn, &new_schema, &new_partition_map);
 
         update_conn(&mut conn, &new_schema, &new_partition_map);
-        assert_eq!(true, new_schema.is_some());
+        assert!(new_schema.is_some());
         assert_eq!(bootstrap::bootstrap_schema(), conn.schema);
         assert_eq!(partition_map_after_bootstrap, conn.partition_map);
         assert_matches!(conn.datoms(), "[]");

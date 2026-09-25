@@ -22,3 +22,6 @@ path = "../../core-traits"
 [dependencies.rusqlite]
 version = "~0.40"
 features = ["limits", "bundled"]
+
+[lints]
+workspace = true

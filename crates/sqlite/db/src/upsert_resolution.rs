@@ -142,11 +142,12 @@ impl Generation {
     ///
     /// TODO: Considering doing this in place; the function already consumes `self`.
     pub(crate) fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
-        let mut next = Generation::default();
-
         // We'll iterate our own allocations to resolve more things, but terms that have already
         // resolved stay resolved.
-        next.resolved = self.resolved;
+        let mut next = Generation {
+            resolved: self.resolved,
+            ..Default::default()
+        };
 
         for UpsertE(t, a, v) in self.upserts_e {
             match temp_id_map.get(&*t) {
@@ -362,10 +363,11 @@ impl Generation {
         assert!(self.upserts_e.is_empty());
         assert!(self.upserts_ev.is_empty());
 
-        let mut populations = FinalPopulations::default();
-
-        populations.upserted = self.upserted;
-        populations.resolved = self.resolved;
+        let mut populations = FinalPopulations {
+            upserted: self.upserted,
+            resolved: self.resolved,
+            ..Default::default()
+        };
 
         for term in self.allocations {
             let allocated = match term {

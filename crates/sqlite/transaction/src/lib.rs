@@ -310,7 +310,7 @@ impl<'a, 'c> InProgress<'a, 'c> {
         metadata.partition_map = self.partition_map;
 
         // Update the conn's cache if we made any changes.
-        self.cache.commit_to(&mut metadata.attribute_cache);
+        self.cache.commit_to(&mut metadata.attribute_cache)?;
 
         if self.schema != *(metadata.schema) {
             metadata.schema = Arc::new(self.schema);
