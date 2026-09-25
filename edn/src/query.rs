@@ -811,6 +811,9 @@ pub struct Pattern {
     pub attribute: PatternNonValuePlace,
     pub value: PatternValuePlace,
     pub tx: PatternNonValuePlace,
+    /// The `added` flag, a 5th pattern place for history queries:
+    /// `[?e ?a ?v ?tx ?added]`. Placeholder in an ordinary 4-place pattern.
+    pub added: PatternNonValuePlace,
 }
 
 impl Pattern {
@@ -819,7 +822,7 @@ impl Pattern {
         a: PatternNonValuePlace,
         v: PatternValuePlace,
     ) -> Option<Pattern> {
-        Pattern::new(None, e, a, v, PatternNonValuePlace::Placeholder)
+        Pattern::new(None, e, a, v, PatternNonValuePlace::Placeholder, PatternNonValuePlace::Placeholder)
     }
 
     pub fn new(
@@ -828,6 +831,7 @@ impl Pattern {
         a: PatternNonValuePlace,
         v: PatternValuePlace,
         tx: PatternNonValuePlace,
+        added: PatternNonValuePlace,
     ) -> Option<Pattern> {
         let aa = a.clone(); // Too tired of fighting borrow scope for now.
         if let PatternNonValuePlace::Ident(ref k) = aa {
@@ -843,6 +847,7 @@ impl Pattern {
                         attribute: k.to_reversed().into(),
                         value: e_v,
                         tx,
+                        added,
                     });
                 } else {
                     return None;
@@ -855,6 +860,7 @@ impl Pattern {
             attribute: a,
             value: v,
             tx,
+            added,
         })
     }
 }
@@ -1010,12 +1016,14 @@ pub struct ParsedQuery {
 pub(crate) enum QueryPart {
     FindSpec(FindSpec),
     WithVars(Vec<Variable>),
-    InVars(Vec<Variable>),
-    // ponytail: parsed :in still emits InVars (unchanged A semantics); InBindings
-    // + ParsedQuery.in_bindings are ported infra for binding-form :in, wired when
-    // a feature needs it. Upgrade path: add a binding-based :in grammar alt.
     #[allow(dead_code)]
+    InVars(Vec<Variable>),
     InBindings(Vec<Binding>),
+    // `$` / `$named` source vars from `:in`. Previously nothing populated
+    // ParsedQuery.in_sources; the grammar now routes source vars here so a
+    // `:in $ [?a ...]` binding list is not polluted with `$` (which is not a
+    // Variable and would shift positional inputs).
+    InSources(Vec<SrcVar>),
     Limit(Limit),
     Offset(Offset),
     WhereClauses(Vec<WhereClause>),
@@ -1023,7 +1031,6 @@ pub(crate) enum QueryPart {
     Distinct,
     Rules(Vec<Rule>),
 }
-
 /// A `ParsedQuery` represents a parsed but potentially invalid query to the query algebrizer.
 /// Such a query is syntactically valid but might be semantically invalid, for example because
 /// constraints on the set of variables are not respected.
@@ -1038,6 +1045,7 @@ impl ParsedQuery {
         let mut with: Option<Vec<Variable>> = None;
         let mut in_vars: Option<Vec<Variable>> = None;
         let mut in_bindings: Option<Vec<Binding>> = None;
+        let mut in_sources: Option<Vec<SrcVar>> = None;
         let mut limit: Option<Limit> = None;
         let mut offset: Option<Offset> = None;
         let mut where_clauses: Option<Vec<WhereClause>> = None;
@@ -1070,6 +1078,12 @@ impl ParsedQuery {
                         return Err("find query has repeated :in");
                     }
                     in_bindings = Some(x)
+                }
+                QueryPart::InSources(x) => {
+                    if in_sources.is_some() {
+                        return Err("find query has repeated :in");
+                    }
+                    in_sources = Some(x)
                 }
                 QueryPart::Limit(x) => {
                     if limit.is_some() {
@@ -1128,7 +1142,7 @@ impl ParsedQuery {
             with: with.unwrap_or_default(),
             in_vars: final_in_vars,
             in_bindings: final_in_bindings,
-            in_sources: BTreeSet::default(),
+            in_sources: in_sources.unwrap_or_default().into_iter().collect(),
             limit: limit.unwrap_or(Limit::Unlimited),
             offset: offset.unwrap_or(Offset::Unlimited),
             where_clauses: where_clauses.ok_or("expected :where")?,
@@ -1313,6 +1327,9 @@ impl ContainsVariables for Pattern {
             acc_ref(acc, v)
         }
         if let PatternNonValuePlace::Variable(ref v) = self.tx {
+            acc_ref(acc, v)
+        }
+        if let PatternNonValuePlace::Variable(ref v) = self.added {
             acc_ref(acc, v)
         }
     }

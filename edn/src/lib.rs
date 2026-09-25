@@ -73,6 +73,13 @@ use crate::query::FromValue;
 
 pub type ParseError = peg::error::ParseError<peg::str::LineCol>;
 
+/// One item of an `:in` clause: a source var (`$`, `$named`) or a binding form.
+/// The grammar partitions these into `in_sources` and `in_bindings`.
+enum InItem {
+    Source(query::SrcVar),
+    Binding(query::Binding),
+}
+
 peg::parser!(grammar grammar() for str {
 
     pub rule nil() -> SpannedValue = "nil" { SpannedValue::Nil }
@@ -432,10 +439,12 @@ peg::parser!(grammar grammar() for str {
           a:pattern_non_value_place()
           v:pattern_value_place()?
           tx:pattern_non_value_place()?
+          added:pattern_non_value_place()?
         "]" __
         {?
             let v = v.unwrap_or(query::PatternValuePlace::Placeholder);
             let tx = tx.unwrap_or(query::PatternNonValuePlace::Placeholder);
+            let added = added.unwrap_or(query::PatternNonValuePlace::Placeholder);
 
             // Pattern::new takes care of reversal of reversed
             // attributes: [?x :foo/_bar ?y] turns into
@@ -455,7 +464,7 @@ peg::parser!(grammar grammar() for str {
             // ```
             //
             // is nonsense. That leaves us with a nested optional, which we unwrap here.
-            query::Pattern::new(src, e, a, v, tx)
+            query::Pattern::new(src, e, a, v, tx, added)
                 .map(query::WhereClause::Pattern)
                 .ok_or("expected pattern")
         }
@@ -593,19 +602,45 @@ peg::parser!(grammar grammar() for str {
             }).collect()
         }
 
-    rule query_part() -> query::QueryPart
-        = __ ":find" fs:find_spec() { query::QueryPart::FindSpec(fs) }
-        / __ ":in" in_vars:variable()+ { query::QueryPart::InVars(in_vars) }
-        / __ ":limit" l:limit() { query::QueryPart::Limit(l) }
-        / __ ":offset" o:offset() { query::QueryPart::Offset(o) }
-        / __ ":order" os:order()+ { query::QueryPart::Order(os) }
-        / __ ":where" ws:where_clause()+ { query::QueryPart::WhereClauses(ws) }
-        / __ ":rules" rules:rule_definitions() { query::QueryPart::Rules(rules) }
-        / __ ":with" with_vars:variable()+ { query::QueryPart::WithVars(with_vars) }
-        / __ ":distinct" { query::QueryPart::Distinct }
+    rule query_part() -> Vec<query::QueryPart>
+        = __ ":find" fs:find_spec() { vec![query::QueryPart::FindSpec(fs)] }
+        / __ ":in" parts:in_clause() { parts }
+        / __ ":limit" l:limit() { vec![query::QueryPart::Limit(l)] }
+        / __ ":offset" o:offset() { vec![query::QueryPart::Offset(o)] }
+        / __ ":order" os:order()+ { vec![query::QueryPart::Order(os)] }
+        / __ ":where" ws:where_clause()+ { vec![query::QueryPart::WhereClauses(ws)] }
+        / __ ":rules" rules:rule_definitions() { vec![query::QueryPart::Rules(rules)] }
+        / __ ":with" rules:rule_definitions() { vec![query::QueryPart::Rules(rules)] }
+        / __ ":with" with_vars:variable()+ { vec![query::QueryPart::WithVars(with_vars)] }
+        / __ ":distinct" { vec![query::QueryPart::Distinct] }
+
+    // `:in` accepts source vars (`$`, `$named`) and binding forms, in any mix.
+    // Sources go to InSources, everything else to InBindings; the scalar
+    // bindings are later derived into in_vars. Emits up to two parts.
+    rule in_clause() -> Vec<query::QueryPart>
+        = items:in_item()+ {
+            let mut sources = Vec::new();
+            let mut bindings = Vec::new();
+            for item in items {
+                match item {
+                    InItem::Source(s) => sources.push(s),
+                    InItem::Binding(b) => bindings.push(b),
+                }
+            }
+            let mut parts = Vec::new();
+            if !sources.is_empty() { parts.push(query::QueryPart::InSources(sources)); }
+            parts.push(query::QueryPart::InBindings(bindings));
+            parts
+        }
+
+    // A source var if it starts with `$`, else a binding. `src_var()` accepts
+    // any symbol, so try it only on `$`-led input to avoid swallowing `?vars`.
+    rule in_item() -> InItem
+        = __ &"$" s:src_var() { InItem::Source(s) }
+        / b:binding() { InItem::Binding(b) }
 
     pub rule parse_query() -> query::ParsedQuery
-        = __ "[" qps:query_part()+ "]" __ {? query::ParsedQuery::from_parts(qps) }
+        = __ "[" qps:query_part()+ "]" __ {? query::ParsedQuery::from_parts(qps.into_iter().flatten().collect()) }
 
     rule variable() -> query::Variable
         = v:value() {? query::Variable::from_value(&v).ok_or("expected variable") }

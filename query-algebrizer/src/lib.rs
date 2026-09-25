@@ -736,6 +736,7 @@ fn subst_clause(c: WhereClause, subst: &BTreeMap<Variable, Variable>) -> WhereCl
             attribute: subst_nv(p.attribute, subst),
             value: subst_v(p.value, subst),
             tx: subst_nv(p.tx, subst),
+            added: subst_nv(p.added, subst),
         }),
         WhereClause::Pred(p) => WhereClause::Pred(Predicate {
             operator: p.operator,

@@ -105,6 +105,9 @@ pub enum AlgebrizerError {
     #[error("multi-clause rule {0} is not yet supported in the embedded engine")]
     MultiClauseRuleUnsupported(PlainSymbol),
 
+    #[error("the 5th pattern place (`added`, e.g. [?e ?a ?v ?tx ?added]) is not yet supported by the SQLite engine")]
+    UnsupportedHistoryPattern,
+
     #[error("{0}")]
     EdnParseError(ParseError), // TODO [#from] ?
 }

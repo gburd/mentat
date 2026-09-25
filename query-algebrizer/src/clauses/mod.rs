@@ -1174,6 +1174,12 @@ impl ConjoiningClauses {
     pub(crate) fn apply_clause(&mut self, known: Known, where_clause: WhereClause) -> Result<()> {
         match where_clause {
             WhereClause::Pattern(p) => {
+                // The 5th `added` place (history queries) has no home in the
+                // current-state `datoms` table; reject it rather than silently
+                // dropping it (Task 12 routes such patterns to `transactions`).
+                if p.added != PatternNonValuePlace::Placeholder {
+                    bail!(AlgebrizerError::UnsupportedHistoryPattern);
+                }
                 match self.make_evolved_pattern(known, p) {
                     PlaceOrEmpty::Place(evolved) => self.apply_pattern(known, evolved),
                     PlaceOrEmpty::Empty(because) => self.mark_known_empty(because),
