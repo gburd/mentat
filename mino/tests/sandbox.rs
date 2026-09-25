@@ -61,7 +61,10 @@ fn step_limit_stops_infinite_loop() {
         steps: Some(100_000),
         ..Default::default()
     });
-    assert_limit(&err_of(&mut it, "(loop [] (recur))"), ":steps");
+    let e = err_of(&mut it, "(loop [] (recur))");
+    assert_limit(&e, ":steps");
+    assert!(e.contains("\"step limit exceeded\""), "{e}");
+    assert!(e.contains(":mino/code \"MLM001\""), "{e}");
 }
 
 #[test]

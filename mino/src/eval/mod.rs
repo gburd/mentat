@@ -442,7 +442,10 @@ impl Interp {
     }
 
     fn trip_limit(&mut self, which: &str, value: u64) -> Throw {
-        let msg = format!("{which} limit exceeded");
+        let msg = match which {
+            "steps" => "step limit exceeded".to_string(),
+            _ => format!("{which} limit exceeded"),
+        };
         self.trip(crate::error::limit_diag(&msg, which, value))
     }
 
