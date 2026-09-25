@@ -1,0 +1,1128 @@
+//! Thread-local garbage-collected boxes (The `Gc<T>` type).
+//!
+//! The `Gc<T>` type provides shared ownership of an immutable value.
+//! It is marked as non-sendable because the garbage collection only occurs
+//! thread-locally.
+
+#![cfg_attr(
+    feature = "nightly",
+    feature(coerce_unsized, dispatch_from_dyn, unsize)
+)]
+
+use crate::gc::{GcBox, GcBoxHeader};
+use std::alloc::Layout;
+use std::cell::{Cell, UnsafeCell};
+use std::cmp::Ordering;
+use std::fmt::{self, Debug, Display};
+use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
+use std::mem::{self, ManuallyDrop};
+use std::ops::{Deref, DerefMut};
+use std::ptr::{self, NonNull};
+use std::rc::Rc;
+
+#[cfg(feature = "nightly")]
+use std::marker::Unsize;
+#[cfg(feature = "nightly")]
+use std::ops::{CoerceUnsized, DispatchFromDyn};
+
+mod gc;
+#[cfg(feature = "serde")]
+mod serde;
+mod trace;
+
+#[cfg(feature = "derive")]
+pub use gc_derive::{Finalize, Trace};
+
+// We re-export the Trace method, as well as some useful internal methods for
+// managing collections or configuring the garbage collector.
+pub use crate::gc::{finalizer_safe, force_collect};
+pub use crate::trace::{Finalize, Trace};
+
+#[cfg(feature = "unstable-config")]
+pub use crate::gc::{configure, GcConfig};
+#[cfg(feature = "unstable-stats")]
+pub use crate::gc::{stats, GcStats};
+
+////////
+// Gc //
+////////
+
+/// A garbage-collected pointer type over an immutable value.
+///
+/// See the [module level documentation](./) for more details.
+pub struct Gc<T: ?Sized + 'static> {
+    ptr_root: Cell<NonNull<GcBox<T>>>,
+    marker: PhantomData<Rc<T>>,
+}
+
+#[cfg(feature = "nightly")]
+impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Gc<U>> for Gc<T> {}
+
+#[cfg(feature = "nightly")]
+impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Gc<U>> for Gc<T> {}
+
+impl<T: Trace> Gc<T> {
+    /// Constructs a new `Gc<T>` with the given value.
+    ///
+    /// # Collection
+    ///
+    /// This method could trigger a garbage collection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::Gc;
+    ///
+    /// let five = Gc::new(5);
+    /// assert_eq!(*five, 5);
+    /// ```
+    pub fn new(value: T) -> Self {
+        unsafe { Gc::from_gcbox(GcBox::new(value)) }
+    }
+}
+
+impl<T: Trace + ?Sized> Gc<T> {
+    /// Constructs a `Gc` that points to a new `GcBox`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid `GcBox` on the thread-local
+    /// `GcBox` chain.
+    #[inline]
+    unsafe fn from_gcbox(ptr: NonNull<GcBox<T>>) -> Gc<T> {
+        assert!(mem::align_of_val::<GcBox<T>>(ptr.as_ref()) > 1);
+
+        // When we create a Gc<T>, all pointers which have been moved to the
+        // heap no longer need to be rooted, so we unroot them.
+        ptr.as_ref().value().unroot();
+        let gc = Gc {
+            ptr_root: Cell::new(ptr),
+            marker: PhantomData,
+        };
+        gc.set_root();
+        gc
+    }
+}
+
+impl<T: ?Sized> Gc<T> {
+    /// Returns `true` if the two `Gc`s point to the same allocation.
+    pub fn ptr_eq(this: &Gc<T>, other: &Gc<T>) -> bool {
+        GcBox::ptr_eq(this.inner(), other.inner())
+    }
+
+    /// Provides a raw pointer to the data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::Gc;
+    ///
+    /// let x = Gc::new("hello".to_owned());
+    /// let y = x.clone();
+    /// let x_ptr = Gc::as_ptr(&x);
+    /// assert_eq!(x_ptr, Gc::as_ptr(&y));
+    /// assert_eq!(unsafe { &*x_ptr }, "hello");
+    /// ```
+    pub fn as_ptr(this: &Gc<T>) -> *const T {
+        let ptr = this.inner_ptr();
+        GcBox::value_ptr(ptr)
+    }
+}
+
+/// Returns the given pointer with its root bit cleared.
+unsafe fn clear_root_bit<T: ?Sized>(ptr: NonNull<GcBox<T>>) -> NonNull<GcBox<T>> {
+    let ptr = ptr.as_ptr();
+    let data = ptr.cast::<u8>();
+    let addr = data as isize;
+    let ptr = set_data_ptr(ptr, data.wrapping_offset((addr & !1) - addr));
+    NonNull::new_unchecked(ptr)
+}
+
+impl<T: ?Sized> Gc<T> {
+    fn rooted(&self) -> bool {
+        self.ptr_root.get().as_ptr().cast::<u8>() as usize & 1 != 0
+    }
+
+    unsafe fn set_root(&self) {
+        let ptr = self.ptr_root.get().as_ptr();
+        let data = ptr.cast::<u8>();
+        let addr = data as isize;
+        let ptr = set_data_ptr(ptr, data.wrapping_offset((addr | 1) - addr));
+        self.ptr_root.set(NonNull::new_unchecked(ptr));
+    }
+
+    unsafe fn clear_root(&self) {
+        self.ptr_root.set(clear_root_bit(self.ptr_root.get()));
+    }
+
+    #[inline]
+    fn inner_ptr(&self) -> *mut GcBox<T> {
+        // If we are currently in the dropping phase of garbage collection,
+        // it would be undefined behavior to dereference an unrooted Gc.
+        // By opting into `Trace` you agree to not dereference this pointer
+        // within your drop method, meaning that it should be safe.
+        //
+        // This assert exists just in case.
+        assert!(finalizer_safe() || self.rooted());
+
+        unsafe { clear_root_bit(self.ptr_root.get()).as_ptr() }
+    }
+
+    #[inline]
+    fn inner(&self) -> &GcBox<T> {
+        unsafe { &*self.inner_ptr() }
+    }
+}
+
+impl<T: ?Sized> Gc<T> {
+    /// Consumes the `Gc`, returning the wrapped pointer.
+    ///
+    /// To avoid a memory leak, the pointer must be converted back into a `Gc`
+    /// using [`Gc::from_raw`][from_raw].
+    ///
+    /// [from_raw]: struct.Gc.html#method.from_raw
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::Gc;
+    ///
+    /// let x = Gc::new(22);
+    /// let x_ptr = Gc::into_raw(x);
+    /// assert_eq!(unsafe { *x_ptr }, 22);
+    /// unsafe { Gc::from_raw(x_ptr) };
+    /// ```
+    pub fn into_raw(this: Self) -> *const T {
+        GcBox::value_ptr(ManuallyDrop::new(this).inner_ptr())
+    }
+
+    /// Constructs an `Gc` from a raw pointer.
+    ///
+    /// The raw pointer must have been previously returned by a call to a
+    /// [`Gc::into_raw`][into_raw].
+    ///
+    /// This function is unsafe because improper use may lead to memory
+    /// problems. For example, a use-after-free will occur if the function is
+    /// called twice on the same raw pointer.
+    ///
+    /// [into_raw]: struct.Gc.html#method.into_raw
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::Gc;
+    ///
+    /// let x = Gc::new(22);
+    /// let x_ptr = Gc::into_raw(x);
+    ///
+    /// unsafe {
+    ///     // Convert back to an `Gc` to prevent leak.
+    ///     let x = Gc::from_raw(x_ptr);
+    ///     assert_eq!(*x, 22);
+    ///
+    ///     // Further calls to `Gc::from_raw(x_ptr)` would be memory unsafe.
+    /// }
+    ///
+    /// // The memory can be freed at any time after `x` went out of scope above
+    /// // (when the collector is run), which would result in `x_ptr` dangling!
+    /// ```
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
+        // Find the offset of T in GcBox<T>. Note that Layout::extend
+        // relies on GcBox being repr(C).
+        let (_, offset) = Layout::new::<GcBoxHeader>()
+            .extend(Layout::for_value::<T>(&*ptr))
+            .unwrap();
+
+        // Reverse the offset to find the original GcBox.
+        let fake_ptr = ptr as *mut GcBox<T>;
+        let rc_ptr = set_data_ptr(fake_ptr, (ptr as *mut u8).offset(-(offset as isize)));
+
+        let gc = Gc {
+            ptr_root: Cell::new(NonNull::new_unchecked(rc_ptr)),
+            marker: PhantomData,
+        };
+        gc.set_root();
+        gc
+    }
+}
+
+impl<T: ?Sized> Finalize for Gc<T> {}
+
+unsafe impl<T: Trace + ?Sized> Trace for Gc<T> {
+    #[inline]
+    unsafe fn trace(&self) {
+        self.inner().trace_inner();
+    }
+
+    #[inline]
+    unsafe fn root(&self) {
+        assert!(!self.rooted(), "Can't double-root a Gc<T>");
+
+        // Try to get inner before modifying our state. Inner may be
+        // inaccessible due to this method being invoked during the sweeping
+        // phase, and we don't want to modify our state before panicking.
+        self.inner().root_inner();
+
+        self.set_root();
+    }
+
+    #[inline]
+    unsafe fn unroot(&self) {
+        assert!(self.rooted(), "Can't double-unroot a Gc<T>");
+
+        // Try to get inner before modifying our state. Inner may be
+        // inaccessible due to this method being invoked during the sweeping
+        // phase, and we don't want to modify our state before panicking.
+        self.inner().unroot_inner();
+
+        self.clear_root();
+    }
+
+    #[inline]
+    fn finalize_glue(&self) {
+        Finalize::finalize(self);
+    }
+}
+
+impl<T: ?Sized> Clone for Gc<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        unsafe {
+            self.inner().root_inner();
+            let gc = Gc {
+                ptr_root: Cell::new(self.ptr_root.get()),
+                marker: PhantomData,
+            };
+            gc.set_root();
+            gc
+        }
+    }
+}
+
+impl<T: ?Sized> Deref for Gc<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        self.inner().value()
+    }
+}
+
+impl<T: ?Sized> Drop for Gc<T> {
+    #[inline]
+    fn drop(&mut self) {
+        // If this pointer was a root, we should unroot it.
+        if self.rooted() {
+            unsafe {
+                self.inner().unroot_inner();
+            }
+        }
+    }
+}
+
+impl<T: Trace + Default> Default for Gc<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
+impl<T: ?Sized + PartialEq> PartialEq for Gc<T> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: ?Sized + Eq> Eq for Gc<T> {}
+
+impl<T: ?Sized + PartialOrd> PartialOrd for Gc<T> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (**self).partial_cmp(&**other)
+    }
+
+    #[inline(always)]
+    fn lt(&self, other: &Self) -> bool {
+        **self < **other
+    }
+
+    #[inline(always)]
+    fn le(&self, other: &Self) -> bool {
+        **self <= **other
+    }
+
+    #[inline(always)]
+    fn gt(&self, other: &Self) -> bool {
+        **self > **other
+    }
+
+    #[inline(always)]
+    fn ge(&self, other: &Self) -> bool {
+        **self >= **other
+    }
+}
+
+impl<T: ?Sized + Ord> Ord for Gc<T> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl<T: ?Sized + Hash> Hash for Gc<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
+impl<T: ?Sized + Display> Display for Gc<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&**self, f)
+    }
+}
+
+impl<T: ?Sized + Debug> Debug for Gc<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: ?Sized> fmt::Pointer for Gc<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Pointer::fmt(&self.inner(), f)
+    }
+}
+
+impl<T: Trace> From<T> for Gc<T> {
+    fn from(t: T) -> Self {
+        Self::new(t)
+    }
+}
+
+impl<
+        #[cfg(not(feature = "nightly"))] T: Trace,
+        #[cfg(feature = "nightly")] T: Trace + Unsize<dyn Trace> + ?Sized,
+    > From<Box<T>> for Gc<T>
+{
+    /// Moves a boxed value into a new garbage-collected
+    /// allocation. If the `nightly` crate feature is enabled, the
+    /// value may be an unsized trait object.
+    fn from(v: Box<T>) -> Gc<T> {
+        unsafe { Gc::from_gcbox(GcBox::from_box(v)) }
+    }
+}
+
+impl<T: ?Sized> std::borrow::Borrow<T> for Gc<T> {
+    fn borrow(&self) -> &T {
+        self
+    }
+}
+
+impl<T: ?Sized> std::convert::AsRef<T> for Gc<T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+
+////////////
+// GcCell //
+////////////
+
+/// The `BorrowFlag` used by GC is split into 2 parts. the upper 63 or 31 bits
+/// (depending on the architecture) are used to store the number of borrowed
+/// references to the type. The low bit is used to record the rootedness of the
+/// type.
+///
+/// This means that `GcCell` can have, at maximum, half as many outstanding
+/// borrows as `RefCell` before panicking. I don't think that will be a problem.
+#[derive(Copy, Clone)]
+struct BorrowFlag(usize);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum BorrowState {
+    Reading,
+    Writing,
+    Unused,
+}
+
+const ROOT: usize = 1;
+const WRITING: usize = !1;
+const UNUSED: usize = 0;
+
+/// The base borrowflag init is rooted, and has no outstanding borrows.
+const BORROWFLAG_INIT: BorrowFlag = BorrowFlag(1);
+
+impl BorrowFlag {
+    fn borrowed(self) -> BorrowState {
+        match self.0 & !ROOT {
+            UNUSED => BorrowState::Unused,
+            WRITING => BorrowState::Writing,
+            _ => BorrowState::Reading,
+        }
+    }
+
+    fn rooted(self) -> bool {
+        self.0 & ROOT != 0
+    }
+
+    fn set_writing(self) -> Self {
+        // Set every bit other than the root bit, which is preserved
+        BorrowFlag(self.0 | WRITING)
+    }
+
+    fn set_unused(self) -> Self {
+        // Clear every bit other than the root bit, which is preserved
+        BorrowFlag(self.0 & ROOT)
+    }
+
+    fn add_reading(self) -> Self {
+        assert!(self.borrowed() != BorrowState::Writing);
+        // Add 1 to the integer starting at the second binary digit. As our
+        // borrowstate is not writing, we know that overflow cannot happen, so
+        // this is equivalent to the following, more complicated, expression:
+        //
+        // BorrowFlag((self.0 & ROOT) | (((self.0 >> 1) + 1) << 1))
+        BorrowFlag(self.0 + 0b10)
+    }
+
+    fn sub_reading(self) -> Self {
+        assert!(self.borrowed() == BorrowState::Reading);
+        // Subtract 1 from the integer starting at the second binary digit. As
+        // our borrowstate is not writing or unused, we know that overflow or
+        // undeflow cannot happen, so this is equivalent to the following, more
+        // complicated, expression:
+        //
+        // BorrowFlag((self.0 & ROOT) | (((self.0 >> 1) - 1) << 1))
+        BorrowFlag(self.0 - 0b10)
+    }
+
+    fn set_rooted(self, rooted: bool) -> Self {
+        // Preserve the non-root bits
+        BorrowFlag((self.0 & !ROOT) | usize::from(rooted))
+    }
+}
+
+/// A mutable memory location with dynamically checked borrow rules
+/// that can be used inside of a garbage-collected pointer.
+///
+/// This object is a `RefCell` that can be used inside of a `Gc<T>`.
+pub struct GcCell<T: ?Sized + 'static> {
+    flags: Cell<BorrowFlag>,
+    cell: UnsafeCell<T>,
+}
+
+impl<T> GcCell<T> {
+    /// Creates a new `GcCell` containing `value`.
+    #[inline]
+    pub fn new(value: T) -> Self {
+        GcCell {
+            flags: Cell::new(BORROWFLAG_INIT),
+            cell: UnsafeCell::new(value),
+        }
+    }
+
+    /// Consumes the `GcCell`, returning the wrapped value.
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.cell.into_inner()
+    }
+}
+
+impl<T: ?Sized> GcCell<T> {
+    /// Immutably borrows the wrapped value.
+    ///
+    /// The borrow lasts until the returned `GcCellRef` exits scope.
+    /// Multiple immutable borrows can be taken out at the same time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently mutably borrowed.
+    #[inline]
+    #[track_caller]
+    pub fn borrow(&self) -> GcCellRef<'_, T> {
+        match self.try_borrow() {
+            Ok(value) => value,
+            Err(e) => panic!("{}", e),
+        }
+    }
+}
+
+impl<T: Trace + ?Sized> GcCell<T> {
+    /// Mutably borrows the wrapped value.
+    ///
+    /// The borrow lasts until the returned `GcCellRefMut` exits scope.
+    /// The value cannot be borrowed while this borrow is active.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently borrowed.
+    #[inline]
+    #[track_caller]
+    pub fn borrow_mut(&self) -> GcCellRefMut<'_, T> {
+        match self.try_borrow_mut() {
+            Ok(value) => value,
+            Err(e) => panic!("{}", e),
+        }
+    }
+}
+
+impl<T: ?Sized> GcCell<T> {
+    /// Immutably borrows the wrapped value, returning an error if the value is currently mutably
+    /// borrowed.
+    ///
+    /// The borrow lasts until the returned `GcCellRef` exits scope. Multiple immutable borrows can be
+    /// taken out at the same time.
+    ///
+    /// This is the non-panicking variant of [`borrow`](#method.borrow).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::GcCell;
+    ///
+    /// let c = GcCell::new(5);
+    ///
+    /// {
+    ///     let m = c.borrow_mut();
+    ///     assert!(c.try_borrow().is_err());
+    /// }
+    ///
+    /// {
+    ///     let m = c.borrow();
+    ///     assert!(c.try_borrow().is_ok());
+    /// }
+    /// ```
+    pub fn try_borrow(&self) -> Result<GcCellRef<'_, T>, BorrowError> {
+        if self.flags.get().borrowed() == BorrowState::Writing {
+            return Err(BorrowError);
+        }
+        self.flags.set(self.flags.get().add_reading());
+
+        // This will fail if the borrow count overflows, which shouldn't happen,
+        // but let's be safe
+        assert!(self.flags.get().borrowed() == BorrowState::Reading);
+
+        unsafe {
+            Ok(GcCellRef {
+                flags: &self.flags,
+                value: &*self.cell.get(),
+            })
+        }
+    }
+}
+
+impl<T: Trace + ?Sized> GcCell<T> {
+    /// Mutably borrows the wrapped value, returning an error if the value is currently borrowed.
+    ///
+    /// The borrow lasts until the returned `GcCellRefMut` exits scope.
+    /// The value cannot be borrowed while this borrow is active.
+    ///
+    /// This is the non-panicking variant of [`borrow_mut`](#method.borrow_mut).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::GcCell;
+    ///
+    /// let c = GcCell::new(5);
+    ///
+    /// {
+    ///     let m = c.borrow();
+    ///     assert!(c.try_borrow_mut().is_err());
+    /// }
+    ///
+    /// assert!(c.try_borrow_mut().is_ok());
+    /// ```
+    pub fn try_borrow_mut(&self) -> Result<GcCellRefMut<'_, T>, BorrowMutError> {
+        if self.flags.get().borrowed() != BorrowState::Unused {
+            return Err(BorrowMutError);
+        }
+        self.flags.set(self.flags.get().set_writing());
+
+        unsafe {
+            // Force the val_ref's contents to be rooted for the duration of the
+            // mutable borrow
+            if !self.flags.get().rooted() {
+                (*self.cell.get()).root();
+            }
+
+            Ok(GcCellRefMut {
+                gc_cell: self,
+                value: &mut *self.cell.get(),
+            })
+        }
+    }
+}
+
+/// An error returned by [`GcCell::try_borrow`](struct.GcCell.html#method.try_borrow).
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Default, Hash)]
+pub struct BorrowError;
+
+impl std::fmt::Display for BorrowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt("GcCell<T> already mutably borrowed", f)
+    }
+}
+
+/// An error returned by [`GcCell::try_borrow_mut`](struct.GcCell.html#method.try_borrow_mut).
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Default, Hash)]
+pub struct BorrowMutError;
+
+impl std::fmt::Display for BorrowMutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt("GcCell<T> already borrowed", f)
+    }
+}
+
+impl<T: ?Sized> Finalize for GcCell<T> {}
+
+unsafe impl<T: Trace + ?Sized> Trace for GcCell<T> {
+    #[inline]
+    unsafe fn trace(&self) {
+        match self.flags.get().borrowed() {
+            BorrowState::Writing => (),
+            _ => (*self.cell.get()).trace(),
+        }
+    }
+
+    #[inline]
+    unsafe fn root(&self) {
+        assert!(!self.flags.get().rooted(), "Can't root a GcCell twice!");
+        self.flags.set(self.flags.get().set_rooted(true));
+
+        match self.flags.get().borrowed() {
+            BorrowState::Writing => (),
+            _ => (*self.cell.get()).root(),
+        }
+    }
+
+    #[inline]
+    unsafe fn unroot(&self) {
+        assert!(self.flags.get().rooted(), "Can't unroot a GcCell twice!");
+        self.flags.set(self.flags.get().set_rooted(false));
+
+        match self.flags.get().borrowed() {
+            BorrowState::Writing => (),
+            _ => (*self.cell.get()).unroot(),
+        }
+    }
+
+    #[inline]
+    fn finalize_glue(&self) {
+        Finalize::finalize(self);
+        match self.flags.get().borrowed() {
+            BorrowState::Writing => (),
+            _ => unsafe { (*self.cell.get()).finalize_glue() },
+        }
+    }
+}
+
+/// A wrapper type for an immutably borrowed value from a `GcCell<T>`.
+pub struct GcCellRef<'a, T: ?Sized + 'static> {
+    flags: &'a Cell<BorrowFlag>,
+    value: &'a T,
+}
+
+impl<'a, T: ?Sized> GcCellRef<'a, T> {
+    /// Copies a `GcCellRef`.
+    ///
+    /// The `GcCell` is already immutably borrowed, so this cannot fail.
+    ///
+    /// This is an associated function that needs to be used as
+    /// `GcCellRef::clone(...)`. A `Clone` implementation or a method
+    /// would interfere with the use of `c.borrow().clone()` to clone
+    /// the contents of a `GcCell`.
+    #[allow(clippy::should_implement_trait)]
+    #[inline]
+    #[must_use]
+    pub fn clone(orig: &GcCellRef<'a, T>) -> GcCellRef<'a, T> {
+        orig.flags.set(orig.flags.get().add_reading());
+        GcCellRef {
+            flags: orig.flags,
+            value: orig.value,
+        }
+    }
+
+    /// Makes a new `GcCellRef` for a component of the borrowed data.
+    ///
+    /// The `GcCell` is already immutably borrowed, so this cannot fail.
+    ///
+    /// This is an associated function that needs to be used as `GcCellRef::map(...)`.
+    /// A method would interfere with methods of the same name on the contents
+    /// of a `GcCellRef` used through `Deref`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::{GcCell, GcCellRef};
+    ///
+    /// let c = GcCell::new((5, 'b'));
+    /// let b1: GcCellRef<(u32, char)> = c.borrow();
+    /// let b2: GcCellRef<u32> = GcCellRef::map(b1, |t| &t.0);
+    /// assert_eq!(*b2, 5);
+    /// ```
+    #[inline]
+    pub fn map<U, F>(orig: Self, f: F) -> GcCellRef<'a, U>
+    where
+        U: ?Sized,
+        F: FnOnce(&T) -> &U,
+    {
+        let value = f(orig.value);
+
+        // We have to tell the compiler not to call the destructor of GcCellRef,
+        // because it will update the borrow flags.
+        let orig = ManuallyDrop::new(orig);
+
+        GcCellRef {
+            flags: orig.flags,
+            value,
+        }
+    }
+
+    /// Makes a new `GcCellRef` for an optional component of the borrowed data.
+    /// The original guard is returned as an `Err(..)` if the closure returns
+    /// `None`.
+    ///
+    /// The `GcCell` is already immutably borrowed, so this cannot fail.
+    ///
+    /// This is an associated function that needs to be used as
+    /// `GcCellRef::filter_map(...)`. A method would interfere with methods of
+    /// the same name on the contents of a `GcCellRef` used through `Deref`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::{GcCell, GcCellRef};
+    ///
+    /// let c = GcCell::new(vec![1, 2, 3]);
+    /// let b1: GcCellRef<Vec<u32>> = c.borrow();
+    /// let b2: Result<GcCellRef<u32>, _> = GcCellRef::filter_map(b1, |v| v.get(1));
+    /// assert_eq!(*b2.unwrap(), 2);
+    /// ```
+    #[inline]
+    pub fn filter_map<U, F>(orig: Self, f: F) -> Result<GcCellRef<'a, U>, Self>
+    where
+        U: ?Sized,
+        F: FnOnce(&T) -> Option<&U>,
+    {
+        match f(orig.value) {
+            None => Err(orig),
+            Some(value) => {
+                // We have to tell the compiler not to call the destructor of GcCellRef,
+                // because it will update the borrow flags.
+                let orig = ManuallyDrop::new(orig);
+
+                Ok(GcCellRef {
+                    flags: orig.flags,
+                    value,
+                })
+            }
+        }
+    }
+
+    /// Splits a `GcCellRef` into multiple `GcCellRef`s for different components of the borrowed data.
+    ///
+    /// The `GcCell` is already immutably borrowed, so this cannot fail.
+    ///
+    /// This is an associated function that needs to be used as `GcCellRef::map_split(...)`.
+    /// A method would interfere with methods of the same name on the contents of a `GcCellRef` used through `Deref`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::{GcCell, GcCellRef};
+    ///
+    /// let cell = GcCell::new((1, 'c'));
+    /// let borrow = cell.borrow();
+    /// let (first, second) = GcCellRef::map_split(borrow, |x| (&x.0, &x.1));
+    /// assert_eq!(*first, 1);
+    /// assert_eq!(*second, 'c');
+    /// ```
+    #[inline]
+    pub fn map_split<U, V, F>(orig: Self, f: F) -> (GcCellRef<'a, U>, GcCellRef<'a, V>)
+    where
+        U: ?Sized,
+        V: ?Sized,
+        F: FnOnce(&T) -> (&U, &V),
+    {
+        let (a, b) = f(orig.value);
+
+        orig.flags.set(orig.flags.get().add_reading());
+
+        // We have to tell the compiler not to call the destructor of GcCellRef,
+        // because it will update the borrow flags.
+        let orig = ManuallyDrop::new(orig);
+
+        (
+            GcCellRef {
+                flags: orig.flags,
+                value: a,
+            },
+            GcCellRef {
+                flags: orig.flags,
+                value: b,
+            },
+        )
+    }
+}
+
+impl<'a, T: ?Sized> Deref for GcCellRef<'a, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        self.value
+    }
+}
+
+impl<'a, T: ?Sized> Drop for GcCellRef<'a, T> {
+    fn drop(&mut self) {
+        debug_assert!(self.flags.get().borrowed() == BorrowState::Reading);
+        self.flags.set(self.flags.get().sub_reading());
+    }
+}
+
+impl<'a, T: ?Sized + Debug> Debug for GcCellRef<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+
+impl<'a, T: ?Sized + Display> Display for GcCellRef<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&**self, f)
+    }
+}
+
+/// A wrapper type for a mutably borrowed value from a `GcCell<T>`.
+pub struct GcCellRefMut<'a, T: Trace + ?Sized + 'static, U: ?Sized = T> {
+    gc_cell: &'a GcCell<T>,
+    value: &'a mut U,
+}
+
+impl<'a, T: Trace + ?Sized, U: ?Sized> GcCellRefMut<'a, T, U> {
+    /// Makes a new `GcCellRefMut` for a component of the borrowed data, e.g., an enum
+    /// variant.
+    ///
+    /// The `GcCell` is already mutably borrowed, so this cannot fail.
+    ///
+    /// This is an associated function that needs to be used as
+    /// `GcCellRefMut::map(...)`. A method would interfere with methods of the same
+    /// name on the contents of a `GcCell` used through `Deref`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::{GcCell, GcCellRefMut};
+    ///
+    /// let c = GcCell::new((5, 'b'));
+    /// {
+    ///     let b1: GcCellRefMut<(u32, char)> = c.borrow_mut();
+    ///     let mut b2: GcCellRefMut<(u32, char), u32> = GcCellRefMut::map(b1, |t| &mut t.0);
+    ///     assert_eq!(*b2, 5);
+    ///     *b2 = 42;
+    /// }
+    /// assert_eq!(*c.borrow(), (42, 'b'));
+    /// ```
+    #[inline]
+    pub fn map<V, F>(orig: Self, f: F) -> GcCellRefMut<'a, T, V>
+    where
+        V: ?Sized,
+        F: FnOnce(&mut U) -> &mut V,
+    {
+        let gc_cell = orig.gc_cell;
+
+        // Use MaybeUninit to avoid calling the destructor of
+        // GcCellRefMut (which would update the borrow flags) and to
+        // avoid duplicating the mutable reference orig.value (which
+        // would be UB).
+        let orig = mem::MaybeUninit::new(orig);
+        let value = unsafe { ptr::addr_of!((*orig.as_ptr()).value).read() };
+
+        GcCellRefMut {
+            gc_cell,
+            value: f(value),
+        }
+    }
+
+    /// Makes a new `GcCellRefMut` for an optional component of the borrowed
+    /// data. The original guard is returned as an `Err(..)` if the closure
+    /// returns `None`.
+    ///
+    /// The `GcCell` is already mutably borrowed, so this cannot fail.
+    ///
+    /// This is an associated function that needs to be used as
+    /// `GcCellRefMut::filter_map(...)`. A method would interfere with methods
+    /// of the same name on the contents of a `GcCell` used through `Deref`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gc::{GcCell, GcCellRefMut};
+    ///
+    /// let c = GcCell::new(vec![1, 2, 3]);
+    ///
+    /// {
+    ///     let b1: GcCellRefMut<Vec<u32>> = c.borrow_mut();
+    ///     let mut b2: Result<GcCellRefMut<Vec<u32>, u32>, _> = GcCellRefMut::filter_map(b1, |v| v.get_mut(1));
+    ///
+    ///     if let Ok(mut b2) = b2 {
+    ///         *b2 += 2;
+    ///     }
+    /// }
+    ///
+    /// assert_eq!(*c.borrow(), vec![1, 4, 3]);
+    /// ```
+    #[inline]
+    pub fn filter_map<V, F>(orig: Self, f: F) -> Result<GcCellRefMut<'a, T, V>, Self>
+    where
+        V: ?Sized,
+        F: FnOnce(&mut U) -> Option<&mut V>,
+    {
+        let gc_cell = orig.gc_cell;
+
+        // Use MaybeUninit to avoid calling the destructor of
+        // GcCellRefMut (which would update the borrow flags) and to
+        // avoid duplicating the mutable reference orig.value (which
+        // would be UB).
+        let orig = mem::MaybeUninit::new(orig);
+        let value = unsafe { ptr::addr_of!((*orig.as_ptr()).value).read() };
+
+        match f(value) {
+            None => Err(unsafe { orig.assume_init() }),
+            Some(value) => Ok(GcCellRefMut { gc_cell, value }),
+        }
+    }
+}
+
+impl<'a, T: Trace + ?Sized, U: ?Sized> Deref for GcCellRefMut<'a, T, U> {
+    type Target = U;
+
+    #[inline]
+    fn deref(&self) -> &U {
+        self.value
+    }
+}
+
+impl<'a, T: Trace + ?Sized, U: ?Sized> DerefMut for GcCellRefMut<'a, T, U> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut U {
+        self.value
+    }
+}
+
+impl<'a, T: Trace + ?Sized, U: ?Sized> Drop for GcCellRefMut<'a, T, U> {
+    #[inline]
+    fn drop(&mut self) {
+        debug_assert!(self.gc_cell.flags.get().borrowed() == BorrowState::Writing);
+        // Restore the rooted state of the GcCell's contents to the state of the GcCell.
+        // During the lifetime of the GcCellRefMut, the GcCell's contents are rooted.
+        if !self.gc_cell.flags.get().rooted() {
+            unsafe {
+                (*self.gc_cell.cell.get()).unroot();
+            }
+        }
+        self.gc_cell
+            .flags
+            .set(self.gc_cell.flags.get().set_unused());
+    }
+}
+
+impl<'a, T: Trace + ?Sized, U: Debug + ?Sized> Debug for GcCellRefMut<'a, T, U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+
+impl<'a, T: Trace + ?Sized, U: Display + ?Sized> Display for GcCellRefMut<'a, T, U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&**self, f)
+    }
+}
+
+unsafe impl<T: ?Sized + Send> Send for GcCell<T> {}
+
+impl<T: Clone> Clone for GcCell<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self::new(self.borrow().clone())
+    }
+}
+
+impl<T: Default> Default for GcCell<T> {
+    #[inline]
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
+impl<T: ?Sized + PartialEq> PartialEq for GcCell<T> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        *self.borrow() == *other.borrow()
+    }
+}
+
+impl<T: ?Sized + Eq> Eq for GcCell<T> {}
+
+impl<T: ?Sized + PartialOrd> PartialOrd for GcCell<T> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (*self.borrow()).partial_cmp(&*other.borrow())
+    }
+
+    #[inline(always)]
+    fn lt(&self, other: &Self) -> bool {
+        *self.borrow() < *other.borrow()
+    }
+
+    #[inline(always)]
+    fn le(&self, other: &Self) -> bool {
+        *self.borrow() <= *other.borrow()
+    }
+
+    #[inline(always)]
+    fn gt(&self, other: &Self) -> bool {
+        *self.borrow() > *other.borrow()
+    }
+
+    #[inline(always)]
+    fn ge(&self, other: &Self) -> bool {
+        *self.borrow() >= *other.borrow()
+    }
+}
+
+impl<T: ?Sized + Ord> Ord for GcCell<T> {
+    #[inline]
+    fn cmp(&self, other: &GcCell<T>) -> Ordering {
+        (*self.borrow()).cmp(&*other.borrow())
+    }
+}
+
+impl<T: ?Sized + Debug> Debug for GcCell<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.flags.get().borrowed() {
+            BorrowState::Unused | BorrowState::Reading => f
+                .debug_struct("GcCell")
+                .field("value", &self.borrow())
+                .finish(),
+            BorrowState::Writing => f
+                .debug_struct("GcCell")
+                .field("value", &"<borrowed>")
+                .finish(),
+        }
+    }
+}
+
+// Sets the data pointer of a `?Sized` raw pointer.
+//
+// For a slice/trait object, this sets the `data` field and leaves the rest
+// unchanged. For a sized raw pointer, this simply sets the pointer.
+unsafe fn set_data_ptr<T: ?Sized, U>(mut ptr: *mut T, data: *mut U) -> *mut T {
+    ptr::addr_of_mut!(ptr)
+        .cast::<*mut u8>()
+        .write(data.cast::<u8>());
+    ptr
+}
