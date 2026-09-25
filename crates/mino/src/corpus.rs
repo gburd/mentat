@@ -47,8 +47,17 @@ pub fn run_corpus_file(path: &str, skip_deftests: &[&str]) -> (usize, usize) {
                     eprintln!("FAIL {name}: {} failed", failed - before.1);
                 }
             }
-            // Bare (require ...) / (ns ...) etc.: no-op (no test.clj loaded).
-            Some("require") | Some("ns") | Some("in-ns") => {}
+            // `(ns ...)` / `(in-ns ...)` are flat-env no-ops. `(require ...)`
+            // is eval'd so its `[ns :as alias]` clauses register aliases (the
+            // store_backend corpus binds `mino.store` as `sstore` and reaches
+            // its 3-arity `read` through that alias); the load itself is a
+            // no-op (bundled libs are already loaded).
+            Some("ns") | Some("in-ns") => {}
+            Some("require") => {
+                if let Ok((form, _)) = read_one(form_src) {
+                    let _ = it.eval(&form, &it.root.clone());
+                }
+            }
             // Any other top-level form: eval best-effort, ignore failure.
             _ => {
                 if let Ok((form, _)) = read_one(form_src) {
