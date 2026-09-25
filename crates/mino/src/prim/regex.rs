@@ -13,10 +13,11 @@
 //! `\b`, `\d\w\s`, and positional/named capture groups -- the full surface
 //! mino's `tests/regex_test.clj` exercises.
 //!
-//! DEVIATIONS matched to mino: mino's engine REJECTS lookahead `(?=`/`(?!`,
-//! lookbehind `(?<=`/`(?<!`, and scoped flag groups `(?flags:...)`; fancy-regex
-//! accepts them. `re_translate` below rejects those constructs so
-//! `(re-find #"(?=a)" "a")` throws (MCT001), matching mino.
+//! DEVIATIONS matched to mino: mino's engine now SUPPORTS lookahead `(?=`/`(?!`
+//! (mino 9c65bb50); it still REJECTS lookbehind `(?<=`/`(?<!` and scoped flag
+//! groups `(?flags:...)`. `uses_unsupported` below rejects those remaining
+//! constructs so `(re-find #"(?<=a)b" "ab")` throws (MCT001), matching mino,
+//! while `(re-find #"(?=a)" "a")` works via fancy-regex.
 
 use crate::collections::vector::PVec;
 use crate::error::{throw_classified, Throw};
@@ -36,19 +37,24 @@ fn pattern_source(v: &Value) -> Option<&str> {
 }
 
 /// Detect the constructs mino's engine rejects. Called before compiling so a
-/// `#"(?=a)"` / `#"(?<=a)b"` / `#"(?i:foo)"` throws MCT001 like mino, instead
-/// of quietly working via fancy-regex. Scans for the `(?` prefixes; the check
-/// is intentionally a substring scan (not a full parse) -- these operators are
+/// `#"(?<=a)b"` / `#"(?i:foo)"` throws MCT001 like mino, instead of quietly
+/// working via fancy-regex. Scans for the `(?` prefixes; the check is
+/// intentionally a substring scan (not a full parse) -- these operators are
 /// unambiguous by their two/three-char sigil.
+///
+/// mino 9c65bb50 ADDED lookahead `(?=` / `(?!` (re_compile.c, zero-width
+/// assertions), so those are NO LONGER rejected — fancy-regex implements them
+/// natively. Lookbehind `(?<=` / `(?<!` is still rejected (upstream's flag
+/// parser rejects it); a scoped flag group `(?flags:...)` is still rejected.
 fn uses_unsupported(src: &str) -> bool {
     let b = src.as_bytes();
     let mut i = 0;
     while i + 1 < b.len() {
         if b[i] == b'(' && b[i + 1] == b'?' {
             match b.get(i + 2) {
-                // Lookahead (?= (?! and inline non-flag ops.
-                Some(b'=') | Some(b'!') => return true,
-                // (?<= (?<! lookbehind, but (?<name> is a named group (kept).
+                // Lookahead (?= (?! are now SUPPORTED (mino 9c65bb50): accept.
+                Some(b'=') | Some(b'!') => {}
+                // (?<= (?<! lookbehind stays rejected; (?<name> is a named group (kept).
                 Some(b'<') => match b.get(i + 3) {
                     Some(b'=') | Some(b'!') => return true,
                     _ => {}
@@ -405,11 +411,12 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_constructs_throw() {
-        // mino rejects lookahead/lookbehind/scoped flags with MCT001.
+    fn lookahead_supported_lookbehind_and_scoped_flags_rejected() {
         let mut it = Interp::new();
+        // Lookahead now works (mino 9c65bb50): a zero-width positive lookahead.
+        assert_eq!(ev(r#"(re-find #"a(?=b)" "ab")"#), "\"a\"");
+        // Lookbehind and scoped flag groups still throw MCT001.
         for e in [
-            r#"(re-find #"(?=a)" "a")"#,
             r#"(re-find #"(?<=a)b" "ab")"#,
             r#"(re-find #"(?i:foo)" "FOO")"#,
         ] {
