@@ -105,6 +105,12 @@ Written 2026-09-25 at ~91% context. Read this + the plan
      clean workspace-wide (vendored gc reformatted, VENDORED.md notes it).
    - EC2 GREEN after all: cargo test default, -p mentat --features mino,
      -p mino-rs (112+12+7+11+9), pgrx pg16 1846, fmt --check clean, mentatd builds.
+   - **Task 1c DONE** (5d7db9e5 + 2b534591): mentat_eval sandboxed() + 3 SUSET GUCs
+     (script_max_steps/heap_bytes/depth) + check hook; 7 security pg_tests; 1884 pg16
+     with 'script', 1846 without. NO REVOKE, not SECURITY DEFINER.
+   - IN FLIGHT: Task 7 (mentat-script crate), Task 8 (mino refresh) dispatched parallel.
+   - TODO: Task 10 (SQLite unimplemented!->errors), 11 (cas/retractEntity), 12 (history/asof q),
+     13 (README/docs), 14 (release 1.7.0 + retire pg_mentat). Then benchmark + prod-readiness.
    - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
    restructure into crates/ (Task 5); one flake + CI + delete dead weight (Task 6).
