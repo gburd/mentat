@@ -50,23 +50,11 @@ Written 2026-09-25 at ~91% context. Read this + the plan
 - **README** (e348e7bd): EDN/Datalog learning links from /tmp/edn.
 
 ## REMAINING (in order)
-1. **mino deep-data recursion** (plan 1.24 tail; IN PROGRESS — background agent
-   2788cfd5 is on it as of 2026-09-25; the reader cap is already applied
-   UNCOMMITTED in mino/src/{depth.rs (MAX_DATA_DEPTH=512),reader.rs (ReadError::TooDeep,
-   depth field + read_form guard),lib.rs (pub mod depth)}; the agent is also
-   editing printer.rs/error.rs/hashing.rs/prim/collections.rs and will commit
-   depth.rs/reader.rs/lib.rs as part of its work. If the agent died: check
-   `git status mino`, its brief covered printer depth-cap+cycle, iterative-or-capped
-   eq_val/hash32/default_cmp, print_str_checked wired to pr-str/str/prn/println/print,
-   and mino/tests/deep_data.rs. Build/test on EC2 only.) Original NOT-done note — the background
-   agent for it died with no commits). Fix Rust-stack recursion, all crash in a
-   DEBUG build on a 2 MB stack (verified): reader (>=2000 nested `[`), printer
-   pr-str (>=2000 nested vec), hash (>=2000), eq (>=20000), compare (>=20000),
-   self-referencing atom pr-str (always). Fix = MAX_DATA_DEPTH cap in reader
-   (prescan like edn/src/depth.rs), iterative eq_val/hash_val/compare + printer
-   depth-cap/cycle-detect. See mino/src/{reader.rs,printer.rs,collections/hashing.rs,
-   prim/collections.rs::compare}. Add mino/tests/deep_data.rs. A detailed brief
-   was written for subagent 3d836d5b (died) — reuse it.
+1. **mino deep-data recursion**: DONE (commits 41b153d4, c321edfc). reader cap
+   (MAX_DATA_DEPTH=512), printer depth-cap + cycle detection + print_str_checked,
+   iterative eq_val, depth-capped hash32/default_cmp. EC2-verified:
+   112+12+7+11+9 mino tests, workspace 638, mino_script 11 green. This completes
+   Task 1b entirely (mino is now safe for untrusted mentat_eval input).
 2. **Task 1c**: open mentat_eval to PUBLIC on the hardened interpreter, pg_mentat
    1.6.3. GUCs mentat.script_max_{steps,heap_bytes,depth} (PGC_SUSET) in
    _PG_init (pg_mentat/src/planner/hooks.rs has the define_int_guc pattern);
