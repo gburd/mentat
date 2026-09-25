@@ -24,6 +24,37 @@ publishes). `pg_mentat`'s full git history is preserved under `crates/pg/`.
 Entries below this line and dated on/before 2026-09-24 are the `pg_mentat`
 history; the condensed embedded-`mentat` (0.x) history follows at the end.
 
+### Security
+
+**`mentat_eval` is now sandboxed and resource-limited.** The optional mino
+scripting surface (`mentat_eval(TEXT)`, behind the `script` cargo feature, added
+in 1.6.0) built its interpreter with `mino_rs::Interpreter::new()`, which
+installs host-filesystem primitives (`slurp`, `spit`, `rm-rf`, `mkdir-p`,
+`file-exists?`) and a file-backed store, and imposed no CPU, memory, or stack
+limit. Because the extension issues no `REVOKE`, `EXECUTE` on `mentat_eval` is
+granted to `PUBLIC`, so any role that could call it — in a build that enabled
+`--features script` — could read or delete files as the server's OS user, pin a
+backend forever with `(loop [] (recur))`, exhaust memory with `(range 1e11)`, or
+crash the whole server into recovery with deep non-tail recursion.
+**No shipped artifact was affected:** `script` is off by default and none of the
+flake, Dockerfile, or release workflow in the 1.6.0–1.6.2 builds enabled it —
+only someone who built with `--features script` themselves was exposed.
+
+`mentat_eval` now builds a **sandboxed** interpreter
+(`mino_rs::Interpreter::sandboxed()`): the language, regex, bignum, atoms and
+the SPI-backed `mentat.store/*` surface remain, but every host-filesystem prim
+and the file-backed store are absent (unbound). Three `PGC_SUSET` GUCs bound
+each call — `mentat.script_max_steps` (10,000,000), `mentat.script_max_heap_bytes`
+(64 MiB), `mentat.script_max_depth` (2000) — throwing an `:eval/limit` error
+instead of hanging, exhausting memory, or overflowing the stack; being
+`PGC_SUSET`, an ordinary role cannot raise them for its own session. An
+interrupt check hook wires `statement_timeout` and `pg_cancel_backend()` into
+the interpreter, and `stack_is_too_deep()` as a second line against runaway
+recursion. `mentat_eval` remains intentionally callable by every role (no
+`REVOKE`) and is deliberately **not** `SECURITY DEFINER`: a script runs through
+SPI as the calling role, so it reaches only the stores that role can already
+query with `mentat_query`/`mentat_transact`, gaining no privilege.
+
 ## [1.6.2] - 2026-09-24
 
 ### Security

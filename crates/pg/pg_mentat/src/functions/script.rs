@@ -71,13 +71,40 @@ use serde_json::Value as J;
 
 /// A fresh scripting interpreter with the `mentat.store/*` prims registered.
 ///
-/// Built per `mentat_eval` call. `Interpreter::new()` loads `core.clj`; if that
-/// proves hot, cache in a `thread_local!` (a backend is one thread) — but the
-/// prims capture no connection, so a per-call interpreter is correct and
+/// Built per `mentat_eval` call. Uses [`Interpreter::sandboxed`](mino_rs::Interpreter::sandboxed):
+/// the language, regex, bignum, atoms and the in-memory store are installed,
+/// but every host-filesystem prim (`slurp`, `spit`, `rm-rf`, `mkdir-p`,
+/// `file-exists?`) and the file-backed store are *absent* (unbound) — so a
+/// hostile `mentat_eval` caller cannot touch the server's disk. The
+/// `mentat.store/*` prims we register here are SPI-backed and run as the
+/// calling role, exactly like `mentat_query`/`mentat_transact`; sandboxing
+/// only removes host access, not the store surface.
+///
+/// Three `PGC_SUSET` GUCs bound CPU, memory and stack; the check hook wires
+/// mino's step counter to `check_for_interrupts!` (so `statement_timeout` and
+/// `pg_cancel_backend` work) and to `stack_is_too_deep()` as a second line
+/// against runaway recursion. See `register_script_gucs`.
+///
+/// The prims capture no connection, so a per-call interpreter is correct and
 /// leak-free (the GC arena drops when the call returns).
 pub fn build_interpreter() -> mino_rs::Interpreter {
-    let mut it = mino_rs::Interpreter::new();
+    use crate::functions::script_gucs::{
+        SCRIPT_MAX_DEPTH, SCRIPT_MAX_HEAP_BYTES, SCRIPT_MAX_STEPS,
+    };
+    let mut it = mino_rs::Interpreter::sandboxed();
     register_store_prims(&mut it);
+    it.set_limits(mino_rs::Limits {
+        steps: Some(SCRIPT_MAX_STEPS.get() as u64),
+        heap_bytes: Some(SCRIPT_MAX_HEAP_BYTES.get() as u64),
+        depth: Some(SCRIPT_MAX_DEPTH.get() as u32),
+    });
+    it.set_check_hook(Box::new(|| {
+        pgrx::check_for_interrupts!();
+        if unsafe { pgrx::pg_sys::stack_is_too_deep() } {
+            return Err(mino_rs::error::throw_str("mentat_eval: stack depth limit"));
+        }
+        Ok(())
+    }));
     it
 }
 

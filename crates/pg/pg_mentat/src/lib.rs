@@ -12,6 +12,10 @@ pub extern "C-unwind" fn _PG_init() {
 
     // Register monitoring GUC parameters (slow query threshold, logging)
     monitoring::register_monitoring_gucs();
+
+    // Register mentat_eval scripting limit GUCs (steps, heap, depth; PGC_SUSET)
+    #[cfg(feature = "script")]
+    functions::script_gucs::register_script_gucs();
 }
 
 // Initialize the mentat schema during CREATE EXTENSION.
