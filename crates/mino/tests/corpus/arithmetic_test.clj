@@ -63,6 +63,19 @@
   (is (= 16 (bit-shift-left 1 4)))
   (is (= 4 (bit-shift-right 16 2))))
 
+(deftest bitwise-variadic-folds-left-to-right
+  (is (= 0  (bit-and 12 10 6)))
+  (is (= 7  (bit-or 1 2 4)))
+  (is (= 5  (bit-xor 1 3 7)))
+  ;; ((15 & ~3) & ~1)
+  (is (= 12 (bit-and-not 15 3 1)))
+  ;; a single argument is undeclared on the JVM shape
+  ;; ([x y] [x y & more]) and rejects as an arity error
+  (is (= :eval/arity (try (bit-and 7) (catch Throwable e (:mino/kind e)))))
+  (is (= :eval/arity (try (bit-or 7) (catch Throwable e (:mino/kind e)))))
+  (is (= :eval/arity (try (bit-xor 7) (catch Throwable e (:mino/kind e)))))
+  (is (= 7 (bit-and-not 7))))
+
 (deftest bit-shift-boundary
   ;; In-range shifts at both ends of [0, 63] are defined and produce the
   ;; usual two's-complement results.
@@ -109,6 +122,23 @@
   (is (= 5 (abs -5)))
   (is (= 7 (max 3 7)))
   (is (= 3 (min 3 7))))
+
+(deftest sign-predicates-accept-float32
+  (is (neg? (float -1)))
+  (is (pos? (float 1)))
+  (is (zero? (float 0)))
+  (is (not (neg? (float 0))))
+  (is (not (pos? (float -0.5))))
+  (is (= "0.0" (pr-str (abs (float -0.0))))))
+
+(deftest abs-normalizes-signed-zero
+  (is (= "0.0" (pr-str (abs -0.0))))
+  (is (= "0.0" (pr-str (abs 0.0))))
+  (is (= ##Inf (/ 1.0 (abs -0.0))))
+  (is (= 0 (abs 0)))
+  (is (= 1.5 (abs -1.5)))
+  (is (NaN? (abs ##NaN)))
+  (is (= ##Inf (abs ##-Inf))))
 
 (deftest numeric-coercion
   (is (= 3 (int 3.7)))
@@ -302,3 +332,11 @@
   (is (< 1e-10 1))
   (is (< 1.5e-3 1))
   (is (< -2.5e+4 0)))
+
+(deftest one-arity-sum-and-product-pass-nil-through
+  (is (nil? (+ nil)))
+  (is (nil? (* nil)))
+  (is (nil? (+' nil)))
+  (is (nil? (*' nil)))
+  (is (= 5 (+ 5)))
+  (is (= 5 (* 5))))

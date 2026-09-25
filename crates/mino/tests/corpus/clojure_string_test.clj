@@ -61,6 +61,10 @@
   (is (= "A_Abc" (str/escape "abc" {\a "A_A"})))
   (is (= "A_AbC_C" (str/escape "abc" {\a "A_A" \c "C_C"}))))
 
+(deftest str-escape-fn-cmap
+  (is (= "BC" (str/escape "ak" (fn [c] (get {\a "B"} c "C")))))
+  (is (= "xbc" (str/escape "abc" (fn [c] (when (= c \a) "x"))))))
+
 (deftest str-escape-throws
   (is (thrown? (str/escape nil {\a "A"})))
   (is (thrown? (str/escape 1 {\a "A"}))))
@@ -171,3 +175,44 @@
   (is (= "<a>-<bb>"  (str/replace "a-bb" #"\w+" (fn [m] (str "<" m ">")))))
   (is (= "1a-2b"     (str/replace "a1-b2" #"(\w)(\d)"
                                   (fn [[_ g1 g2]] (str g2 g1))))))
+
+(deftest str-replace-regex-fn-char
+  ;; A fn replacement may return a single char; Clojure encodes it as
+  ;; its codepoint. A char is an inline-tagged value, so the replace
+  ;; path must read it through the char accessor, not the union.
+  (is (= "aXc"   (str/replace "abc" #"b" (fn [m] \X))))
+  (is (= "ABC"   (str/replace "abc" #"\w" (fn [m] (first (str/upper-case m))))))
+  (is (= "aéc" (str/replace "abc" #"b" (fn [m] \é))))
+  (is (= "heXlo" (str/replace-first "hello" #"l" (fn [m] \X)))))
+
+(deftest str-resolves-without-require
+  ;; A fresh JVM 1.12 process resolves the full clojure.string surface
+  ;; with no require; mino must too. Spawned as a fresh process because
+  ;; this suite itself requires the namespace: in-process the module
+  ;; cache would mask a preload regression.
+  (let [script "/tmp/mino-str-no-require.clj"
+        ;; `timeout` on Linux, `gtimeout` (coreutils) on macOS, or no
+        ;; watchdog when neither is on PATH -- the macOS runner ships
+        ;; neither by default, so a hard dependency exits 127 there.
+        tc (cond
+             (zero? (:exit (sh "sh" "-c" "command -v timeout")))  "timeout"
+             (zero? (:exit (sh "sh" "-c" "command -v gtimeout"))) "gtimeout"
+             :else nil)]
+    (spit script "(println (clojure.string/capitalize \"abc\"))\n")
+    (let [{:keys [exit out]} (if tc
+                               (sh tc "10" "./mino" script)
+                               (sh "./mino" script))]
+      (is (zero? exit))
+      (is (= "Abc" (str/trim out))))))
+
+(deftest str-case-maps-unicode
+  ;; 1:1 Unicode mappings from the generated tables (ADR 31);
+  ;; expectations pinned against JVM Clojure.
+  (is (= "ÆØÅ"   (str/upper-case "æøå")))
+  (is (= "æøå"   (str/lower-case "ÆØÅ")))
+  (is (= "Æøå"   (str/capitalize "æøå")))
+  (is (= "HELLO WÖRLD" (str/upper-case "hello wörld")))
+  (is (= "ĐŽ"    (str/upper-case "đž")))
+  (is (= "ДЕТО"  (str/upper-case "дето")))
+  (is (= "無"    (str/upper-case "無")))
+  (is (= "ABC"   (str/upper-case "abc"))))

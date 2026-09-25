@@ -296,3 +296,69 @@ fn store_corpus_passes() {
     assert!(passed > 0, "no assertions ran");
     assert_eq!(failed, 0, "{failed} store_test assertions failed");
 }
+
+/// Task 8 gate: store_backend_test.clj — the mino.store backend seam (ADR 35).
+/// The seam itself lives in `store.clj` (pure data: a backend is a `{:kind
+/// :initial :wal-entries :commit :checkpoint :close}` map routing durability
+/// through the same 7 `store-*` C prims), so the built-in `:memory`/`:file`
+/// backends and a third-party atom-backed backend all ride the same lifecycle.
+/// This exercises classed catch `(catch :store/backend _ ...)`, `read-string`
+/// round-trips of WAL lines and snapshots, and byte-for-byte file-format
+/// identity across the seam.
+///
+/// Skipped: the final `clojure.test.check` property deftest — mino's
+/// `clojure.test.check` bundle (generators + `quick-check`) is out of scope for
+/// the port (same YAGNI line as core.logic/core.match), and the corpus harness
+/// only tallies top-level `(is ...)` so a `let`-bound `tc/quick-check` never
+/// runs anyway. Every other backend-seam behavior is covered.
+const STORE_BACKEND_SKIP: &[&str] = &[
+    // clojure.test.check property test: gen/quick-check bundle not ported.
+    "reopen-cycle-preserves-the-live-db",
+];
+
+#[test]
+fn store_backend_corpus_passes() {
+    let (passed, failed) = run_corpus_file(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/store_backend_test.clj"
+        ),
+        STORE_BACKEND_SKIP,
+    );
+    assert!(passed > 0, "no assertions ran");
+    assert_eq!(failed, 0, "{failed} store_backend_test assertions failed");
+}
+
+/// Task 8 gate: reader_features_test.clj — per-dependency reader features
+/// (`.cljc` reader conditionals `#?(:clj ...)` scoped to a dependency's source
+/// roots via `mino.deps`). This is a dep-management + reader-conditional +
+/// load-path feature the port does not implement (out of scope, like
+/// core.logic/core.match): every deftest here needs `mino.deps`,
+/// `add-load-path!`, `.cljc` loading, and `#?` reader conditionals. The whole
+/// file is gated off — it is carried as the frozen upstream oracle so the diff
+/// records what upstream added; none of its deftests run.
+///
+/// ponytail: whole-file skip; unskip individual deftests if/when the port
+/// grows reader conditionals + a deps/load-path layer.
+const READER_FEATURES_SKIP: &[&str] = &[
+    "tagged-root-matches-listed-feature",
+    "untagged-root-keeps-default-features",
+    "first-matching-clause-wins-in-clause-order",
+    "reader-features-spec-validation",
+    "add-reader-features-rejects-bad-arguments",
+];
+
+#[test]
+fn reader_features_corpus_gated() {
+    // All deftests are gated off (see READER_FEATURES_SKIP): the file is the
+    // frozen upstream oracle, not a runnable gate. Assert it reads/loads
+    // without the harness panicking (0 assertions is expected here).
+    let (_passed, failed) = run_corpus_file(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/corpus/reader_features_test.clj"
+        ),
+        READER_FEATURES_SKIP,
+    );
+    assert_eq!(failed, 0, "{failed} reader_features_test assertions failed");
+}

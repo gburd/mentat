@@ -313,3 +313,14 @@
   (is (some? []))
   (is (some? :kw))
   (is (not (some? nil))))
+
+;; --- counted? ---
+
+(deftest clj-counted?
+  (is (counted? []))
+  (is (counted? {:a 1}))
+  (is (counted? #{1}))
+  (is (counted? ()))
+  (is (not (counted? nil)))
+  (is (not (counted? "ab")))
+  (is (not (counted? (lazy-seq [1 2])))))

@@ -38,6 +38,49 @@
   (is (not (store? nil)))
   (is (not (store? {:entities {}}))))
 
+;; ---------------------------------------------------------------------------
+;; Error taxonomy (ADR 37): every store error carries a :store/* :mino/kind
+;; so classed catch dispatches on it, ex-message returns the human string,
+;; and ex-data returns the useful detail.
+;; ---------------------------------------------------------------------------
+
+(deftest store-query-error-is-classed
+  (let [db (store/db (store/open))]
+    (is (= :store/query
+           (try (store/q db [:not-a-query]) (catch e (:mino/kind e))))
+        ":mino/kind on a malformed query is :store/query")
+    (is (= :caught
+           (try (store/q db [:not-a-query]) (catch :store/query _ :caught)))
+        "classed catch dispatches on :store/query")
+    (is (= [:not-a-query]
+           (try (store/q db [:not-a-query]) (catch e (ex-data e))))
+        "ex-data returns the offending query")
+    (is (some? (try (store/q db [:not-a-query])
+                    (catch e (re-find #"Invalid query" (ex-message e)))))
+        "ex-message returns the human string")))
+
+(deftest store-backend-error-is-classed
+  (is (= :store/backend
+         (try (store/backend? 42) (catch e (:mino/kind e))))
+      ":mino/kind on a bad backend is :store/backend")
+  (is (= :caught
+         (try (store/backend? 42) (catch :store/backend _ :caught)))
+      "classed catch dispatches on :store/backend")
+  (is (= 42
+         (try (store/backend? 42) (catch e (:got (ex-data e)))))
+      "ex-data carries the rejected value"))
+
+(deftest store-schema-error-is-classed
+  (let [trigger (fn []
+                  (store/open nil {:schema {:tags {:cardinality :many
+                                                   :unique :identity}}}))]
+    (is (= :store/schema
+           (try (trigger) (catch e (:mino/kind e))))
+        ":mino/kind on a bad schema is :store/schema")
+    (is (= :caught
+           (try (trigger) (catch :store/schema _ :caught)))
+        "classed catch dispatches on :store/schema")))
+
 (deftest store-close-idempotent
   (let [conn (store/open)]
     (store/close conn)
@@ -293,9 +336,9 @@
         _ (store/transact conn [:db/add 1 :a :v1])   ;; tx 1
         _ (store/transact conn [:db/add 1 :a :v2])   ;; tx 2
         db (store/db conn)]
-    (is (= 3 (count (store/since db 0)) "all facts at or after tx 0"))
-    (is (= 2 (count (store/since db 1)) "tx 1 and 2"))
-    (is (= 1 (count (store/since db 2)) "only tx 2"))
+    (is (= 3 (count (store/since db 0))) "all facts at or after tx 0")
+    (is (= 2 (count (store/since db 1))) "tx 1 and 2")
+    (is (= 1 (count (store/since db 2))) "only tx 2")
     (is (empty? (store/since db 3)) "nothing at or after current tx")))
 
 (deftest store-as-of-by-inst
@@ -323,8 +366,8 @@
         _ (store/transact conn [:db/add 1 :a :v0])
         _ (store/transact conn [:db/add 1 :a :v1])
         db (store/db conn)]
-    (is (= 2 (count (store/since db #inst "2020-01-01T00:00:00.000Z"))
-           "past inst includes all facts"))
+    (is (= 2 (count (store/since db #inst "2020-01-01T00:00:00.000Z")))
+        "past inst includes all facts")
     (is (empty? (store/since db #inst "2099-01-01T00:00:00.000Z"))
         "future inst excludes all facts")))
 
@@ -1244,16 +1287,18 @@
 
 (deftest store-unique-conflict-throws
   ;; Two distinct new entities carrying the same unique value within a
-  ;; single tx must throw, tagged ::unique-conflict, and apply nothing.
+  ;; single tx must throw :store/schema and apply nothing.
   (let [conn (store/open nil {:schema {:email {:unique :identity}}})
         e (try
             (store/transact conn [[:db/add 100 :email "a@x.com"]
                                   [:db/add 200 :email "a@x.com"]])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "conflicting tx throws")
-    (is (some? (re-find #"unique-conflict" (pr-str (ex-data e))))
-        "ex-data carries ::unique-conflict tag")
+    (is (= :store/schema (:mino/kind e))
+        ":mino/kind classes the conflict as :store/schema")
+    (is (= "a@x.com" (:value (ex-data e)))
+        "ex-data carries the conflicting value")
     (is (= #{} (store/entities (store/db conn))) "no facts applied on throw")
     (is (= 0 (:tx (store/db conn))) "tx counter not advanced on throw")))
 
@@ -1287,16 +1332,18 @@
     (is (= 1 (store/read db 2 :child)))))
 
 (deftest store-ref-dangling-throws
-  ;; A :ref value that is not an existing eid at apply time throws,
-  ;; tagged ::dangling-ref, and applies nothing.
+  ;; A :ref value that is not an existing eid at apply time throws
+  ;; :store/schema and applies nothing.
   (let [conn (store/open nil {:schema {:child {:type :ref}}})
         e (try
             (store/transact conn [:db/add 1 :child 999])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) ":ref to nonexistent eid throws")
-    (is (some? (re-find #"dangling-ref" (pr-str (ex-data e))))
-        "ex-data carries ::dangling-ref tag")
+    (is (= :store/schema (:mino/kind e))
+        ":mino/kind classes the dangling ref as :store/schema")
+    (is (= 999 (:value (ex-data e)))
+        "ex-data carries the dangling value")
     (is (= #{} (store/entities (store/db conn))) "no facts applied on throw")
     (is (= 0 (:tx (store/db conn))) "tx counter not advanced on throw")))
 
@@ -1749,7 +1796,7 @@
 ;;
 ;; :db/add value is passed to each predicate (resolved via resolve) AFTER
 ;; the type check and BEFORE the fact is applied. Falsy return aborts
-;; the whole tx tagged ::attr-pred-failed.
+;; the whole tx with :mino/kind :store/schema.
 ;; ---------------------------------------------------------------------------
 
 (defn store-pred-positive-num
@@ -1780,10 +1827,12 @@
         e (try
             (store/transact conn [:db/add 1 :n -1])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "pred rejection throws")
-    (is (some? (re-find #"attr-pred-failed" (pr-str (ex-data e))))
-        "ex-data carries ::attr-pred-failed tag")
+    (is (= :store/schema (:mino/kind e))
+        ":mino/kind classes the pred failure as :store/schema")
+    (is (some? (re-find #"Attribute predicate failed" (ex-message e)))
+        "message names the failing predicate")
     (is (= #{} (store/entities (store/db conn))) "no facts applied on throw")
     (is (= 0 (:tx (store/db conn))) "tx counter not advanced")))
 
@@ -1795,9 +1844,11 @@
         e (try
             (store/transact conn [:db/add 1 :s "hi"])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "second pred failing throws")
-    (is (some? (re-find #"attr-pred-failed" (pr-str (ex-data e))))
+    (is (= :store/schema (:mino/kind e))
+        ":mino/kind classes the pred failure as :store/schema")
+    (is (some? (re-find #"Attribute predicate failed" (ex-message e)))
         "failure reports the pred that rejected")))
 
 (deftest store-attr-pred-runs-after-type-check
@@ -1809,10 +1860,12 @@
         e (try
             (store/transact conn [:db/add 1 :n "not a number"])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "type mismatch throws")
-    (is (nil? (re-find #"attr-pred-failed" (pr-str (ex-data e))))
-        "type error observed, pred never reached")))
+    (is (nil? (re-find #"Attribute predicate failed" (ex-message e)))
+        "type error observed, pred never reached")
+    (is (some? (re-find #"Type mismatch" (ex-message e)))
+        "the type check is what surfaced")))
 
 (deftest store-attr-pred-tx-atomic
   ;; A pred failure on any one fact in a multi-fact tx aborts ALL facts.
@@ -1822,7 +1875,7 @@
             (store/transact conn [[:db/add 1 :n 5]
                                   [:db/add 2 :n -1]])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "pred failure on second fact throws")
     (is (= #{} (store/entities (store/db conn))) "first fact NOT applied (atomic)")
     (is (= 0 (:tx (store/db conn))) "tx not advanced")))
@@ -1837,10 +1890,11 @@
         e (try
             (store/transact conn [:db/add 1 :tags ""])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (= #{"x" "y"} (store/read db-ok 1 :tags)) "valid members accepted")
     (is (some? e) "pred rejection on a :many member throws")
-    (is (some? (re-find #"attr-pred-failed" (pr-str (ex-data e)))))))
+    (is (= :store/schema (:mino/kind e)))
+    (is (some? (re-find #"Attribute predicate failed" (ex-message e))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entity specs (:db/ensure)
@@ -1848,7 +1902,7 @@
 ;; Spec-first. Entity specs are registered at open time under
 ;; :entity-specs. tx-data map form carries a virtual :db/ensure spec-name
 ;; key. After all facts apply, each ensured entity is checked for
-;; required-attrs and preds. Failure aborts tagged ::entity-spec-failed.
+;; required-attrs and preds. Failure aborts with :mino/kind :store/schema.
 ;; ---------------------------------------------------------------------------
 
 (defn store-spec-email-has-at
@@ -1884,11 +1938,38 @@
         e (try
             (store/transact conn {1 {:db/ensure :user :name "Alice"}})
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "missing required attr throws")
-    (is (some? (re-find #"entity-spec-failed" (pr-str (ex-data e))))
-        "ex-data carries ::entity-spec-failed tag")
+    (is (= :store/schema (:mino/kind e))
+        ":mino/kind classes the entity-spec failure as :store/schema")
+    (is (= [:email] (:missing-attrs (ex-data e)))
+        "ex-data carries the missing attrs")
     (is (= #{} (store/entities (store/db conn))) "no facts applied")))
+
+(deftest store-compact-preserves-entity-specs
+  ;; Compaction rebuilds the db value; it must carry :entity-specs so a
+  ;; spec-violating transact is still rejected afterward.
+  (let [conn (store/open nil {:schema store-es-schema
+                              :entity-specs {:user {:required-attrs [:name :email]}}})
+        _ (store/transact conn {1 {:db/ensure :user :name "Alice" :email "a@x.com"}})
+        _ (store/compact conn)
+        e (try (store/transact conn {2 {:db/ensure :user :name "Bob"}})
+               nil
+               (catch Throwable e e))]
+    (is (some? (get (store/db conn) :entity-specs))
+        "compact preserves :entity-specs on the db value")
+    (is (some? e) "entity-spec validation still fires after compact")
+    (is (= :store/schema (:mino/kind e)))))
+
+(deftest store-merge-preserves-entity-specs
+  ;; merge takes schema, indexes, and history from db-a; :entity-specs
+  ;; travels with them.
+  (let [conn (store/open nil {:schema store-es-schema
+                              :entity-specs {:user {:required-attrs [:name :email]}}})
+        _ (store/transact conn {1 {:name "Alice" :email "a@x.com"}})
+        db (store/db conn)]
+    (is (= (:entity-specs db) (:entity-specs (store/merge db db)))
+        "merge carries :entity-specs from db-a")))
 
 (deftest store-entity-spec-pred-passes
   (let [conn (store/open nil {:schema store-es-schema
@@ -1903,9 +1984,10 @@
         e (try
             (store/transact conn {1 {:db/ensure :user :name "Alice" :email "a@x.com"}})
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "failing entity pred throws")
-    (is (some? (re-find #"entity-spec-failed" (pr-str (ex-data e)))))
+    (is (= :store/schema (:mino/kind e)))
+    (is (some? (re-find #"predicate failed" (ex-message e))))
     (is (= #{} (store/entities (store/db conn))) "no facts applied")))
 
 (deftest store-entity-spec-on-new-entity
@@ -1926,7 +2008,7 @@
             (store/transact conn {1 {:db/ensure :user :name "Alice"}
                                   2 {:note "unrelated"}})
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "entity spec failure throws")
     (is (= #{} (store/entities (store/db conn))) "no facts applied (atomic)")
     (is (= 0 (:tx (store/db conn))) "tx not advanced")))
@@ -1957,16 +2039,18 @@
 
 (deftest store-migrate-tighten-type-throws
   ;; Tightening :any -> :long when existing data is non-long throws
-  ;; ::migration-conflict without :force.
+  ;; :store/migration without :force.
   (let [conn (store/open nil {:schema {:n {}}})
         _ (store/transact conn [:db/add 1 :n "not a number"])
         e (try
             (store/migrate conn {:n {:type :long}})
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "violations throw without :force")
-    (is (some? (re-find #"migration-conflict" (pr-str (ex-data e))))
-        "ex-data carries ::migration-conflict tag")
+    (is (= :store/migration (:mino/kind e))
+        ":mino/kind classes the conflict as :store/migration")
+    (is (seq (ex-data e))
+        "ex-data carries the violations vector")
     (is (= "not a number" (store/read (store/db conn) 1 :n))
         "existing db unchanged on throw")))
 
@@ -2004,7 +2088,7 @@
         e (try
             (store/transact conn [:db/add 1 :n "not a number"])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "tightened type enforced on new txs")))
 
 (deftest store-migrate-durable
@@ -2371,8 +2455,10 @@
         _ (store/transact conn [[:db/add 1 :name "Alice"]
                                 [:db/add 2 :name "Bob"]])
         db (store/db conn)
-        e (try (store/find-by-range db :name 1 10) (catch e e))]
+        e (try (store/find-by-range db :name 1 10) (catch Throwable e e))]
     (is (some? e) "mixed-type range throws")
+    (is (= :store/range (:mino/kind e))
+        ":mino/kind classes the mismatch as :store/range")
     (is (= :range-type-mismatch (:reason (ex-data e)))
         "classified :range-type-mismatch, not a raw ClassCastException")))
 
@@ -2456,10 +2542,12 @@
         e (try
             (store/transact conn [:db/add 2 :email "a@x.com"])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "duplicate :unique :value throws")
-    (is (some? (re-find #"unique-conflict" (pr-str (ex-data e))))
-        "ex-data carries ::unique-conflict tag")))
+    (is (= :store/schema (:mino/kind e))
+        ":mino/kind classes the conflict as :store/schema")
+    (is (= "a@x.com" (:value (ex-data e)))
+        "ex-data carries the conflicting value")))
 
 (deftest store-unique-value-no-upsert
   ;; Unlike :identity, :unique :value does NOT rewrite the eid; the
@@ -2469,7 +2557,7 @@
         e (try
             (store/transact conn [:db/add 999 :email "a@x.com"])
             nil
-            (catch e e))]
+            (catch Throwable e e))]
     (is (some? e) "duplicate throws rather than upserting")
     (is (= #{100} (store/entities (store/db conn)))
         "no new entity written; existing eid unchanged")))
@@ -2739,4 +2827,363 @@
         "listener fired exactly once (transact only, not compact/migrate)")
     (store/close conn)))
 
+;; ---------------------------------------------------------------------------
+;; Backend seam (ADR 35)
+;; ---------------------------------------------------------------------------
+
+(deftest memory-backend-shape
+  ;; The default backend carries the five contract ops as fns, tagged
+  ;; :kind :memory, and serves no segments.
+  (let [b (store/memory-backend)]
+    (is (= :memory (:kind b)))
+    (is (true? (store/backend? b)) "constructor output passes backend?")
+    (doseq [op [:initial :wal-entries :commit :checkpoint :close]]
+      (is (fn? (get b op)) (str "op " op " is a fn")))
+    (is (nil? ((:initial b))) "no snapshot segment")
+    (is (nil? ((:wal-entries b))) "no WAL segment")))
+
+(deftest memory-backend-commit-publishes
+  ;; :commit on a pathless conn is a plain publish: the new db value is
+  ;; in effect after the call, and :checkpoint stays a nil no-op.
+  (let [conn (store/open)
+        b (store/memory-backend)
+        db (assoc (store/db conn) :entities {1 {:name "a"}})]
+    (is (= db ((:commit b) conn db {:tx 0 :instant 0 :tx-data []}))
+        ":commit returns the published db")
+    (is (= db (store/db conn)) ":commit publishes the db value")
+    (is (nil? ((:checkpoint b) conn)) ":checkpoint is a no-op returning nil")
+    (store/close conn)))
+
+(deftest file-backend-shape
+  ;; The file backend is tagged :kind :file and reads its segments
+  ;; through the C prims: a fresh path yields no snapshot and no WAL.
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [path (str store-test-dir "/backend-shape.db")
+        b (store/file-backend path)]
+    (is (= :file (:kind b)))
+    (is (true? (store/backend? b)) "constructor output passes backend?")
+    (is (nil? ((:initial b))) "no snapshot at a fresh path")
+    (is (nil? ((:wal-entries b))) "no WAL at a fresh path"))
+  (rm-rf store-test-dir))
+
+(deftest file-backend-reads-written-segments
+  ;; A transact on a real durable conn leaves WAL bytes that the file
+  ;; backend's :wal-entries op parses back as tx-info.
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [path (str store-test-dir "/backend-segments.db")
+        conn (store/open path)
+        _ (store/transact conn {1 {:name "Alice"}})
+        entries ((:wal-entries (store/file-backend path)))]
+    (is (= 1 (count entries)) "one WAL entry after one transact")
+    (is (= 0 (:tx (first entries))) "entry carries the tx number")
+    (is (= {1 {:name "Alice"}} (:tx-data (first entries)))
+        "entry carries the original tx-data")
+    (store/close conn))
+  (rm-rf store-test-dir))
+
+(deftest backend?-rejects-malformed-backends
+  ;; Malformed backends throw :store/backend diagnostics: a non-map, a
+  ;; missing or non-keyword :kind, a missing op, a non-fn op.
+  (let [invalid (fn [x]
+                  (try
+                    (store/backend? x)
+                    nil
+                    (catch Throwable e e)))
+        e1 (invalid 42)
+        e2 (invalid {:initial (fn [] nil)})
+        e3 (invalid {:kind "memory"})
+        e4 (invalid {:kind :memory :initial (fn [] nil)})
+        e5 (invalid {:kind :memory :initial "not a fn"
+                     :wal-entries (fn [] nil)
+                     :commit (fn [conn new-db tx-info] new-db)
+                     :checkpoint (fn [conn] nil)
+                     :close (fn [conn] nil)})]
+    (is (every? some? [e1 e2 e3 e4 e5]) "each malformed shape throws")
+    (doseq [e [e1 e2 e3 e4 e5]]
+      (is (= :store/backend (:mino/kind e))
+          ":mino/kind classes each as :store/backend"))
+    (is (= :wal-entries (:op (ex-data e4)))
+        "the missing-op error names the op")))
+
+(deftest backend-registry-round-trip
+  ;; Registration binds conn to backend, dissoc removes the binding,
+  ;; and a failed registration leaves no entry behind. open seeds the
+  ;; registry with the resolved backend, so the round trip starts from
+  ;; the seeded entry.
+  (let [conn (store/open)
+        b (store/memory-backend)]
+    (is (= :memory (:kind (store/backend-for conn)))
+        "open seeds the registry with the resolved backend")
+    (is (nil? (store/register-on-open conn b)) "registration returns nil")
+    (is (= b (store/backend-for conn)) "registered backend reads back")
+    (is (nil? (store/dissoc-on-close conn)) "dissoc returns nil")
+    (is (nil? (store/backend-for conn)) "dissoc removes the binding")
+    (let [e (try
+              (store/register-on-open conn {:kind :memory})
+              nil
+              (catch Throwable e e))]
+      (is (some? e) "registering a malformed backend throws")
+      (is (nil? (store/backend-for conn)) "failed registration leaves no entry"))
+    (store/close conn)))
+
+;; ---------------------------------------------------------------------------
+;; Backend-selected open (ADR 35)
+;; ---------------------------------------------------------------------------
+
+(deftest open-resolves-backends-from-arguments
+  ;; open selects its backend from its arguments: no path opens the
+  ;; :memory backend, a path opens the :file backend at that path, and
+  ;; the resolved backend is registered for the conn at open.
+  (let [mem0 (store/open)
+        mem1 (store/open nil)]
+    (is (= :memory (:kind (store/backend-for mem0)))
+        "(open) resolves the memory backend")
+    (is (= :memory (:kind (store/backend-for mem1)))
+        "(open nil) resolves the memory backend")
+    (store/close mem0)
+    (store/close mem1))
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [path (str store-test-dir "/open-default.db")
+        conn (store/open path)]
+    (is (= :file (:kind (store/backend-for conn)))
+        "(open path) resolves the file backend at path")
+    (store/close conn))
+  (rm-rf store-test-dir))
+
+(deftest open-backend-option-overrides-the-default
+  ;; The :backend option overrides the path-derived default in both
+  ;; directions: :memory alongside a path, :file spelled out, and a
+  ;; prebuilt backend map each register as given.
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [mem-path (str store-test-dir "/open-opt-memory.db")
+        mem-conn (store/open mem-path {:backend :memory})
+        file-path (str store-test-dir "/open-opt-file.db")
+        file-conn (store/open file-path {:backend :file})
+        built-path (str store-test-dir "/open-opt-built.db")
+        built-conn (store/open built-path {:backend (store/file-backend built-path)})]
+    (is (= :memory (:kind (store/backend-for mem-conn)))
+        ":backend :memory wins over a path")
+    (is (= :file (:kind (store/backend-for file-conn)))
+        ":backend :file resolves at the path")
+    (is (= :file (:kind (store/backend-for built-conn)))
+        "a prebuilt backend map registers as-is")
+    (store/close mem-conn)
+    (store/close file-conn)
+    (store/close built-conn))
+  (rm-rf store-test-dir))
+
+(deftest open-rejects-unusable-backends
+  ;; Values that are neither a built-in backend keyword nor a valid
+  ;; backend map throw :store/backend diagnostics from open before any
+  ;; conn is created.
+  (let [rejected (fn [opts]
+                   (try
+                     (store/open nil opts)
+                     nil
+                     (catch Throwable e e)))
+        e1 (rejected {:backend 42})
+        e2 (rejected {:backend {:kind :memory}})
+        e3 (rejected {:backend :sqlite})
+        e4 (rejected {:backend :file})]
+    (is (every? some? [e1 e2 e3 e4])
+        "each unusable value throws")
+    (doseq [e [e1 e2 e3 e4]]
+      (is (= :store/backend (:mino/kind e))
+          ":mino/kind classes each as :store/backend"))
+    (is (= :file-without-path (:reason (ex-data e4)))
+        "the :file error names the missing-path reason")))
+
+(deftest open-routing-preserves-reopen-behavior
+  ;; The rerouted open keeps its behavior: a durable store's segments
+  ;; still replay on reopen through the backend, and the reopened conn
+  ;; binds the file backend. The unedited durability tests above pin
+  ;; the rest of the surface.
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [path (str store-test-dir "/open-reopen.db")
+        conn (store/open path {:schema {:name {:type :string}}})]
+    (store/transact conn {1 {:name "Alice"}})
+    (store/checkpoint conn)
+    (store/close conn)
+    (let [reopened (store/open path)
+          db (store/db reopened)]
+      (is (= "Alice" (store/read db 1 :name))
+          "the snapshot replays through the seam")
+      (is (= 1 (:tx db)) "the tx counter survives the reopen")
+      (is (= :file (:kind (store/backend-for reopened)))
+          "the reopened conn carries the file backend")
+      (store/close reopened)))
+  (rm-rf store-test-dir))
+
+;; ---------------------------------------------------------------------------
+;; Durability routing (ADR 35)
+;; ---------------------------------------------------------------------------
+
+(deftest transact-commit-routes-through-the-memory-backend
+  ;; transact no longer calls store-commit* directly: the registered
+  ;; backend's :commit op owns the publish, once per transact, and put
+  ;; and retract delegate to transact so they route through the same
+  ;; op. The memory path publishes exactly as before.
+  (let [conn (store/open)
+        base (store/memory-backend)
+        calls (atom [])
+        wrapped (assoc base :commit
+                       (fn [c new-db tx-info]
+                         (swap! calls conj (:tx tx-info))
+                         ((:commit base) c new-db tx-info)))]
+    (store/register-on-open conn wrapped)
+    (store/transact conn [:db/add 1 :name "Alice"])
+    (store/put conn 2 :name "Bob")
+    (store/retract conn 1 :name)
+    (is (= [0 1 2] @calls)
+        "one :commit route per transact, put, and retract")
+    (is (= "Bob" (store/read (store/db conn) 2 :name))
+        "the published db value is in effect")
+    (store/close conn)))
+
+(deftest transact-commit-routes-one-wal-line-per-tx
+  ;; On a durable conn each transact routes through :commit and leaves
+  ;; exactly one WAL line, preserving ADR 11's append-before-publish
+  ;; ordering through the seam.
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [path (str store-test-dir "/route-wal.db")
+        conn (store/open path)
+        base (store/file-backend path)
+        calls (atom [])
+        wrapped (assoc base :commit
+                       (fn [c new-db tx-info]
+                         (swap! calls conj (:tx tx-info))
+                         ((:commit base) c new-db tx-info)))]
+    (store/register-on-open conn wrapped)
+    (store/transact conn [:db/add 1 :name "Alice"])
+    (store/transact conn [:db/add 2 :name "Bob"])
+    (is (= [0 1] @calls) "one :commit route per transact")
+    (is (= 2 (count ((:wal-entries base)))) "one WAL line per transact")
+    (store/close conn))
+  (rm-rf store-test-dir))
+
+(deftest compact-and-migrate-publish-through-backend-commit
+  ;; The maintenance publishes route through the same :commit op:
+  ;; compact passes no tx-info (no WAL line), migrate passes its
+  ;; :migration tx-info (one WAL line), matching the direct prim calls
+  ;; they replaced.
+  (rm-rf store-test-dir)
+  (mkdir-p store-test-dir)
+  (let [path (str store-test-dir "/route-maint.db")
+        conn (store/open path {:schema {:name {:type :string}}})
+        base (store/file-backend path)
+        calls (atom [])
+        wrapped (assoc base :commit
+                       (fn [c new-db tx-info]
+                         (swap! calls conj (cond
+                                             (nil? tx-info) :no-wal
+                                             (:migration tx-info) :migration
+                                             :else :tx))
+                         ((:commit base) c new-db tx-info)))]
+    (store/register-on-open conn wrapped)
+    (store/transact conn [:db/add 1 :name "Alice"])
+    (store/compact conn)
+    (store/migrate conn {:name {:type :string} :email {:type :string}})
+    (is (= [:tx :no-wal :migration] @calls)
+        "transact, compact, and migrate each route once through :commit")
+    (is (= 2 (count ((:wal-entries base))))
+        "compact adds no WAL line, migrate adds its migration line")
+    (is (= "Alice" (store/read (store/db conn) 1 :name))
+        "the maintenance publishes took effect")
+    (store/close conn))
+  (rm-rf store-test-dir))
+
+(deftest transact-on-unregistered-conn-throws
+  ;; The seam owns durability: a conn with no registered backend has
+  ;; no :commit op to route through, so transact throws :store/backend
+  ;; instead of silently publishing.
+  (let [conn (store/open)]
+    (store/dissoc-on-close conn)
+    (let [e (try
+              (store/transact conn [:db/add 1 :a 1])
+              nil
+              (catch Throwable e e))]
+      (is (some? e) "transact without a registered backend throws")
+      (is (= :store/backend (:mino/kind e))
+          ":mino/kind classes the unregistered conn as :store/backend")
+      (is (= :commit (:op (ex-data e)))
+          "ex-data names the op that could not route")
+      (is (empty? (:entities (store/db conn)))
+          "nothing was published"))))
+
+(deftest checkpoint-routes-through-backend-checkpoint
+  ;; checkpoint routes through the registered backend's :checkpoint
+  ;; op; the durable effects (snapshot bytes, WAL delete) stay pinned
+  ;; unedited by the durability tests above.
+  (let [conn (store/open)
+        base (store/memory-backend)
+        calls (atom [])
+        wrapped (assoc base :checkpoint
+                       (fn [c]
+                         (swap! calls conj :route)
+                         ((:checkpoint base) c)))]
+    (store/register-on-open conn wrapped)
+    (is (nil? (store/checkpoint conn))
+        "checkpoint returns nil through the seam")
+    (is (= 1 (count @calls)) ":checkpoint routed once")
+    (store/close conn)))
+
+(deftest checkpoint-on-unregistered-conn-throws
+  ;; Like transact, checkpoint requires a registered backend: a conn
+  ;; with no entry has no :checkpoint op to route through.
+  (let [conn (store/open)]
+    (store/dissoc-on-close conn)
+    (let [e (try
+              (store/checkpoint conn)
+              nil
+              (catch Throwable e e))]
+      (is (some? e) "checkpoint without a registered backend throws")
+      (is (= :store/backend (:mino/kind e))
+          ":mino/kind classes the unregistered conn as :store/backend")
+      (is (= :checkpoint (:op (ex-data e)))
+          "ex-data names the op that could not route"))))
+
+(deftest close-routes-through-backend-close-and-deregisters
+  ;; close routes through the backend :close op and deregisters the
+  ;; backend alongside the listener registry; a second close finds no
+  ;; registered backend and stays the documented no-op.
+  (let [conn (store/open)
+        base (store/memory-backend)
+        calls (atom [])
+        wrapped (assoc base :close
+                       (fn [c]
+                         (swap! calls conj :route)
+                         ((:close base) c)))]
+    (store/register-on-open conn wrapped)
+    (store/close conn)
+    (is (= 1 (count @calls)) ":close routed once")
+    (is (nil? (store/backend-for conn)) "close deregisters the backend")
+    (is (nil? (store/close conn)) "second close is still a no-op")
+    (is (= 1 (count @calls)) "second close does not route again")))
+
+;; ---------------------------------------------------------------------------
+;; Shared watch table
+;; ---------------------------------------------------------------------------
+
+(deftest add-watch-on-store-fires-through-the-standard-path
+  ;; Stores register with the same watch table as atoms, refs, vars,
+  ;; and agents: add-watch on a conn fires (fn key conn old new) on
+  ;; every transact, and remove-watch detaches it.
+  (let [conn (store/open)
+        log  (atom [])]
+    (add-watch conn :w (fn [k r o n]
+                         (swap! log conj [k (identical? r conn) (map? o) (map? n)])))
+    (store/transact conn {1 {:name "a"}})
+    (is (= [[:w true true true]] @log))
+    (remove-watch conn :w)
+    (store/transact conn {2 {:name "b"}})
+    (is (= 1 (count @log)))
+    (store/close conn)))
+
 (run-tests-and-exit)
+

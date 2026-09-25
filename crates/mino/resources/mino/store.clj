@@ -26,7 +26,56 @@
   and a materialized view (entity -> attribute -> value). Stores are
   per-state isolated; cross-runtime transfer uses mino_clone.
 
-  In-memory by default; durability via snapshot-on-checkpoint.")
+  In-memory by default; durability via snapshot-on-checkpoint.
+
+  ## Backend seam (ADR 35)
+
+  Durability routes through a pluggable backend: a dumb segment store
+  that owns bytes and their durability ordering, never db logic. The db
+  value stays a persistent map and replay, schema, and compaction stay
+  here, so a backend cannot drift db semantics.
+
+  A backend is a plain map (no defprotocol) tagged with a :kind keyword
+  and carrying five contract ops, each a fn. `backend?` validates the
+  shape and throws a :store/backend diagnostic on any violation.
+
+    :kind         a keyword naming the backend. :memory and :file are
+                  the built-ins; any other keyword names a third-party
+                  backend.
+    :initial      (fn []) -> the snapshot segment as a db value, or nil
+                  when absent.
+    :wal-entries  (fn []) -> the WAL segment as a vector of parsed
+                  tx-info maps, or nil when absent. A torn final line
+                  stops the read at the parse edge.
+    :commit       (fn [conn new-db tx-info]) -> the published db. Owns
+                  the durable-append-before-publish ordering. tx-info
+                  nil means publish only (compact/migrate carry no WAL
+                  line); a map is the WAL line (transact).
+    :checkpoint   (fn [conn]) -> writes the snapshot, deletes the WAL.
+    :close        (fn [conn]) -> performs the final checkpoint, releases
+                  the handle.
+
+  The segment-ownership boundary: a backend owns durable bytes (snapshot
+  and WAL segments) and their ordering only. Everything else -- fact
+  application, schema validation, index maintenance, log compaction,
+  replay on reopen -- lives in this namespace and is identical across
+  backends. `open` reads the snapshot via :initial, replays the WAL via
+  :wal-entries, then registers the conn against its backend; `close`
+  deregisters and runs the backend's :close.
+
+  Lifecycle. `open` resolves the backend (a path selects :file, no path
+  the :memory default; the :backend option overrides) then
+  `register-on-open` binds the conn to its backend in a process-global
+  atom registry keyed by conn -- the same pattern the listener registry
+  uses. Every durability op (`transact`, `checkpoint`, `compact`,
+  `migrate`, `close`) looks the backend up through that registry and
+  throws :store/backend when a conn carries no entry (never came from
+  `open`, or was already closed). `close` removes the entry; a
+  GC-finalized conn leaks its registry entry exactly as it leaks
+  listener entries -- accepted precedent, not a new hazard. The registry
+  accessors `register-on-open`, `backend-for`, and `dissoc-on-close` are
+  public so a host that builds a conn outside `open` (or simulates a
+  crash by dropping the entry) can drive the seam directly.")
 
 ;; The clojure.core store? predicate is referred into this namespace at
 ;; load time. Capturing it under a private alias lets the public store?
@@ -40,6 +89,18 @@
 (def ^:private map-merge merge)
 
 (require '[clojure.set :as set])
+
+;; ---------------------------------------------------------------------------
+;; Errors
+;; ---------------------------------------------------------------------------
+
+(defn- store-fail
+  "Throws a classified mino.store diagnostic (ADR 37): :mino/kind names
+  the error class so classed catch dispatches on it, :mino/message the
+  human string ex-message returns, :mino/data the detail ex-data reads."
+  [kind code msg data]
+  (throw {:mino/kind kind :mino/code code :mino/message msg
+          :mino/data data}))
 
 ;; ---------------------------------------------------------------------------
 ;; Data shape helpers
@@ -67,7 +128,8 @@
 (def ^:private long-max 9223372036854775807)
 
 (defn- check-type
-  "Returns nil if v matches type-spec, throws ex-info otherwise.
+  "Returns nil if v matches type-spec, throws a diagnostic
+  with :mino/kind :store/schema otherwise.
   Supported types: :string, :keyword, :long, :double, :boolean,
   :instant (treated as :long, 64-bit signed), :any (no check).
   Unknown type-spec values throw -- they are treated as schema
@@ -95,15 +157,15 @@
                    :any     true
                    ;; Unknown type keyword: surface as a schema error instead
                    ;; of silently passing every value.
-                   (throw
-                     (ex-info (str "Unknown schema type spec for attribute " attr
-                                   ": " type-spec)
-                              {:attribute attr :type-spec type-spec})))]
+                   (store-fail :store/schema "MSTS001"
+                     (str "Unknown schema type spec for attribute " attr
+                          ": " type-spec)
+                     {:attribute attr :type-spec type-spec}))]
          (when-not ok?
-           (throw
-             (ex-info (str "Type mismatch for attribute " attr
-                           ": expected " type-spec)
-                      {:attribute attr :value val :expected type-spec}))))))))
+           (store-fail :store/schema "MSTS001"
+             (str "Type mismatch for attribute " attr
+                  ": expected " type-spec)
+             {:attribute attr :value val :expected type-spec})))))))
 
 (defn- eid-ok?
   "Returns true if e is a valid entity id: a positive integer (>= 1,
@@ -128,35 +190,36 @@
     :else false))
 
 (defn- validate-fact
-  "Validates a single fact against the schema. Throws ex-info on
+  "Validates a single fact against the schema. Throws a diagnostic
+  with :mino/kind :store/schema on
   violation: nil entity-id, nil attribute, unknown attribute in a
   closed schema, or type mismatch on :db/add. No-op when schema is
   empty. nil as a fact value on :db/add is a documented v1 design
   choice (see store-add-nil-value) and is allowed."
   [schema closed? {:keys [e a v op]}]
   (when (nil? e)
-    (throw
-      (ex-info "nil entity id is not allowed"
-               {:attribute a})))
+    (store-fail :store/schema "MSTS001"
+      "nil entity id is not allowed"
+      {:attribute a}))
   (when (not (eid-ok? e))
-    (throw
-      (ex-info (str "Invalid entity id (must be a positive integer or a keyword): "
-                    (pr-str e))
-               {:entity e :attribute a})))
+    (store-fail :store/schema "MSTS001"
+      (str "Invalid entity id (must be a positive integer or a keyword): "
+           (pr-str e))
+      {:entity e :attribute a}))
   (when (nil? a)
-    (throw
-      (ex-info "nil attribute is not allowed"
-               {:entity e})))
+    (store-fail :store/schema "MSTS001"
+      "nil attribute is not allowed"
+      {:entity e}))
   (when (not (attr-ok? a))
-    (throw
-      (ex-info (str "Invalid attribute (must be a non-empty keyword or string): "
-                    (pr-str a))
-               {:entity e :attribute a})))
+    (store-fail :store/schema "MSTS001"
+      (str "Invalid attribute (must be a non-empty keyword or string): "
+           (pr-str a))
+      {:entity e :attribute a}))
   (let [spec (get schema a)]
     (when (and closed? (not spec))
-      (throw
-        (ex-info (str "Unknown attribute in closed schema: " a)
-                 {:attribute a :entity e})))
+      (store-fail :store/schema "MSTS001"
+        (str "Unknown attribute in closed schema: " a)
+        {:attribute a :entity e}))
     (when (and spec (:type spec) (not= (:type spec) :any)
                (= op :db/add))
       (check-type a v (:type spec) (:cardinality spec)))))
@@ -180,7 +243,8 @@
   either a function value (passed directly) or a symbol (resolved in
   the calling namespace, mirroring how migrate's docstring names the
   value as a 'coerce-fn-sym'). Symbols are not callable in mino; an
-  unresolved symbol throws ::invalid-coerce so the failure surfaces
+  unresolved symbol throws a diagnostic with :mino/kind :store/coerce
+  so the failure surfaces
   at migration time rather than silently producing nil."
   [cf]
   (cond
@@ -188,17 +252,19 @@
     (symbol? cf)
     (let [v (resolve cf)]
       (when-not (and v (fn? @v))
-        (throw (ex-info (str "migrate :coerce symbol not resolvable to a function: " cf)
-                        {::invalid-coerce cf})))
+        (store-fail :store/coerce "MSTC001"
+          (str "migrate :coerce symbol not resolvable to a function: " cf)
+          cf))
       @v)
-    :else (throw (ex-info (str "migrate :coerce spec must be a function or symbol: " cf)
-                          {::invalid-coerce cf}))))
+    :else (store-fail :store/coerce "MSTC001"
+            (str "migrate :coerce spec must be a function or symbol: " cf)
+            cf)))
 
 (defn- validate-preds
   "Validates attribute predicates on a fact. Each pred symbol is
   resolved and called with the value. For :many cardinality with a
   set value, each member is checked. Falsy return throws
-  ::attr-pred-failed."
+  a diagnostic with :mino/kind :store/schema."
   [schema {:keys [e a v op]}]
   (when (= op :db/add)
     (let [spec (get schema a)
@@ -208,9 +274,9 @@
       (doseq [pred preds
               val vals]
         (when-not (pred val)
-            (throw
-              (ex-info (str "Attribute predicate failed for " a)
-                       {::attr-pred-failed {:attr a :value val}})))))))
+            (store-fail :store/schema "MSTS001"
+              (str "Attribute predicate failed for " a)
+              {:attr a :value val}))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Index maintenance
@@ -280,10 +346,10 @@
   (doseq [[attr spec] schema]
     (when (and (:unique spec)
                (= :many (:cardinality spec)))
-      (throw
-        (ex-info (str "Attribute " attr " cannot be :unique"
-                      " with :cardinality :many")
-                 {:attribute attr :spec spec}))))
+      (store-fail :store/schema "MSTS001"
+        (str "Attribute " attr " cannot be :unique"
+             " with :cardinality :many")
+        {:attribute attr :spec spec})))
   schema)
 
 (defn- unique-attrs
@@ -330,8 +396,9 @@
               existing (seq (get-in indexes [ref-attr ref-val]))]
           (if existing
             [op (first existing) a v]
-            (throw (ex-info (str "Lookup-ref " e " does not resolve")
-                            {:lookup-ref e}))))
+            (store-fail :store/schema "MSTS001"
+              (str "Lookup-ref " e " does not resolve")
+              {:lookup-ref e})))
         [op e a v]))))
 
 (defn- resolve-upserts
@@ -355,14 +422,16 @@
               (cond
                 ;; Two tx claims on same unique value, different eids
                 (and tx-existing (not= tx-existing mapped-e))
-                (throw (ex-info (str "Unique conflict on " a ": " v)
-                                {::unique-conflict {:attr a :value v}}))
+                (store-fail :store/schema "MSTS001"
+                  (str "Unique conflict on " a ": " v)
+                  {:attr a :value v})
 
                 ;; Pre-existing + :value + different eid = conflict (no upsert)
                 (and pre-existing (= u-type :value)
                      (not= (first pre-existing) mapped-e))
-                (throw (ex-info (str "Unique conflict on " a ": " v)
-                                {::unique-conflict {:attr a :value v}}))
+                (store-fail :store/schema "MSTS001"
+                  (str "Unique conflict on " a ": " v)
+                  {:attr a :value v})
 
                 ;; Pre-existing + :identity + different eid = upsert
                 (and pre-existing (= u-type :identity)
@@ -410,7 +479,7 @@
 
 (defn- validate-entity-specs
   "Validates entity specs on entities that had :db/ensure. Called after
-  all facts are applied. Throws ::entity-spec-failed."
+  all facts are applied. Throws a diagnostic with :mino/kind :store/schema."
   [entities entity-specs ensures]
   (let [db-proxy {:entities entities}]
     (doseq [[eid spec-name] ensures]
@@ -420,21 +489,22 @@
           (let [required (:required-attrs spec)
                 missing (filter #(nil? (get entity %)) required)]
             (when (seq missing)
-              (throw
-                (ex-info (str "Entity spec " spec-name " failed for entity " eid
-                              ": missing required attrs " (vec missing))
-                         {::entity-spec-failed {:eid eid :spec spec-name
-                                                :missing-attrs (vec missing)}}))))
+              (store-fail :store/schema "MSTS001"
+                (str "Entity spec " spec-name " failed for entity " eid
+                     ": missing required attrs " (vec missing))
+                {:eid eid :spec spec-name
+                 :missing-attrs (vec missing)})))
           (doseq [pred (:preds spec)]
             (when-not (pred db-proxy eid)
-                (throw
-                  (ex-info (str "Entity spec " spec-name
-                                " predicate failed for entity " eid)
-                           {::entity-spec-failed {:eid eid :spec spec-name}})))))))))
+                (store-fail :store/schema "MSTS001"
+                  (str "Entity spec " spec-name
+                       " predicate failed for entity " eid)
+                  {:eid eid :spec spec-name}))))))))
 
 (defn- validate-refs
   "Validates that :db/add facts on :ref attrs target eids that exist
-  in the pre-tx db or are created in this tx. Throws ::dangling-ref."
+  in the pre-tx db or are created in this tx. Throws a diagnostic
+  with :mino/kind :store/schema."
   [db ops]
   (let [schema (:schema db)
         r-attrs (ref-attrs schema)
@@ -446,10 +516,10 @@
       (let [vals (if (set? v) v #{v})]
         (doseq [val vals]
           (when-not (contains? all-known val)
-            (throw
-              (ex-info (str "Dangling ref: " a " = " val
-                            " does not reference an existing entity")
-                       {::dangling-ref {:attr a :value val :entity e}}))))))))
+            (store-fail :store/schema "MSTS001"
+              (str "Dangling ref: " a " = " val
+                   " does not reference an existing entity")
+              {:attr a :value val :entity e})))))))
 
 (defn- cleanup-dangling-refs
   "After applying facts, removes ref values that point at entities that
@@ -507,51 +577,218 @@
               {} entities))))
 
 ;; ---------------------------------------------------------------------------
+;; Backend seam (ADR 35)
+;; ---------------------------------------------------------------------------
+
+(def ^:private backend-ops
+  "The five contract ops every backend carries (ADR 35)."
+  [:initial :wal-entries :commit :checkpoint :close])
+
+(defn backend?
+  "Returns true when x is a valid backend: a map tagged with a :kind
+  keyword and carrying every contract op as a fn. Throws a diagnostic
+  with :mino/kind :store/backend on a non-map, a missing or non-keyword
+  :kind, a missing op, or a non-fn op. Any keyword kind is valid;
+  :memory and :file are the built-ins, any other keyword names a
+  third-party backend."
+  [x]
+  (when-not (map? x)
+    (store-fail :store/backend "MSTB001"
+      (str "backend must be a map of fns tagged :kind, got: "
+           (pr-str x))
+      {:reason :not-a-map :got x}))
+  (when-not (keyword? (:kind x))
+    (store-fail :store/backend "MSTB001"
+      (str "backend :kind must be a keyword, got: "
+           (pr-str (:kind x)))
+      {:reason :bad-kind :kind (:kind x)}))
+  (doseq [op backend-ops]
+    (when-not (fn? (get x op))
+      (store-fail :store/backend "MSTB001"
+        (str "backend is missing op " op " or the op is not a fn")
+        {:reason :bad-op :op op})))
+  true)
+
+(defn memory-backend
+  "Returns the default in-memory backend (ADR 35): no segments, plain
+  publish on :commit, no-op :checkpoint and :close through the
+  pathless C prims."
+  []
+  (let [backend {:kind :memory
+                 :initial (fn [] nil)
+                 :wal-entries (fn [] nil)
+                 :commit (fn [conn new-db tx-info]
+                           (store-commit* conn new-db tx-info))
+                 :checkpoint (fn [conn] (store-checkpoint* conn))
+                 :close (fn [conn] (store-close* conn))}]
+    (backend? backend)
+    backend))
+
+(defn file-backend
+  "Returns a file backend at path (ADR 35). Each op delegates to the
+  C store prims, the native edge that owns fsync, atomic rename, and
+  EDN segment parsing; the on-disk format (ADR 11) is unchanged."
+  [path]
+  (let [backend {:kind :file
+                 :initial (fn [] (store-read-snapshot* path))
+                 :wal-entries (fn [] (store-read-wal* path))
+                 :commit (fn [conn new-db tx-info]
+                           (store-commit* conn new-db tx-info))
+                 :checkpoint (fn [conn] (store-checkpoint* conn))
+                 :close (fn [conn] (store-close* conn))}]
+    (backend? backend)
+    backend))
+
+(defn- resolve-backend
+  "Resolves the backend for open (ADR 35): a path selects the :file
+  backend at path, no path the :memory default. opts :backend
+  overrides with :memory, :file (which requires a path), or a prebuilt
+  backend map validated by backend?. Unusable values throw classified
+  :store/backend diagnostics. The backend owns segments only; the path
+  itself still flows to store-open* so the C handle and its commit
+  machinery are unchanged."
+  [path opts]
+  (let [given (:backend opts)]
+    (cond
+      (nil? given) (if path (file-backend path) (memory-backend))
+
+      (= given :memory) (memory-backend)
+
+      (= given :file)
+      (if path
+        (file-backend path)
+        (store-fail :store/backend "MSTB001"
+          "the :file backend requires a path string"
+          {:reason :file-without-path}))
+
+      (map? given) (do (backend? given) given)
+
+      :else
+      (store-fail :store/backend "MSTB001"
+        (str "no built-in backend " (pr-str given)
+             "; expected :memory, :file, or a backend map")
+        {:reason :unknown-backend
+         :backend given}))))
+
+(def ^:private conn->backend
+  "conn to backend registry, the listener-registry pattern: open
+  registers, close deregisters, and a GC-finalized conn leaks its
+  entry exactly as it leaks listener entries (ADR 35)."
+  (atom {}))
+
+(defn register-on-open
+  "Binds conn to backend in the process-global backend registry, the
+  step `open` runs after building the conn (ADR 35). Public so a host
+  that constructs a conn outside `open` can join it to the seam.
+  Validates backend first: throws a :store/backend diagnostic when it
+  fails `backend?`, leaving the registry untouched. Returns nil."
+  [conn backend]
+  (backend? backend)
+  (swap! conn->backend assoc conn backend)
+  nil)
+
+(defn backend-for
+  "Returns the backend registered for conn, or nil when none is. The
+  read side of the registry `register-on-open` writes and
+  `dissoc-on-close` clears; every durability op resolves its backend
+  through this lookup."
+  [conn]
+  (get @conn->backend conn))
+
+(defn dissoc-on-close
+  "Removes conn's entry from the backend registry, the step `close`
+  runs before the backend's :close op (ADR 35). Public so a host can
+  simulate a crash -- drop the registry entry without a checkpoint, so
+  only the already-appended WAL survives a reopen. A subsequent
+  durability op on the conn then throws :store/backend. Returns nil."
+  [conn]
+  (swap! conn->backend dissoc conn)
+  nil)
+
+(defn- require-backend
+  "Returns the backend registered for conn, throwing a diagnostic
+  with :mino/kind :store/backend when none is. Durability ops route
+  through the seam (ADR 35); an unregistered conn is one that never
+  came from open or was closed, and publishing on it silently would
+  bypass the backend's durability contract."
+  [conn op]
+  (or (backend-for conn)
+      (store-fail :store/backend "MSTB001"
+        (str "no backend registered for conn; cannot route "
+             op " through the seam")
+        {:op op})))
+
+(defn- backend-commit
+  "Publishes new-db on conn through the registered backend's :commit
+  op (ADR 35). The op owns the durable-append-before-publish ordering:
+  both built-in backends delegate to store-commit*, whose C edge
+  WAL-appends (fflush + fsync) before the in-memory publish on a
+  path-bearing conn and publishes plain on a pathless one, so the
+  routing is byte-identical to the direct store-commit* call it
+  replaced. tx-info nil means publish only (compact); a map is the WAL
+  line (transact, migrate). One registry lookup per call."
+  [conn new-db tx-info]
+  (let [backend (require-backend conn :commit)]
+    ((:commit backend) conn new-db tx-info)))
+
+;; ---------------------------------------------------------------------------
 ;; Lifecycle
 ;; ---------------------------------------------------------------------------
 
 (defn open
-  "Opens a store connection. With no args, opens an in-memory store.
-  With a path string, opens a durable store (reads snapshot + replays
-  WAL if files exist). The options map may carry:
+  "Opens a store connection on a backend (ADR 35). With no path
+  string, opens on the in-memory :memory backend; with a path, opens
+  on the :file backend at path (reads snapshot + replays WAL if files
+  exist). The options map may carry:
     :schema    map of attribute -> {:type :cardinality} spec
     :closed    when true, reject attributes not in :schema (default false)
     :indexes   set of attributes to maintain reverse indexes for
     :history   {:keep-last N} or {:keep-since T} for auto-compaction
+    :backend   :memory, :file, or a prebuilt backend map; overrides the
+               path-derived default (:file requires a path)
   Schema, indexes, and history are set at first open and stored in the
-  db value; on reopen the snapshot's values take precedence."
-  ([] (store-open* (empty-db) nil))
+  db value; on reopen the snapshot's values take precedence. The
+  backend supplies the segments, replay stays here, and the conn is
+  registered with its backend; the path still reaches store-open* so
+  the C handle keeps it."
+  ([] (open nil))
   ([path] (open path nil))
   ([path opts]
-   (let [schema (validate-schema (:schema opts))
-         snap-db (when path (store-read-snapshot* path))
+   (let [backend (resolve-backend path opts)
+         schema (validate-schema (:schema opts))
+         snap-db ((:initial backend))
          base (or snap-db
-                    (-> (empty-db schema (:closed opts))
-                        (assoc :indexed-attrs (set/union (or (:indexes opts) #{})
-                                                          (unique-attrs schema)))
-                        (assoc :history (:history opts))
-                        (assoc :entity-specs (:entity-specs opts))))
-          entries (when path (store-read-wal* path))
-          db (if (seq entries)
-               (let [snapshot-tx (:tx base)]
-                 (reduce (fn [d entry]
-                           (if (< (:tx entry) snapshot-tx)
-                             d
-                             (dissoc (apply-tx d (:tx entry) (:instant entry)
-                                       (:tx-data entry)) :tx-data)))
-                         base entries))
-               base)
-          db (maybe-compact-log db)]
-     (store-open* db path))))
+                  (-> (empty-db schema (:closed opts))
+                      (assoc :indexed-attrs (set/union (or (:indexes opts) #{})
+                                                        (unique-attrs schema)))
+                      (assoc :history (:history opts))
+                      (assoc :entity-specs (:entity-specs opts))))
+         entries ((:wal-entries backend))
+         db (if (seq entries)
+              (let [snapshot-tx (:tx base)]
+                (reduce (fn [d entry]
+                          (if (< (:tx entry) snapshot-tx)
+                            d
+                            (dissoc (apply-tx d (:tx entry) (:instant entry)
+                                      (:tx-data entry)) :tx-data)))
+                        base entries))
+              base)
+         db (maybe-compact-log db)
+         conn (store-open* db path)]
+     (register-on-open conn backend)
+     conn)))
 
 (defn close
-  "Flushes (if durable) and closes the store. Idempotent. Also clears
-  any listeners registered on conn so the process-global listener
-  registry does not retain the conn (or its listener closures) after
-  close."
+  "Flushes (if durable) and closes the store through the backend
+  :close op (ADR 35). Idempotent. Deregisters the backend alongside
+  any listeners registered on conn so the process-global registries
+  do not retain the conn (or its listener closures) after close; a
+  second close finds no registered backend and is a no-op."
   [conn]
   (swap! listener-registry dissoc conn)
-  (store-close* conn)
+  (when-let [backend (backend-for conn)]
+    (dissoc-on-close conn)
+    ((:close backend) conn))
   nil)
 
 (defn db
@@ -560,10 +797,14 @@
   @conn)
 
 (defn checkpoint
-  "Writes the db value to disk if the store is durable. No-op for an
-  in-memory store."
+  "Writes the db value to disk through the backend :checkpoint op
+  (ADR 35): the file backend's C edge writes the snapshot (0x00
+  version header + EDN via .tmp + rename + fsync) and deletes the
+  WAL; the memory backend no-ops. Throws a diagnostic with :mino/kind
+  :store/backend for a conn with no registered backend."
   [conn]
-  (store-checkpoint* conn)
+  (let [backend (require-backend conn :checkpoint)]
+    ((:checkpoint backend) conn))
   nil)
 
 (defn store?
@@ -595,10 +836,12 @@
       4 [[(tx-data 0) (tx-data 1) (tx-data 2) (tx-data 3)]]
       3 (if (= (first tx-data) :db/retract)
           [[:db/retract (tx-data 1) (tx-data 2) nil]]
-          (throw (ex-info "[:db/add e a] is missing a value"
-                          {:tx-data tx-data})))
-      (throw (ex-info "tx-data vector has wrong arity (expected 3 or 4 elements)"
-                      {:tx-data tx-data})))
+          (store-fail :store/tx "MSTT001"
+            "[:db/add e a] is missing a value"
+            {:tx-data tx-data}))
+      (store-fail :store/tx "MSTT001"
+        "tx-data vector has wrong arity (expected 3 or 4 elements)"
+        {:tx-data tx-data}))
 
     (map? tx-data)
     (vec (for [[e attrs] tx-data
@@ -613,7 +856,7 @@
     (mapcat parse-tx-data tx-data)
 
     :else
-    (throw (ex-info "Invalid tx-data format" {:tx-data tx-data}))))
+    (store-fail :store/tx "MSTT001" "Invalid tx-data format" {:tx-data tx-data})))
 
 (defn- expand-retract-entity
   "Pre-processes tx-data to expand [:db/retractEntity eid] into
@@ -705,6 +948,21 @@
              (retract-attr entities e entity a)
              :else entities)))))))
 
+(defn- db-value
+  "Assemble a db value. The configuration fields (:schema, :closed?,
+  :indexed-attrs, :entity-specs, :history) carry from `from` unless
+  `overrides` replaces them. Centralizing the invariant key set here
+  keeps a publisher from silently dropping a field."
+  [from overrides]
+  ;; into, not merge: this namespace's own `merge` (two-db merge) shadows
+  ;; clojure.core/merge.
+  (into {:schema        (get from :schema {})
+         :closed?       (get from :closed? false)
+         :indexed-attrs (get from :indexed-attrs #{})
+         :entity-specs  (get from :entity-specs)
+         :history       (get from :history)}
+        overrides))
+
 (defn- apply-tx
   "Applies a parsed transaction to the db value, returning a new db
   value. Each op becomes a fact tagged with tx-num and instant; the
@@ -716,7 +974,6 @@
   (let [schema        (get db :schema {})
         closed?       (get db :closed? false)
         indexed-attrs (get db :indexed-attrs #{})
-        history       (get db :history)
         entity-specs  (get db :entity-specs)
         expanded      (expand-retract-entity (:entities db) schema tx-data)
         ensures       (extract-ensures tx-data)
@@ -739,16 +996,11 @@
                       facts
                       (filter #(not (contains? nh-attrs (:a %))) facts))
           tx-facts (for [f facts] {:e (:e f) :a (:a f) :v (:v f) :op (:op f)})]
-      {:entities entities
-       :log (into (:log db) log-facts)
-       :tx (inc tx-num)
-       :schema schema
-       :closed? closed?
-       :indexed-attrs indexed-attrs
-       :indexes indexes
-       :entity-specs entity-specs
-       :history history
-       :tx-data tx-facts})))
+      (db-value db {:entities entities
+                    :log (into (:log db) log-facts)
+                    :tx (inc tx-num)
+                    :indexes indexes
+                    :tx-data tx-facts}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Public transaction API
@@ -760,14 +1012,14 @@
   "Registers f to be called with {:db-before :db-after :tx-data} on
   each transact. key is used for unregistration. Returns nil.
 
-  Scope is the transaction stream only: `put`, `retract`, and
-  `transact` (which they delegate to) all fire f. The maintenance and
-  schema ops `compact` and `migrate` do NOT fire f -- they bypass the
-  tx log and publish directly via store-commit*. If you need to react
-  to a compact/migrate db change, poll `(db conn)` after the call.
-  (The C-level `add-watch` does not cover stores either: stores are
-  not in the watchable-get table, so store->watches is never populated.
-  `listen`/`fire-listeners` is the only observer surface.)"
+   Scope is the transaction stream only: `put`, `retract`, and
+   `transact` (which they delegate to) all fire f. The maintenance and
+   schema ops `compact` and `migrate` do NOT fire f -- they bypass the
+   tx log and publish through the backend :commit op with no listener
+   event. If you need to react to a compact/migrate db change, poll
+   `(db conn)` after the call, or use `add-watch`: stores register with
+   the shared watch table, and a store watch fires (fn key conn old new)
+   on every publish, compact and migrate included."
   [conn key f]
   (swap! listener-registry assoc-in [conn key] f)
   nil)
@@ -788,8 +1040,10 @@
 (defn transact
   "Transacts facts against the store connection. Atomic: all-or-nothing.
   tx-data accepts any of the parse-tx-data forms, plus [:db/retractEntity eid].
-  Returns {:tx N :db-after db :tx-data [...]}. On a durable store, the
-  transaction is appended to the WAL before the in-memory publish."
+  Returns {:tx N :db-after db :tx-data [...]}. The publish routes
+  through the registered backend's :commit op (ADR 35): on a durable
+  store the transaction is appended to the WAL before the in-memory
+  publish, and a conn with no registered backend throws."
   [conn tx-data]
   (let [cur @conn
         tx-num (:tx cur)
@@ -799,7 +1053,7 @@
         tx-facts (:tx-data result)
         new-db (dissoc result :tx-data)
         tx-info {:tx tx-num :instant instant :tx-data tx-data}]
-    (store-commit* conn new-db tx-info)
+    (backend-commit conn new-db tx-info)
     (fire-listeners conn {:db-before cur :db-after new-db :tx-data tx-facts})
     {:tx tx-num :db-after new-db :tx-data tx-facts}))
 
@@ -917,16 +1171,16 @@
   for the tx branch.
 
   Validates point is either an inst or an integer; anything else
-  throws ::invalid-point so callers see a clear argument error
-  rather than a downstream numeric-comparator crash."
+  throws a diagnostic with :mino/kind :store/point so callers see a
+  clear argument error rather than a downstream numeric-comparator crash."
   [point]
   (cond
     (point-as-instant? point) (inst-ms point)
     (integer? point) point
-    :else (throw
-            (ex-info (str "as-of/since point must be an inst or an integer, got: "
-                          (pr-str point))
-                     {::invalid-point point}))))
+    :else (store-fail :store/point "MSTP001"
+            (str "as-of/since point must be an inst or an integer, got: "
+                 (pr-str point))
+            point)))
 
 (defn as-of
   "Returns the db value as it was at tx N or instant T. Replays the log
@@ -972,11 +1226,8 @@
                                    (assoc ents e (conj cur nh-vals))))))
                            entities (:entities db-val)))
         indexes (build-indexes entities indexed-attrs)]
-    {:entities entities :log (vec ordered) :tx (:tx db-val)
-     :schema schema :closed? (get db-val :closed? false)
-     :indexed-attrs indexed-attrs :indexes indexes
-     :entity-specs (get db-val :entity-specs)
-     :history (get db-val :history)}))
+    (db-value db-val {:entities entities :log (vec ordered)
+                      :tx (:tx db-val) :indexes indexes})))
 
 (defn since
   "Returns the seq of facts asserted at or after tx N (or instant T),
@@ -1045,8 +1296,8 @@
   "Merges two db values into a new one. The fact logs concatenate and
   replay in instant order, so the entity view reflects last-write-wins
   by :instant. The tx counter is the max of the two. Schema, closed?,
-  indexed-attrs, and history are taken from db-a. Indexes are rebuilt
-  for the merged entity view."
+  indexed-attrs, entity-specs, and history are taken from db-a. Indexes
+  are rebuilt for the merged entity view."
   [db-a db-b]
   (let [schema (get db-a :schema {})
         indexed-attrs (get db-a :indexed-attrs #{})
@@ -1054,14 +1305,10 @@
         entities (reduce (fn [acc f] (apply-fact acc f schema))
                          {} all-facts)
         indexes (build-indexes entities indexed-attrs)]
-    {:entities entities
-     :log (vec all-facts)
-     :tx (max (:tx db-a) (:tx db-b))
-     :schema schema
-     :closed? (get db-a :closed? false)
-     :indexed-attrs indexed-attrs
-     :indexes indexes
-     :history (get db-a :history)}))
+    (db-value db-a {:entities entities
+                    :log (vec all-facts)
+                    :tx (max (:tx db-a) (:tx db-b))
+                    :indexes indexes})))
 
 (defn fold
   "Reduces across a collection of db values. extract-fn pulls the value
@@ -1096,8 +1343,9 @@
 
 (defn compact
   "Bounds the log of a durable or long-lived store by dropping old
-  facts while preserving the materialized view. Does not write to the
-  WAL — compaction is a maintenance operation; checkpoint afterwards to
+  facts while preserving the materialized view. Publishes through the
+  backend :commit op with no tx-info, so it does not write to the WAL;
+  compaction is a maintenance operation; checkpoint afterwards to
   persist the compacted state.
 
   listeners do NOT fire for compact (it bypasses the tx log); see
@@ -1107,16 +1355,13 @@
   With a keep-spec map:
     {:keep-last N}     keep the last N facts
     {:keep-since T}    keep facts at or after instant T"
-  ([conn]
-   (let [cur @conn]
-     (store-commit* conn {:entities (:entities cur)
-                          :log []
-                          :tx (:tx cur)
-                          :schema (get cur :schema {})
-                          :closed? (get cur :closed? false)
-                          :indexed-attrs (get cur :indexed-attrs #{})
-                          :indexes (get cur :indexes {})
-                          :history (get cur :history)})))
+   ([conn]
+    (let [cur @conn]
+      (backend-commit conn (db-value cur {:entities (:entities cur)
+                                          :log []
+                                          :tx (:tx cur)
+                                          :indexes (get cur :indexes {})})
+                      nil)))
   ([conn keep-spec]
    (let [valid-last  (and (map? keep-spec)
                           (contains? keep-spec :keep-last)
@@ -1127,9 +1372,10 @@
                           (integer? (:keep-since keep-spec)))]
      (if (or valid-last valid-since)
        nil
-       (throw (ex-info (str "compact keep-spec must be {:keep-last N} or {:keep-since T}, got: "
-                            (pr-str keep-spec))
-                       {::invalid-keep-spec keep-spec}))))
+       (store-fail :store/keep-spec "MSTK001"
+         (str "compact keep-spec must be {:keep-last N} or {:keep-since T}, got: "
+              (pr-str keep-spec))
+         keep-spec)))
    (let [cur @conn
          log (:log cur)
          kept (cond
@@ -1139,15 +1385,12 @@
                 (and (map? keep-spec) (:keep-since keep-spec))
                 (filter #(>= (:instant %) (:keep-since keep-spec)) log)
 
-                :else log)]
-     (store-commit* conn {:entities (:entities cur)
-                          :log (vec kept)
-                          :tx (:tx cur)
-                          :schema (get cur :schema {})
-                          :closed? (get cur :closed? false)
-                          :indexed-attrs (get cur :indexed-attrs #{})
-                          :indexes (get cur :indexes {})
-                          :history (get cur :history)}))))
+                 :else log)]
+      (backend-commit conn (db-value cur {:entities (:entities cur)
+                                          :log (vec kept)
+                                          :tx (:tx cur)
+                                          :indexes (get cur :indexes {})})
+                      nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; Schema and migration
@@ -1171,10 +1414,12 @@
     :data     fn — called as a tx on the migrated db (for data migration)
 
   Returns {:db-after new-db :violations [...] :tx N}.
-  Throws ::migration-conflict when violations exist without :force.
+  Throws a diagnostic with :mino/kind :store/migration when violations
+  exist without :force.
 
-  listeners do NOT fire for migrate (it publishes via store-commit*,
-  bypassing the tx log); see `listen` for the scope contract."
+  listeners do NOT fire for migrate (it publishes via the backend
+  :commit op, bypassing the tx log); see `listen` for the scope
+  contract."
   ([conn new-schema] (migrate conn new-schema {}))
   ([conn new-schema opts]
    (let [cur @conn
@@ -1201,24 +1446,22 @@
                                        (not (type-matches? v (:type spec))))]
                         {:entity e :attr a :value v :expected (:type spec)}))
          _ (when (and (seq violations) (not (:force opts)))
-             (throw (ex-info (str "Migration conflict: " (count violations) " violations")
-                             {::migration-conflict violations})))
-         new-db {:entities entities
-                 :log (:log cur)
-                 :tx (:tx cur)
-                 :schema new-schema
-                 :closed? (:closed? cur)
-                 :indexed-attrs indexed-attrs
-                 :indexes (build-indexes entities indexed-attrs)
-                 :entity-specs (:entity-specs cur)
-                 :history (:history cur)}
+             (store-fail :store/migration "MSTM001"
+               (str "Migration conflict: " (count violations) " violations")
+               violations))
+         new-db (db-value cur {:entities entities
+                               :log (:log cur)
+                               :tx (:tx cur)
+                               :schema new-schema
+                               :indexed-attrs indexed-attrs
+                               :indexes (build-indexes entities indexed-attrs)})
          new-db (if (:data opts)
                   (:db-after (with new-db ((:data opts))))
                   new-db)
-         tx-num (:tx cur)
-         instant (store-clock* conn)]
-     (store-commit* conn new-db {:tx tx-num :instant instant :migration true})
-     {:db-after new-db :violations violations :tx tx-num})))
+          tx-num (:tx cur)
+          instant (store-clock* conn)]
+    (backend-commit conn new-db {:tx tx-num :instant instant :migration true})
+    {:db-after new-db :violations violations :tx tx-num})))
 
 ;; ---------------------------------------------------------------------------
 ;; Datalog query
@@ -1234,12 +1477,13 @@
 
 (defn- parse-query
   "Parses a Datalog query vector into {:find :with :in :order-by :where}.
-  Throws ex-info tagged ::invalid-query when the input is not a vector
-  beginning with :find."
+  Throws a diagnostic with :mino/kind :store/query when the input is
+  not a vector beginning with :find."
   [query]
   (when-not (and (vector? query) (= (first query) :find))
-    (throw (ex-info "Invalid query: expected a vector starting with :find"
-                    {::invalid-query query})))
+    (store-fail :store/query "MSTQ001"
+      "Invalid query: expected a vector starting with :find"
+      query))
   (loop [q query find-vars [] with-vars [] in-vars [] order-by nil clauses [] mode nil]
     (if (empty? q)
       {:find find-vars :with with-vars :in in-vars
@@ -1360,9 +1604,9 @@
          el)))
 
 (defn- validate-query
-  "Validates a parsed query. Throws ex-info tagged ::invalid-query for
-  malformed clauses, unbound find vars, or an :order-by var that is
-  not projected by :find."
+  "Validates a parsed query. Throws a diagnostic with :mino/kind
+  :store/query for malformed clauses, unbound find vars, or an
+  :order-by var that is not projected by :find."
   [find where order-by]
   (let [bound-vars (reduce
                      (fn [acc clause]
@@ -1383,9 +1627,9 @@
                          (not-clause? clause) acc
                          (not-join-clause? clause) acc
                          :else
-                         (throw
-                           (ex-info "Invalid Datalog clause: must be [e a v] pattern, [(pred ...)] predicate, (not ...), (not-join ...), or (or ...)"
-                                    {::invalid-query clause}))))
+                         (store-fail :store/query "MSTQ001"
+                           "Invalid Datalog clause: must be [e a v] pattern, [(pred ...)] predicate, (not ...), (not-join ...), or (or ...)"
+                           clause)))
                      #{} where)
         find-vars-for-check (flatten
                               (for [v find]
@@ -1395,15 +1639,15 @@
                                   :else [])))
         unbound (filter #(not (contains? bound-vars %)) find-vars-for-check)]
     (when (seq unbound)
-      (throw
-        (ex-info (str "Query var(s) not bound by any clause: " (vec unbound))
-                 {::invalid-query {:find find :unbound (vec unbound)}})))
+      (store-fail :store/query "MSTQ001"
+        (str "Query var(s) not bound by any clause: " (vec unbound))
+        {:find find :unbound (vec unbound)}))
     (when (and order-by (variable? (:var order-by)))
       (let [ob-var (:var order-by)]
         (when-not (contains? bound-vars ob-var)
-          (throw
-            (ex-info (str "Query :order-by var not bound by any clause: " ob-var)
-                     {::invalid-query {:order-by ob-var}})))))))
+          (store-fail :store/query "MSTQ001"
+            (str "Query :order-by var not bound by any clause: " ob-var)
+            {:order-by ob-var}))))))
 
 (defn- process-not
   "Filters bindings: removes any binding where the negated pattern matches."
@@ -1469,14 +1713,14 @@
         arg-specs (rest pred-form)
         pred-var  (resolve pred-sym)
         _         (when-not pred-var
-                    (throw
-                      (ex-info (str "Query predicate not resolvable: " pred-sym)
-                               {::invalid-query {:predicate pred-sym}})))
+                    (store-fail :store/query "MSTQ001"
+                      (str "Query predicate not resolvable: " pred-sym)
+                      {:predicate pred-sym}))
         pred-fn   @pred-var
         _         (when-not (fn? pred-fn)
-                    (throw
-                      (ex-info (str "Query predicate not a function: " pred-sym)
-                               {::invalid-query {:predicate pred-sym}})))]
+                    (store-fail :store/query "MSTQ001"
+                      (str "Query predicate not a function: " pred-sym)
+                      {:predicate pred-sym}))]
     (filter (fn [b]
               (let [args (for [a arg-specs]
                            (if (variable? a) (get b a) a))]
@@ -1837,16 +2081,16 @@
   in-range member.
 
   Bounds and attribute values must be mutually comparable: a numeric
-  range over a string attr (or vice versa) throws a classified
-  ::range-type-mismatch error rather than a raw ClassCastException."
+  range over a string attr (or vice versa) throws a diagnostic with
+  :mino/kind :store/range rather than a raw ClassCastException."
   [db-val attr lo hi]
   (let [lo-cat (range-value-category lo)
         hi-cat (range-value-category hi)]
     (when (and lo-cat hi-cat (not= lo-cat hi-cat))
-      (throw
-        (ex-info (str "find-by-range: lo and hi must be the same type, got "
-                      (pr-str lo) " and " (pr-str hi))
-                 {:reason :range-type-mismatch :attr attr :lo lo :hi hi})))
+      (store-fail :store/range "MSTR001"
+        (str "find-by-range: lo and hi must be the same type, got "
+             (pr-str lo) " and " (pr-str hi))
+        {:reason :range-type-mismatch :attr attr :lo lo :hi hi}))
     (->> (:entities db-val)
          (keep (fn [[e attrs]]
                  (let [v (get attrs attr)]
@@ -1859,21 +2103,21 @@
                                                            (not= (range-value-category %) lo-cat))
                                                  %) v)]
                                 (when bad
-                                  (throw
-                                    (ex-info (str "find-by-range: value " (pr-str bad)
-                                                  " for " attr " is not comparable to bounds "
-                                                  (pr-str lo) ".." (pr-str hi))
-                                             {:reason :range-type-mismatch
-                                              :attr attr :value bad :entity e})))
+                                  (store-fail :store/range "MSTR001"
+                                    (str "find-by-range: value " (pr-str bad)
+                                         " for " attr " is not comparable to bounds "
+                                         (pr-str lo) ".." (pr-str hi))
+                                    {:reason :range-type-mismatch
+                                     :attr attr :value bad :entity e}))
                                 (let [in-range (filter #(and (>= % lo) (<= % hi)) v)]
                                   (when (seq in-range)
                                     [e (reduce min in-range)])))
                      (and lo-cat (not= (range-value-category v) lo-cat))
-                     (throw
-                       (ex-info (str "find-by-range: value " (pr-str v) " for " attr
-                                     " is not comparable to bounds " (pr-str lo) ".." (pr-str hi))
-                                {:reason :range-type-mismatch
-                                 :attr attr :value v :entity e}))
+                     (store-fail :store/range "MSTR001"
+                       (str "find-by-range: value " (pr-str v) " for " attr
+                            " is not comparable to bounds " (pr-str lo) ".." (pr-str hi))
+                       {:reason :range-type-mismatch
+                        :attr attr :value v :entity e})
                      (and (>= v lo) (<= v hi)) [e v]
                      :else nil))))
          (sort-by second)
@@ -1895,5 +2139,6 @@
       :eavt (sort-by (fn [d] [(:e d) (:a d)]) entries)
       :avet (sort-by (fn [d] [(:a d) (:v d)]) entries)
       :aevt (sort-by (fn [d] [(:a d) (:e d)]) entries)
-      (throw (ex-info (str "Unknown index: " index)
-                      {:index index})))))
+      (store-fail :store/index "MSTI001"
+        (str "Unknown index: " index)
+        {:index index}))))

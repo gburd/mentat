@@ -170,21 +170,37 @@
                             (parse-zone-segment s idx m))]
             (recur m' idx')))))))
 
+(def ^:private days-in-month
+  ;; Days per 1-based month; index 0 is a placeholder.
+  [0 31 28 31 30 31 30 31 31 30 31 30 31])
+
+(defn- month-length
+  "Days in month m of year y, accounting for a February leap day."
+  [y m]
+  (if (and (= m 2) (leap-year? y))
+    29
+    (nth days-in-month m)))
+
 (defn validated
   "Range-checks the components in a parsed timestamp map. Returns
    the map unchanged on success; throws ex-info on out-of-range
-   values. Mirrors the canonical clojure.instant validation."
+   values. Mirrors the canonical clojure.instant validation,
+   including its per-month day bound and its rule that a :60 leap
+   second is accepted only when minutes is 59."
   [{:keys [years months days hours minutes seconds nanoseconds
            offset-hours offset-minutes]
     :as m}]
   (let [bad (cond
               (or (< months 1)  (> months 12))            "months"
-              (or (< days 1)    (> days 31))              "days"
+              (or (< days 1)    (> days (month-length years months)))
+              "days"
               (or (< hours 0)   (> hours 23))             "hours"
               (or (< minutes 0) (> minutes 59))           "minutes"
-              ;; 60 permitted for leap second; not validated against
-              ;; an actual UT1 schedule.
-              (or (< seconds 0) (> seconds 60))           "seconds"
+              ;; :60 is the leap second, permitted only in the 59th
+              ;; minute (matching canon's (if (= minutes 59) 60 59)).
+              ;; Not validated against an actual UT1 schedule.
+              (or (< seconds 0) (> seconds (if (= minutes 59) 60 59)))
+              "seconds"
               (or (< nanoseconds 0)
                   (>= nanoseconds 1000000000))            "nanoseconds"
               (or (< offset-hours 0)   (> offset-hours 23))   "offset-hours"
@@ -195,6 +211,34 @@
                       {:component bad :map m}))))
   m)
 
+(defn- normalize-leap-second
+  "The JVM constructs a java.util.Date, which cannot represent a leap
+   second: a :60 second rolls into the following minute, carrying
+   through hour, day, month, and year boundaries. mino has no host
+   Date, so we carry the extra second in the component map itself,
+   yielding the same instant the JVM produces. Only :seconds 60 needs
+   carrying; validation already guarantees it appears solely at minute
+   59, so the carry cascades 59:60 -> 00:00 of the next minute."
+  [{:keys [years months days hours minutes seconds] :as m}]
+  (if (< seconds 60)
+    m
+    (let [minutes' (inc minutes)
+          [hours' minutes']   (if (= minutes' 60) [(inc hours) 0] [hours minutes'])
+          [days'  hours']     (if (= hours'  24)  [(inc days)  0] [days  hours'])
+          [months' days' years']
+          (if (> days' (month-length years months))
+            (if (= months 12)
+              [1 1 (inc years)]
+              [(inc months) 1 years])
+            [months days' years])]
+      (assoc m
+             :years   years'
+             :months  months'
+             :days    days'
+             :hours   hours'
+             :minutes minutes'
+             :seconds 0))))
+
 (defn read-instant-date
   "Parses an ISO 8601 timestamp string and returns the validated
    component map. Named for parity with canonical clojure.instant;
@@ -203,9 +247,13 @@
    The returned map carries `:mino/instant true` in its metadata so
    `inst?` recognises it; the map content itself stays free of
    marker keys so equality with user-constructed maps of the same
-   shape isn't accidentally broken."
-  [s]
-  (with-meta (validated (parse-timestamp s))
+   shape isn't accidentally broken.
+
+   A :60 leap second is normalized into the following minute (see
+   normalize-leap-second) so the returned instant equals the one the
+   JVM produces via java.util.Date."
+  [cs]
+  (with-meta (normalize-leap-second (validated (parse-timestamp cs)))
              {:mino/instant true}))
 
 (defn inst?

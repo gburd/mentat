@@ -5,8 +5,8 @@
 
 (defmacro when
   "Evaluates body when test is truthy. Returns nil otherwise."
-  [c & body]
-  `(if ~c (do ~@body)))
+  [test & body]
+  `(if ~test (do ~@body)))
 
 (defmacro cond
   "Takes pairs of test/expr. Returns the expr for the first truthy test."
@@ -66,14 +66,14 @@
   or commuted within. The transaction retries on write conflicts in
   multi-threaded mode. Side effects via (io! ...) inside the body
   throw. Requires STM to be installed (mino_install_stm)."
-  [& body]
-  `(dosync* (fn [] ~@body)))
+  [& exprs]
+  `(dosync* (fn [] ~@exprs)))
 
 (defmacro sync
   "Like dosync: runs the exprs (which may be nil) in an STM
   transaction. flags-ignored is accepted for arglist parity and
   currently ignored."
-  [flags-ignored & body]
+  [flags-ignored-for-now & body]
   `(dosync ~@body))
 
 (defmacro io!
@@ -89,48 +89,10 @@
 ;; Anything that depends only on special forms, primitives, and the
 ;; macros defined above (when, cond, and, or, ->, ->>) is fair game.
 
-;; Walk a single fn arity (params-vec body...) and, if the first body
-;; form is a {:pre [...] :post [...]} map, rewrite the arity so the
-;; conditions run around the body. % in :post bodies refers to the
-;; return value, matching Clojure.
-(def ^:private fn-arity-with-prepost
-  (fn [arity]
-    (let [params (first arity)
-          body   (rest arity)
-          head   (first body)]
-      (if (and (map? head)
-               (or (contains? head :pre) (contains? head :post)))
-        (let [pre   (get head :pre [])
-              post  (get head :post [])
-              rest-body (rest body)
-              assert-pre
-              (map (fn [p]
-                     (list 'when-not p
-                           (list 'throw
-                                 (list 'ex-info
-                                       (str "Pre-condition failed: "
-                                            (pr-str p))
-                                       {:pre (list 'quote p)}))))
-                   pre)
-              assert-post
-              (map (fn [p]
-                     (list 'when-not p
-                           (list 'throw
-                                 (list 'ex-info
-                                       (str "Post-condition failed: "
-                                            (pr-str p))
-                                       {:post (list 'quote p)}))))
-                   post)
-              wrapped
-              (apply list
-                     (concat assert-pre
-                             [(apply list 'let
-                                     ['% (apply list 'do rest-body)]
-                                     [(apply list 'do
-                                             (concat assert-post
-                                                     ['%]))])]))]
-          (cons params wrapped))
-        arity))))
+;; The :pre/:post condition rewrite lives in the fn special form (C
+;; core, eval/fn.c fn_rewrite_prepost_body), so defn, plain fn, and
+;; named fn all enforce conditions through one shared mechanism. defn
+;; therefore hands its raw arities straight to fn.
 
 (defmacro defn
   "Defines a named function. Supports docstrings, multi-arity, and
@@ -143,22 +105,26 @@
         fdecl    (if has-attr (rest fdecl) fdecl)
         ;; If the first remaining form is a vector, this is single-arity
         ;; (params-vec body...). Otherwise it's a sequence of arity
-        ;; lists (params-vec body...) (params-vec body...). Handle the
-        ;; :pre/:post map either way.
-        rewritten (if (vector? (first fdecl))
-                    (fn-arity-with-prepost fdecl)
-                    (mapv fn-arity-with-prepost fdecl))
+        ;; lists (params-vec body...) (params-vec body...). fn applies
+        ;; the :pre/:post rewrite for both shapes.
         form     (if (vector? (first fdecl))
-                   (cons 'fn rewritten)
-                   (apply list 'fn rewritten))]
+                   (cons 'fn fdecl)
+                   (apply list 'fn fdecl))
+        ;; The declared parameter vectors in declaration order, stored
+        ;; under :arglists on the var the way JVM defn does. The value
+        ;; is quoted so def's metadata evaluation yields the raw forms.
+        arglists (if (vector? (first fdecl))
+                   (list (first fdecl))
+                   (apply list (mapv first fdecl)))
+        name     (vary-meta name assoc :arglists (list 'quote arglists))]
     (if doc
       `(def ~name ~doc ~form)
       `(def ~name ~form))))
 
 (defmacro defn-
   "Same as defn, yielding a non-public def."
-  [name & body]
-  (apply list 'defn (vary-meta name assoc :private true) body))
+  [name & decls]
+  (apply list 'defn (vary-meta name assoc :private true) decls))
 
 (defmacro defonce
   "Defines name only if it has no root binding."
@@ -251,11 +217,13 @@
    called with multiple collections, maps f across them in parallel.
    When called with no collection, returns a transducer."
   ([f]
-   (fn [rf]
-     (fn ([] (rf))
-         ([result] (rf result))
-         ([result input] (rf result (f input)))
-         ([result input & inputs] (rf result (apply f input inputs))))))
+   (with-meta
+     (fn [rf]
+       (fn ([] (rf))
+           ([result] (rf result))
+           ([result input] (rf result (f input)))
+           ([result input & inputs] (rf result (apply f input inputs)))))
+     {:mino.fusion/stage {:kind :map :f f}}))
   ([f & colls]
    (if (= (count colls) 1)
      (map1 f (first colls))
@@ -265,13 +233,15 @@
   "Returns a lazy sequence of items in coll for which pred returns
    truthy. When called with no collection, returns a transducer."
   ([pred]
-   (fn [rf]
-     (fn ([] (rf))
-         ([result] (rf result))
-         ([result input]
-          (if (pred input)
-            (rf result input)
-            result)))))
+   (with-meta
+     (fn [rf]
+       (fn ([] (rf))
+           ([result] (rf result))
+           ([result input]
+            (if (pred input)
+              (rf result input)
+              result))))
+     {:mino.fusion/stage {:kind :filter :f pred}}))
   ([pred coll] (lazy-filter pred coll)))
 
 (defn take
@@ -288,7 +258,10 @@
               (if (> r 0)
                 (let [ret (rf result input)]
                   (if (= (dec r) 0)
-                    (reduced ret)
+                    ;; ensure-reduced: a downstream rf may already have
+                    ;; wrapped; wrapping again would smuggle a Reduced
+                    ;; past the loop's single unwrap.
+                    (if (reduced? ret) ret (reduced ret))
                     ret))
                 result)))))))
   ([n coll] (lazy-take n coll)))
@@ -348,19 +321,19 @@
 
 ;; --- Utility functions ---
 ;; some, every?, not-any?, not-every? are registered as C primitives
-;; (see src/prim/sequences.c). zipmap is also a C prim.
+;; (see src/prim/core/sequences.c). zipmap is also a C prim.
 
 ;; --- Higher-order functions ---
 
 ;; comp, partial, complement are registered as C primitives
-;; (see src/prim/sequences.c).
+;; (see src/prim/core/sequences.c).
 
 ;; --- Trivial compositions ---
 
-(defn second "Returns the second item in coll." [coll] (first (rest coll)))
+(defn second "Returns the second item in coll." [x] (first (rest x)))
 (defn ffirst
   "Returns the first item of the first item in coll."
-  [coll] (first (first coll)))
+  [x] (first (first x)))
 ;; inc and dec are C primitives.
 ;; zero? is a C primitive.
 (defn ==
@@ -378,19 +351,21 @@
    semantics: (abs Long/MIN_VALUE) returns Long/MIN_VALUE rather than
    overflowing, since the true absolute value is unrepresentable in a
    signed 64-bit int."
-  [x]
+  [a]
   (cond
-    (not (neg? x)) x
-    (int? x)       (unchecked-negate x)
-    :else          (- x)))
+    (neg? a) (if (int? a) (unchecked-negate a) (- a))
+    ;; -0.0 is not neg?; adding 0.0 normalizes it to positive zero
+    ;; and is the identity for every other non-negative float.
+    (and (float? a) (zero? a)) (+ a 0.0)
+    :else a))
 (defn max "Returns the greatest of the given values."
-                  ([a] a)
-                  ([a b] (if (NaN? a) a (if (NaN? b) b (if (> a b) a b))))
-                  ([a b & more] (reduce max (max a b) more)))
+                  ([x] x)
+                  ([x y] (if (NaN? x) x (if (NaN? y) y (if (> x y) x y))))
+                  ([x y & more] (reduce max (max x y) more)))
 (defn min "Returns the least of the given values."
-                  ([a] a)
-                  ([a b] (if (NaN? a) a (if (NaN? b) b (if (< a b) a b))))
-                  ([a b & more] (reduce min (min a b) more)))
+                  ([x] x)
+                  ([x y] (if (NaN? x) x (if (NaN? y) y (if (< x y) x y))))
+                  ([x y & more] (reduce min (min x y) more)))
 (defn min-key "Returns the x for which (k x) is least."
                   ([k x] x)
                   ([k x y] (if (< (k x) (k y)) x y))
@@ -442,26 +417,26 @@
 
 (defn select-keys
   "Returns a map containing only the entries whose keys are in ks."
-  [m ks]
+  [map keyseq]
   ;; Validate ks is a collection. A bare scalar like a single keyword
   ;; would otherwise silently produce {} because (reduce ... :a) sees
   ;; nothing.
-  (let [_ (seq ks)]
+  (let [_ (seq keyseq)]
     (reduce (fn [acc k]
-      (if (contains? m k)
-        (assoc acc k (get m k))
+      (if (contains? map k)
+        (assoc acc k (get map k))
         acc))
-      (with-meta {} (meta m)) ks)))
+      (with-meta {} (meta map)) keyseq)))
 
-;; zipmap is registered as a C primitive (see src/prim/sequences.c).
+;; zipmap is registered as a C primitive (see src/prim/core/sequences.c).
 
-;; frequencies is registered as a C primitive (see src/prim/sequences.c).
+;; frequencies is registered as a C primitive (see src/prim/core/sequences.c).
 
-;; group-by is registered as a C primitive (see src/prim/sequences.c).
+;; group-by is registered as a C primitive (see src/prim/core/sequences.c).
 
 ;; --- More higher-order ---
 
-;; juxt is registered as a C primitive (see src/prim/sequences.c).
+;; juxt is registered as a C primitive (see src/prim/core/sequences.c).
 
 (defn mapcat
   "Returns the result of applying concat to the result of mapping f
@@ -555,9 +530,11 @@
     `(lazy-seq nil)))
 
 (defn iterate
-  "Returns a lazy sequence of x, (f x), (f (f x)), and so on."
+  "Returns a lazy sequence of x, (f x), (f (f x)), and so on. f is
+   applied only when the tail is realized: element 0 is x itself, so
+   taking n elements calls f exactly (dec n) times."
   [f x]
-  (lazy-seq (cons x (iterate f (f x)))))
+  (cons x (lazy-seq (iterate f (f x)))))
 
 (defn iteration
   "Creates a seqable via repeated calls to step, a function of some
@@ -608,28 +585,28 @@
   ([f]   (lazy-seq (cons (f) (repeatedly f))))
   ([n f] (take n (repeatedly f))))
 
-(def interleave
+(def ^:private interleave2
+  (fn interleave2 [c1 c2]
+    (lazy-seq
+      (let [s1 (seq c1) s2 (seq c2)]
+        (when (and s1 s2)
+          (cons (first s1)
+                (cons (first s2)
+                      (interleave2 (rest s1)
+                                   (rest s2)))))))))
+
+(defn interleave
   "Returns a lazy sequence of the first item in each collection, then
    the second, and so on."
-  (let [interleave2
-        (fn interleave2 [c1 c2]
-          (lazy-seq
-            (let [s1 (seq c1) s2 (seq c2)]
-              (when (and s1 s2)
-                (cons (first s1)
-                      (cons (first s2)
-                            (interleave2 (rest s1)
-                                         (rest s2))))))))]
-    (fn
-      ([] ())
-      ([c1] (lazy-seq (seq c1)))
-      ([c1 c2] (interleave2 c1 c2))
-      ([c1 c2 & colls]
-       (lazy-seq
-         (let [ss (map seq (cons c1 (cons c2 colls)))]
-           (when (every? identity ss)
-             (concat (map first ss)
-                     (apply interleave (map rest ss))))))))))
+  ([] ())
+  ([c1] (lazy-seq (seq c1)))
+  ([c1 c2] (interleave2 c1 c2))
+  ([c1 c2 & colls]
+   (lazy-seq
+     (let [ss (map seq (cons c1 (cons c2 colls)))]
+       (when (every? identity ss)
+         (concat (map first ss)
+                 (apply interleave (map rest ss))))))))
 
 (defn interpose
   "Returns a lazy sequence of the items in coll separated by sep. When
@@ -677,30 +654,31 @@
                    xs seen)))]
      (step coll #{}))))
 
-(def partition
+(def ^:private part-impl
+  (fn part-impl [n step coll]
+    (lazy-seq
+      (when-let [s (seq coll)]
+        (let [p (doall (take n s))]
+          (when (= n (count p))
+            (cons p (part-impl n step (drop step s)))))))))
+
+(def ^:private part-pad-impl
+  (fn part-pad-impl [n step pad coll]
+    (lazy-seq
+      (when-let [s (seq coll)]
+        (let [p (doall (take n s))]
+          (if (= n (count p))
+            (cons p (part-pad-impl n step pad (drop step s)))
+            (list (take n (concat p pad)))))))))
+
+(defn partition
   "Returns a lazy sequence of lists of n items each, at offsets step
    apart. With pad, the final partition is filled from pad to reach
    n; if pad is shorter than needed, returns a partition with fewer
    than n items."
-  (let [part-impl
-        (fn part-impl [n step coll]
-          (lazy-seq
-            (when-let [s (seq coll)]
-              (let [p (doall (take n s))]
-                (when (= n (count p))
-                  (cons p (part-impl n step (drop step s))))))))
-        part-pad-impl
-        (fn part-pad-impl [n step pad coll]
-          (lazy-seq
-            (when-let [s (seq coll)]
-              (let [p (doall (take n s))]
-                (if (= n (count p))
-                  (cons p (part-pad-impl n step pad (drop step s)))
-                  (list (take n (concat p pad))))))))]
-    (fn
-      ([n coll]            (part-impl n n coll))
-      ([n step coll]       (part-impl n step coll))
-      ([n step pad coll]   (part-pad-impl n step pad coll)))))
+  ([n coll]          (part-impl n n coll))
+  ([n step coll]     (part-impl n step coll))
+  ([n step pad coll] (part-pad-impl n step pad coll)))
 
 (defn partition-by
   "Splits coll into lazy sequences of consecutive items with the same
@@ -745,9 +723,9 @@
 
 (defn integer?
   "Returns true if x is an integer (long or bigint)."
-  [x] (if (mino-installed? :bignum)
-        (or (int? x) (bigint? x))
-        (int? x)))
+  [n] (if (mino-installed? :bignum)
+        (or (int? n) (bigint? n))
+        (int? n)))
 ;; pos-int? / neg-int? / nat-int? specifically test the long-sized
 ;; int tier per Clojure's contract: `(neg-int? -1N)` returns false on
 ;; the JVM because clojure.core/neg-int? composes int? (Long-only),
@@ -783,26 +761,29 @@
   "Returns true if x is a collection."
   [x] (or (seq? x) (vector? x) (map? x) (set? x) (= :queue (type x))))
 ;; some? is a C primitive.
-;; list? is registered as a C primitive (see src/prim/reflection.c)
+;; list? is registered as a C primitive (see src/prim/core/reflection.c)
 ;; that distinguishes MINO_CONS / MINO_EMPTY_LIST from
 ;; MINO_CHUNKED_CONS, matching Clojure's narrower contract: sequences
 ;; produced by `seq` on other collections are seqs but not lists.
 ;; atom? is defined as a C primitive; no mino-level fallback needed.
-;; not-any? / not-every? are C primitives (see src/prim/sequences.c).
-;; distinct? is registered as a C primitive (see src/prim/sequences.c).
-(def array-map    "Creates a hash-map." hash-map)
+;; not-any? / not-every? are C primitives (see src/prim/core/sequences.c).
+;; distinct? is registered as a C primitive (see src/prim/core/sequences.c).
+;; Alias of the hash-map prim: :arglists ride def metadata because the
+;; value is a var, not a fn form defn could derive them from.
+(def ^{:arglists '([] [& keyvals])} array-map
+  "Creates a hash-map." hash-map)
 (defn sorted?
   "Returns true if x is a sorted collection."
-  [x]
-  (let [t (type x)] (or (= t :sorted-map) (= t :sorted-set))))
+  [coll]
+  (let [t (type coll)] (or (= t :sorted-map) (= t :sorted-set))))
 (defn associative?
   "Returns true if x supports assoc (maps and vectors)."
-  [x]
-  (let [t (type x)]
+  [coll]
+  (let [t (type coll)]
     (or (= t :map) (= t :vector) (= t :sorted-map) (= t :map-entry))))
 (defn reversible?
   "Returns true if x supports rseq (vectors and sorted collections)."
-  [x] (let [t (type x)]
+  [coll] (let [t (type coll)]
         (or (= t :vector) (= t :sorted-map) (= t :sorted-set)
             (= t :map-entry))))
 (defn any? "Returns true for any argument." [x] true)
@@ -820,43 +801,22 @@
           (instance? :boolean-array x)))
 (defn indexed?
   "Returns true if x supports nth in constant time (vectors)."
-  [x] (vector? x))
+  [coll] (vector? coll))
 
 ;; --- Delay (lazy thunk) ---
 
 (defn delay?
   "Returns true if x is a delay."
-  [x] (and (map? x) (contains? x :delay/fn)))
+  [x] (= :delay (type x)))
 (defmacro delay
   "Creates a delay that evaluates body on first deref. The body runs
   at most once: a failure is recorded and rethrown on every later
   force."
   [& body]
-  `(let [state# (atom {:status :pending})]
-     {:delay/fn  (fn []
-                   (let [s# @state#]
-                     (cond
-                       (= (:status s#) :done)
-                       (:value s#)
-
-                       (= (:status s#) :failed)
-                       (throw (:error s#))
-
-                       :else
-                       (try
-                         (let [v# (do ~@body)]
-                           (reset! state# {:status :done :value v#})
-                           v#)
-                         (catch e#
-                           (reset! state# {:status :failed :error e#})
-                           (throw e#))))))
-      :delay/state state#}))
-(defn deref-delay
-  "Forces evaluation of a delay and returns its value."
-  [d] ((:delay/fn d)))
+  `(delay* (fn [] ~@body)))
 (defn force
   "Forces evaluation of a delay. If x is not a delay, returns x."
-  [x] (if (delay? x) (deref-delay x) x))
+  [x] (if (delay? x) (deref x) x))
 
 ;; --- Monitors (locking) ---
 
@@ -931,62 +891,45 @@
        (do ~@body)
        (finally
          (monitor-exit mon# owner#)))))
-;; Delay realisation is folded into the C prim_deref hot path
-;; (see src/prim/stateful.c): when (deref m) is called on a map
-;; carrying :delay/fn, the prim invokes the thunk directly. The
-;; Clojure-side `deref` shadow that used to wrap every call with
-;; a (delay? x) check is no longer needed; the 3-arg form
-;; (deref ref ms timeout-val) is supported natively by the same
-;; prim for blocking refs (futures/promises).
-;; Override C realized? to also handle delays and futures
-(let [c-realized? realized?]
-  (def realized?
-    "Returns true if a delay, lazy sequence, future, or promise has
-     been realized."
-    (fn [x]
-      (cond
-        (nil? x)    (throw "realized? requires a non-nil argument")
-        (delay? x)  (not= :pending (:status @(:delay/state x)))
-        (future? x) (future-done? x)
-        :else       (c-realized? x)))))
-
 ;; --- Sequence navigation ---
 
 (defn next
   "Returns a seq of the items after the first. Returns nil if no more
    items."
   [coll] (seq (rest coll)))
-(defn nfirst "Same as (next (first coll))." [coll] (next (first coll)))
-(defn fnext "Same as (first (next coll))." [coll] (first (next coll)))
-(defn nnext "Same as (next (next coll))." [coll] (next (next coll)))
+(defn nfirst "Same as (next (first coll))." [x] (next (first x)))
+(defn fnext "Same as (first (next coll))." [x] (first (next x)))
+(defn nnext "Same as (next (next coll))." [x] (next (next x)))
 
 ;; --- Map entry accessors ---
 
 (defn key
   "Returns the key of a map entry. Throws on values that are not
    map entries (a literal 2-vector, for instance)."
-  [entry]
-  (if (= :map-entry (type entry))
-    (first entry)
-    (throw (str "key: expected a map entry, got " (type entry)))))
+  [e]
+  (if (= :map-entry (type e))
+    (first e)
+    (throw (str "key: expected a map entry, got " (type e)))))
 (defn val
   "Returns the value of a map entry. Throws on values that are not
    map entries (a literal 2-vector, for instance)."
-  [entry]
-  (if (= :map-entry (type entry))
-    (second entry)
-    (throw (str "val: expected a map entry, got " (type entry)))))
+  [e]
+  (if (= :map-entry (type e))
+    (second e)
+    (throw (str "val: expected a map entry, got " (type e)))))
 
 (defn counted?
-  "Returns true if (count x) is a constant-time operation. Per
-   Clojure this is the Counted protocol -- vectors, maps, sets, and
-   sorted variants. Strings are not Counted on the JVM (their count
-   walks java.lang.CharSequence)."
-  [x]
-  (let [t (type x)]
+  "Returns true if (count x) is a constant-time operation: vectors,
+   maps, sets, and their sorted variants. The empty list also counts
+   in constant time. Cons lists and lazy seqs report false because
+   their count walks the sequence; strings report false per canon
+   (their count walks the character data)."
+  [coll]
+  (let [t (type coll)]
     (or (= t :vector) (= t :map) (= t :set)
         (= t :sorted-map) (= t :sorted-set) (= t :map-entry)
-        (= t :queue))))
+        (= t :queue)
+        (and (= t :list) (empty? coll)))))
 
 (defn bounded-count
   "Returns the count of coll, but stops counting at n."
@@ -1003,8 +946,10 @@
 (defn remove
   "Returns a lazy sequence of items in coll for which pred returns
    falsy. When called with no collection, returns a transducer."
-  ([pred] (filter (complement pred)))
-  ([pred coll] (filter (complement pred) coll)))
+  ([pred]
+   (with-meta (filter (complement pred))
+     {:mino.fusion/stage {:kind :remove :f pred}}))
+  ([pred coll] (lazy-remove pred coll)))
 (defn vec
   "Converts coll into a vector. Coll must be nil, a sequential
    collection, a string, a map, a set, or a host array. Booleans,
@@ -1067,8 +1012,8 @@
 
 (defn run!
   "Applies f to each item in coll for side effects. Returns nil."
-  [f coll]
-  (let [go (fn go [s] (when (seq s) (f (first s)) (go (rest s))))]
+  [proc coll]
+  (let [go (fn go [s] (when (seq s) (proc (first s)) (go (rest s))))]
     (go coll)
     nil))
 
@@ -1122,12 +1067,12 @@
    to each other (mutual recursion) — every name is placeholder-
    bound before any fn body is evaluated, so each fn's closure
    captures the shared scope."
-  [bindings & body]
+  [fnspecs & body]
   (let [pairs (vec (mapcat
                      (fn [b]
                        [(first b)
                         (apply list 'fn (first b) (rest b))])
-                     bindings))]
+                     fnspecs))]
     `(letfn* ~pairs ~@body)))
 
 (defmacro set!
@@ -1233,24 +1178,25 @@
   "Returns a sorted sequence of the items in coll, ordered by (keyfn item)."
   ([keyfn coll]
    (sort (fn [a b] (compare (keyfn a) (keyfn b))) coll))
-  ([keyfn cmp coll]
-   (sort (fn [a b] (cmp (keyfn a) (keyfn b))) coll)))
+  ([keyfn comp coll]
+   (sort (fn [a b] (comp (keyfn a) (keyfn b))) coll)))
 
 ;; --- Collection utilities ---
 
-(def get-in
+(def ^:private get-in-step
+  (fn get-in-step [m ks not-found sentinel]
+    (if ks
+      (let [v (get m (first ks) sentinel)]
+        (if (= v sentinel)
+          not-found
+          (get-in-step v (next ks) not-found sentinel)))
+      m)))
+
+(defn get-in
   "Returns the value in a nested associative structure at the given
    key path."
-  (let [step (fn step [m ks nf sentinel]
-               (if ks
-                 (let [v (get m (first ks) sentinel)]
-                   (if (= v sentinel)
-                     nf
-                     (step v (next ks) nf sentinel)))
-                 m))]
-    (fn
-      ([m ks]     (reduce get m ks))
-      ([m ks nf]  (step m (seq ks) nf (gensym))))))
+  ([m ks] (reduce get m ks))
+  ([m ks not-found] (get-in-step m (seq ks) not-found (gensym))))
 
 (defn assoc-in
   "Associates a value in a nested associative structure at the given
@@ -1270,13 +1216,13 @@
       (assoc m k (apply update-in (get m k) (rest ks) f args))
       (assoc m k (apply f (get m k) args)))))
 
-;; merge-with is registered as a C primitive (see src/prim/sequences.c).
+;; merge-with is registered as a C primitive (see src/prim/core/sequences.c).
 
 (defn reduce-kv
   "Reduces a map with f taking accumulator, key, and value."
-  [f init m]
+  [f init coll]
   (reduce (fn [acc kv] (f acc (first kv) (second kv)))
-          init (seq m)))
+          init (seq coll)))
 
 (defn update-vals "Returns a map with f applied to each value." [m f]
   (reduce-kv (fn [acc k v] (assoc acc k (f v))) {} m))
@@ -1286,20 +1232,25 @@
 
 (defn replace
   "Returns a collection with items in coll replaced by entries in
-   smap."
-  [smap coll]
-  (let [f (fn [x] (if-let [e (find smap x)] (val e) x))]
-    (if (vector? coll)
-      (with-meta (mapv f coll) (meta coll))
-      (map f coll))))
+   smap. When called with no collection, returns a transducer."
+  ([smap]
+   (map (fn [x] (if-let [e (find smap x)] (val e) x))))
+  ([smap coll]
+   (let [f (fn [x] (if-let [e (find smap x)] (val e) x))]
+     (if (vector? coll)
+       (with-meta (mapv f coll) (meta coll))
+       (map f coll)))))
 
 ;; str-replace is now a C primitive in prim/string.c
 
 ;; --- Bitwise compositions ---
 
 (defn bit-and-not
-  "Returns the bitwise AND of x and the complement of y."
-  [x y] (bit-and x (bit-not y)))
+  "Returns the bitwise AND of x and the complement of each remaining
+   argument, folded left to right."
+  ([x] x)
+  ([x y] (bit-and x (bit-not y)))
+  ([x y & more] (reduce bit-and-not (bit-and-not x y) more)))
 (defn bit-test
   "Returns true if bit n of x is set."
   [x n] (not= 0 (bit-and x (bit-shift-left 1 n))))
@@ -1326,32 +1277,18 @@
   "Returns a lazy sequence of non-nil results of (f item). When called
    with no collection, returns a transducer."
   ([f]
-   (fn [rf]
-     (fn ([] (rf))
-         ([result] (rf result))
-         ([result input]
-          (let [v (f input)]
-            (if (nil? v)
-              result
-              (rf result v)))))))
+   (with-meta
+     (fn [rf]
+       (fn ([] (rf))
+           ([result] (rf result))
+           ([result input]
+            (let [v (f input)]
+              (if (nil? v)
+                result
+                (rf result v))))))
+     {:mino.fusion/stage {:kind :keep :f f}}))
   ([f coll]
-   (lazy-seq
-     (let [s (seq coll)]
-       (when s
-         (if (chunked-seq? s)
-           (let [c (chunk-first s)
-                 size (count c)
-                 b (chunk-buffer size)]
-             (loop [i 0]
-               (when (< i size)
-                 (let [v (f (nth c i))]
-                   (when-not (nil? v) (chunk-append b v)))
-                 (recur (inc i))))
-             (chunk-cons (chunk b) (keep f (chunk-rest s))))
-           (let [v (f (first s))]
-             (if (nil? v)
-               (keep f (rest s))
-               (cons v (keep f (rest s)))))))))))
+   (lazy-keep f coll)))
 
 (defn keep-indexed
   "Returns a lazy sequence of non-nil results of (f index item).
@@ -1392,29 +1329,16 @@
   "Returns a lazy sequence of (f index item) for each item in coll.
    When called with no collection, returns a transducer."
   ([f]
-   (fn [rf]
-     (let [i (volatile! -1)]
-       (fn ([] (rf))
-           ([result] (rf result))
-           ([result input]
-            (rf result (f (vswap! i inc) input)))))))
+   (with-meta
+     (fn [rf]
+       (let [i (volatile! -1)]
+         (fn ([] (rf))
+             ([result] (rf result))
+             ([result input]
+              (rf result (f (vswap! i inc) input))))))
+     {:mino.fusion/stage {:kind :map-indexed :f f}}))
   ([f coll]
-   (let [step (fn step [i s]
-                (lazy-seq
-                  (when-let [s (seq s)]
-                    (if (chunked-seq? s)
-                      (let [c (chunk-first s)
-                            size (count c)
-                            b (chunk-buffer size)]
-                        (loop [j 0]
-                          (when (< j size)
-                            (chunk-append b (f (+ i j) (nth c j)))
-                            (recur (inc j))))
-                        (chunk-cons (chunk b)
-                                    (step (+ i size) (chunk-rest s))))
-                      (cons (f i (first s))
-                            (step (inc i) (rest s)))))))]
-     (step 0 coll))))
+   (lazy-map-indexed f coll)))
 
 (defn partition-all
   "Like partition, but includes a final partial group if items remain.
@@ -1448,19 +1372,21 @@
      (pa-impl n step coll))))
 
 (defn reductions
-  "Returns a lazy sequence of the intermediate values of a reduction."
+  "Returns a lazy sequence of the intermediate values of a reduction.
+   A reduced value from f (or as init) short-circuits: its dereferenced
+   value becomes the final element."
   ([f coll]
    (lazy-seq
      (if-let [s (seq coll)]
        (reductions f (first s) (rest s))
        (list (f)))))
   ([f init coll]
-   (let [step (fn step [acc s]
-                (lazy-seq
-                  (when (seq s)
-                    (let [v (f acc (first s))]
-                      (cons v (step v (rest s)))))))]
-     (cons init (step init coll)))))
+   (if (reduced? init)
+     (list @init)
+     (cons init
+           (lazy-seq
+             (when-let [s (seq coll)]
+               (reductions f (f init (first s)) (rest s))))))))
 
 (defn dedupe
   "Returns a lazy sequence removing consecutive duplicates. When
@@ -1564,16 +1490,16 @@
 (defn fnil
   "Returns a function like f, but replaces nil arguments with the
    given defaults."
-  ([f d1]
-   (fn [x & args]
-     (apply f (if (nil? x) d1 x) args)))
-  ([f d1 d2]
-   (fn [x y & args]
-     (apply f (if (nil? x) d1 x) (if (nil? y) d2 y) args)))
-  ([f d1 d2 d3]
-   (fn [x y z & args]
-     (apply f (if (nil? x) d1 x) (if (nil? y) d2 y)
-            (if (nil? z) d3 z) args))))
+  ([f x]
+   (fn [a & args]
+     (apply f (if (nil? a) x a) args)))
+  ([f x y]
+   (fn [a b & args]
+     (apply f (if (nil? a) x a) (if (nil? b) y b) args)))
+  ([f x y z]
+   (fn [a b c & args]
+     (apply f (if (nil? a) x a) (if (nil? b) y b)
+            (if (nil? c) z c) args))))
 
 (defn memoize
   "Returns a memoized version of f that caches return values by
@@ -1601,11 +1527,11 @@
 (defmacro as->
   "Binds expr to sym, then threads it through each form where sym can
    appear anywhere."
-  [expr sym & forms]
+  [expr name & forms]
   (if (= 0 (count forms))
     expr
-    `(let [~sym ~expr]
-       (as-> ~(first forms) ~sym ~@(rest forms)))))
+    `(let [~name ~expr]
+       (as-> ~(first forms) ~name ~@(rest forms)))))
 
 (defmacro cond->
   "Thread-first through forms whose tests are truthy."
@@ -1714,35 +1640,35 @@
   just the inner one. We encode that with a shared 'stop' atom that
   the outer driver inspects each iteration. Without it, an outer
   infinite seq paired with a later :while would never terminate."
-  [bindings & body]
+  [seq-exprs & body]
   (let [stop-sym (gensym "doseq-stop_")]
-    (letfn [(emit [bindings]
+    (letfn [(emit [seq-exprs]
               (cond
-                (zero? (count bindings))
+                (zero? (count seq-exprs))
                 `(do ~@body nil)
 
-                (= :let (first bindings))
-                (let [bs            (first (rest bindings))
-                      rest-bindings (into [] (drop 2 bindings))]
+                (= :let (first seq-exprs))
+                (let [bs            (first (rest seq-exprs))
+                      rest-bindings (into [] (drop 2 seq-exprs))]
                   `(let ~bs ~(emit rest-bindings)))
 
-                (= :when (first bindings))
-                (let [pred          (first (rest bindings))
-                      rest-bindings (into [] (drop 2 bindings))]
+                (= :when (first seq-exprs))
+                (let [pred          (first (rest seq-exprs))
+                      rest-bindings (into [] (drop 2 seq-exprs))]
                   `(when ~pred ~(emit rest-bindings)))
 
-                (= :while (first bindings))
-                (let [pred          (first (rest bindings))
-                      rest-bindings (into [] (drop 2 bindings))]
+                (= :while (first seq-exprs))
+                (let [pred          (first (rest seq-exprs))
+                      rest-bindings (into [] (drop 2 seq-exprs))]
                   `(if ~pred
                      ~(emit rest-bindings)
                      (do (reset! ~stop-sym true) nil)))
 
                 ;; Plain binding sym/coll. Drive a recursive loop.
                 :else
-                (let [sym           (first bindings)
-                      coll          (first (rest bindings))
-                      rest-bindings (into [] (drop 2 bindings))
+                (let [sym           (first seq-exprs)
+                      coll          (first (rest seq-exprs))
+                      rest-bindings (into [] (drop 2 seq-exprs))
                       gs            (gensym)
                       go            (gensym)]
                   ;; Use a named fn so the body can self-reference;
@@ -1757,7 +1683,7 @@
                                    (~go (next ~gs)))))]
                      (~go (seq ~coll))))))]
       `(let [~stop-sym (atom false)]
-         ~(emit bindings)
+         ~(emit seq-exprs)
          nil))))
 
 ;; --- Shuffle (Fisher-Yates) ---
@@ -1793,8 +1719,8 @@
 (defn sequential?
   "Returns true if x is a sequential collection (list, vector,
    lazy-seq, or queue)."
-  [x]
-  (or (cons? x) (vector? x) (seq? x) (= :queue (type x))))
+  [coll]
+  (or (cons? coll) (vector? coll) (seq? coll) (= :queue (type coll))))
 
 (defn flatten
   "Returns a lazy sequence of the non-sequential items from a nested
@@ -1870,18 +1796,32 @@
 (def ^:private prim-re-find    re-find)
 (def ^:private prim-re-matches re-matches)
 
+(defn- re-require-pattern
+  "Guard for the re match fns: the pattern argument must be a compiled
+   regex, so metachar intent stays explicit. Strings are rejected;
+   build a pattern with re-pattern or a regex literal."
+  [fname re]
+  (when-not (regex? re)
+    (throw {:mino/kind :eval/type :mino/code "MTY001"
+            :mino/message (str fname ": pattern must be a compiled regex;"
+                               " build one with re-pattern")
+            :mino/data {:got re}})))
+
 (defn re-seq
   "Returns a lazy sequence of all matches of pattern in string s. Each
    match is a string when the pattern has no groups, or a vector
    [whole g1 g2 ...] when it does."
-  [pattern s]
+  [re s]
+  (re-require-pattern "re-seq" re)
   (letfn [(step [pos]
             (lazy-seq
-              (when-let [[m start end] (re-find-from pattern s pos)]
+              (when-let [[m start end] (re-find-from re s pos)]
                 ;; A zero-width match advances the scan one byte so
                 ;; the walk terminates.
                 (cons m (step (if (= start end) (inc end) end))))))]
-    (step 0)))
+    ;; Canon finds the first match eagerly and returns nil when the
+    ;; pattern never matches; only the tail stays lazy.
+    (seq (step 0))))
 
 ;; re-matcher: a stateful matcher value backed by an atom holding
 ;; {:pattern :text :pos :last}. Each (re-find m) advances :pos past the
@@ -1890,8 +1830,9 @@
   "Returns a matcher value for repeated find/match operations on text
    using pattern. The resulting value is consumed by re-find, re-groups
    and so on."
-  [pattern text]
-  (atom {::matcher? true :pattern pattern :text text :pos 0 :last nil}))
+  [re s]
+  (re-require-pattern "re-matcher" re)
+  (atom {::matcher? true :pattern re :text s :pos 0 :last nil}))
 
 (defn ^:private matcher? [m]
   (and (atom? m)
@@ -1913,13 +1854,16 @@
   "Find the first match. (re-find pattern text) returns a string (no
    groups) or [whole g1 g2 ...] (groups). (re-find m) advances a matcher."
   ([m]            (re-find-on-matcher m))
-  ([pattern text] (prim-re-find pattern text)))
+  ([re s]
+   (re-require-pattern "re-find" re)
+   (prim-re-find re s)))
 
 (defn re-matches
   "Like re-find but anchored to the whole string. Returns a string
    (no groups) or [whole g1 g2 ...] (groups), or nil."
-  [pattern text]
-  (prim-re-matches pattern text))
+  [re s]
+  (re-require-pattern "re-matches" re)
+  (prim-re-matches re s))
 
 (defn re-groups
   "Returns the most recent match groups for matcher m: a vector
@@ -1969,7 +1913,7 @@
 (defmacro case
   "Dispatches on the value of expr. Matches constants in pairs, with
    an optional default."
-  [expr & clauses]
+  [e & clauses]
   (let [gexpr   (gensym)
         quote-c (fn [c]
                   (cond
@@ -1993,7 +1937,7 @@
                     (list 'if (match1 gexpr (first cls))
                           (first (rest cls))
                           (build (rest (rest cls))))))]
-    `(let [~gexpr ~expr]
+    `(let [~gexpr ~e]
        ~(build clauses))))
 
 (defmacro for
@@ -2101,16 +2045,16 @@
   form additionally attaches a cause; ex-cause walks the chain via
   metadata so the visible map structure stays the same as the
   2-arity form. The data argument must be a map (or nil)."
-  ([msg data]
-   (when-not (or (nil? data) (map? data))
+  ([msg map]
+   (when-not (or (nil? map) (map? map))
      (throw {:mino/kind :type :mino/code "MTY001"
              :mino/message "ex-info: data must be a map"}))
-   {:message msg :data data})
-  ([msg data cause]
-   (when-not (or (nil? data) (map? data))
+   {:message msg :data map})
+  ([msg map cause]
+   (when-not (or (nil? map) (map? map))
      (throw {:mino/kind :type :mino/code "MTY001"
              :mino/message "ex-info: data must be a map"}))
-   (with-meta {:message msg :data data} {:cause cause})))
+   (with-meta {:message msg :data map} {:cause cause})))
 
 (defn ex-data
   "Extract the data map from an exception. Handles diagnostic maps
@@ -2138,7 +2082,7 @@
 ;; agent / send / send-off / await / agent-error / restart-agent /
 ;; set-error-handler! / error-handler / set-error-mode! / error-mode /
 ;; agent? / await-for / shutdown-agents / release-pending-sends are
-;; provided by mino_install_agent (src/prim/agent.c). mino's MVP runs
+;; provided by mino_install_agent (src/prim/agent/agent.c). mino's MVP runs
 ;; sends synchronously on the calling thread, so await is a no-op.
 ;; See /documentation/stm/ for the full deviation list.
 
@@ -2235,21 +2179,21 @@
    one. When host threads are not granted (mino-thread-limit <= 1),
    falls back to (seq s) so callers don't need a conditional."
   ([s] (seque 128 s))
-  ([n s]
-   (when-not (and (int? n) (pos? n))
+  ([n-or-q s]
+   (when-not (and (int? n-or-q) (pos? n-or-q))
      (throw (ex-info "seque: buffer size must be a positive integer"
-                     {:got n})))
+                     {:got n-or-q})))
    (if (<= (mino-thread-limit) 1)
      (seq s)
      (let [step (fn step [fut s]
                   (lazy-seq
                     (let [chunk (deref fut)]
                       (when (seq chunk)
-                        (let [more (drop n s)
+                        (let [more (drop n-or-q s)
                               nfut (future-call
-                                     (fn [] (doall (take n more))))]
+                                     (fn [] (doall (take n-or-q more))))]
                           (concat chunk (step nfut more)))))))]
-       (step (future-call (fn [] (doall (take n s)))) s)))))
+       (step (future-call (fn [] (doall (take n-or-q s)))) s)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Protocols: polymorphic dispatch on the type of the first argument.
@@ -2294,14 +2238,14 @@
 
 (defmacro defprotocol
   "Defines a protocol with the given method signatures."
-  [proto-name & methods]
-  (let [pname (name proto-name)]
+  [name & opts+sigs]
+  (let [pname (clojure.core/name name)]
     (letfn [(method-meta [m]
               (let [mname (first m)
                     sigs  (vec (take-while vector? (rest m)))]
                 {:mname mname
                  :sigs sigs
-                 :dsym (symbol (str pname "--" (name mname)))}))
+                 :dsym (symbol (str pname "--" (clojure.core/name mname)))}))
             (method-defn [mi]
               ;; Single-signature methods keep the exact single-arity
               ;; shape the BC compiler's protocol-IC recognizer keys
@@ -2322,7 +2266,7 @@
                                            (str (:mname mi))
                                            params)))
                             (:sigs mi)))))]
-      (let [methods     (remove string? methods)
+      (let [methods     (remove string? opts+sigs)
             methods     (loop [ms methods result []]
                           (if (or (nil? ms) (empty? ms))
                             result
@@ -2340,7 +2284,7 @@
                                         [(keyword (str (:mname mi)))
                                          (:dsym mi)])
                                       method-info))
-            proto-def   (list 'def proto-name
+            proto-def   (list 'def name
                               {:name pname :methods proto-map})
             all-forms   (concat atom-defs fn-defs
                                 (list proto-def))]
@@ -2348,7 +2292,7 @@
 
 (defmacro extend-type
   "Extends a protocol with method implementations for the given type."
-  [type-kw & specs]
+  [t & specs]
   (let [groups (loop [remaining specs
                       result []
                       cur-proto nil
@@ -2388,7 +2332,7 @@
                                     " clauses, got: " (pr-str (first tail)))))
                       (let [dsym (symbol pns (str pname "--" (name mname)))
                             fn-form (apply list 'fn tail)]
-                        (list 'swap! dsym 'assoc type-kw fn-form))))
+                        (list 'swap! dsym 'assoc t fn-form))))
                    methods)))
               groups)]
     (apply list 'do (vec swaps))))
@@ -2442,21 +2386,27 @@
 
 (defmacro extend-protocol
   "Extends a protocol with implementations for multiple types."
-  [proto & specs]
+  [p & specs]
   (let [groups (partition-protocol-specs specs)
         forms (into [] (map (fn [group]
                               (apply list 'extend-type
-                                     (first group) proto
+                                     (first group) p
                                      (rest group)))
                             groups))]
     (apply list 'do forms)))
 
 (defn satisfies?
   "Returns true if x's type has implementations for all methods of
-   proto."
-  [proto x]
+   proto. proto must be a protocol; anything else throws."
+  [protocol x]
+  (when-not (and (map? protocol)
+                 (string? (:name protocol))
+                 (map? (:methods protocol)))
+    (throw {:mino/kind :eval/type :mino/code "MTY001"
+            :mino/message "satisfies?: first argument must be a protocol"
+            :mino/data {:got protocol}}))
   (let [t (type x)
-        methods (vals (:methods proto))]
+        methods (vals (:methods protocol))]
     (every? (fn [dispatch-atom]
               (let [dm @dispatch-atom]
                 (or (contains? dm t)
@@ -2468,8 +2418,8 @@
    t without generating wrapper code: (extend T P {:m (fn [x] ...)}).
    The fn-map keys are keywordized method names; values are the
    implementation fns."
-  [t & proto+mmaps]
-  (let [tk (if (nil? t) :nil t)]
+  [atype & proto+mmaps]
+  (let [tk (if (nil? atype) :nil atype)]
     (doseq [[proto mmap] (partition 2 proto+mmaps)]
       (doseq [[mkw f] mmap]
         (let [a (get (:methods proto) mkw)]
@@ -2483,17 +2433,17 @@
 (defn extends?
   "Returns true if type t has been extended to proto (an explicit
    registration for at least one method; :default does not count)."
-  [proto t]
-  (boolean (some (fn [dispatch-atom] (contains? @dispatch-atom t))
-                 (vals (:methods proto)))))
+  [protocol atype]
+  (boolean (some (fn [dispatch-atom] (contains? @dispatch-atom atype))
+                 (vals (:methods protocol)))))
 
 (defn extenders
   "Returns a seq of the types explicitly extended to proto, or nil
    when there are none."
-  [proto]
+  [protocol]
   (seq (distinct (remove (fn [t] (= t :default))
                          (mapcat (fn [a] (keys @a))
-                                 (vals (:methods proto)))))))
+                                 (vals (:methods protocol)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Core protocols: extension points wired into reduce / reduce-kv /
@@ -2555,8 +2505,16 @@
 
 (extend-type :default Navigable (nav [_coll _k v] v))
 
+;; Unique marker for the no-init reduce path. A custom coll-reduce is
+;; 3-arg (coll f init), so the 2-arg reduce emulates "first element is
+;; the init" by handing the impl this sentinel and a wrapper f that
+;; adopts the first element rather than combining it. The sentinel is
+;; module-private and never escapes: the empty coll is handled before
+;; the impl runs, so no reduction ever returns it.
+(def ^:private reduce-no-init-sentinel (atom :reduce-no-init))
+
 (defn reduce "Reduces coll using f. With 2 args, uses the first element as init.
-  With 3 args, uses init explicitly. Consults CollReduce: a user
+  With 3 args, uses val explicitly. Consults CollReduce: a user
   type or :default override on coll-reduce takes precedence over the
   built-in seq-driven reduction."
     ([f coll]
@@ -2564,36 +2522,42 @@
      ;; no user override exists, hand the coll through to the C
      ;; primitive as-is -- it has its own 2-arg fast paths (int
      ;; range, persistent vec/map/set) that rely on coll being
-     ;; the unforced source value. Only seq-decompose when a
+     ;; the unforced source value. Only route through the impl when a
      ;; user-extended CollReduce impl is taking over.
      (let [table @CollReduce--coll-reduce
            impl  (or (get table (type coll))
                      (get table :default))]
        (if impl
-         (let [s (seq coll)]
-           (if (nil? s)
-             (f)
-             (impl (rest s) f (first s))))
+         ;; Dispatch to the impl over the ORIGINAL coll (like the 3-arg
+         ;; arm), reproducing the no-init contract: empty -> (f); a
+         ;; non-empty coll uses its first element as init and reduces
+         ;; the rest through the coll's own coll-reduce.
+         (if (nil? (seq coll))
+           (f)
+           (let [sentinel reduce-no-init-sentinel]
+             (impl coll
+                   (fn [acc x] (if (identical? acc sentinel) x (f acc x)))
+                   sentinel)))
          (internal-reduce f coll))))
-    ([f init coll]
-     (let [table @CollReduce--coll-reduce
-           impl  (or (get table (type coll))
-                     (get table :default))]
-       (if impl
-         (impl coll f init)
-         (internal-reduce f init coll)))))
+     ([f val coll]
+      (let [table @CollReduce--coll-reduce
+            impl  (or (get table (type coll))
+                      (get table :default))]
+        (if impl
+          (impl coll f val)
+          (internal-reduce f val coll)))))
 
 (defn reduce-kv
   "Reduces a map (or any associative source) with f taking
    accumulator, key, and value. Consults IKVReduce; falls back to
    walking the seq."
-  [f init m]
+  [f init coll]
     (let [table @IKVReduce--kv-reduce
-          impl  (or (get table (type m))
+          impl  (or (get table (type coll))
                     (get table :default))]
       (if impl
-        (impl m f init)
-        (internal-reduce-kv f init m))))
+        (impl coll f init)
+        (internal-reduce-kv f init coll))))
 
 ) ;; end (when (mino-installed? :protocols) ...)
 
@@ -2660,7 +2624,7 @@
 
 (defn- valid-tag? [x]
   ;; A derive tag must be a Named (keyword/symbol) or a record/host-type
-  ;; value. mino, like babashka and cljs, does not require namespacing.
+  ;; value. mino does not require namespacing.
   (or (keyword? x) (symbol? x) (record-type? x)))
 
 (defn- valid-hierarchy? [h]
@@ -2672,51 +2636,51 @@
 (defn derive
   "Establishes a parent/child relationship between child and parent
    in a hierarchy."
-  ([child parent]
-   (when-not (valid-tag? child)
+  ([tag parent]
+   (when-not (valid-tag? tag)
      (throw (ex-info "derive: tag must be a keyword, symbol, or type"
-                     {:child child :parent parent})))
+                     {:child tag :parent parent})))
    (when-not (valid-tag? parent)
      (throw (ex-info "derive: parent must be a keyword, symbol, or type"
-                     {:child child :parent parent})))
-   (swap! global-hierarchy derive child parent)
+                     {:child tag :parent parent})))
+   (swap! global-hierarchy derive tag parent)
    (swap! hierarchy-version inc)
    nil)
-  ([h child parent]
+  ([h tag parent]
    (when-not (valid-hierarchy? h)
      (throw (ex-info "derive: invalid hierarchy"
-                     {:h h :child child :parent parent})))
-   (when-not (valid-tag? child)
+                     {:h h :child tag :parent parent})))
+   (when-not (valid-tag? tag)
      (throw (ex-info "derive: tag must be a keyword, symbol, or type"
-                     {:child child :parent parent})))
+                     {:child tag :parent parent})))
    (when-not (valid-tag? parent)
      (throw (ex-info "derive: parent must be a keyword, symbol, or type"
-                     {:child child :parent parent})))
-   (when (= child parent)
+                     {:child tag :parent parent})))
+   (when (= tag parent)
      (throw (ex-info "Cannot derive tag from itself"
-                     {:child child :parent parent})))
-   (when (contains? (get (:ancestors h) parent #{}) child)
+                     {:child tag :parent parent})))
+   (when (contains? (get (:ancestors h) parent #{}) tag)
      (throw (ex-info "Cyclic derivation"
-                     {:child child :parent parent})))
-   (let [new-parents (update (:parents h) child
+                     {:child tag :parent parent})))
+   (let [new-parents (update (:parents h) tag
                              (fn [s] (conj (or s #{}) parent)))]
      (recompute-hierarchy (assoc h :parents new-parents)))))
 
 (defn underive
   "Removes a parent/child relationship between child and parent."
-  ([child parent]
-   (swap! global-hierarchy underive child parent)
+  ([tag parent]
+   (swap! global-hierarchy underive tag parent)
    (swap! hierarchy-version inc)
    nil)
-  ([h child parent]
+  ([h tag parent]
    (when-not (valid-hierarchy? h)
      (throw (ex-info "invalid hierarchy" {:h h})))
-   (let [cur (get (:parents h) child #{})]
+   (let [cur (get (:parents h) tag #{})]
      (if (contains? cur parent)
        (let [new-set (disj cur parent)
              new-parents (if (empty? new-set)
-                           (dissoc (:parents h) child)
-                           (assoc (:parents h) child new-set))]
+                           (dissoc (:parents h) tag)
+                           (assoc (:parents h) tag new-set))]
          (recompute-hierarchy (assoc h :parents new-parents)))
        h))))
 
@@ -2858,46 +2822,46 @@
 
 (defmacro defmethod
   "Defines a method for a multimethod."
-  [mm-name dispatch-val & fn-tail]
-  (list 'register-method mm-name dispatch-val
+  [multifn dispatch-val & fn-tail]
+  (list 'register-method multifn dispatch-val
         (apply list 'fn fn-tail)))
 
 (defn prefer-method
   "Prefers dispatch-val x over y in multimethod mm."
-  [mm x y]
-  (swap! (:prefer-table (meta mm))
-         update x (fn [s] (conj (or s #{}) y)))
-  (reset! (:dispatch-cache (meta mm)) {})
-  mm)
+  [multifn dispatch-val-x dispatch-val-y]
+  (swap! (:prefer-table (meta multifn))
+         update dispatch-val-x (fn [s] (conj (or s #{}) dispatch-val-y)))
+  (reset! (:dispatch-cache (meta multifn)) {})
+  multifn)
 
 (defn remove-method
   "Removes the method for dispatch-val from multimethod mm."
-  [mm dispatch-val]
-  (swap! (:method-table (meta mm)) dissoc dispatch-val)
-  (reset! (:dispatch-cache (meta mm)) {})
-  mm)
+  [multifn dispatch-val]
+  (swap! (:method-table (meta multifn)) dissoc dispatch-val)
+  (reset! (:dispatch-cache (meta multifn)) {})
+  multifn)
 
 (defn remove-all-methods
   "Removes all methods from multimethod mm."
-  [mm]
-  (reset! (:method-table (meta mm)) {})
-  (reset! (:dispatch-cache (meta mm)) {})
-  mm)
+  [multifn]
+  (reset! (:method-table (meta multifn)) {})
+  (reset! (:dispatch-cache (meta multifn)) {})
+  multifn)
 
 (defn methods
   "Returns the method table of multimethod mm."
-  [mm]
-  @(:method-table (meta mm)))
+  [multifn]
+  @(:method-table (meta multifn)))
 
 (defn get-method
   "Returns the method for dispatch-val, or nil."
-  [mm dispatch-val]
-  (get @(:method-table (meta mm)) dispatch-val))
+  [multifn dispatch-val]
+  (get @(:method-table (meta multifn)) dispatch-val))
 
 (defn prefers
   "Returns the prefer-table of multimethod mm."
-  [mm]
-  @(:prefer-table (meta mm)))
+  [multifn]
+  @(:prefer-table (meta multifn)))
 
 ;; ---------------------------------------------------------------------------
 ;; Extensible printer: print-method is a multimethod dispatched on (type x)
@@ -2923,13 +2887,13 @@
 ) ;; end (when (mino-installed? :multimethods) ...)
 
 (defmacro with-out-str
-  "Evaluates body with *out* bound to a fresh string-collecting atom,
+  "Evaluates body with *out* bound to a fresh growable output buffer,
   and returns the accumulated string."
   [& body]
-  `(let [a# (atom "")]
-     (binding [*out* a#]
+  `(let [b# (out-buffer)]
+     (binding [*out* b#]
        ~@body)
-     (deref a#)))
+     (out-buffer-str b#)))
 
 (defmacro with-in-str
   "Evaluates body with *in* bound to a string-cursor atom holding
@@ -2942,23 +2906,24 @@
 
 (defn print-str
   "Returns the print-string of args, space-separated, no trailing newline."
-  [& args]
-  (with-out-str (apply print args)))
+  [& xs]
+  (with-out-str (apply print xs)))
 
 (defn prn-str
   "Returns the readable-string of args followed by a newline."
-  [& args]
-  (with-out-str (apply prn args)))
+  [& xs]
+  (with-out-str (apply prn xs)))
 
 (defn println-str
   "Returns the print-string of args followed by a newline."
-  [& args]
-  (with-out-str (apply println args)))
+  [& xs]
+  (with-out-str (apply println xs)))
 
 (defn print-simple
   "Writes the plain text form of o (its str form, bypassing the
-   print-method dispatch) to w, a string-collecting atom like the one
-   *out* is bound to inside with-out-str. Returns nil."
+   print-method dispatch) to w, an output sink such as the buffer
+   *out* is bound to inside with-out-str or a string-collecting
+   atom. Returns nil."
   [o w]
   (binding [*out* w]
     (print (str o)))
@@ -2984,6 +2949,9 @@
    \return    "return"
    \delete    "delete"})
 
+;; with-open's close call is emitted unqualified (~'close) so it
+;; resolves in the consumer's namespace at runtime; the JVM macro
+;; avoids auto-qualification the same way with (.close ~name).
 (defmacro with-open
   "Binds resources, evaluates body, then closes each resource."
   [bindings & body]
@@ -2995,7 +2963,44 @@
       `(let [~name ~init]
          (try
            (with-open ~(into [] rest-bindings) ~@body)
-           (finally (close ~name)))))))
+           (finally (~'close ~name)))))))
+
+(defmacro with-temp-dir
+  "Binds name to a fresh private temp directory, evaluates body, and
+   removes the directory (and its contents) on every exit, including a
+   throwing one. An optional prefix string names the directory."
+  [bindings & body]
+  (let [name   (first bindings)
+        prefix (nth bindings 1 nil)]
+    `(let [~name (if ~prefix (mkdtemp ~prefix) (mkdtemp))]
+       (try
+         ~@body
+         (finally (rm-rf ~name))))))
+
+(defmacro with-temp-file
+  "Binds name to a fresh private temp file, evaluates body, and removes
+   the file on every exit, including a throwing one. An optional prefix
+   string names the file."
+  [bindings & body]
+  (let [name   (first bindings)
+        prefix (nth bindings 1 nil)]
+    `(let [~name (if ~prefix (mkstemp ~prefix) (mkstemp))]
+       (try
+         ~@body
+         (finally (rm-rf ~name))))))
+
+(defmacro with-file-lock
+  "Acquires an advisory lock on the lockfile, binds name to the lock
+   handle, evaluates body, and releases the lock on every exit, including
+   a throwing one. An optional opts map is passed to flock."
+  [bindings & body]
+  (let [name (first bindings)
+        lock (nth bindings 1)
+        opts (nth bindings 2 nil)]
+    `(let [~name (if ~opts (flock ~lock ~opts) (flock ~lock))]
+       (try
+         ~@body
+         (finally (funlock ~name))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Transducers: composable algorithmic transformations. Gated on
@@ -3032,24 +3037,57 @@
        ([result input] (f result input)))))
 
 (defn unreduced
-  "Unwraps a reduced value. If not reduced, returns x."
+  "If x is reduced?, returns (deref x), else returns x."
   [x]
-  (if (reduced? x) (unreduced @x) x))
+  (if (reduced? x) @x x))
 
 (defn ensure-reduced
   "Wraps x in reduced if it is not already reduced."
   [x]
   (if (reduced? x) x (reduced x)))
 
+;; The pipeline walker fuses at most this many stages (PIPELINE_MAX_STAGES
+;; in src/prim/core/sequences.c). A longer comp falls back to the slow
+;; closure path rather than overrun the walker's fixed stage array.
+(def ^:private fusion-max-stages 8)
+
+(defn- fusion-stages
+  "Returns the ordered fusible stage descriptors for xform, or nil.
+   A comp of standard stage transducers carries a :mino.fusion/stages
+   vector (attached by comp); a lone standard stage transducer carries
+   a single :mino.fusion/stage map. Anything else (a reduced-producing,
+   completion-stateful, or user xform, or a comp with any untagged
+   operand) has neither and is nil, so transduce falls back to the slow
+   closure path. A chain longer than the walker's fixed stage limit also
+   returns nil and falls back. (ADR 65)"
+  [xform]
+  (let [m (meta xform)
+        stages (when m
+                 (or (:mino.fusion/stages m)
+                     (when-let [s (:mino.fusion/stage m)] [s])))]
+    (when (and stages (<= (count stages) fusion-max-stages))
+      stages)))
+
 (defn transduce
   "Reduces coll using the transducer xf applied to the reducing
    function f."
-  ([xf f coll]
-   (transduce xf f (f) coll))
-  ([xf f init coll]
-   (let [xrf (xf (completing f))
-         result (reduce xrf init coll)]
-     (xrf (unreduced result)))))
+  ([xform f coll]
+   (transduce xform f (f) coll))
+  ([xform f init coll]
+   (let [stages (fusion-stages xform)
+         result (when stages (__transduce-fuse stages f init coll))]
+     (if (and stages (not (identical? result :mino.fusion/no-fuse)))
+       ;; Fast path (ADR 65): the whole xform is a comp of standard
+       ;; stage transducers within the walker's stage limit. Apply the
+       ;; completion arity exactly as the slow path does. The C prim
+       ;; still guards against an unrecognised descriptor by returning
+       ;; :mino.fusion/no-fuse; the identical? check falls back safely.
+       ;; The reduce step already unwraps its loop-stopping Reduced
+       ;; exactly once; a Reduced surviving that unwrap must reach the
+       ;; completion and pass through unchanged, so no unreduced here.
+       ((xform f) result)
+       (let [xrf (xform f)]
+         (xrf (reduce xrf init coll)))))))
 
 (def ^:private prim-into into)
 (defn into
@@ -3058,7 +3096,7 @@
   ([] [])
   ([to] to)
   ([to from] (prim-into to from))
-  ([to xf from] (transduce xf conj to from)))
+  ([to xform from] (transduce xform conj to from)))
 
 (defn sequence
   "Coerces coll to a (possibly empty) sequence, if it is not already
@@ -3072,9 +3110,9 @@
      (nil? coll)  ()
      (seq? coll)  coll
      :else        (or (seq coll) ())))
-  ([xf coll]
+  ([xform coll]
    (let [acc   (atom [])
-         xrf   (xf (fn
+         xrf   (xform (fn
                       ([] nil)
                       ([result] result)
                       ([_ input] (swap! acc conj input) nil)))
@@ -3108,13 +3146,13 @@
                     (reset! acc [])
                     (emit items 0 (fn [] nil))))))))
       coll)))
-  ([xf coll & more-colls]
+  ([xform coll & colls]
    ;; Multi-coll variant: pull one element per collection per step and
    ;; pass them all as inputs to the transducer's reducer. The reducer
    ;; is expected to support (rf acc in1 in2 ...) for this to be
    ;; meaningful; map, filter, etc. implement that arity.
    (let [acc   (atom [])
-         xrf   (xf (fn
+         xrf   (xform (fn
                       ([] nil)
                       ([result] result)
                       ([_ input] (swap! acc conj input) nil)
@@ -3149,7 +3187,7 @@
                     (let [items @acc]
                       (reset! acc [])
                       (emit items 0 (fn [] nil)))))))))
-      (cons coll more-colls)))))
+      (cons coll colls)))))
 
 (defn halt-when
   "Returns a transducer that halts reduction when pred is satisfied."
@@ -3168,18 +3206,23 @@
             (rf result input)))))))
 
 (defn eduction
-  "Returns a lazy sequence of applying the given transducers to coll."
+  "Returns a traversal recipe over applying the given transducers to
+   coll. The result prints and seqs like a seq, but caches nothing:
+   every reduce, seq, or print over it re-runs the transducer stack
+   (and any side effects) from the source. Takes any number of
+   transducers followed by coll."
   [& args]
   (let [coll (last args)
-        xfs  (butlast args)]
-    (if (= 1 (count xfs))
-      (sequence (first xfs) coll)
-      (sequence (apply comp xfs) coll))))
+        xfs  (butlast args)
+        xf   (if (= 1 (count xfs))
+               (first xfs)
+               (apply comp xfs))]
+    (rerun-seq (fn [] (sequence xf coll)))))
 
 (defn ->Eduction
   "Factory matching the value (eduction xform coll) returns. mino's
-   eduction values are sequences, so the factory applies xform to
-   coll the same way eduction does."
+   eduction values re-apply the transducer stack per traversal; the
+   factory builds one the same way eduction does."
   [xform coll]
   (eduction xform coll))
 
@@ -3199,15 +3242,36 @@
 
 (defn into-array
   "Converts a collection to an Object array."
-  ([coll]      (to-array coll))
-  ([_typ coll] (to-array coll)))
+  ([aseq]      (to-array aseq))
+  ([type aseq] (to-array aseq)))
 
 ;; --- Compatibility vars ---
 
 (def ^:dynamic *clojure-version*
   "The version of this runtime, as a map with :major :minor :incremental
-   and :qualifier keys. CalVer scheme matches MINO_VERSION in src/mino.h."
-  {:major 2026 :minor 8 :incremental 8 :qualifier "alpha1"})
+   and :qualifier keys. CalVer scheme; decoded from (mino-version), which
+   returns MINO_VERSION from src/mino.h -- the single source of truth, so
+   this can never drift from the C version banner. Decoded with core
+   string ops rather than a regex so the version surface stays available
+   when a host installs a capability set that omits the regex engine."
+  (let [ver  (mino-version)
+        n    (count ver)
+        dash (loop [i 0]
+               (cond (>= i n)           nil
+                     (= \- (nth ver i)) i
+                     :else              (recur (inc i))))
+        head (if dash (subs ver 0 dash) ver)
+        qual (when dash (subs ver (inc dash)))
+        nums (loop [i 0, start 0, acc []]
+               (cond
+                 (>= i (count head))  (conj acc (subs head start i))
+                 (= \. (nth head i))  (recur (inc i) (inc i)
+                                             (conj acc (subs head start i)))
+                 :else                (recur (inc i) start acc)))]
+    {:major       (parse-long (nth nums 0))
+     :minor       (parse-long (nth nums 1))
+     :incremental (parse-long (nth nums 2))
+     :qualifier   qual}))
 (defn clojure-version
   "Returns the runtime version as a printable string."
   []
@@ -3235,7 +3299,7 @@
 
 (defmacro assert
   ([x] (list 'when-not x (list 'throw "Assert failed")))
-  ([x msg] (list 'when-not x (list 'throw msg))))
+  ([x message] (list 'when-not x (list 'throw message))))
 
 (def ^:dynamic *assert*
   "Controls assertion compilation. When false, `assert` is a no-op.
@@ -3321,9 +3385,9 @@
   rounding-mode keyword (e.g. (with-precision 5 :rounding :half-up
   (/ 1M 3M))) or as a JVM RoundingMode enum symbol (e.g. HALF_UP,
   CEILING). Without :rounding, the mode defaults to :half-up."
-  [precision & body]
-  (let [has-rounding? (and (seq body) (= :rounding (first body)))
-        raw-mode      (if has-rounding? (second body) :half-up)
+  [precision & exprs]
+  (let [has-rounding? (and (seq exprs) (= :rounding (first exprs)))
+        raw-mode      (if has-rounding? (second exprs) :half-up)
         mode          (if (symbol? raw-mode)
                         (or (rounding-symbol->keyword raw-mode)
                             (throw (str "with-precision: unknown rounding mode "
@@ -3332,7 +3396,7 @@
                                         "HALF_UP, HALF_DOWN, HALF_EVEN, "
                                         "or UNNECESSARY)")))
                         raw-mode)
-        actual-body   (if has-rounding? (drop 2 body) body)]
+        actual-body   (if has-rounding? (drop 2 exprs) exprs)]
     `(binding [*math-context* {:precision ~precision
                                :rounding-mode ~mode}]
        ~@actual-body)))
@@ -3359,7 +3423,7 @@
 
 (defn special-symbol?
   "Returns true if x is a symbol that names a special form."
-  [x] (contains? special-symbols-set x))
+  [s] (contains? special-symbols-set s))
 
 (defn map-entry?
   "Returns true if x is a map entry (mino represents entries as
@@ -3384,14 +3448,14 @@
     `(eval (list 'ns *ns* '~clause))))
 
 ;; bytes? / bitstring? predicates are installed as C primitives -- the
-;; real checks against MINO_BYTES live in src/prim/reflection.c so they
+;; real checks against MINO_BYTES live in src/prim/core/reflection.c so they
 ;; integrate with the type-dispatch fast path. `inst?` does the real
 ;; check against the `:mino/instant` meta marker that clojure.instant
 ;; attaches to its parsed maps. mino has no URI type, so uri? stays
 ;; false.
-(defn inst?  [v]
-  (boolean (and (map? v) (:mino/instant (meta v)))))
-(defn uri?   [_] false)
+(defn inst?  [x]
+  (boolean (and (map? x) (:mino/instant (meta x)))))
+(defn uri?   [x] false)
 
 ;; ---------------------------------------------------------------------------
 ;; Bit-syntax destructure macro.
@@ -3500,21 +3564,15 @@
 (defn tagged-literal?
   "Returns true if x is a tagged-literal record produced by
    tagged-literal."
-  [x] (boolean (some-> x meta :mino/tagged-literal)))
+  [value] (boolean (some-> value meta :mino/tagged-literal)))
 
 (defn reader-conditional?
   "Returns true if x is a reader-conditional record produced by
    reader-conditional."
-  [x] (boolean (some-> x meta :mino/reader-conditional)))
+  [value] (boolean (some-> value meta :mino/reader-conditional)))
 
-;; Keyword interning probe. mino interns every keyword on construction,
-;; so any keyword we can construct already exists.
-(defn find-keyword
-  "Returns the keyword for the given string. In mino keywords are
-   always interned, so this is equivalent to keyword for string input
-   and nil for other input."
-  ([s]      (when (string? s) (keyword s)))
-  ([ns nm]  (when (and (string? ns) (string? nm)) (keyword ns nm))))
+;; find-keyword is a C primitive: a lookup-only probe over the
+;; keyword intern table (nil when absent, never interns).
 
 ;; Parsing helpers (Clojure 1.11+).
 (defn parse-boolean
@@ -3545,8 +3603,9 @@
   ([n step coll] (map vec (partition-all n step coll))))
 
 (defn splitv-at
-  "Returns a vector [(vec (take n coll)) (vec (drop n coll))]."
-  [n coll] [(vec (take n coll)) (vec (drop n coll))])
+  "Returns a vector [(vec (take n coll)) (drop n coll)]: the head is a
+   vector, the tail stays a lazy seq."
+  [n coll] [(vec (take n coll)) (drop n coll)])
 
 (defn replicate
   "Returns a lazy seq of n copies of x. Deprecated alias for
@@ -3565,9 +3624,9 @@
 (defn reset-meta!
   "Atomically resets the metadata for a reference type to meta-map.
    Returns meta-map."
-  [ref meta-map]
-  (alter-meta! ref (constantly meta-map))
-  meta-map)
+  [iref metadata-map]
+  (alter-meta! iref (constantly metadata-map))
+  metadata-map)
 
 ;; Collection-hash helpers. Real Clojure mixes via Murmur3; mino uses
 ;; a simpler combiner that is consistent across runs but does not
@@ -3575,8 +3634,8 @@
 ;; bookkeeping; not for cross-runtime hash compatibility.
 (defn mix-collection-hash
   "Combines a hash-basis with the collection's count."
-  [hash-basis cnt]
-  (bit-xor (or hash-basis 0) (or cnt 0)))
+  [hash-basis count]
+  (bit-xor (or hash-basis 0) (or count 0)))
 
 (defn hash-combine
   "Boost-style hash combiner: mixes seed and hash into a single 32-bit
@@ -3588,16 +3647,16 @@
 
   The operation is performed in unchecked 32-bit arithmetic; the result
   is truncated to the low 32 bits."
-  [seed hash]
-  (let [seed (or seed 0)
-        hash (or hash 0)]
+  [x y]
+  (let [x (or x 0)
+        y (or y 0)]
     (unchecked-int
-      (bit-xor seed
-               (unchecked-add hash
+      (bit-xor x
+               (unchecked-add y
                               (unchecked-add 0x9e3779b9
                                              (unchecked-add
-                                               (bit-shift-left seed 6)
-                                               (bit-shift-right seed 2))))))))
+                                               (bit-shift-left x 6)
+                                               (bit-shift-right x 2))))))))
 
 (defn hash-ordered-coll
   "Computes a sequence-position-aware hash for an ordered collection."
@@ -3630,8 +3689,8 @@
    vector (mino error values do not retain call-stack frames).
    Works on caught diagnostic maps and on ex-info values alike;
    the cause chain is walked via ex-cause."
-  [t]
-  (let [chain (loop [e t acc []]
+  [o]
+  (let [chain (loop [e o acc []]
                 (let [acc (conj acc e)
                       c   (ex-cause e)]
                   (if (map? c) (recur c acc) acc)))
@@ -3674,11 +3733,11 @@
   "Returns epoch millis (since 1970-01-01T00:00:00Z) for an inst
    value as returned by clojure.instant/read-instant-date or the
    `#inst \"...\"` reader literal. Throws on a non-inst argument."
-  [v]
-  (when-not (inst? v)
-    (throw (ex-info "inst-ms: not an inst" {:got v})))
+  [inst]
+  (when-not (inst? inst)
+    (throw (ex-info "inst-ms: not an inst" {:got inst})))
   (let [{:keys [years months days hours minutes seconds nanoseconds
-                offset-sign offset-hours offset-minutes]} v
+                offset-sign offset-hours offset-minutes]} inst
         epoch-days (inst-ms-days-from-1970 years months days)
         local-ms   (+ (* 1000 (+ (* epoch-days 86400)
                                   (* hours 3600)
@@ -3769,8 +3828,13 @@
   "Returns the lines of text from rdr as a lazy sequence of strings.
    rdr is a string-cursor atom (the *in* model that read-line
    consumes from): each realized element takes one line off the
-   cursor. Returns nil when the cursor is exhausted."
+   cursor. Returns nil when the cursor is exhausted. Throws for a
+   rdr that is not an atom; per JVM line-seq, a value that is not a
+   reader cannot be consumed."
   [rdr]
+  (when-not (atom? rdr)
+    (throw (ex-info "line-seq: argument must be a string-cursor atom"
+                    {:value rdr})))
   (when-let [line (binding [*in* rdr] (read-line))]
     (cons line (lazy-seq (line-seq rdr)))))
 
@@ -3866,13 +3930,13 @@
   "Temporarily rebinds the root values of vars to new-values while
    thunk runs, restoring originals afterward. bindings-map is a map
    of var -> new-value."
-  [bindings-map thunk]
-  (let [pairs (vec bindings-map)
-        olds  (mapv (fn [pair] [(first pair) (deref (first pair))]) pairs)]
+  [binding-map func]
+  (let [pairs (vec binding-map)
+        olds  (mapv (fn [pair] [(first pair) (-var-root (first pair))]) pairs)]
     (try
       (doseq [pair pairs]
         (alter-var-root (first pair) (constantly (second pair))))
-      (thunk)
+      (func)
       (finally
         (doseq [pair olds]
           (alter-var-root (first pair) (constantly (second pair))))))))
@@ -4045,21 +4109,55 @@
    type at expansion time; repeated invocations of the form share
    that type, so (= (type r1) (type r2)) is true for two values
    produced by the same reify form."
-  [& specs]
+  [& opts+specs]
   (let [ns-str   (str (ns-name *ns*))
         sym      (gensym "reify_T_")
         name-str (str sym)
         T        (gensym "T")]
     (list 'let [T (list 'defrecord* ns-str name-str [])]
-          (apply list 'extend-type T specs)
+          (apply list 'extend-type T opts+specs)
           (list 'record* T []))))
+
+(def ^:private munge-char-map
+  "The compiler CHAR_MAP: each character that is illegal in a host
+   identifier maps to a reserved token. Alphanumerics and '.' are
+   absent, so they pass through munge unchanged."
+  {\-  "_",             \:  "_COLON_",       \+  "_PLUS_",
+   \>  "_GT_",          \<  "_LT_",          \=  "_EQ_",
+   \~  "_TILDE_",       \!  "_BANG_",        \@  "_CIRCA_",
+   \#  "_SHARP_",       \'  "_SINGLEQUOTE_", \"  "_DOUBLEQUOTE_",
+   \%  "_PERCENT_",     \^  "_CARET_",       \&  "_AMPERSAND_",
+   \*  "_STAR_",        \|  "_BAR_",         \{  "_LBRACE_",
+   \}  "_RBRACE_",      \[  "_LBRACK_",      \]  "_RBRACK_",
+   \/  "_SLASH_",       \\  "_BSLASH_",      \?  "_QMARK_"})
+
+(defn munge
+  "Encodes s into a string legal as a host identifier, replacing every
+   character in the compiler CHAR_MAP with its reserved token. Symbols
+   munge to symbols; anything else munges to a string."
+  [s]
+  ((if (symbol? s) symbol str)
+   (apply str (map (fn [c] (get munge-char-map c c)) (str s)))))
+
+(defmacro definline
+  "Experimental - like defmacro, except defines a named function whose
+   body is the expansion of the template expr. On mino the :inline hint
+   is advisory (the JIT, not a source inliner, supplies the speed the
+   hint asks for on other hosts); the defined var is an ordinary,
+   first-class function. Cannot be used with variadic (&) args."
+  [name & decl]
+  (let [[pre-args [args expr]] (split-with (comp not vector?) decl)]
+    `(do
+       (defn ~name ~@pre-args ~args ~(apply (eval (list `fn args expr)) args))
+       (alter-meta! (var ~name) assoc :inline (fn ~name ~args ~expr))
+       (var ~name))))
 
 (defmacro proxy [& _]
   (throw (ex-info
            "proxy is not supported on mino — there is no JVM to subclass"
            {:mino/unsupported :proxy})))
 
-(defmacro gen-class [& _]
+(defmacro gen-class [& options]
   (throw (ex-info
            (str "gen-class is not supported on mino — there is no"
                 " JVM to compile against")
@@ -4071,19 +4169,24 @@
                 " defprotocol instead")
            {:mino/unsupported :definterface})))
 
-(defmacro import [& _]
+(defmacro import [& import-symbols-or-lists]
   (throw (ex-info
            (str "Java import is not supported on mino — there are no"
                 " Java classes to import")
            {:mino/unsupported :import})))
 
 (defn instance?
-  "Returns true if x is an instance of t. For record types defined
-   with defrecord, t is the type value and the test is type-pointer
-   identity. For built-in types or ad-hoc :type-tagged values, t may
-   be the keyword (type x) returns and the test is keyword equality."
-  [t x]
-  (= t (type x)))
+  "Returns true if x is an instance of c. For record types defined
+   with defrecord, c is the type value and the test is type-pointer
+   identity. For built-in types or ad-hoc :type-tagged values, c may
+   be the keyword (type x) returns and the test is keyword equality.
+   A small set of frozen capability keywords (ADR 72) answer by
+   capability instead: :editable-collection is true for the
+   collections that support transients."
+  [c x]
+  (if (identical? c :editable-collection)
+    (contains? #{:map :vector :set} (type x))
+    (= c (type x))))
 
 ;; In Clojure JVM the primed arithmetic forms (`+'`, `-'`, `*'`,
 ;; `inc'`, `dec'`) auto-promote to BigInt; the unprimed forms throw
@@ -4117,7 +4220,7 @@
         try-form     (apply list 'try (concat sets body (list finally-form)))]
     (list 'let
           (vec (concat
-                 (mapcat (fn [old v] [old (list 'deref (list 'var v))])
+                 (mapcat (fn [old v] [old (list '-var-root (list 'var v))])
                          olds var-syms)
                  (mapcat (fn [new-sym new-val] [new-sym new-val])
                          news new-vals)))
@@ -4128,8 +4231,8 @@
    Within body the names refer to vars: read with @name, mutate with
    (var-set name val). The vars are interned in the current namespace
    under gensym'd suffixes so they don't collide with named defs."
-  [bindings & body]
-  (let [pairs (partition 2 bindings)
+  [name-vals-vec & body]
+  (let [pairs (partition 2 name-vals-vec)
         let-pairs (mapcat (fn [pair]
                             (let [n    (first pair)
                                   init (first (rest pair))]
