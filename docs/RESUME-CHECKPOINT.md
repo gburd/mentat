@@ -56,6 +56,21 @@ Written 2026-09-25 at ~91% context. Read this + the plan
    112+12+7+11+9 mino tests, workspace 638, mino_script 11 green. This completes
    Task 1b entirely (mino is now safe for untrusted mentat_eval input).
 2. **Task 1c**: open mentat_eval to PUBLIC on the hardened interpreter, pg_mentat
+   1.6.3.
+
+   *** BLOCKER / DECISION (found 2026-09-25): pg_mentat pins `mino-rs` at git tag
+   v0.1.0 (standalone repo, codeberg.org/gregburd/mino-rs), which has NONE of the
+   hardening. The hardened mino lives ONLY in ~/ws/mentat/mino (in-tree, not
+   pushed; version 0.14.0). Task 1c needs the hardened mino. Options:
+     (a) push hardened mino to the standalone repo as v0.2.0, pg_mentat deps on it
+         — but plan 1.25 retires the standalone repo, so this is a throwaway.
+     (b) pg_mentat deps via the mentat repo git tag — needs mentat pushed (it isn't).
+     (c) DEFER 1c until after the repo merge (Tasks 4-5), when pg_mentat's mino-rs
+         dep becomes a workspace path. Then 1c is trivial. mentat_eval is
+         off-by-default until the merged repo ships, so there is NO live exposure
+         to race — nothing forces 1c before the merge. RECOMMENDED: option (c),
+         i.e. do Tasks 3-5 (merge) first, then 1c falls out.
+   Ask the user, or proceed with (c). The 1c mechanics themselves (below) are ready: to PUBLIC on the hardened interpreter, pg_mentat
    1.6.3. GUCs mentat.script_max_{steps,heap_bytes,depth} (PGC_SUSET) in
    _PG_init (pg_mentat/src/planner/hooks.rs has the define_int_guc pattern);
    pg_mentat/src/functions/script.rs build_interpreter() -> sandboxed()+limits
