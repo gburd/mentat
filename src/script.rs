@@ -85,6 +85,16 @@ use crate::store::Store;
 /// `next_id` hands out fresh handles.
 type Stores = Rc<std::cell::RefCell<HashMap<i64, Store>>>;
 
+/// Per-eval resource limits for scripts. `depth` 1000 is safe on an 8 MB
+/// (main-thread) stack even in a debug build: the worst frame mix measured
+/// (destructuring + let + try + macro per call) overflows 8 MB at ~2600 depth
+/// units in debug, so 1000 leaves >2x headroom (see `mino_rs::Limits`).
+const SCRIPT_LIMITS: mino_rs::Limits = mino_rs::Limits {
+    steps: Some(10_000_000),
+    heap_bytes: Some(64 * 1024 * 1024),
+    depth: Some(1000),
+};
+
 /// A Mentat scripting interpreter: an embedded mino-rs interpreter whose
 /// `mentat.store/*` namespace is bound to native prims over real
 /// SQLite-backed [`Store`]s.
@@ -100,7 +110,11 @@ impl Interpreter {
     /// A fresh scripting interpreter with the `mentat.store/*` prims registered
     /// over a private table of live SQLite stores.
     pub fn new() -> Self {
-        let mut inner = mino_rs::Interpreter::new();
+        // Sandboxed: scripts get no host filesystem and captured print
+        // output; every top-level eval is bounded in steps, heap, and depth
+        // (see `SCRIPT_LIMITS`).
+        let mut inner = mino_rs::Interpreter::sandboxed();
+        inner.set_limits(SCRIPT_LIMITS);
         let stores: Stores = Rc::new(std::cell::RefCell::new(HashMap::new()));
         let next_id = Rc::new(Cell::new(1i64));
 
