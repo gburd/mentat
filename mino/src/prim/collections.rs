@@ -65,6 +65,33 @@ fn to_vec(v: &Value) -> Result<Vec<Value>, Throw> {
     }
 }
 
+/// Element count of a seqable without realizing it (a cons list is a pointer
+/// walk; a string counts bytes, an upper bound on chars).
+fn seq_count(v: &Value) -> usize {
+    match v {
+        Value::Cons(_) => {
+            let (mut n, mut cur) = (0, v);
+            while let Value::Cons(c) = cur {
+                n += 1;
+                cur = &c.1;
+            }
+            n
+        }
+        Value::Vector(x) => x.len(),
+        Value::Map(m) => m.count(),
+        Value::Set(s) => s.count(),
+        Value::Str(s) => s.len(),
+        _ => 0,
+    }
+}
+
+/// [`to_vec`] for bulk producers: charge the output size to the step/heap
+/// budget BEFORE allocating it.
+fn to_vec_charged(it: &mut Interp, v: &Value) -> Result<Vec<Value>, Throw> {
+    it.charge_values(seq_count(v))?;
+    to_vec(v)
+}
+
 fn as_int(v: &Value, ctx: &str) -> Result<i64, Throw> {
     match v {
         Value::Int(n) => Ok(*n),
@@ -301,8 +328,8 @@ pub fn seq(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
 }
 
-pub fn reverse(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    let mut items = to_vec(&args[0])?;
+pub fn reverse(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let mut items = to_vec_charged(it, &args[0])?;
     items.reverse();
     Ok(list_of(&items))
 }
@@ -318,6 +345,7 @@ pub fn map(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let f = args[0].clone();
     let colls: Vec<Vec<Value>> = args[1..].iter().map(to_vec).collect::<Result<_, _>>()?;
     let n = colls.iter().map(|c| c.len()).min().unwrap_or(0);
+    it.charge_values(n)?;
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let call: Vec<Value> = colls.iter().map(|c| c[i].clone()).collect();
@@ -376,18 +404,18 @@ pub fn apply_prim(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
     let f = args[0].clone();
     let mut call: Vec<Value> = args[1..args.len() - 1].to_vec();
-    call.extend(to_vec(&args[args.len() - 1])?);
+    call.extend(to_vec_charged(it, &args[args.len() - 1])?);
     apply(it, &f, &call)
 }
 
 /// `(into to from)`: conj every element of `from` into `to`. For a list target
 /// this reverses order (each element prepends), matching the binary.
-pub fn into(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn into(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     if args.len() != 2 {
         return Err(throw_str("into requires exactly 2 arguments"));
     }
     let mut to = args[0].clone();
-    for x in to_vec(&args[1])? {
+    for x in to_vec_charged(it, &args[1])? {
         to = conj1(&to, &x)?;
     }
     Ok(to)
@@ -395,17 +423,17 @@ pub fn into(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 pub fn mapv(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let l = map(it, args)?;
-    Ok(Value::Vector(Gc::new(to_vec(&l)?.into_iter().collect())))
+    Ok(Value::Vector(Gc::new(to_vec_charged(it, &l)?.into_iter().collect())))
 }
 
 pub fn filterv(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let l = filter(it, args)?;
-    Ok(Value::Vector(Gc::new(to_vec(&l)?.into_iter().collect())))
+    Ok(Value::Vector(Gc::new(to_vec_charged(it, &l)?.into_iter().collect())))
 }
 
 /// `(range)` (infinite: unsupported here), `(range end)`, `(range start end)`,
 /// `(range start end step)`. Returns a realized list. // Phase 5: lazy range.
-pub fn range(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn range(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let (start, end, step) = match args.len() {
         0 => return Err(throw_str("infinite range needs lazy seqs (Phase 5)")),
         1 => (0, as_int(&args[0], "range")?, 1),
@@ -420,7 +448,16 @@ pub fn range(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     if step == 0 {
         return Err(throw_str("range step cannot be 0"));
     }
-    let mut out = Vec::new();
+    // Element count, in i128 so no (start, end, step) can overflow; charged
+    // BEFORE allocating so `(range 1e11)` fails in O(1) under a heap limit.
+    let span = end as i128 - start as i128;
+    let n = if (span > 0) == (step > 0) && span != 0 {
+        (span.abs() + step.abs() as i128 - 1) / step.abs() as i128
+    } else {
+        0
+    };
+    it.charge_values(usize::try_from(n).unwrap_or(usize::MAX))?;
+    let mut out = Vec::with_capacity(n as usize);
     let mut i = start;
     if step > 0 {
         while i < end {
@@ -436,20 +473,58 @@ pub fn range(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     Ok(list_of(&out))
 }
 
-pub fn vec_prim(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+/// `(repeat n x)`: a realized list of n copies of x. core.clj's `repeat`
+/// recurses once per element through the eager `lazy-seq`, which overflows the
+/// Rust stack for large n; this prim is O(1) stack and charges n up front.
+/// Count coercion matches core.clj (floats truncate, non-numbers throw).
+/// `(repeat x)` (infinite) needs lazy seqs. // Phase 5: lazy repeat.
+pub fn repeat(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let (n, x) = match args {
+        [_] => return Err(throw_str("infinite repeat needs lazy seqs (Phase 5)")),
+        [n, x] => (n, x),
+        _ => return Err(throw_str("repeat takes 1 or 2 arguments")),
+    };
+    // Same coercion as core.clj: integers as-is, other numbers via `long`
+    // (truncating), anything else throws.
+    let n = match n {
+        Value::Int(n) => *n,
+        Value::Float(_) | Value::Float32(_) | Value::BigInt(_) | Value::Ratio(_) => {
+            match crate::prim::numeric::long_(it, std::slice::from_ref(n))? {
+                Value::Int(n) => n,
+                _ => return Err(throw_str("repeat: count out of range")),
+            }
+        }
+        other => {
+            let t = crate::prim::reflection::type_(it, std::slice::from_ref(other))?;
+            return Err(throw_str(&format!(
+                "repeat: count must be a number, got {}",
+                crate::printer::print_str(&t)
+            )));
+        }
+    };
+    let n = n.max(0) as usize;
+    it.charge_values(n)?;
+    let mut acc = Value::EmptyList;
+    for _ in 0..n {
+        acc = Value::Cons(Gc::new((x.clone(), acc)));
+    }
+    Ok(acc)
+}
+
+pub fn vec_prim(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let items = if args.is_empty() {
         Vec::new()
     } else {
-        to_vec(&args[0])?
+        to_vec_charged(it, &args[0])?
     };
     Ok(Value::Vector(Gc::new(items.into_iter().collect())))
 }
 
-pub fn set_prim(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn set_prim(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let items = if args.is_empty() {
         Vec::new()
     } else {
-        to_vec(&args[0])?
+        to_vec_charged(it, &args[0])?
     };
     let mut s = PSet::empty();
     for x in items {
@@ -550,7 +625,7 @@ pub fn sort(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         2 => (Some(args[0].clone()), &args[1]),
         _ => return Err(throw_str("sort requires 1 or 2 arguments")),
     };
-    let mut items = to_vec(coll)?;
+    let mut items = to_vec_charged(it, coll)?;
     sort_with(it, &mut items, cmp.as_ref(), |v| v.clone())?;
     Ok(list_of(&items))
 }
@@ -562,7 +637,7 @@ pub fn sort_by(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         3 => (args[0].clone(), Some(args[1].clone()), &args[2]),
         _ => return Err(throw_str("sort-by requires 2 or 3 arguments")),
     };
-    let mut items = to_vec(coll)?;
+    let mut items = to_vec_charged(it, coll)?;
     // Precompute keys once.
     let keys: Vec<Value> = items
         .iter()
@@ -623,10 +698,10 @@ fn sort_indices(
     Ok(())
 }
 
-pub fn concat(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn concat(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let mut out = Vec::new();
     for a in args {
-        out.extend(to_vec(a)?);
+        out.extend(to_vec_charged(it, a)?);
     }
     Ok(list_of(&out))
 }

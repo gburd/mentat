@@ -12,12 +12,25 @@ use gc::Gc;
 /// raw, nil contributes nothing, chars append their character, everything
 /// else uses the readable printer. Ports `prim_str` (string.c) for the value
 /// kinds the port has. No args -> "".
-pub fn str_(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    let mut out = String::new();
+pub fn str_(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    // Charge the known string bytes before allocating, the printed rest after.
+    let known = str_bytes(args.iter());
+    it.charge(0, known)?;
+    let mut out = String::with_capacity(known as usize);
     for a in args {
         arg_to_str(&mut out, a);
     }
+    it.charge(0, (out.len() as u64).saturating_sub(known))?;
     Ok(Value::Str(Gc::new(out)))
+}
+
+/// Total byte length of the string values among `vals` (others count 0).
+fn str_bytes<'a>(vals: impl Iterator<Item = &'a Value>) -> u64 {
+    vals.map(|v| match v {
+        Value::Str(s) => s.len() as u64,
+        _ => 0,
+    })
+    .sum()
 }
 
 /// Append one arg's `str` form: strings raw, nil nothing, char raw, else pr.
@@ -201,7 +214,7 @@ pub fn includes_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 /// `(clojure.string/join sep coll)` / `(clojure.string/join coll)`. Joins the
 /// `str` forms of each item; nil items contribute nothing. Ports `prim_join`.
-pub fn join(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+pub fn join(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     let (sep, coll) = match args {
         [coll] => ("", coll),
         [Value::Str(sep), coll] => (sep.as_str(), coll),
@@ -210,18 +223,23 @@ pub fn join(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
         _ => return Err(throw_str("join requires 1 or 2 arguments")),
     };
     let items = seq_items(coll)?;
+    let known = str_bytes(items.iter())
+        .saturating_add((sep.len() as u64).saturating_mul(items.len() as u64));
+    it.charge_values(items.len())?;
+    it.charge(0, known)?;
     let mut out = String::new();
     let mut first = true;
-    for it in &items {
-        if matches!(it, Value::Nil) {
+    for item in &items {
+        if matches!(item, Value::Nil) {
             continue;
         }
         if !first {
             out.push_str(sep);
         }
-        arg_to_str(&mut out, it);
+        arg_to_str(&mut out, item);
         first = false;
     }
+    it.charge(0, (out.len() as u64).saturating_sub(known))?;
     Ok(Value::Str(Gc::new(out)))
 }
 
@@ -286,6 +304,10 @@ fn str_replace(it: &mut Interp, args: &[Value], first_only: bool) -> Result<Valu
     if m.is_empty() {
         return Ok(Value::Str(Gc::new(s.to_string())));
     }
+    // Output size is known exactly: charge it before building.
+    let hits = if first_only { s.contains(m) as u64 } else { s.matches(m).count() as u64 };
+    let grow = (r.len() as u64).saturating_sub(m.len() as u64).saturating_mul(hits);
+    it.charge(0, (s.len() as u64).saturating_add(grow))?;
     let out = if first_only {
         s.replacen(m, r, 1)
     } else {
@@ -378,6 +400,7 @@ fn regex_replace(
         let (ms, me) = (whole.start(), whole.end());
         out.push_str(&s[last_end..ms]);
         let replacement = build_replacement(it, &m, repl)?;
+        it.charge(0, (ms - last_end + replacement.len()) as u64)?;
         out.push_str(&replacement);
         last_end = me;
         if first_only {

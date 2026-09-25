@@ -231,6 +231,7 @@ pub fn install_eager_seq_prims(root: &Env) {
     register(root, "mapv", c::mapv);
     register(root, "filterv", c::filterv);
     register(root, "range", c::range);
+    register(root, "repeat", c::repeat);
     register(root, "vec", c::vec_prim);
     register(root, "set", c::set_prim);
     register(root, "hash-map", c::hash_map);
