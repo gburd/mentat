@@ -30,7 +30,7 @@ members = [
   "tools/cli",
   "ffi", "core", "core-traits","db", "db-traits", "edn", "public-traits", "query-algebrizer",
   "query-algebrizer-traits", "query-projector", "query-projector-traits","query-pull",
-  "query-sql", "sql", "sql-traits", "transaction", "mino"
+  "query-sql", "sql", "sql-traits", "transaction", "mino", "mino/vendor/gc", "mino/vendor/gc_derive"
   ]
 
 [build-dependencies]

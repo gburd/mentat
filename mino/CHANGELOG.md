@@ -16,6 +16,15 @@
   `catch` still sees the throw), and non-tail recursion such as
   `(inc (f (dec n)))` is still bounded by the depth limit.
 
+- **Garbage collection no longer overflows the stack on long or deeply
+  nested data.** mino now uses a vendored copy of rust-gc v0.5.1
+  (`vendor/`, MPL-2.0) whose marking uses a worklist instead of recursing
+  once per `Gc` edge; see `vendor/CHANGES.md`. Before, collecting while a
+  list of ~6,000 elements was alive aborted a debug build on a 2 MB stack
+  (so `(count (range 10000))` crashed), and live data nested ~200,000 deep
+  aborted release builds. Now both run a million elements / 300,000 levels
+  on a 2 MB stack.
+
 ### Added
 - **`Interpreter::sandboxed()`**: an interpreter with no host access.
   - *Before:* every interpreter bound `slurp`, `spit`, `rm-rf`, `mkdir-p` and

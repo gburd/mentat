@@ -58,6 +58,9 @@ const ROOTS_MAX: usize = ROOTS_MASK; // max allowed value of roots
 pub(crate) struct GcBoxHeader {
     roots: Cell<usize>, // high bit is used as mark flag
     next: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
+    // mentat: this box as a `dyn Trace` box pointer, set in `insert_gcbox`, so
+    // marking can queue a box without knowing its concrete type.
+    this: Cell<Option<NonNull<GcBox<dyn Trace>>>>,
 }
 
 impl GcBoxHeader {
@@ -66,6 +69,7 @@ impl GcBoxHeader {
         GcBoxHeader {
             roots: Cell::new(1), // unmarked and roots count = 1
             next: Cell::new(None),
+            this: Cell::new(None),
         }
     }
 
@@ -211,6 +215,7 @@ unsafe fn insert_gcbox(gcbox: NonNull<GcBox<dyn Trace>>) {
 
         let next = st.boxes_start.replace(gcbox);
         gcbox.as_ref().header.next.set(next);
+        gcbox.as_ref().header.this.set(Some(gcbox));
 
         // We allocated some bytes! Let's record it
         st.stats.bytes_allocated += mem::size_of_val::<GcBox<_>>(gcbox.as_ref());
@@ -226,11 +231,62 @@ impl<T: ?Sized> GcBox<T> {
     }
 }
 
+// mentat modification (see ../../CHANGES.md): iterative marking.
+//
+// Upstream marks recursively: `trace_inner` marks a box, then traces its data,
+// which calls `trace_inner` on every child `Gc`. Marking a chain of N boxes
+// therefore used N nested Rust frames, and a long list or deeply nested
+// structure overflowed the stack during a collection (in a debug build, a list
+// of ~6,000 cons cells on a 2 MB stack).
+//
+// Now, while a mark pass is running, `trace_inner` only marks the box and
+// pushes it on `MARK_STACK`; `mark_from` traces the pushed boxes one at a time
+// in a loop. The recursion depth of a collection is bounded by the nesting
+// *within a single box's data* (a Vec of Gcs traced in one call), not by the
+// length of the object graph. Outside a mark pass (a `Trace` impl called
+// directly) the old recursive behaviour is kept.
+thread_local! {
+    // Boxes marked but not yet traced. `None` outside a mark pass.
+    static MARK_STACK: RefCell<Option<Vec<NonNull<GcBox<dyn Trace>>>>> = const { RefCell::new(None) };
+}
+
+/// Trace everything reachable from the box at `root` without recursing on the
+/// Rust stack once per `Gc` edge.
+unsafe fn mark_from(root: NonNull<GcBox<dyn Trace>>) {
+    if root.as_ref().header.is_marked() {
+        return;
+    }
+    root.as_ref().header.mark();
+    MARK_STACK.with(|s| *s.borrow_mut() = Some(Vec::new()));
+    let mut next = Some(root);
+    while let Some(node) = next {
+        // Tracing the data calls `trace_inner` on each child `Gc`, which
+        // (because MARK_STACK is Some) marks and queues it instead of
+        // recursing.
+        node.as_ref().data.trace();
+        next = MARK_STACK.with(|s| s.borrow_mut().as_mut().and_then(Vec::pop));
+    }
+    MARK_STACK.with(|s| *s.borrow_mut() = None);
+}
+
 impl<T: Trace + ?Sized> GcBox<T> {
     /// Marks this `GcBox` and marks through its data.
     pub(crate) unsafe fn trace_inner(&self) {
-        if !self.header.is_marked() {
-            self.header.mark();
+        if self.header.is_marked() {
+            return;
+        }
+        self.header.mark();
+        // During a mark pass, queue this box (by the `dyn Trace` pointer to
+        // itself that every box in the chain records in its header) instead of
+        // tracing into it here. Outside a pass, trace directly as upstream did.
+        let queued = MARK_STACK.with(|s| match (s.borrow_mut().as_mut(), self.header.this.get()) {
+            (Some(stack), Some(this)) => {
+                stack.push(this);
+                true
+            }
+            _ => false,
+        });
+        if !queued {
             self.data.trace();
         }
     }
@@ -271,7 +327,7 @@ fn collect_garbage(st: &mut GcState) {
         let mut mark_head = head.get();
         while let Some(node) = mark_head {
             if node.as_ref().header.roots() > 0 {
-                node.as_ref().trace_inner();
+                mark_from(node);
             }
 
             mark_head = node.as_ref().header.next.get();
