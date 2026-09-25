@@ -155,6 +155,7 @@ pub fn install_core(root: &Env) {
     register(root, "keyword", r::keyword);
     register(root, "find-keyword", r::find_keyword);
     register(root, "regex?", r::regex_p);
+    register(root, "identical?", r::identical_p);
     register(root, "mino-version", r::mino_version);
     register(root, "read-string", r::read_string);
     register(root, "symbol", r::symbol);

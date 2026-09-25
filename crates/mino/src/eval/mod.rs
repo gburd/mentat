@@ -271,6 +271,51 @@ impl Interp {
         self.root.alias("store", "mino.store");
     }
 
+    /// Register `[ns :as alias]` aliases from a `(require ...)` args list into
+    /// the flat env's alias table (the only part of `require` the port acts
+    /// on). Each arg may be `'[ns :as alias]`, `(quote [ns :as alias])`, or a
+    /// bare vector; anything else (a bare symbol, a `:refer` clause, options)
+    /// is ignored. `rest` is the un-evaluated cons list after the `require`
+    /// head.
+    fn register_require_aliases(&mut self, rest: &Value) {
+        let mut cur = rest;
+        while let Value::Cons(cell) = cur {
+            self.register_one_require_spec(&cell.0);
+            cur = &cell.1;
+        }
+    }
+
+    fn register_one_require_spec(&mut self, spec: &Value) {
+        // Unwrap `(quote X)` -> X, else use spec as-is.
+        let inner: Value = match spec {
+            Value::Cons(c) => match (&c.0, &c.1) {
+                (Value::Sym(s), Value::Cons(c2)) if &*s.name == "quote" => c2.0.clone(),
+                _ => spec.clone(),
+            },
+            _ => spec.clone(),
+        };
+        // Look for a vector `[ns :as alias ...]`.
+        let Value::Vector(v) = &inner else { return };
+        let items: Vec<Value> = v.iter().cloned().collect();
+        let Some(Value::Sym(ns)) = items.first() else {
+            return;
+        };
+        let ns_name = match &ns.ns {
+            Some(n) => format!("{n}/{}", ns.name),
+            None => ns.name.to_string(),
+        };
+        // Scan for `:as alias`.
+        let mut i = 1;
+        while i + 1 < items.len() {
+            if let (Value::Keyword(k), Value::Sym(alias)) = (&items[i], &items[i + 1]) {
+                if k.ns.is_none() && &*k.name == "as" {
+                    self.root.alias(&alias.name, &ns_name);
+                }
+            }
+            i += 1;
+        }
+    }
+
     /// Read and eval mino's bundled `core.clj` (embedded via include_str!) form
     /// by form into the root env. Ports `install_core_mino` (prim/install.c),
     /// but resilient: a form that fails to read or eval is recorded in
@@ -803,11 +848,19 @@ impl Interp {
                     Ok(Value::Recur(gc::Gc::new(vals)))
                 }
                 // Namespace / load machinery. The port has a single flat
-                // env (no ns tables), so these are no-ops that return nil
-                // — enough that core.clj's `(in-ns 'clojure.core)` etc. and
-                // any `(ns ..)`/`(require ..)` load without erroring.
-                // ponytail: flat-env no-op ns machinery; real ns tables in Phase 4.
-                "in-ns" | "ns" | "require" | "use" | "refer" | "refer-clojure" | "load"
+                // env (no ns tables), so these are mostly no-ops that return
+                // nil — enough that core.clj's `(in-ns 'clojure.core)` etc. and
+                // any `(ns ..)`/`(require ..)` load without erroring. `require`
+                // additionally registers any `[ns :as alias]` so a qualified
+                // `alias/name` reaches the bundled lib's fns through the
+                // ns-fallback (e.g. `(require '[mino.store :as sstore])` then
+                // `sstore/read`).
+                // ponytail: flat-env ns machinery; real ns tables in Phase 4.
+                "require" => {
+                    self.register_require_aliases(rest);
+                    Ok(Value::Nil)
+                }
+                "in-ns" | "ns" | "use" | "refer" | "refer-clojure" | "load"
                 | "load-file" | "import" => Ok(Value::Nil),
                 _ => {
                     special = false;

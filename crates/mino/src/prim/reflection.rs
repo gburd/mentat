@@ -288,6 +288,61 @@ pub fn regex_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     Ok(Value::Bool(matches!(v, Value::Regex(_))))
 }
 
+/// `(identical? x y)` — reference identity. In mino's tagged representation a
+/// heap value is identical only to itself (pointer eq) while immediates
+/// (nil/bool/int/char/interned keyword) are identical iff value-equal. The
+/// port mirrors this: heap `Gc` variants compare by pointer, immediates by
+/// value. Ports `prim_identical`.
+pub fn identical_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
+    let [a, b] = args else {
+        return Err(throw_classified(
+            "eval/arity",
+            "MAR001",
+            "identical? requires 2 arguments",
+        ));
+    };
+    Ok(Value::Bool(value_identical(a, b)))
+}
+
+/// Reference identity for `identical?`: pointer-eq for heap `Gc` payloads,
+/// value-eq for immediates.
+fn value_identical(a: &Value, b: &Value) -> bool {
+    use gc::Gc;
+    fn same<T>(x: &Gc<T>, y: &Gc<T>) -> bool {
+        std::ptr::eq(&**x, &**y)
+    }
+    match (a, b) {
+        // Immediates: identity == value equality.
+        (Value::Nil, Value::Nil) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Char(x), Value::Char(y)) => x == y,
+        // Keywords and symbols are interned by value in mino, so identity is
+        // value equality.
+        (Value::Keyword(x), Value::Keyword(y)) => x == y,
+        (Value::Sym(x), Value::Sym(y)) => x == y,
+        (Value::Var(x), Value::Var(y)) => x == y,
+        (Value::EmptyList, Value::EmptyList) => true,
+        // Heap payloads: pointer identity.
+        (Value::Str(x), Value::Str(y)) => same(x, y),
+        (Value::Cons(x), Value::Cons(y)) => same(x, y),
+        (Value::Vector(x), Value::Vector(y)) => same(x, y),
+        (Value::Map(x), Value::Map(y)) => same(x, y),
+        (Value::Set(x), Value::Set(y)) => same(x, y),
+        (Value::Fn(x), Value::Fn(y)) => same(x, y),
+        (Value::PrimClosure(x), Value::PrimClosure(y)) => same(x, y),
+        (Value::BigInt(x), Value::BigInt(y)) => same(x, y),
+        (Value::Ratio(x), Value::Ratio(y)) => same(x, y),
+        (Value::Regex(x), Value::Regex(y)) => same(x, y),
+        (Value::Atom(x), Value::Atom(y)) => same(x, y),
+        (Value::Store(x), Value::Store(y)) => same(x, y),
+        (Value::Delay(x), Value::Delay(y)) => same(x, y),
+        // A bare fn pointer prim: identical iff the same fn pointer + name.
+        (Value::Prim(x), Value::Prim(y)) => std::ptr::fn_addr_eq(x.0, y.0),
+        _ => false,
+    }
+}
+
 /// `(mino-version)` — the runtime version string. core.clj's `*mino-version*`
 /// decoder parses this into a CalVer map. The port reports the archived mino
 /// release it tracks. Ports `prim_mino_version`.
