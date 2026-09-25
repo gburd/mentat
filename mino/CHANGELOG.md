@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+- **Tail calls no longer grow the stack.** A call to a fn in tail position
+  now returns an internal `TailCall` signal that the caller's apply loop runs,
+  as upstream mino does (`MINO_TAIL_CALL`). Before, only `recur` did this, so
+  `dotimes`, `while` (both expand to a named fn calling itself last) and any
+  self- or mutually-recursive fn used one Rust stack frame and one depth level
+  per iteration: `(dotimes [i 60] i)` already hit a depth limit of 300, and
+  without limits large counts overflowed the stack and aborted the process.
+  Now `(dotimes [i 1000000] ...)`, `(while ...)` over 100,000 iterations and a
+  1,000,000-deep self tail call run at constant depth on a 1 MB stack. Tail
+  calls never cross a `try` (the body is fully run inside the frame, so
+  `catch` still sees the throw), and non-tail recursion such as
+  `(inc (f (dec n)))` is still bounded by the depth limit.
+
 ### Added
 - **`Interpreter::sandboxed()`**: an interpreter with no host access.
   - *Before:* every interpreter bound `slurp`, `spit`, `rm-rf`, `mkdir-p` and

@@ -81,7 +81,7 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
     let clauses = partition(args)?;
 
     // 1. Body.
-    let mut result = no_recur(it.eval_implicit_do(&clauses.body, env));
+    let mut result = no_recur(eval_forced(it, &clauses.body, env));
 
     // A tripped resource limit is uncatchable: skip catch AND finally (any
     // eval would re-trip immediately) and propagate it as-is.
@@ -98,7 +98,7 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
                 local.set(var.clone(), ex);
             }
             // A re-throw here propagates (after finally, below).
-            result = no_recur(it.eval_implicit_do(&clauses.catch_body, &local));
+            result = no_recur(eval_forced(it, &clauses.catch_body, &local));
         }
     }
 
@@ -108,11 +108,19 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
 
     // 3. Finally: run unconditionally; value discarded, errors in it propagate.
     if clauses.has_finally {
-        it.eval_implicit_do(&clauses.finally_body, env)?;
+        eval_forced(it, &clauses.finally_body, env)?;
     }
 
     // 4. The try/catch result (or propagating throw) stands.
     result
+}
+
+/// Eval a try/catch/finally body to a finished value. A tail call must not
+/// leave the try frame as a signal: its callee would then run (and throw)
+/// outside the catch/finally. Run it here, inside the frame.
+fn eval_forced(it: &mut Interp, body: &[Value], env: &Env) -> Result<Value, Throw> {
+    let r = it.eval_implicit_do(body, env);
+    it.force(r)
 }
 
 /// A `recur` signal cannot cross a try frame (the unwind machinery would be

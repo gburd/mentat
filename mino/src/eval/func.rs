@@ -101,8 +101,9 @@ fn parse_arity(params: &Value, body: &[Value]) -> Result<Arity, Throw> {
 }
 
 /// Apply a callable to already-evaluated `args`. One depth level per call,
-/// restored on every return path; a `recur` loop inside the callee iterates
-/// at this same level (the trampoline is a Rust loop, not a nested apply).
+/// restored on every return path; a `recur` loop or a chain of tail calls
+/// inside the callee iterates at this same level (the trampoline in
+/// `apply_closure` is a Rust loop, not a nested apply).
 pub fn apply(it: &mut Interp, callee: &Value, args: &[Value]) -> Result<Value, Throw> {
     it.enter_frame()?;
     let r = match callee {
@@ -163,48 +164,64 @@ fn apply_closure(
     callee: &Value,
     args: &[Value],
 ) -> Result<Value, Throw> {
-    // Pick the arity whose fixed count matches exactly, else a variadic one
-    // whose fixed count the args can cover.
-    let arity = closure
-        .arities
-        .iter()
-        .find(|a| !a.variadic && a.fixed == args.len())
-        .or_else(|| {
-            closure
-                .arities
-                .iter()
-                .find(|a| a.variadic && args.len() >= a.fixed)
-        })
-        .ok_or_else(|| wrong_arity(args.len()))?;
-
-    // Recur trampoline: bind params, run the body; if the body produced a
-    // `Recur` signal, rebind this arity's params to the new args and iterate
-    // in this Rust `for`-free loop — constant stack, no recursive Rust call.
     let mut cur_args: Vec<Value> = args.to_vec();
+    // Trampoline: bind params, run the body, and iterate in this Rust loop
+    // (constant stack, same depth level) while the body ends in
+    //  * `recur`: rebind this arity's params to the new args, or
+    //  * a tail call to a user fn (`TailCall`): switch to that fn (it may be a
+    //    different one: mutual recursion) and dispatch its arity.
+    // Steps are still counted: each iteration's body goes through `eval`.
+    let mut tail: Option<Gc<(Value, Vec<Value>)>> = None;
     loop {
-        let frame = closure.env.child();
-        // Named fn: bind the self-name in the body scope so recursive calls
-        // like (fn f [n] ... (f ...)) resolve (mino binds the fn name in its
-        // own frame). Anonymous fns skip this.
-        if let Some(name) = &closure.name {
-            frame.set(name.clone(), callee.clone());
-        }
-        crate::eval::bindings::bind_params(
-            it,
-            &frame,
-            &arity.params,
-            &cur_args,
-            crate::eval::bindings::Ctx::Fn,
-        )?;
-        let result = it.eval_implicit_do(&arity.body, &frame)?;
-        match &result {
-            Value::Recur(new_args) => {
+        let (closure, callee) = match &tail {
+            Some(tc) => match &tc.0 {
+                Value::Fn(c) => (&**c, &tc.0),
+                _ => unreachable!("TailCall is only emitted for fns"),
+            },
+            None => (closure, callee),
+        };
+        let arity = pick_arity(closure, cur_args.len())?;
+        let result = loop {
+            let frame = closure.env.child();
+            // Named fn: bind the self-name in the body scope so recursive
+            // calls like (fn f [n] ... (f ...)) resolve (mino binds the fn
+            // name in its own frame). Anonymous fns skip this.
+            if let Some(name) = &closure.name {
+                frame.set(name.clone(), callee.clone());
+            }
+            crate::eval::bindings::bind_params(
+                it,
+                &frame,
+                &arity.params,
+                &cur_args,
+                crate::eval::bindings::Ctx::Fn,
+            )?;
+            let result = it.eval_implicit_do(&arity.body, &frame)?;
+            match &result {
                 // recur re-enters this arity's param loop with new args.
-                cur_args = (**new_args).clone();
+                Value::Recur(new_args) => cur_args = (**new_args).clone(),
+                _ => break result,
+            }
+        };
+        match &result {
+            Value::TailCall(tc) => {
+                cur_args = tc.1.clone();
+                tail = Some(tc.clone());
             }
             _ => return Ok(result),
         }
     }
+}
+
+/// The arity whose fixed count matches exactly, else a variadic one whose
+/// fixed count the args can cover.
+fn pick_arity(closure: &Closure, n: usize) -> Result<&Arity, Throw> {
+    closure
+        .arities
+        .iter()
+        .find(|a| !a.variadic && a.fixed == n)
+        .or_else(|| closure.arities.iter().find(|a| a.variadic && n >= a.fixed))
+        .ok_or_else(|| wrong_arity(n))
 }
 
 #[cold]

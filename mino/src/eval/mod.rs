@@ -529,19 +529,46 @@ impl Interp {
         Ok(())
     }
 
-    /// Evaluate `form` in `env`. Every call is one step and one depth level
-    /// (the guard below restores `depth` on every return path).
+    /// Evaluate `form` in `env` at a NON-tail position: always a finished
+    /// value (never a `TailCall`). Every call is one step and one depth level.
+    #[inline(always)]
     pub fn eval(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+        self.eval_at(form, env, false)
+    }
+
+    /// Evaluate `form` in TAIL position: a call to a user fn comes back as a
+    /// `Value::TailCall` instead of nesting a frame. Tail-ness propagates into
+    /// `if` branches and macro expansions; a special form whose body ends in
+    /// a tail call forces it when the form itself is not in tail position.
+    #[inline(always)]
+    pub(crate) fn eval_tail(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+        self.eval_at(form, env, true)
+    }
+
+    /// The one eval frame behind `eval`/`eval_tail` (the guard below
+    /// restores `depth` on every return path).
+    fn eval_at(&mut self, form: &Value, env: &Env, tail: bool) -> Result<Value, Throw> {
         self.enter_frame()?;
         let r = match self.step() {
-            Ok(()) => self.eval_form(form, env),
+            Ok(()) => self.eval_form(form, env, tail),
             Err(t) => Err(t),
         };
         self.depth -= 1;
         r
     }
 
-    fn eval_form(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+    /// Run a `Value::TailCall` result to completion (`apply` trampolines any
+    /// further tail calls, so one apply suffices); anything else passes
+    /// through. Out of line: it is off the plain call path.
+    #[inline(never)]
+    pub(crate) fn force(&mut self, r: Result<Value, Throw>) -> Result<Value, Throw> {
+        match &r {
+            Ok(Value::TailCall(tc)) => func::apply(self, &tc.0, &tc.1),
+            _ => r,
+        }
+    }
+
+    fn eval_form(&mut self, form: &Value, env: &Env, tail: bool) -> Result<Value, Throw> {
         match form {
             // Self-evaluating: scalars plus already-built fns/prims/vars.
             Value::Nil
@@ -579,7 +606,7 @@ impl Interp {
 
             Value::Sym(sym) => env.get(sym).ok_or_else(|| unbound(sym)),
 
-            Value::Cons(_) => self.eval_list(form, env),
+            Value::Cons(_) => self.eval_list(form, env, tail),
         }
     }
 
@@ -626,7 +653,7 @@ impl Interp {
         }
     }
 
-    fn eval_list(&mut self, form: &Value, env: &Env) -> Result<Value, Throw> {
+    fn eval_list(&mut self, form: &Value, env: &Env, tail: bool) -> Result<Value, Throw> {
         let Value::Cons(cell) = form else {
             unreachable!("eval_list called on non-cons")
         };
@@ -642,9 +669,9 @@ impl Interp {
         if let Value::Sym(sym) = head {
             if matches!(sym.ns.as_deref(), None | Some("clojure.core")) {
                 if &*sym.name == "if" {
-                    return self.eval_if(rest, env);
+                    return self.eval_if(rest, env, tail);
                 }
-                if let Some(r) = self.eval_special(&sym.name, rest, env) {
+                if let Some(r) = self.eval_special(&sym.name, rest, env, tail) {
                     return r;
                 }
             }
@@ -655,7 +682,7 @@ impl Interp {
         // (the repeat-until-not-a-macro loop) falls out naturally: the
         // expansion is re-eval'd, and if its head is another macro this same
         // check fires again. Ports macroexpand1 + the eval-time dispatch.
-        if let Some(r) = self.eval_macro_call(form, env) {
+        if let Some(r) = self.eval_macro_call(form, env, tail) {
             return r;
         }
 
@@ -670,6 +697,11 @@ impl Interp {
             args.push(self.eval_value(&cell.0, env)?);
             cur = &cell.1;
         }
+        // A user fn in tail position: hand (callee, args) back to the
+        // enclosing apply_closure trampoline instead of nesting a frame.
+        if tail && matches!(&callee, Value::Fn(c) if !c.is_macro) {
+            return tail_call(&callee, &mut args);
+        }
         func::apply(self, &callee, &args)
     }
 
@@ -677,22 +709,30 @@ impl Interp {
     /// Out of line so a plain call's frame does not carry the expansion
     /// temporaries.
     #[inline(never)]
-    fn eval_macro_call(&mut self, form: &Value, env: &Env) -> Option<Result<Value, Throw>> {
+    fn eval_macro_call(
+        &mut self,
+        form: &Value,
+        env: &Env,
+        tail: bool,
+    ) -> Option<Result<Value, Throw>> {
         match self.macroexpand1_flagged(form) {
             Err(t) => Some(Err(t)),
-            Ok((expanded, true)) => Some(self.eval(&expanded, env)),
+            Ok((expanded, true)) => Some(self.eval_at(&expanded, env, tail)),
             Ok((_, false)) => None,
         }
     }
 
     /// The special forms other than `if`. `None` = not a special form. Out of
     /// line so its many temporaries stay off the hot call path's stack.
+    /// Bodies (do/let/letfn*/loop) end in a tail eval; when the form itself
+    /// is not in tail position (`!tail`) a resulting tail call is run here.
     #[inline(never)]
     fn eval_special(
         &mut self,
         name: &str,
         rest: &Value,
         env: &Env,
+        tail: bool,
     ) -> Option<Result<Value, Throw>> {
         let mut special = true;
         let r = (|| -> Result<Value, Throw> {
@@ -774,12 +814,15 @@ impl Interp {
                 }
             }
         })();
-        special.then_some(r)
+        if !special {
+            return None;
+        }
+        Some(if tail { r } else { self.force(r) })
     }
 
     /// `(if cond then else?)`: eval cond, then-branch when truthy else
     /// else-branch; a missing else yields nil.
-    fn eval_if(&mut self, args: &Value, env: &Env) -> Result<Value, Throw> {
+    fn eval_if(&mut self, args: &Value, env: &Env, tail: bool) -> Result<Value, Throw> {
         // Walk the arg list by reference: this frame is on every recursive
         // path, so no clones/temporaries beyond the test value.
         let Value::Cons(c1) = args else {
@@ -788,12 +831,12 @@ impl Interp {
         let Value::Cons(c2) = &c1.1 else {
             return Err(if_too_few());
         };
-        // Condition is a value (non-tail); branches are tail positions and
-        // may legitimately produce a `recur` signal, so use plain `eval`.
+        // Condition is a value (non-tail); branches inherit the if's tail-ness
+        // (a `recur` signal passes through either way).
         if self.eval_value(&c1.0, env)?.is_truthy() {
-            self.eval(&c2.0, env)
+            self.eval_at(&c2.0, env, tail)
         } else if let Value::Cons(c3) = &c2.1 {
-            self.eval(&c3.0, env)
+            self.eval_at(&c3.0, env, tail)
         } else {
             Ok(Value::Nil)
         }
@@ -809,7 +852,7 @@ impl Interp {
         for form in init {
             self.eval_value(form, env)?;
         }
-        self.eval(last, env)
+        self.eval_tail(last, env)
     }
 
     /// The `(do ...)` special form: body is the cons tail.
@@ -982,6 +1025,15 @@ impl Default for Interp {
 #[inline(never)]
 fn if_too_few() -> Throw {
     throw_str("if: too few forms")
+}
+
+/// Box a tail call's (callee, args); out of line to keep `eval_list` small.
+#[inline(never)]
+fn tail_call(callee: &Value, args: &mut Vec<Value>) -> Result<Value, Throw> {
+    Ok(Value::TailCall(gc::Gc::new((
+        callee.clone(),
+        std::mem::take(args),
+    ))))
 }
 
 #[cold]
