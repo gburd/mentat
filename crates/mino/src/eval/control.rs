@@ -1,14 +1,26 @@
 //! `try`/`catch`/`finally`. Ports `eval/control.c` (`eval_try`,
-//! `partition_try_clauses`, `normalize_exception`).
+//! `partition_try_clauses`, `normalize_exception`) plus the classed/keyword
+//! catch dispatch of ADR 32 and ADR 37.
 //!
-//! mino's `catch` takes NO exception type/class — `(catch binding handler...)`
-//! catches ALL exceptions unconditionally (documented DEVIATION in control.c:
-//! mino has a single exception kind, a diagnostic map, not a class hierarchy).
+//! `catch` accepts three shapes:
+//!   * `(catch e body...)` — bare catch-all (mino's original single-kind form).
+//!   * `(catch Class e body...)` — a *symbol* class from the frozen compat
+//!     table (ADR 32): it maps a JVM-ish class token to the set of
+//!     `:mino/kind` values it accepts. An unknown class symbol is a COMPILE
+//!     ERROR (typo safety), mirroring the JVM's unknown-class failure.
+//!   * `(catch :some/kind e body...)` — a *keyword* class (ADR 37): first
+//!     looked up in the table (so `:default` stays catch-all), and otherwise
+//!     matched against the thrown diagnostic's `:mino/kind` by exact equality.
+//!     An unknown keyword is NOT an error — it is a kind literal.
+//!
+//! Multiple catch clauses run first-match-wins; a bare clause may follow
+//! classed ones. `finally` runs on every path.
 //!
 //! Contract (verified against the mino binary):
 //!   * body evaluates; its value is the try's value when nothing throws;
-//!   * on a throw, the (single) catch clause runs with `binding` bound to the
-//!     *normalized* diagnostic map, and its value becomes the try's value;
+//!   * on a throw, the FIRST matching catch clause runs with `binding` bound
+//!     to the *normalized* diagnostic map, and its value becomes the try's
+//!     value; if no clause matches, the throw propagates (after `finally`);
 //!   * `finally` runs on EVERY path (normal, caught, re-thrown) and its value
 //!     is discarded — the try/catch result or the propagating throw stands;
 //!   * a re-throw from the catch handler propagates after `finally` runs.
@@ -16,45 +28,132 @@
 use crate::env::Env;
 use crate::error::{normalize_exception, throw_classified, Throw};
 use crate::eval::Interp;
+use crate::symbol::Symbol;
 use crate::value::Value;
 
-/// The partitioned shape of a `(try body... [catch e handler...]
-/// [finally cleanup...])` form.
+/// What a catch clause dispatches on.
+enum CatchClass {
+    /// Bare `(catch e ...)`, or a `:default`/`Throwable`/`Exception` alias:
+    /// matches any diagnostic.
+    Any,
+    /// A symbol class or table-keyword alias: matches when the thrown
+    /// diagnostic's `:mino/kind` is one of these kinds (kind strings like
+    /// `"eval/type"`, `"user"`).
+    Kinds(Vec<&'static str>),
+    /// A keyword class not in the table (ADR 37): matches `:mino/kind` by
+    /// exact keyword equality against this symbol.
+    Kind(Symbol),
+}
+
+/// One parsed catch clause.
+struct Catch {
+    class: CatchClass,
+    var: Symbol,
+    body: Vec<Value>,
+}
+
+/// The ADR 32 compat table: a class-name token -> the `:mino/kind` values it
+/// accepts. `None` means catch-all (Throwable/Exception). Returns `Some(kinds)`
+/// for a known class, or `Err` (via the caller) for an unknown symbol.
+fn compat_class(name: &str) -> Option<CatchClass> {
+    match name {
+        // Catch-all classes.
+        "Throwable" | "Exception" | "java.lang.Throwable" | "java.lang.Exception" => {
+            Some(CatchClass::Any)
+        }
+        "ExceptionInfo" | "clojure.lang.ExceptionInfo" => Some(CatchClass::Kinds(vec!["user"])),
+        "Error" | "java.lang.Error" => Some(CatchClass::Kinds(vec!["internal"])),
+        "ClassCastException"
+        | "ArithmeticException"
+        | "NullPointerException"
+        | "NumberFormatException" => Some(CatchClass::Kinds(vec!["eval/type"])),
+        "IllegalArgumentException" => Some(CatchClass::Kinds(vec!["eval/arity", "eval/contract"])),
+        "UnsupportedOperationException" => Some(CatchClass::Kinds(vec!["eval/contract"])),
+        "IndexOutOfBoundsException" | "StringIndexOutOfBoundsException" => {
+            Some(CatchClass::Kinds(vec!["eval/bounds"]))
+        }
+        "IllegalStateException" => Some(CatchClass::Kinds(vec!["eval/state"])),
+        _ => None,
+    }
+}
+
+/// The `:mino/kind` of a normalized diagnostic as a kind string
+/// (`"eval/type"`, `"user"`, `"store/backend"`, ...), or None.
+fn diagnostic_kind(ex: &Value) -> Option<Symbol> {
+    let Value::Map(m) = ex else { return None };
+    let key = Value::Keyword(Symbol::namespaced("mino", "kind"));
+    match m.get(&key) {
+        Some(Value::Keyword(k)) => Some(k.clone()),
+        _ => None,
+    }
+}
+
+/// Render a kind symbol as its slash-joined string (`"eval/type"`, `"user"`).
+fn kind_str(k: &Symbol) -> String {
+    match &k.ns {
+        Some(ns) => format!("{ns}/{}", k.name),
+        None => k.name.to_string(),
+    }
+}
+
+/// Does this catch clause handle the normalized diagnostic `ex`?
+fn clause_matches(class: &CatchClass, ex: &Value) -> bool {
+    match class {
+        CatchClass::Any => true,
+        CatchClass::Kinds(kinds) => match diagnostic_kind(ex) {
+            Some(k) => kinds.contains(&kind_str(&k).as_str()),
+            None => false,
+        },
+        CatchClass::Kind(want) => match diagnostic_kind(ex) {
+            Some(k) => &k == want,
+            None => false,
+        },
+    }
+}
+
+/// The partitioned shape of a `(try body... catch-clause* [finally cleanup...])`
+/// form.
 struct TryClauses {
     body: Vec<Value>,
-    catch_var: Option<crate::symbol::Symbol>,
-    catch_body: Vec<Value>,
+    catches: Vec<Catch>,
     finally_body: Vec<Value>,
-    has_catch: bool,
     has_finally: bool,
 }
 
 /// Walk the args once, classifying each top-level form as body / catch /
-/// finally. Ports `partition_try_clauses`.
+/// finally. Ports `partition_try_clauses` extended for ADR 32/37 catch classes.
 fn partition(args: &[Value]) -> Result<TryClauses, Throw> {
     let mut c = TryClauses {
         body: Vec::new(),
-        catch_var: None,
-        catch_body: Vec::new(),
+        catches: Vec::new(),
         finally_body: Vec::new(),
-        has_catch: false,
         has_finally: false,
     };
     for clause in args {
         match clause_head(clause) {
             Some("catch") => {
-                // (catch binding handler...) — no type argument.
                 let elems = list_elems(clause);
-                let var = match elems.get(1) {
-                    Some(Value::Sym(s)) => s.clone(),
-                    Some(_) => {
+                // (catch e body...)          -> bare catch-all
+                // (catch Class e body...)    -> classed
+                // The clause has a class iff there are two leading symbols/
+                // keywords before the body.
+                let (class, var, skip) = match (elems.get(1), elems.get(2)) {
+                    // Two leading tokens: classed catch. elems[1] is the class
+                    // (symbol or keyword), elems[2] is the binding symbol.
+                    (Some(class_tok), Some(Value::Sym(bind))) => {
+                        let class = parse_catch_class(class_tok)?;
+                        (class, bind.clone(), 3)
+                    }
+                    // One leading symbol: bare catch-all.
+                    (Some(Value::Sym(bind)), _) => (CatchClass::Any, bind.clone(), 2),
+                    (Some(_), _) => {
                         return Err(throw_classified(
                             "syntax",
                             "MSY001",
                             "catch binding must be a symbol",
                         ))
                     }
-                    None => {
+                    (None, _) => {
                         return Err(throw_classified(
                             "syntax",
                             "MSY001",
@@ -62,9 +161,11 @@ fn partition(args: &[Value]) -> Result<TryClauses, Throw> {
                         ))
                     }
                 };
-                c.catch_var = Some(var);
-                c.catch_body = elems.into_iter().skip(2).collect();
-                c.has_catch = true;
+                c.catches.push(Catch {
+                    class,
+                    var,
+                    body: elems.into_iter().skip(skip).collect(),
+                });
             }
             Some("finally") => {
                 c.finally_body = list_elems(clause).into_iter().skip(1).collect();
@@ -74,6 +175,46 @@ fn partition(args: &[Value]) -> Result<TryClauses, Throw> {
         }
     }
     Ok(c)
+}
+
+/// Parse a catch class token (the form before the binding symbol). A symbol
+/// must be in the compat table (unknown = compile error, ADR 32). A keyword is
+/// looked up in the table first (so `:default` is catch-all) and otherwise is
+/// a kind literal matched by equality (ADR 37).
+fn parse_catch_class(tok: &Value) -> Result<CatchClass, Throw> {
+    match tok {
+        Value::Sym(s) => {
+            let name = if let Some(ns) = &s.ns {
+                format!("{ns}.{}", s.name)
+            } else {
+                s.name.to_string()
+            };
+            // Try the bare name and the ns-qualified name against the table.
+            compat_class(&name)
+                .or_else(|| compat_class(&s.name))
+                .ok_or_else(|| {
+                    throw_classified(
+                        "syntax",
+                        "MSY001",
+                        &format!("catch: unknown exception class {name}"),
+                    )
+                })
+        }
+        Value::Keyword(k) => {
+            // `:default` is the catch-all alias (ADR 32). Any other keyword is
+            // matched against :mino/kind by equality (ADR 37).
+            if k.ns.is_none() && &*k.name == "default" {
+                Ok(CatchClass::Any)
+            } else {
+                Ok(CatchClass::Kind(k.clone()))
+            }
+        }
+        _ => Err(throw_classified(
+            "syntax",
+            "MSY001",
+            "catch class must be a symbol or keyword",
+        )),
+    }
 }
 
 /// `(try ...)`: evaluate the body inside a catch/finally frame.
@@ -89,17 +230,16 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
         return Err(Throw(p.clone()));
     }
 
-    // 2. Catch: run the handler if the body threw.
-    if clauses.has_catch {
-        if let Err(Throw(raw)) = result {
-            let ex = normalize_exception(&raw);
+    // 2. Catch: run the FIRST matching handler if the body threw.
+    if let Err(Throw(raw)) = &result {
+        let ex = normalize_exception(raw);
+        if let Some(cat) = clauses.catches.iter().find(|c| clause_matches(&c.class, &ex)) {
             let local = env.child();
-            if let Some(var) = &clauses.catch_var {
-                local.set(var.clone(), ex);
-            }
+            local.set(cat.var.clone(), ex);
             // A re-throw here propagates (after finally, below).
-            result = no_recur(eval_forced(it, &clauses.catch_body, &local));
+            result = no_recur(eval_forced(it, &cat.body, &local));
         }
+        // No matching clause: `result` stays the original Err and propagates.
     }
 
     if let Some(p) = &it.tripped {
@@ -284,5 +424,65 @@ mod tests {
         );
         // rethrow when no catch: propagates out as an Err.
         assert!(it.eval_str("(try (throw \"x\") (finally 1))").is_err());
+    }
+
+    #[test]
+    fn classed_catch_dispatches_on_kind() {
+        let mut it = Interp::new();
+        // A keyword catch matches :mino/kind by equality (ADR 37): a
+        // user-thrown map with :mino/kind :store/backend.
+        assert_eq!(
+            ev(
+                &mut it,
+                "(try (throw {:mino/kind :store/backend :mino/message \"bad\"}) \
+                 (catch :store/backend e :caught))"
+            ),
+            ":caught"
+        );
+        // A non-matching keyword catch declines; the throw propagates.
+        assert!(it
+            .eval_str(
+                "(try (throw {:mino/kind :store/backend}) (catch :store/schema e :caught))"
+            )
+            .is_err());
+        // First-match-wins across clauses; a later bare clause is the fallback.
+        assert_eq!(
+            ev(
+                &mut it,
+                "(try (throw {:mino/kind :store/schema}) \
+                 (catch :store/backend e :backend) \
+                 (catch e :fallback))"
+            ),
+            ":fallback"
+        );
+        // :default is catch-all.
+        assert_eq!(
+            ev(&mut it, "(try (throw \"x\") (catch :default e :caught))"),
+            ":caught"
+        );
+    }
+
+    #[test]
+    fn classed_catch_symbol_from_compat_table() {
+        let mut it = Interp::new();
+        // ArithmeticException maps to :eval/type; division-by-zero is :eval/math
+        // in the port, so use a real :eval/type error instead: a type error.
+        // Throwable is catch-all.
+        assert_eq!(
+            ev(&mut it, "(try (/ 1 0) (catch Throwable e :caught))"),
+            ":caught"
+        );
+        // ExceptionInfo maps to :user — an ex-info throw is caught.
+        assert_eq!(
+            ev(
+                &mut it,
+                "(try (throw (ex-info \"boom\" {:a 1})) (catch ExceptionInfo e (ex-message e)))"
+            ),
+            "\"boom\""
+        );
+        // An unknown class SYMBOL is a compile error.
+        assert!(it
+            .eval_str("(try 1 (catch NoSuchThingException e 2))")
+            .is_err());
     }
 }
