@@ -17,3 +17,6 @@ path = "../core-traits"
 [dependencies.edn]
 path = "../edn"
 features = ["serde_support"]
+
+[lints]
+workspace = true

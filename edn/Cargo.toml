@@ -29,3 +29,6 @@ serde_json = "~1.0"
 
 [features]
 serde_support = ["serde", "serde_derive"]
+
+[lints]
+workspace = true

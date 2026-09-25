@@ -33,6 +33,50 @@ members = [
   "query-sql", "sql", "sql-traits", "transaction", "mino", "mino/vendor/gc", "mino/vendor/gc_derive"
   ]
 
+[workspace.package]
+# ponytail: plan §1.14 intends pinned 1.98; MSRV floor stays 1.88 (plan). The
+# CI host (EC2) runs 1.90 via rustup, so rust-toolchain.toml pins 1.90.
+rust-version = "1.88"
+
+[workspace.lints.clippy]
+# Panic prevention (to be promoted to deny as code is cleaned up)
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
+panic_in_result_fn = "allow"
+unimplemented = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Temporarily allowed (pre-existing, non-safety, to be fixed incrementally)
+type_complexity = "allow"
+needless_borrow = "allow"
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow"
+unnecessary_wraps = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+get_first = "allow"
+collapsible_match = "allow"
+collapsible_else_if = "allow"
+single_match = "allow"
+cloned_ref_to_slice_refs = "allow"
+unnecessary_cast = "allow"
+collapsible_str_replace = "allow"
+needless_range_loop = "allow"
+manual_strip = "allow"
+unnecessary_map_or = "allow"
+useless_format = "allow"
+
 [build-dependencies]
 rustc_version = "~0.4"
 
@@ -113,5 +157,10 @@ optional = true
 
 [profile.release]
 opt-level = 3
-debug = false
-lto = true
+lto = "fat"
+codegen-units = 1
+
+[profile.release-dev]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
