@@ -78,7 +78,11 @@ pub fn install(it: &mut mino_rs::Interpreter, backend: Backend) {
                 .ok_or_else(|| throw_str("mentat.store/transact: expected (conn tx-data)"))?;
             let edn = print_str(tx);
             let report = thr("mentat.store/transact", b.borrow_mut().transact(id, &edn))?;
-            Ok(tx_report_value(&report, None))
+            // A tx-report carries its resulting basis as :mentat.store/db-after
+            // (Datomic shape), so a committed transact and a speculative `with`
+            // report the same way.
+            let db_after = db_value(id, report.tx_id, None, None);
+            Ok(tx_report_value(&report, Some(db_after)))
         });
     }
 

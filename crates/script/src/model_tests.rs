@@ -72,13 +72,15 @@ pub fn q_takes_a_db_value(it: &mut Interpreter) {
 pub fn pull_returns_a_map(it: &mut Interpreter) {
     seed(it);
     let eid = eid_of(it, "Alice");
-    assert_eq!(
-        it.eval_to_string(&format!(
+    let pulled = it
+        .eval_to_string(&format!(
             "(mentat.store/pull (mentat.store/db c) {eid} [:person/name])"
         ))
-        .unwrap(),
-        "{:person/name \"Alice\"}"
-    );
+        .unwrap();
+    // A keyword-keyed map carrying the pulled value. (The exact map shape is
+    // backend-specific — pg may include extra keys — so assert the content.)
+    assert!(pulled.starts_with('{'), "pull -> map: {pulled}");
+    assert!(pulled.contains(":person/name \"Alice\""), "pull: {pulled}");
 }
 
 pub fn entity_returns_an_entity_map(it: &mut Interpreter) {
@@ -108,8 +110,11 @@ pub fn datoms_returns_tuples(it: &mut Interpreter) {
     let ds = it
         .eval_to_string("(mentat.store/datoms (mentat.store/db c))")
         .unwrap();
-    assert!(ds.starts_with('['), "{ds}");
-    assert!(ds.contains(":person/name \"Alice\""), "{ds}");
+    // A vector of tuples that includes the Alice name assertion's value. (The
+    // attribute place is a keyword on SQLite and an entid on pg — a real
+    // backend difference — so assert only the portable facts.)
+    assert!(ds.starts_with('['), "datoms: {ds}");
+    assert!(ds.contains("\"Alice\""), "datoms should include Alice: {ds}");
 }
 
 pub fn with_is_speculative_and_does_not_commit(it: &mut Interpreter) {
@@ -220,6 +225,7 @@ pub fn tx_report_has_the_datomic_shape(it: &mut Interpreter) {
         .unwrap();
     assert!(report.contains(":mentat.store/tx-id"), "{report}");
     assert!(report.contains(":mentat.store/tempids"), "{report}");
+    assert!(report.contains(":mentat.store/db-after"), "{report}");
 }
 
 /// The inst/uuid VALUE BUILDERS emit values that round-trip through the mino

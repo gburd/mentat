@@ -20,7 +20,7 @@ default = ["pg16"]
 # Optional Datomic-in-Clojure scripting surface (the `mentat.store/*` language),
 # embedding the pure-Rust mino-rs interpreter. Default off; a build without it
 # pulls nothing and pays nothing.
-script = ["dep:mino-rs"]
+script = ["dep:mino-rs", "dep:mentat_script"]
 pg13 = ["pgrx/pg13", "pgrx-tests/pg13"]
 pg14 = ["pgrx/pg14", "pgrx-tests/pg14"]
 pg15 = ["pgrx/pg15", "pgrx-tests/pg15"]
@@ -47,6 +47,9 @@ parking_lot = "0.12"
 # Pure-Rust, single-threaded, no FFI/threads/global state -- safe to embed in
 # a Postgres backend (build -> eval -> drop within one function call).
 mino-rs = { path = "../../mino", optional = true }
+
+# Optional: the backend-independent mentat.store/* scripting glue (§ 1.19).
+mentat_script = { path = "../../script", optional = true }
 
 # Mentat dependencies
 edn = { path = "../../edn", features = ["serde_support"] }

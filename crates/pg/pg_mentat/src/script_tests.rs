@@ -69,135 +69,6 @@ mod tests {
     }
 
     #[pg_test]
-    fn db_is_an_immutable_value_not_the_conn() {
-        seed();
-        let db = eval("(mentat.store/db (mentat.store/open))");
-        assert!(db.contains(":mentat.store/db true"), "db value: {db}");
-        assert!(db.contains(":mentat.store/basis-tx"), "db value: {db}");
-        assert_ne!(db, "1");
-
-        let basis: i64 = eval("(:mentat.store/basis-tx (mentat.store/db (mentat.store/open)))")
-            .parse()
-            .unwrap();
-        assert!(basis > 0, "basis-tx should be a real tx id, got {basis}");
-    }
-
-    #[pg_test]
-    fn q_takes_a_db_value() {
-        seed();
-        let got = eval(
-            "(mentat.store/q (mentat.store/db (mentat.store/open)) \
-               '[:find ?n :where [?e :person/name ?n]])",
-        );
-        assert!(got.contains("Alice"), "q result: {got}");
-
-        // A bare conn is accepted for ergonomics.
-        let via_conn =
-            eval("(mentat.store/q (mentat.store/open) '[:find ?n :where [?e :person/name ?n]])");
-        assert!(via_conn.contains("Alice"), "q via conn: {via_conn}");
-    }
-
-    #[pg_test]
-    fn pull_returns_a_map() {
-        seed();
-        let eid = eid_of("Alice");
-        let pulled = eval(&format!(
-            "(mentat.store/pull (mentat.store/db (mentat.store/open)) {eid} [:person/name])"
-        ));
-        assert!(pulled.contains(":person/name \"Alice\""), "pull: {pulled}");
-    }
-
-    #[pg_test]
-    fn entity_returns_an_entity_map() {
-        seed();
-        let eid = eid_of("Alice");
-        let ent = eval(&format!(
-            "(mentat.store/entity (mentat.store/db (mentat.store/open)) {eid})"
-        ));
-        assert!(ent.contains(&format!(":db/id {eid}")), "entity: {ent}");
-        assert!(ent.contains(":person/name \"Alice\""), "entity: {ent}");
-    }
-
-    #[pg_test]
-    fn read_returns_the_scalar() {
-        seed();
-        let eid = eid_of("Alice");
-        let v = eval(&format!(
-            "(mentat.store/read (mentat.store/db (mentat.store/open)) {eid} :person/name)"
-        ));
-        assert_eq!(v, "\"Alice\"");
-    }
-
-    #[pg_test]
-    fn with_is_speculative_and_does_not_commit() {
-        seed();
-
-        let with_result = eval(
-            "(mentat.store/with (mentat.store/db (mentat.store/open)) \
-               [{:person/name \"Bob\"}])",
-        );
-        assert!(
-            with_result.contains(":mentat.store/db-after"),
-            "with result: {with_result}"
-        );
-        assert!(
-            with_result.contains(":mentat.store/tx-report"),
-            "with result: {with_result}"
-        );
-
-        // CRUCIAL: the store is UNCHANGED. Bob was rolled back, never committed.
-        let after = eval(
-            "(mentat.store/q (mentat.store/db (mentat.store/open)) \
-               '[:find ?n :where [?e :person/name ?n]])",
-        );
-        assert!(after.contains("Alice"), "with must keep Alice: {after}");
-        assert!(!after.contains("Bob"), "with must not commit Bob: {after}");
-    }
-
-    #[pg_test]
-    fn as_of_and_since_reflect_the_basis() {
-        seed();
-        let basis_alice: i64 =
-            eval("(:mentat.store/basis-tx (mentat.store/db (mentat.store/open)))")
-                .parse()
-                .unwrap();
-
-        eval("(mentat.store/transact (mentat.store/open) [{:person/name \"Bob\"}])");
-        let basis_bob: i64 = eval("(:mentat.store/basis-tx (mentat.store/db (mentat.store/open)))")
-            .parse()
-            .unwrap();
-        assert!(basis_bob > basis_alice);
-
-        // Full q against an as-of basis: Alice only, not Bob (pg_mentat's edge
-        // over Mentat -- real temporal query support).
-        let as_of_alice = eval(&format!(
-            "(mentat.store/q (mentat.store/as-of (mentat.store/db (mentat.store/open)) {basis_alice}) \
-               '[:find ?n :where [?e :person/name ?n]])"
-        ));
-        assert!(as_of_alice.contains("Alice"), "as-of Alice: {as_of_alice}");
-        assert!(
-            !as_of_alice.contains("Bob"),
-            "as-of should exclude Bob: {as_of_alice}"
-        );
-
-        // as-of / since return db values carrying the bound.
-        let as_of_db = eval(&format!(
-            "(mentat.store/as-of (mentat.store/db (mentat.store/open)) {basis_alice})"
-        ));
-        assert!(
-            as_of_db.contains(&format!(":mentat.store/as-of {basis_alice}")),
-            "as-of db: {as_of_db}"
-        );
-        let since_db = eval(&format!(
-            "(mentat.store/since (mentat.store/db (mentat.store/open)) {basis_alice})"
-        ));
-        assert!(
-            since_db.contains(&format!(":mentat.store/since {basis_alice}")),
-            "since db: {since_db}"
-        );
-    }
-
-    #[pg_test]
     fn inst_representation_emitted_on_the_output_path() {
         // The instant OUTPUT path is real: `datoms` reconstruction surfaces the
         // per-tx :db/txInstant (instant-typed) datom. pg_mentat renders it via
@@ -348,6 +219,29 @@ mod tests {
         assert!(ds.starts_with('['), "datoms -> vector: {ds}");
         // The Alice name assertion appears among the [e a v tx added] tuples.
         assert!(ds.contains("Alice"), "datoms should include Alice: {ds}");
+    }
+
+    #[pg_test]
+    fn q_against_as_of_basis_is_faithful() {
+        // pg_mentat's edge over Mentat (§ 1.20): full Datalog `q` runs against a
+        // historical as-of basis, not just datoms/entity/read. The shared model
+        // suite proves as-of via `datoms` on both backends; this proves the
+        // pg-only temporal-`q` path.
+        seed();
+        let basis_alice: i64 =
+            eval("(:mentat.store/basis-tx (mentat.store/db (mentat.store/open)))")
+                .parse()
+                .unwrap();
+        eval("(mentat.store/transact (mentat.store/open) [{:person/name \"Bob\"}])");
+        let as_of_alice = eval(&format!(
+            "(mentat.store/q (mentat.store/as-of (mentat.store/db (mentat.store/open)) {basis_alice}) \
+               '[:find ?n :where [?e :person/name ?n]])"
+        ));
+        assert!(as_of_alice.contains("Alice"), "as-of Alice: {as_of_alice}");
+        assert!(
+            !as_of_alice.contains("Bob"),
+            "as-of should exclude Bob: {as_of_alice}"
+        );
     }
 
     #[pg_test]

@@ -26,6 +26,19 @@ fn seeded() -> Interpreter {
     it
 }
 
+/// SQLite's `datoms` renders the attribute place as a KEYWORD (pg renders it
+/// as an entid). This backend-specific tuple shape lives here; the shared model
+/// suite asserts only the portable facts (starts with `[`, contains the value).
+#[test]
+fn datoms_render_the_attribute_as_a_keyword() {
+    let mut it = seeded();
+    let ds = it
+        .eval_to_string("(mentat.store/datoms (mentat.store/db c))")
+        .expect("datoms failed");
+    assert!(ds.starts_with('['), "datoms: {ds}");
+    assert!(ds.contains(":person/name \"Alice\""), "datoms: {ds}");
+}
+
 #[test]
 fn q_against_non_current_basis_errors_honestly() {
     let mut it = seeded();
