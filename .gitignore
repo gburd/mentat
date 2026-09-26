@@ -96,3 +96,6 @@ build.xcarchive
 docs/_site
 docs/.sass-cache
 docs/.jekyll-metadata
+
+# DuckDB registry build output (root Makefile forwards to crates/duckdb)
+/build/

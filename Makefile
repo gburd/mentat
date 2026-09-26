@@ -59,3 +59,35 @@ outdated:
 
 fix:
 	$$(for p in $$(dirname $$(ls Cargo.toml */Cargo.toml */*/Cargo.toml)); do echo $$p; (cd $$p; cargo fix --allow-dirty --broken-code --edition-idioms); done)
+
+# --- DuckDB extension (crates/duckdb) ------------------------------------
+# The DuckDB Community Extensions CI (duckdb/community-extensions ->
+# extension-ci-tools/_extension_distribution.yml) clones THIS repo at its root and
+# runs `make configure_ci`, `make release` / `make debug`, `make test_release` /
+# `make test_debug` here, then collects
+#   build/<type>/extension/mentat/mentat.duckdb_extension
+# from the repo root. The extension lives in crates/duckdb, so these targets
+# forward there and copy the artifacts to where the registry looks. The registry
+# also checks out its own extension-ci-tools at ./extension-ci-tools; we use the
+# pinned submodule under crates/duckdb either way.
+DUCKDB_DIR := crates/duckdb
+.PHONY: configure configure_ci debug release test_debug test_release \
+        set_duckdb_version set_duckdb_tag set_duckdb_repository
+
+configure configure_ci:
+	$(MAKE) -C $(DUCKDB_DIR) $@
+
+debug release:
+	$(MAKE) -C $(DUCKDB_DIR) $@
+	mkdir -p build/$@/extension/mentat
+	cp $(DUCKDB_DIR)/build/$@/mentat.duckdb_extension build/$@/
+	cp $(DUCKDB_DIR)/build/$@/mentat.duckdb_extension build/$@/extension/mentat/
+
+test_debug test_release:
+	$(MAKE) -C $(DUCKDB_DIR) $@
+
+# The registry sets these to pin the DuckDB it builds against; our extension is
+# already pinned (TARGET_DUCKDB_VERSION in crates/duckdb/Makefile), so they're
+# accepted and ignored.
+set_duckdb_version set_duckdb_tag set_duckdb_repository:
+	@echo "mentat: $@ is a no-op (DuckDB version pinned in $(DUCKDB_DIR)/Makefile)"
