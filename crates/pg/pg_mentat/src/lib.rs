@@ -725,6 +725,8 @@ mod cardinality_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod cas_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod explain_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod comprehensive_retract_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod comprehensive_upsert_tests;

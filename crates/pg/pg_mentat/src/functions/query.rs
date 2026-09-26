@@ -1460,16 +1460,20 @@ fn mentat_explain_internal(
     let explain_sql = format!("EXPLAIN (VERBOSE, FORMAT {}) {}", format_keyword, sql_query);
     let params = builder.params;
 
-    let plan_json = Spi::connect(|client| {
+    let plan_json = Spi::connect_mut(|client| {
         // Must prepare first so bound params are typed correctly. `client.select(&str, ..., params)`
         // works for literal queries, but EXPLAIN wrappers around parameterised SQL need the OID list
         // attached to a prepared plan or SPI returns an empty result set and the JSON parse below
         // fails with "EOF while parsing a value at line 1 column 0".
+        //
+        // Use the mutable (read_only = false) SPI connection: EXPLAIN of a plannable
+        // statement is rejected ("EXPLAIN is not allowed in a non-volatile function")
+        // when run through a read-only SPI context, even though this function is VOLATILE.
         let arg_types: Vec<PgOid> = params
             .iter()
             .map(|p| PgOid::from_untagged(p.oid()))
             .collect();
-        let prepared = client.prepare(&explain_sql, &arg_types)?;
+        let prepared = client.prepare_mut(&explain_sql, &arg_types)?;
 
         let mut plan_rows: Vec<String> = Vec::new();
         for row in client.select(&prepared, None, &params)? {
