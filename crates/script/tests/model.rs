@@ -69,7 +69,13 @@ impl Fake {
                 (_, Some(s)) => *tx > s,
                 _ => true,
             })
-            .map(|(_, e, a, v)| (*e, a.clone(), read_one(v).map(|(x, _)| x).unwrap_or(Value::Nil)))
+            .map(|(_, e, a, v)| {
+                (
+                    *e,
+                    a.clone(),
+                    read_one(v).map(|(x, _)| x).unwrap_or(Value::Nil),
+                )
+            })
             .collect()
     }
 
@@ -226,7 +232,11 @@ impl ScriptBackend for Fake {
         let tuples: Vec<Value> = rows
             .into_iter()
             .map(|(e, a, v)| {
-                Value::Vector(Gc::new(PVec::from_vec(vec![Value::Int(e), kw_value(&a), v])))
+                Value::Vector(Gc::new(PVec::from_vec(vec![
+                    Value::Int(e),
+                    kw_value(&a),
+                    v,
+                ])))
             })
             .collect();
         Ok(Value::Vector(Gc::new(PVec::from_vec(tuples))))
@@ -266,9 +276,7 @@ fn project_find(find: &[Value], matches: &[(i64, Value)]) -> Value {
     }
     // [:find [?v ...]] -> collection vector.
     if let [Value::Vector(inner)] = find {
-        if inner.len() == 2
-            && matches!(inner.nth(1), Some(Value::Sym(s)) if &*s.name == "...")
-        {
+        if inner.len() == 2 && matches!(inner.nth(1), Some(Value::Sym(s)) if &*s.name == "...") {
             let vals: Vec<Value> = matches.iter().map(|(_, v)| v.clone()).collect();
             return Value::Vector(Gc::new(PVec::from_vec(vals)));
         }

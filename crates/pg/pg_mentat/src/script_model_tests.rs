@@ -42,4 +42,5 @@ mod tests {
     #[pgrx::pg_test]
     fn inst_and_uuid_builders_round_trip_through_the_reader() {
         m::inst_and_uuid_builders_round_trip_through_the_reader();
-    }}
+    }
+}
