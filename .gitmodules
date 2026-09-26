@@ -1,0 +1,3 @@
+[submodule "crates/duckdb/extension-ci-tools"]
+	path = crates/duckdb/extension-ci-tools
+	url = https://github.com/duckdb/extension-ci-tools

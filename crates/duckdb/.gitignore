@@ -1,0 +1,6 @@
+/build
+/configure
+/target
+duckdb_unittest_tempdir
+*.duckdb
+*.duckdb.wal

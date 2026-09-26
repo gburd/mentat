@@ -1,0 +1,30 @@
+[package]
+name = "mentat_duckdb"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Datomic-compatible Datalog engine exposed as a DuckDB extension"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+# Optional mino scripting surface (mentat_eval), mirroring pg_mentat's `script`.
+# Off by default; not wired in M1.
+script = ["mentat/mino"]
+
+[dependencies]
+# Pin to the DuckDB v1.5.5 line. Tilde => crate patch updates, same DuckDB.
+# loadable-extension transitively enables `vtab` + `duckdb-loadable-macros`;
+# `vscalar` is added for the scalar functions.
+duckdb = { version = "~1.10505.0", features = ["loadable-extension", "vscalar"] }
+
+# The embedded engine (plan §3.1 option (a)). Path dep on the workspace mentat
+# crate; it bundles its own sqlite via rusqlite `bundled` (the default).
+mentat = { path = "../sqlite/mentat" }
+
+serde_json = "1"
