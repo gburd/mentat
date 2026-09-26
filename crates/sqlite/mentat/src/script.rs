@@ -69,13 +69,16 @@ const SCRIPT_LIMITS: mino_rs::Limits = mino_rs::Limits {
 struct MentatBackend {
     stores: RefCell<HashMap<i64, Store>>,
     next_id: Cell<i64>,
+    /// What a no-arg `(mentat.store/open)` opens; `None` = in-memory (`""`).
+    default_path: Option<String>,
 }
 
 impl MentatBackend {
-    fn new() -> Self {
+    fn new(default_path: Option<String>) -> Self {
         MentatBackend {
             stores: RefCell::new(HashMap::new()),
             next_id: Cell::new(1),
+            default_path,
         }
     }
 }
@@ -94,11 +97,23 @@ impl Interpreter {
     /// A fresh scripting interpreter with the `mentat.store/*` prims registered
     /// over a private table of live SQLite stores.
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// Like [`Interpreter::new`], but a no-arg `(mentat.store/open)` opens the
+    /// store at `path` instead of a fresh in-memory one. Hosts that own a
+    /// database (e.g. the DuckDB extension's `edn_eval(db_path, script)`) use
+    /// this so scripts act on that database without naming a path themselves.
+    pub fn with_default_path(path: &str) -> Self {
+        Self::build(Some(path.to_string()))
+    }
+
+    fn build(default_path: Option<String>) -> Self {
         // Sandboxed: scripts get no host filesystem; every top-level eval is
         // bounded in steps, heap, and depth (see `SCRIPT_LIMITS`).
         let mut inner = mino_rs::Interpreter::sandboxed();
         inner.set_limits(SCRIPT_LIMITS);
-        let backend = Rc::new(RefCell::new(MentatBackend::new()));
+        let backend = Rc::new(RefCell::new(MentatBackend::new(default_path)));
         mentat_script::install(&mut inner, backend.clone());
         Interpreter {
             inner,
@@ -134,7 +149,8 @@ impl Default for Interpreter {
 
 impl ScriptBackend for MentatBackend {
     fn open(&mut self, path: Option<&str>) -> Result<i64, String> {
-        let store = Store::open(path.unwrap_or("")).map_err(|e| e.to_string())?;
+        let path = path.or(self.default_path.as_deref()).unwrap_or("");
+        let store = Store::open(path).map_err(|e| e.to_string())?;
         let id = self.next_id.get();
         self.next_id.set(id + 1);
         self.stores.borrow_mut().insert(id, store);

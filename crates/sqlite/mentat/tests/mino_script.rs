@@ -115,3 +115,43 @@ fn instant_output_path_emits_tagged_form() {
         "as-of datoms should carry a tagged instant (:db/txInstant): {ds}"
     );
 }
+
+/// `with_default_path`: a no-arg `(mentat.store/open)` opens the host-supplied
+/// file, so writes persist to it and are visible to a plain `Store::open`.
+#[test]
+fn with_default_path_makes_no_arg_open_use_that_file() {
+    let dir = std::env::temp_dir().join(format!("mentat_default_path_{}", std::process::id()));
+    let path = dir.to_str().unwrap().to_string();
+    let _ = std::fs::remove_file(&path);
+
+    let mut it = Interpreter::with_default_path(&path);
+    it.eval("(def c (mentat.store/open))").unwrap();
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/ident :person/name \
+           :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])",
+    )
+    .unwrap();
+    it.eval_to_string("(mentat.store/transact c [{:person/name \"Zed\"}])")
+        .unwrap();
+    drop(it);
+
+    use mentat::{IntoResult, Queryable};
+    let store = mentat::Store::open(&path).unwrap();
+    let name = store
+        .q_once("[:find ?n . :where [_ :person/name ?n]]", None)
+        .into_scalar_result()
+        .unwrap()
+        .and_then(|b| b.into_string());
+    assert_eq!(name.as_deref().map(|s| s.as_str()), Some("Zed"));
+
+    // Plain `new()` is still in-memory: a no-arg open does not see Zed.
+    let mut fresh = Interpreter::new();
+    fresh.eval("(def c (mentat.store/open))").unwrap();
+    let r = fresh
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) '[:find ?n :where [_ :person/name ?n]])",
+        )
+        .unwrap_or_default();
+    assert!(!r.contains("Zed"), "in-memory store leaked: {r}");
+    let _ = std::fs::remove_file(&path);
+}
