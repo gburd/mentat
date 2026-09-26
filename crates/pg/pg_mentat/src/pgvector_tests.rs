@@ -47,14 +47,14 @@ mod tests {
     /// shift across tests).
     fn install_docs_with_vectors() -> (i64, i64, i64) {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :doc/title :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :doc/embedding :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :doc/title \"Postgres\"  :doc/embedding \"x\"}
                 {:db/id \"b\" :doc/title \"Datalog\"   :doc/embedding \"x\"}
                 {:db/id \"c\" :doc/title \"Cookies\"   :doc/embedding \"x\"}
@@ -131,7 +131,7 @@ mod tests {
         // get Postgres plus one other; the join to :doc/title must NOT
         // multiply rows.
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?title ?dist :where \
+            "SELECT edn_q('[:find ?title ?dist :where \
              [(vector-near $ :doc/embedding \"[1,0,0]\" 2) [[?e ?dist]]] \
              [?e :doc/title ?title] :order (asc ?dist)]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -168,7 +168,7 @@ mod tests {
         install_docs_with_vectors();
 
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?title ?dist :where \
+            "SELECT edn_q('[:find ?title ?dist :where \
              [(vector-near $ :doc/embedding \"[1,0,0]\" 1 :l2) [[?e ?dist]]] \
              [?e :doc/title ?title]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -192,7 +192,7 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :doc/v :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
@@ -218,7 +218,7 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :doc/v :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
@@ -240,7 +240,7 @@ mod tests {
     fn pg_test_pgv_arity_error() {
         setup();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(vector-near $ :doc/v) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(vector-near $ :doc/v) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("vector-near"),
@@ -261,7 +261,7 @@ mod tests {
         }
         install_docs_with_vectors();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(vector-near $ :doc/embedding \"[1,0,0]\" 1 :hamming) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(vector-near $ :doc/embedding \"[1,0,0]\" 1 :hamming) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arg") && err.contains("distance"),
@@ -281,7 +281,7 @@ mod tests {
             return;
         }
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(vector-near $ :no/such \"[1,0,0]\" 1) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(vector-near $ :no/such \"[1,0,0]\" 1) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/unknown-attribute"),

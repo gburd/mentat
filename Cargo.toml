@@ -44,7 +44,7 @@ default-members = [
 exclude = ["crates/sqlite/fixtures"]
 
 [workspace.package]
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 # ponytail: plan §1.14 intends pinned 1.98; MSRV floor stays 1.88 (plan). The
 # CI host (EC2) runs 1.90 via rustup, so rust-toolchain.toml pins 1.90.

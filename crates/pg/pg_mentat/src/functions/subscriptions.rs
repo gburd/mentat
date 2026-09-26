@@ -100,7 +100,7 @@ fn subscription_exists(
 /// on datom changes and issues NOTIFY if results differ.
 ///
 /// The trigger function:
-/// 1. Runs the subscribed Datalog query via mentat_query
+/// 1. Runs the subscribed Datalog query via edn_q
 /// 2. Computes an MD5 hash of the result
 /// 3. Compares with the last known hash (stored in a session variable)
 /// 4. Sends NOTIFY on the subscription channel if the hash changed
@@ -128,7 +128,7 @@ DECLARE
     result_json JSONB;
 BEGIN
     -- Re-evaluate the subscribed Datalog query
-    SELECT mentat_query('{escaped_query}') INTO result_json;
+    SELECT edn_q('{escaped_query}', '{{}}'::jsonb) INTO result_json;
 
     -- Compute hash of current results
     new_hash := md5(result_json::TEXT);
@@ -441,7 +441,7 @@ mod tests {
             "[:find ?e :where [?e :person/name]]",
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
-        assert!(sql.contains("mentat_query"));
+        assert!(sql.contains("edn_q"));
         assert!(sql.contains("pg_notify"));
         assert!(sql.contains("mentat_test_sub"));
         assert!(sql.contains("[:find ?e :where [?e :person/name]]"));
@@ -455,7 +455,7 @@ mod tests {
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
         );
-        // Single quotes are doubled once for the mentat_query('...') string
+        // Single quotes are doubled once for the edn_q('...') string
         // literal embedded inside the $$-quoted function body. The function
         // body is dollar-quoted, so the quotes inside it are literal -- there
         // is no second nesting level, hence one level of doubling (O''Brien),

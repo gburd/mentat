@@ -32,7 +32,7 @@ mod tests {
 
     fn setup_cas_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :cas/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :cas/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"d\" :db/ident :cas/dbl :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
@@ -50,21 +50,22 @@ mod tests {
     fn test_cas_string_success() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/name \"old\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/name \"old\"]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/name \"old\" \"new\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/name \"old\" \"new\"]]'::TEXT)",
             eid
         ))
         .expect("cas");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "new");
     }
@@ -73,20 +74,22 @@ mod tests {
     fn test_cas_long_success() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 10]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 10]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/val 10 20]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/val 10 20]]'::TEXT)",
             eid
         ))
         .expect("cas");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("v"), 20);
     }
@@ -95,21 +98,22 @@ mod tests {
     fn test_cas_boolean_success() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/flag false]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/flag false]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/flag false true]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/flag false true]]'::TEXT)",
             eid
         ))
         .expect("cas");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_bool().expect("b"), true);
     }
@@ -118,21 +122,23 @@ mod tests {
     fn test_cas_keyword_success() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/status :draft]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/status :draft]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/status :draft :published]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/status :draft :published]]'::TEXT)",
             eid
         ))
         .expect("cas");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/status ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/status ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_str().expect("s").contains("published"));
     }
@@ -141,30 +147,32 @@ mod tests {
     fn test_cas_sequential_3_steps() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 1]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 1]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/val 1 2]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/val 1 2]]'::TEXT)",
             eid
         ))
         .expect("cas 1->2");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/val 2 3]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/val 2 3]]'::TEXT)",
             eid
         ))
         .expect("cas 2->3");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/val 3 4]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/val 3 4]]'::TEXT)",
             eid
         ))
         .expect("cas 3->4");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("v"), 4);
     }
@@ -173,15 +181,14 @@ mod tests {
     fn test_cas_sequential_10_steps() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 0]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 0]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         for i in 0..10 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/cas {} :cas/val {} {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/cas {} :cas/val {} {}]]'::TEXT)",
                 eid,
                 i,
                 i + 1
@@ -189,8 +196,11 @@ mod tests {
             .expect("cas");
         }
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("v"), 10);
     }
@@ -199,21 +209,23 @@ mod tests {
     fn test_cas_from_nil_string() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 0]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 0]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         // CAS from nil (attribute not set) to a value
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/name nil \"first\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/name nil \"first\"]]'::TEXT)",
             eid
         ))
         .expect("cas from nil");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "first");
     }
@@ -222,21 +234,23 @@ mod tests {
     fn test_cas_from_nil_long() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/name \"test\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/name \"test\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/val nil 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/val nil 42]]'::TEXT)",
             eid
         ))
         .expect("cas from nil");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("v"), 42);
     }
@@ -249,16 +263,15 @@ mod tests {
     fn test_cas_string_wrong_old_fails() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/name \"current\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/name \"current\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db/cas {} :cas/name \"wrong\" \"new\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/cas {} :cas/name \"wrong\" \"new\"]]'::TEXT)",
                 eid
             )),
             "CAS with wrong old value should fail"
@@ -269,15 +282,14 @@ mod tests {
     fn test_cas_long_wrong_old_fails() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 42]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 42]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db/cas {} :cas/val 99 100]]'::TEXT)",
+                "SELECT edn_t('[[:db/cas {} :cas/val 99 100]]'::TEXT)",
                 eid
             )),
             "CAS with wrong old value should fail"
@@ -288,16 +300,14 @@ mod tests {
     fn test_cas_bool_wrong_old_fails() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/flag true]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/flag true]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db/cas {} :cas/flag false true]]'::TEXT)",
+                "SELECT edn_t('[[:db/cas {} :cas/flag false true]]'::TEXT)",
                 eid
             )),
             "CAS with wrong old boolean should fail"
@@ -308,15 +318,14 @@ mod tests {
     fn test_cas_nil_but_has_value_fails() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 42]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 42]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db/cas {} :cas/val nil 99]]'::TEXT)",
+                "SELECT edn_t('[[:db/cas {} :cas/val nil 99]]'::TEXT)",
                 eid
             )),
             "CAS from nil should fail when value exists"
@@ -327,25 +336,27 @@ mod tests {
     fn test_cas_failure_preserves_value() {
         setup();
         setup_cas_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :cas/val 42]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/val 42]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         // Isolate the failing CAS in a subtransaction so its error does not
         // poison the outer transaction; the value must remain 42.
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db/cas {} :cas/val 99 100]]'::TEXT)",
+                "SELECT edn_t('[[:db/cas {} :cas/val 99 100]]'::TEXT)",
                 eid
             )),
             "CAS with wrong old value should fail"
         );
         // Value should remain 42
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("v"), 42);
     }
@@ -359,16 +370,16 @@ mod tests {
         setup();
         setup_cas_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/val 10 :cas/name \"test\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :cas/val 10 :cas/name \"test\"]]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         // CAS val and add name in same tx
-        Spi::run(&format!("SELECT mentat_transact('[[:db/cas {} :cas/val 10 20] [:db/add {} :cas/name \"updated\"]]'::TEXT)", eid, eid)).expect("mixed");
+        Spi::run(&format!("SELECT edn_t('[[:db/cas {} :cas/val 10 20] [:db/add {} :cas/name \"updated\"]]'::TEXT)", eid, eid)).expect("mixed");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v ?n :where [{e} :cas/val ?v] [{e} :cas/name ?n]]'::TEXT, '{{}}'::jsonb)::TEXT", e = eid
+            "SELECT edn_q('[:find ?v ?n :where [{e} :cas/val ?v] [{e} :cas/name ?n]]'::TEXT, '{{}}'::jsonb)::TEXT", e = eid
         )).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["results"].as_array().expect("arr").len(), 1);
@@ -378,31 +389,33 @@ mod tests {
     fn test_cas_status_machine() {
         setup();
         setup_cas_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :cas/status :draft]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :cas/status :draft]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/status :draft :review]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/status :draft :review]]'::TEXT)",
             eid
         ))
         .expect("cas");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/status :review :approved]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/status :review :approved]]'::TEXT)",
             eid
         ))
         .expect("cas");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :cas/status :approved :published]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :cas/status :approved :published]]'::TEXT)",
             eid
         ))
         .expect("cas");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :cas/status ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :cas/status ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_str().expect("s").contains("published"));
     }

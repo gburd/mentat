@@ -140,10 +140,7 @@ mod tests {
                       :db/valueType :db.type/string
                       :db/cardinality :db.cardinality/one}]"#;
 
-        let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('{}')",
-            tx.replace('\'', "''")
-        ));
+        let result = Spi::get_one::<String>(&format!("SELECT edn_t('{}')", tx.replace('\'', "''")));
         assert!(result.is_ok(), "Transaction should succeed");
 
         let cache = crate::cache::get_cache();
@@ -194,10 +191,7 @@ mod tests {
                       :db/index true
                       :db/fulltext false}]"#;
 
-        let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('{}')",
-            tx.replace('\'', "''")
-        ));
+        let result = Spi::get_one::<String>(&format!("SELECT edn_t('{}')", tx.replace('\'', "''")));
         assert!(result.is_ok(), "Transaction should succeed");
 
         let cache = crate::cache::get_cache();
@@ -251,11 +245,8 @@ mod tests {
                        :db/cardinality :db.cardinality/one
                        :db/unique :db.unique/identity}]"#;
 
-        Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('{}')",
-            tx1.replace('\'', "''")
-        ))
-        .expect("Transaction 1 should succeed");
+        Spi::get_one::<String>(&format!("SELECT edn_t('{}')", tx1.replace('\'', "''")))
+            .expect("Transaction 1 should succeed");
 
         // Verify attribute is resolvable
         let entid1 = cache.resolve_ident(":person/email");
@@ -266,11 +257,8 @@ mod tests {
                        :db/valueType :db.type/long
                        :db/cardinality :db.cardinality/one}]"#;
 
-        Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('{}')",
-            tx2.replace('\'', "''")
-        ))
-        .expect("Transaction 2 should succeed");
+        Spi::get_one::<String>(&format!("SELECT edn_t('{}')", tx2.replace('\'', "''")))
+            .expect("Transaction 2 should succeed");
 
         // Both attributes should be resolvable
         let entid2 = cache.resolve_ident(":person/age");
@@ -301,11 +289,8 @@ mod tests {
                       :db/valueType :db.type/boolean
                       :db/cardinality :db.cardinality/many}]"#;
 
-        Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('{}')",
-            tx.replace('\'', "''")
-        ))
-        .expect("Transaction should succeed");
+        Spi::get_one::<String>(&format!("SELECT edn_t('{}')", tx.replace('\'', "''")))
+            .expect("Transaction should succeed");
 
         let cache = crate::cache::get_cache();
 

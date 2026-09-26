@@ -32,7 +32,7 @@ mod tests {
 
     fn setup_query_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :qc/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"a\" :db/ident :qc/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"s\" :db/ident :qc/score :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
@@ -49,7 +49,7 @@ mod tests {
 
     fn setup_query_data() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"mgr\" :qc/name \"Boss\" :qc/age 50 :qc/score 95.0 :qc/active true :qc/role :admin :qc/dept \"Engineering\" :qc/salary 150000}
                 {:db/id \"e1\" :qc/name \"Alice\" :qc/age 30 :qc/score 88.5 :qc/active true :qc/role :engineer :qc/dept \"Engineering\" :qc/manager \"mgr\" :qc/email \"alice@test.com\" :qc/salary 100000}
                 {:db/id \"e2\" :qc/name \"Bob\" :qc/age 35 :qc/score 72.3 :qc/active true :qc/role :engineer :qc/dept \"Engineering\" :qc/manager \"mgr\" :qc/salary 110000}
@@ -77,7 +77,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name ?age :where [?e :qc/name ?name] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name ?age :where [?e :qc/name ?name] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = j["results"].as_array().expect("arr");
@@ -90,7 +90,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name ?age ?score :where [?e :qc/name ?name] [?e :qc/age ?age] [?e :qc/score ?score]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name ?age ?score :where [?e :qc/name ?name] [?e :qc/age ?age] [?e :qc/score ?score]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = j["results"].as_array().expect("arr");
@@ -111,7 +111,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name . :where [?e :qc/name ?name] [?e :qc/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name . :where [?e :qc/name ?name] [?e :qc/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(j["result"].as_str().expect("s"), "Alice");
@@ -123,7 +123,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name . :where [?e :qc/name ?name] [?e :qc/name \"Nonexistent\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name . :where [?e :qc/name ?name] [?e :qc/name \"Nonexistent\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(
@@ -142,7 +142,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -155,8 +155,10 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?age ...] :where [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find [?age ...] :where [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let ages = j["result"].as_array().expect("arr");
         assert_eq!(ages.len(), 6);
@@ -172,7 +174,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ?age] :where [?e :qc/name ?name] [?e :qc/name \"Alice\"] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ?age] :where [?e :qc/name ?name] [?e :qc/name \"Alice\"] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let result = j["result"].as_array().expect("tuple");
@@ -191,7 +193,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(> ?age 35)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(> ?age 35)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -205,7 +207,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(< ?age 30)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(< ?age 30)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -219,7 +221,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(>= ?age 35)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(>= ?age 35)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -233,7 +235,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(<= ?age 30)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age ?age] [(<= ?age 30)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -247,7 +249,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/dept ?d] [(!= ?d \"Engineering\")]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/dept ?d] [(!= ?d \"Engineering\")]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -265,7 +267,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/score ?s] [(> ?s 90.0)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/score ?s] [(> ?s 90.0)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -283,7 +285,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?ename ...] :where [?e :qc/manager ?m] [?m :qc/name ?mname] [?e :qc/name ?ename] [(= ?mname \"Boss\")]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?ename ...] :where [?e :qc/manager ?m] [?m :qc/name ?mname] [?e :qc/name ?ename] [(= ?mname \"Boss\")]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -297,7 +299,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n1 ?n2 :where [?e1 :qc/name ?n1] [?e2 :qc/name ?n2] [?e1 :qc/dept ?d] [?e2 :qc/dept ?d] [(!= ?e1 ?e2)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n1 ?n2 :where [?e1 :qc/name ?n1] [?e2 :qc/name ?n2] [?e1 :qc/dept ?d] [?e2 :qc/dept ?d] [(!= ?e1 ?e2)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = j["results"].as_array().expect("arr");
@@ -319,7 +321,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/tags \"rust\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/tags \"rust\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -333,7 +335,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?t ...] :where [?e :qc/name \"Alice\"] [?e :qc/tags ?t]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?t ...] :where [?e :qc/name \"Alice\"] [?e :qc/tags ?t]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let tags = j["result"].as_array().expect("arr");
@@ -350,7 +352,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/active true]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/active true]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -364,7 +366,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/active false]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/active false]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -381,7 +383,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/role :engineer]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/role :engineer]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -395,8 +397,10 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?r ...] :where [_ :qc/role ?r]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find [?r ...] :where [_ :qc/role ?r]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let roles = j["result"].as_array().expect("arr");
         // admin, engineer, designer, pm => 4 distinct roles
@@ -414,7 +418,7 @@ mod tests {
         setup_query_data();
         // Active engineers over 25 in Engineering
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...]
+            "SELECT edn_q('[:find [?name ...]
                 :where
                 [?e :qc/name ?name]
                 [?e :qc/active true]
@@ -441,7 +445,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name :where [?e :qc/name ?name] [?e :qc/age 999]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name :where [?e :qc/name ?name] [?e :qc/age 999]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = j["results"].as_array().expect("arr");
@@ -454,7 +458,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age 999]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/age 999]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let arr = j["result"].as_array().expect("arr");
@@ -471,7 +475,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e ?name :where [?e :qc/name ?name] [?e :qc/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e ?name :where [?e :qc/name ?name] [?e :qc/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = j["results"].as_array().expect("arr");
@@ -491,7 +495,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?age . :where [?e :qc/name \"Bob\"] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?age . :where [?e :qc/name \"Bob\"] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(j["result"].as_i64().expect("age"), 35);
@@ -503,7 +507,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name . :where [?e :qc/name ?name] [?e :qc/age 30]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name . :where [?e :qc/name ?name] [?e :qc/age 30]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(j["result"].as_str().expect("name"), "Alice");
@@ -520,21 +524,21 @@ mod tests {
         setup_query_data();
         // Find Alice's entity ID
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :qc/email \"alice@test.com\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e . :where [?e :qc/email \"alice@test.com\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
 
         // Update Alice's age
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :qc/age 31]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :qc/age 31]]'::TEXT)",
             eid
         ))
         .expect("update");
 
         // Query should reflect update
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?age . :where [?e :qc/email \"alice@test.com\"] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?age . :where [?e :qc/email \"alice@test.com\"] [?e :qc/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         assert_eq!(j2["result"].as_i64().expect("age"), 31);
@@ -546,21 +550,21 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :qc/email \"alice@test.com\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e . :where [?e :qc/email \"alice@test.com\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
 
         // Retract entity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retract");
 
         // Query should no longer find Alice
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name . :where [?e :qc/email \"alice@test.com\"] [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name . :where [?e :qc/email \"alice@test.com\"] [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         assert!(
@@ -578,9 +582,7 @@ mod tests {
         setup();
         setup_query_schema();
         assert!(
-            raises_error(
-                "SELECT mentat_query('[:where [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT"
-            ),
+            raises_error("SELECT edn_q('[:where [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT"),
             "Query without :find should fail"
         );
     }
@@ -590,7 +592,7 @@ mod tests {
         setup();
         setup_query_schema();
         assert!(
-            raises_error("SELECT mentat_query('[:find ?name]'::TEXT, '{}'::jsonb)::TEXT"),
+            raises_error("SELECT edn_q('[:find ?name]'::TEXT, '{}'::jsonb)::TEXT"),
             "Query without :where should fail"
         );
     }
@@ -599,7 +601,7 @@ mod tests {
     fn test_qc_query_invalid_edn() {
         setup();
         assert!(
-            raises_error("SELECT mentat_query('not valid edn'::TEXT, '{}'::jsonb)::TEXT"),
+            raises_error("SELECT edn_q('not valid edn'::TEXT, '{}'::jsonb)::TEXT"),
             "Invalid EDN should fail"
         );
     }
@@ -609,7 +611,7 @@ mod tests {
         setup();
         setup_query_schema();
         assert!(
-            raises_error("SELECT mentat_query('[:find ?v . :where [?e :nonexistent/attr ?v]]'::TEXT, '{}'::jsonb)::TEXT"),
+            raises_error("SELECT edn_q('[:find ?v . :where [?e :nonexistent/attr ?v]]'::TEXT, '{}'::jsonb)::TEXT"),
             "Unknown attribute should fail"
         );
     }
@@ -625,7 +627,7 @@ mod tests {
         setup_query_data();
         for _ in 0..10 {
             let q = Spi::get_one::<String>(
-                "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
             ).expect("q").expect("NULL");
             let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
             assert_eq!(j["result"].as_array().expect("arr").len(), 6);
@@ -642,7 +644,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/salary ?s] [(>= ?s 100000)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/salary ?s] [(>= ?s 100000)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");
@@ -656,7 +658,7 @@ mod tests {
         setup_query_schema();
         setup_query_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/salary ?s] [(>= ?s 95000)] [(<= ?s 110000)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?name ...] :where [?e :qc/name ?name] [?e :qc/salary ?s] [(>= ?s 95000)] [(<= ?s 110000)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let names = j["result"].as_array().expect("arr");

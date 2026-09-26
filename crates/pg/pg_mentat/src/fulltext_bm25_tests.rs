@@ -19,7 +19,7 @@ mod tests {
 
     fn setup_fts_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"title\" :db/ident :fts/title :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}
                 {:db/id \"body\" :db/ident :fts/body :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}
                 {:db/id \"plain\" :db/ident :fts/plain :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -37,7 +37,7 @@ mod tests {
         setup();
         setup_fts_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"The quick brown fox jumps over the lazy dog\"}
             {:db/id \"e2\" :fts/title \"A slow tortoise walks carefully\"}
             {:db/id \"e3\" :fts/title \"Quick foxes are clever animals\"}
@@ -46,7 +46,7 @@ mod tests {
         .expect("data");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val :where [(fulltext $ :fts/title \"fox\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val :where [(fulltext $ :fts/title \"fox\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -59,14 +59,14 @@ mod tests {
         setup();
         setup_fts_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"The quick brown fox\"}
         ]'::TEXT)",
         )
         .expect("data");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val :where [(fulltext $ :fts/title \"elephant\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val :where [(fulltext $ :fts/title \"elephant\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -86,13 +86,13 @@ mod tests {
         setup_fts_schema();
         // Document 1: "database" appears multiple times (high relevance)
         // Document 2: "database" appears once in longer text (lower relevance)
-        Spi::run("SELECT mentat_transact('[
+        Spi::run("SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"database systems and database design with database optimization\"}
             {:db/id \"e2\" :fts/title \"an introduction to modern computing systems including database and networking and storage and security and many other topics\"}
         ]'::TEXT)").expect("data");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val ?score :where [(fulltext $ :fts/title \"database\") [[?x ?val _ ?score]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val ?score :where [(fulltext $ :fts/title \"database\") [[?x ?val _ ?score]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -114,7 +114,7 @@ mod tests {
         setup();
         setup_fts_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"PostgreSQL full text search engine\"}
         ]'::TEXT)",
         )
@@ -122,7 +122,7 @@ mod tests {
 
         // Binding the score variable should work
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val ?score :where [(fulltext $ :fts/title \"search\") [[?x ?val _ ?score]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val ?score :where [(fulltext $ :fts/title \"search\") [[?x ?val _ ?score]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -139,21 +139,21 @@ mod tests {
     fn test_fts_different_attrs() {
         setup();
         setup_fts_schema();
-        Spi::run("SELECT mentat_transact('[
+        Spi::run("SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"Machine learning\" :fts/body \"Deep neural networks for classification\"}
             {:db/id \"e2\" :fts/title \"Neural networks\" :fts/body \"Machine learning algorithms for prediction\"}
         ]'::TEXT)").expect("data");
 
         // Search title
         let qt = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val :where [(fulltext $ :fts/title \"neural\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val :where [(fulltext $ :fts/title \"neural\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let vt: serde_json::Value = serde_json::from_str(&qt).expect("parse");
         let title_results = vt["results"].as_array().expect("arr");
 
         // Search body
         let qb = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val :where [(fulltext $ :fts/body \"neural\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val :where [(fulltext $ :fts/body \"neural\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let vb: serde_json::Value = serde_json::from_str(&qb).expect("parse");
         let body_results = vb["results"].as_array().expect("arr");
@@ -172,7 +172,7 @@ mod tests {
         setup();
         setup_fts_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"The runners are running in the race\"}
             {:db/id \"e2\" :fts/title \"She runs quickly to the finish line\"}
             {:db/id \"e3\" :fts/title \"The swimming pool is closed\"}
@@ -184,7 +184,7 @@ mod tests {
         // stemming. Note: the Snowball stemmer does NOT reduce the irregular
         // past tense "ran" to "run", so a regular inflection ("runs") is used.
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?val ...] :where [(fulltext $ :fts/title \"run\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?val ...] :where [(fulltext $ :fts/title \"run\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["result"].as_array().expect("arr");
@@ -204,7 +204,7 @@ mod tests {
         setup();
         setup_fts_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"e1\" :fts/title \"Rust programming language\" :fts/plain \"systems\"}
             {:db/id \"e2\" :fts/title \"Python programming language\" :fts/plain \"scripting\"}
         ]'::TEXT)",
@@ -213,7 +213,7 @@ mod tests {
 
         // Search fulltext, then join with regular attr
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?x ?val ?p :where [(fulltext $ :fts/title \"programming\") [[?x ?val]]] [?x :fts/plain ?p]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?x ?val ?p :where [(fulltext $ :fts/title \"programming\") [[?x ?val]]] [?x :fts/plain ?p]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -234,21 +234,21 @@ mod tests {
     fn test_fts_upsert_updates_fulltext() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"uid\" :db/ident :ftsu/uid :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/id \"title\" :db/ident :ftsu/title :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}
             ]'::TEXT)",
         ).expect("schema");
 
         // Create entity with fulltext
-        Spi::run("SELECT mentat_transact('[{:db/id \"e\" :ftsu/uid \"DOC1\" :ftsu/title \"original document about databases\"}]'::TEXT)").expect("create");
+        Spi::run("SELECT edn_t('[{:db/id \"e\" :ftsu/uid \"DOC1\" :ftsu/title \"original document about databases\"}]'::TEXT)").expect("create");
 
         // Upsert with new fulltext value
-        Spi::run("SELECT mentat_transact('[{:db/id \"e\" :ftsu/uid \"DOC1\" :ftsu/title \"updated document about networking\"}]'::TEXT)").expect("upsert");
+        Spi::run("SELECT edn_t('[{:db/id \"e\" :ftsu/uid \"DOC1\" :ftsu/title \"updated document about networking\"}]'::TEXT)").expect("upsert");
 
         // Search for old term should not find it
         let q_old = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?val . :where [(fulltext $ :ftsu/title \"databases\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?val . :where [(fulltext $ :ftsu/title \"databases\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v_old: serde_json::Value = serde_json::from_str(&q_old).expect("parse");
         assert!(
@@ -258,7 +258,7 @@ mod tests {
 
         // Search for new term should find it
         let q_new = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?val . :where [(fulltext $ :ftsu/title \"networking\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?val . :where [(fulltext $ :ftsu/title \"networking\") [[?x ?val]]]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v_new: serde_json::Value = serde_json::from_str(&q_new).expect("parse");
         assert_eq!(

@@ -49,7 +49,7 @@ mod tests {
     fn test_transact_ref_value() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"link\" :db/ident :tu/link
                  :db/valueType :db.type/ref
                  :db/cardinality :db.cardinality/one}
@@ -61,7 +61,7 @@ mod tests {
         .expect("schema failed");
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"a\" :tu/name \"source\"]
                 [:db/add \"b\" :tu/name \"target\"]
                 [:db/add \"a\" :tu/link \"b\"]
@@ -84,7 +84,7 @@ mod tests {
     fn test_transact_boolean_true() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/active
                  :db/valueType :db.type/boolean
                  :db/cardinality :db.cardinality/one}
@@ -92,8 +92,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/active true]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/active true]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<bool>(
             "SELECT v_bool FROM mentat.datoms
@@ -110,7 +109,7 @@ mod tests {
     fn test_transact_boolean_false() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/disabled
                  :db/valueType :db.type/boolean
                  :db/cardinality :db.cardinality/one}
@@ -118,7 +117,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/disabled false]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/disabled false]]'::TEXT)")
             .expect("data failed");
 
         let v = Spi::get_one::<bool>(
@@ -136,7 +135,7 @@ mod tests {
     fn test_transact_long_positive() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/count
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -144,8 +143,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/count 42]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/count 42]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<i64>(
             "SELECT v_long FROM mentat.datoms
@@ -162,7 +160,7 @@ mod tests {
     fn test_transact_long_zero() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/zero
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -170,8 +168,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/zero 0]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/zero 0]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<i64>(
             "SELECT v_long FROM mentat.datoms
@@ -188,7 +185,7 @@ mod tests {
     fn test_transact_long_negative() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/neg
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -196,8 +193,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/neg -9999]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/neg -9999]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<i64>(
             "SELECT v_long FROM mentat.datoms
@@ -214,7 +210,7 @@ mod tests {
     fn test_transact_long_large() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/big
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -222,7 +218,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/big 9223372036854775]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/big 9223372036854775]]'::TEXT)")
             .expect("data failed");
 
         let v = Spi::get_one::<i64>(
@@ -240,7 +236,7 @@ mod tests {
     fn test_transact_double_positive() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/weight
                  :db/valueType :db.type/double
                  :db/cardinality :db.cardinality/one}
@@ -248,8 +244,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/weight 3.14]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/weight 3.14]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<f64>(
             "SELECT v_double FROM mentat.datoms
@@ -266,7 +261,7 @@ mod tests {
     fn test_transact_double_zero() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/dzero
                  :db/valueType :db.type/double
                  :db/cardinality :db.cardinality/one}
@@ -274,8 +269,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/dzero 0.0]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/dzero 0.0]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<f64>(
             "SELECT v_double FROM mentat.datoms
@@ -292,7 +286,7 @@ mod tests {
     fn test_transact_double_negative() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/dneg
                  :db/valueType :db.type/double
                  :db/cardinality :db.cardinality/one}
@@ -300,8 +294,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/dneg -273.15]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/dneg -273.15]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<f64>(
             "SELECT v_double FROM mentat.datoms
@@ -318,7 +311,7 @@ mod tests {
     fn test_transact_string_basic() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/label
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -326,7 +319,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/label \"hello world\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/label \"hello world\"]]'::TEXT)")
             .expect("data failed");
 
         let v = Spi::get_one::<String>(
@@ -344,7 +337,7 @@ mod tests {
     fn test_transact_string_empty() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/empty
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -352,8 +345,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/empty \"\"]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/empty \"\"]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<String>(
             "SELECT v_text FROM mentat.datoms
@@ -370,7 +362,7 @@ mod tests {
     fn test_transact_string_unicode() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/uni
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -378,7 +370,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run(r#"SELECT mentat_transact('[[:db/add "e" :tu/uni "hello ☃ 日本語 🎉"]]'::TEXT)"#)
+        Spi::run(r#"SELECT edn_t('[[:db/add "e" :tu/uni "hello ☃ 日本語 🎉"]]'::TEXT)"#)
             .expect("data failed");
 
         let v = Spi::get_one::<String>(
@@ -397,7 +389,7 @@ mod tests {
     fn test_transact_keyword_namespaced() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/kw
                  :db/valueType :db.type/keyword
                  :db/cardinality :db.cardinality/one}
@@ -405,8 +397,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/kw :foo/bar]]'::TEXT)")
-            .expect("data failed");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/kw :foo/bar]]'::TEXT)").expect("data failed");
 
         let v = Spi::get_one::<String>(
             "SELECT v_keyword FROM mentat.datoms
@@ -423,7 +414,7 @@ mod tests {
     fn test_transact_keyword_plain() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/kwplain
                  :db/valueType :db.type/keyword
                  :db/cardinality :db.cardinality/one}
@@ -431,7 +422,7 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/kwplain :status]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/kwplain :status]]'::TEXT)")
             .expect("data failed");
 
         let v = Spi::get_one::<String>(
@@ -449,7 +440,7 @@ mod tests {
     fn test_transact_instant_value() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/created
                  :db/valueType :db.type/instant
                  :db/cardinality :db.cardinality/one}
@@ -458,7 +449,7 @@ mod tests {
         .expect("schema failed");
 
         Spi::run(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/created #inst \"2024-01-15T10:30:00.000Z\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :tu/created #inst \"2024-01-15T10:30:00.000Z\"]]'::TEXT)",
         )
         .expect("data failed");
 
@@ -477,7 +468,7 @@ mod tests {
     fn test_transact_uuid_value() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/uid
                  :db/valueType :db.type/uuid
                  :db/cardinality :db.cardinality/one}
@@ -486,7 +477,7 @@ mod tests {
         .expect("schema failed");
 
         Spi::run(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/uid #uuid \"550e8400-e29b-41d4-a716-446655440000\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :tu/uid #uuid \"550e8400-e29b-41d4-a716-446655440000\"]]'::TEXT)",
         )
         .expect("data failed");
 
@@ -509,7 +500,7 @@ mod tests {
     fn test_retract_specific_value() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/rname
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -517,17 +508,16 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/rname \"Alice\"]]'::TEXT)",
-        )
-        .expect("add failed")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :tu/rname \"Alice\"]]'::TEXT)")
+                .expect("add failed")
+                .expect("NULL");
 
         let tx_report: serde_json::Value = serde_json::from_str(&result).expect("parse tx report");
         let eid = tx_report["tempids"]["e"].as_i64().expect("get eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :tu/rname \"Alice\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :tu/rname \"Alice\"]]'::TEXT)",
             eid
         ))
         .expect("retract failed");
@@ -546,7 +536,7 @@ mod tests {
     fn test_retract_entity() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :tu/rename
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -558,7 +548,7 @@ mod tests {
         .expect("schema failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :tu/rename \"Bob\"]
                 [:db/add \"e\" :tu/reage 30]
             ]'::TEXT)",
@@ -570,7 +560,7 @@ mod tests {
         let eid = tx_report["tempids"]["e"].as_i64().expect("get eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity failed");
@@ -593,7 +583,7 @@ mod tests {
     fn test_cas_success() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/casval
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -601,18 +591,17 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/casval \"old\"]]'::TEXT)",
-        )
-        .expect("add failed")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :tu/casval \"old\"]]'::TEXT)")
+                .expect("add failed")
+                .expect("NULL");
 
         let tx_report: serde_json::Value = serde_json::from_str(&result).expect("parse tx report");
         let eid = tx_report["tempids"]["e"].as_i64().expect("get eid");
 
         // CAS should succeed: current value is "old", swap to "new"
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/cas {} :tu/casval \"old\" \"new\"]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/cas {} :tu/casval \"old\" \"new\"]]'::TEXT)",
             eid
         ))
         .expect("CAS should succeed");
@@ -633,7 +622,7 @@ mod tests {
     fn test_cas_failure() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/casf
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -641,11 +630,10 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/casf \"current\"]]'::TEXT)",
-        )
-        .expect("add failed")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :tu/casf \"current\"]]'::TEXT)")
+                .expect("add failed")
+                .expect("NULL");
 
         let tx_report: serde_json::Value = serde_json::from_str(&result).expect("parse tx report");
         let eid = tx_report["tempids"]["e"].as_i64().expect("get eid");
@@ -653,7 +641,7 @@ mod tests {
         // CAS should fail: expected "wrong" but actual is "current"
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db.fn/cas {} :tu/casf \"wrong\" \"new\"]]'::TEXT)",
+                "SELECT edn_t('[[:db.fn/cas {} :tu/casf \"wrong\" \"new\"]]'::TEXT)",
                 eid
             )),
             "CAS should fail when expected value differs"
@@ -664,7 +652,7 @@ mod tests {
     fn test_cas_from_nil() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/casnil
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -673,7 +661,7 @@ mod tests {
         .expect("schema failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/casnil \"initial\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :tu/casnil \"initial\"]]'::TEXT)",
         )
         .expect("add failed")
         .expect("NULL");
@@ -684,7 +672,7 @@ mod tests {
         // CAS from nil should fail since there IS a value
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db.fn/cas {} :tu/casnil nil \"new\"]]'::TEXT)",
+                "SELECT edn_t('[[:db.fn/cas {} :tu/casnil nil \"new\"]]'::TEXT)",
                 eid
             )),
             "CAS from nil should fail when value exists"
@@ -699,7 +687,7 @@ mod tests {
     fn test_cardinality_one_replaces() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/c1name
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -707,17 +695,16 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/c1name \"first\"]]'::TEXT)",
-        )
-        .expect("add failed")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :tu/c1name \"first\"]]'::TEXT)")
+                .expect("add failed")
+                .expect("NULL");
 
         let tx_report: serde_json::Value = serde_json::from_str(&result).expect("parse tx report");
         let eid = tx_report["tempids"]["e"].as_i64().expect("get eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :tu/c1name \"second\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :tu/c1name \"second\"]]'::TEXT)",
             eid
         ))
         .expect("update failed");
@@ -750,7 +737,7 @@ mod tests {
     fn test_cardinality_one_idempotent() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/c1idem
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -758,18 +745,17 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/c1idem \"same\"]]'::TEXT)",
-        )
-        .expect("add failed")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :tu/c1idem \"same\"]]'::TEXT)")
+                .expect("add failed")
+                .expect("NULL");
 
         let tx_report: serde_json::Value = serde_json::from_str(&result).expect("parse tx report");
         let eid = tx_report["tempids"]["e"].as_i64().expect("get eid");
 
         // Assert same value again -- should be idempotent
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :tu/c1idem \"same\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :tu/c1idem \"same\"]]'::TEXT)",
             eid
         ))
         .expect("idempotent assert failed");
@@ -790,7 +776,7 @@ mod tests {
     fn test_cardinality_many_accumulates() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/tags
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/many}
@@ -799,7 +785,7 @@ mod tests {
         .expect("schema failed");
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :tu/tags \"rust\"]
                 [:db/add \"e\" :tu/tags \"postgres\"]
                 [:db/add \"e\" :tu/tags \"datalog\"]
@@ -822,7 +808,7 @@ mod tests {
     fn test_cardinality_many_idempotent() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/tags2
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/many}
@@ -830,10 +816,10 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/tags2 \"duplicate\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/tags2 \"duplicate\"]]'::TEXT)")
             .expect("first assert failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :tu/tags2 \"duplicate\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :tu/tags2 \"duplicate\"]]'::TEXT)")
             .expect("second assert should succeed (idempotent)");
 
         // The duplicate should be skipped, so only 1 active datom
@@ -847,7 +833,7 @@ mod tests {
         .expect("query failed")
         .expect("NULL");
 
-        // Each call to mentat_transact with a new tempid creates a new entity,
+        // Each call to edn_t with a new tempid creates a new entity,
         // so each will have its own "duplicate" datom. That's expected.
         assert!(count >= 1);
     }
@@ -856,7 +842,7 @@ mod tests {
     fn test_cardinality_one_multiple_in_tx_rejected() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/single
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -867,7 +853,7 @@ mod tests {
         // Two different values for same entity+attribute in one transaction
         assert!(
             raises_error(
-                "SELECT mentat_transact('[
+                "SELECT edn_t('[
                     [:db/add \"e\" :tu/single \"val1\"]
                     [:db/add \"e\" :tu/single \"val2\"]
                 ]'::TEXT)"
@@ -884,7 +870,7 @@ mod tests {
     fn test_tempid_reuse_within_transaction() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :tu/tname
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -896,7 +882,7 @@ mod tests {
         .expect("schema failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"person1\" :tu/tname \"Alice\"]
                 [:db/add \"person1\" :tu/tage 30]
             ]'::TEXT)",
@@ -933,7 +919,7 @@ mod tests {
     fn test_tempid_unique_across_names() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/tval
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -942,7 +928,7 @@ mod tests {
         .expect("schema failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"a\" :tu/tval 1]
                 [:db/add \"b\" :tu/tval 2]
             ]'::TEXT)",
@@ -968,7 +954,7 @@ mod tests {
     fn test_map_entity_with_db_id() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :tu/mname
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -980,7 +966,7 @@ mod tests {
         .expect("schema failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"p1\" :tu/mname \"Alice\" :tu/mage 25}
             ]'::TEXT)",
         )
@@ -998,7 +984,7 @@ mod tests {
     fn test_map_entity_without_db_id() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/mnoval
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -1008,7 +994,7 @@ mod tests {
 
         // Map entity without :db/id should auto-allocate
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:tu/mnoval \"no-id-entity\"}
             ]'::TEXT)",
         )
@@ -1033,7 +1019,7 @@ mod tests {
     fn test_schema_define_with_all_properties() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/fullattr
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one
@@ -1058,7 +1044,7 @@ mod tests {
         setup();
         // Define schema AND use it in the same transaction
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/samename
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -1086,7 +1072,7 @@ mod tests {
     fn test_unique_value_prevents_duplicate() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/code
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one
@@ -1095,11 +1081,11 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e1\" :tu/code \"ABC\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e1\" :tu/code \"ABC\"]]'::TEXT)")
             .expect("first insert");
 
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add \"e2\" :tu/code \"ABC\"]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add \"e2\" :tu/code \"ABC\"]]'::TEXT)"),
             "Should reject duplicate unique value"
         );
     }
@@ -1108,7 +1094,7 @@ mod tests {
     fn test_unique_identity_upsert() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/email
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one
@@ -1117,11 +1103,11 @@ mod tests {
         )
         .expect("schema failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e1\" :tu/email \"alice@test.com\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e1\" :tu/email \"alice@test.com\"]]'::TEXT)")
             .expect("first insert");
 
         // Second insert with same identity value should upsert
-        Spi::run("SELECT mentat_transact('[[:db/add \"e2\" :tu/email \"alice@test.com\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e2\" :tu/email \"alice@test.com\"]]'::TEXT)")
             .expect("upsert should succeed");
 
         let count = Spi::get_one::<i64>(
@@ -1143,7 +1129,7 @@ mod tests {
     fn test_tx_report_has_all_fields() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/rpname
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -1151,11 +1137,10 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :tu/rpname \"test\"]]'::TEXT)",
-        )
-        .expect("transact failed")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :tu/rpname \"test\"]]'::TEXT)")
+                .expect("transact failed")
+                .expect("NULL");
 
         let tx_report: serde_json::Value = serde_json::from_str(&result).expect("parse tx report");
 
@@ -1188,7 +1173,7 @@ mod tests {
     fn test_tx_report_basis_t_advances() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/advname
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -1196,17 +1181,15 @@ mod tests {
         )
         .expect("schema failed");
 
-        let result1 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e1\" :tu/advname \"a\"]]'::TEXT)",
-        )
-        .expect("tx1 failed")
-        .expect("NULL");
+        let result1 =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e1\" :tu/advname \"a\"]]'::TEXT)")
+                .expect("tx1 failed")
+                .expect("NULL");
 
-        let result2 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e2\" :tu/advname \"b\"]]'::TEXT)",
-        )
-        .expect("tx2 failed")
-        .expect("NULL");
+        let result2 =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e2\" :tu/advname \"b\"]]'::TEXT)")
+                .expect("tx2 failed")
+                .expect("NULL");
 
         let tx1: serde_json::Value = serde_json::from_str(&result1).expect("parse tx1");
         let tx2: serde_json::Value = serde_json::from_str(&result2).expect("parse tx2");
@@ -1225,7 +1208,7 @@ mod tests {
     fn test_error_invalid_edn() {
         setup();
         assert!(
-            raises_error("SELECT mentat_transact('not valid edn {'::TEXT)"),
+            raises_error("SELECT edn_t('not valid edn {'::TEXT)"),
             "Should reject invalid EDN"
         );
     }
@@ -1234,7 +1217,7 @@ mod tests {
     fn test_error_not_a_vector() {
         setup();
         assert!(
-            raises_error("SELECT mentat_transact('{:key \"value\"}'::TEXT)"),
+            raises_error("SELECT edn_t('{:key \"value\"}'::TEXT)"),
             "Should reject non-vector transaction"
         );
     }
@@ -1243,9 +1226,7 @@ mod tests {
     fn test_error_unknown_attribute() {
         setup();
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e\" :nonexistent/attr \"val\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :nonexistent/attr \"val\"]]'::TEXT)"),
             "Should reject unknown attribute"
         );
     }
@@ -1254,7 +1235,7 @@ mod tests {
     fn test_error_type_mismatch() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/numonly
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -1263,9 +1244,7 @@ mod tests {
         .expect("schema failed");
 
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e\" :tu/numonly \"not a number\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :tu/numonly \"not a number\"]]'::TEXT)"),
             "Should reject string for long attribute"
         );
     }
@@ -1274,7 +1253,7 @@ mod tests {
     fn test_empty_transaction() {
         setup();
         // Empty vector should work without panic
-        let _result = Spi::get_one::<String>("SELECT mentat_transact('[]'::TEXT)");
+        let _result = Spi::get_one::<String>("SELECT edn_t('[]'::TEXT)");
     }
 
     // ========================================================================
@@ -1285,7 +1264,7 @@ mod tests {
     fn test_lookup_ref_in_entity_place() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"email\" :db/ident :tu/lremail
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one
@@ -1298,7 +1277,7 @@ mod tests {
         .expect("schema failed");
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :tu/lremail \"alice@example.com\"]
                 [:db/add \"e\" :tu/lrname \"Alice\"]
             ]'::TEXT)",
@@ -1307,7 +1286,7 @@ mod tests {
 
         // Use lookup ref to update the entity
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add [:tu/lremail \"alice@example.com\"] :tu/lrname \"Alice Updated\"]
             ]'::TEXT)",
         )
@@ -1332,7 +1311,7 @@ mod tests {
     fn test_batch_50_entities() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :tu/bname
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -1351,14 +1330,11 @@ mod tests {
                 i = i
             ));
         }
-        let txn = format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            assertions.join("\n")
-        );
+        let txn = format!("SELECT edn_t('[{}]'::TEXT)", assertions.join("\n"));
         Spi::run(&txn).expect("batch txn failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name :where [?e :tu/bname ?name]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name :where [?e :tu/bname ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query failed")
         .expect("NULL");
@@ -1372,7 +1348,7 @@ mod tests {
     fn test_sequential_20_transactions() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :tu/seqval
                  :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}
@@ -1382,14 +1358,14 @@ mod tests {
 
         for i in 0..20 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add \"e{i}\" :tu/seqval {i}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{i}\" :tu/seqval {i}]]'::TEXT)",
                 i = i
             ))
             .expect("sequential txn failed");
         }
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?v :where [?e :tu/seqval ?v] :order (asc ?v)]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v :where [?e :tu/seqval ?v] :order (asc ?v)]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query failed")
         .expect("NULL");

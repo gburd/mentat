@@ -62,7 +62,7 @@ mod tests {
     /// Define a :doc/body string attribute and return its entid.
     fn install_doc_attr() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :doc/body :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
@@ -74,7 +74,7 @@ mod tests {
     fn install_typo_dataset() -> [i64; 5] {
         install_doc_attr();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"d1\" :doc/body \"the database error happens at scale\"}
                 {:db/id \"d2\" :doc/body \"the databse error happens at scale\"}
                 {:db/id \"d3\" :doc/body \"an unrelated row about cats\"}
@@ -102,7 +102,7 @@ mod tests {
             pattern, k
         );
         let sql = format!(
-            "SELECT mentat_query('{}'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('{}'::TEXT, '{{}}'::jsonb)::TEXT",
             q.replace('\'', "''")
         );
         let raw = Spi::get_one::<String>(&sql).expect("query").expect("NULL");
@@ -211,7 +211,7 @@ mod tests {
         setup();
         install_doc_attr();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(fuzzy-match $ :doc/body \"x\") [[?e ?v]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(fuzzy-match $ :doc/body \"x\") [[?e ?v]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity"),
@@ -226,7 +226,7 @@ mod tests {
         setup();
         install_doc_attr();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(fuzzy-match $ :doc/body \"x\" 99) [[?e ?v]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(fuzzy-match $ :doc/body \"x\" 99) [[?e ?v]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arg") && err.contains("k must be in"),
@@ -243,7 +243,7 @@ mod tests {
             return; // wrong-type check is gated behind has_pg_tre()
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :doc/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )

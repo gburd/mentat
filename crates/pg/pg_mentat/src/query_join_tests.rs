@@ -13,7 +13,7 @@ mod tests {
 
     fn setup_qj_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :qj/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :qj/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"d\" :db/ident :qj/dept :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -29,7 +29,7 @@ mod tests {
     }
 
     fn setup_org_data() {
-        Spi::run("SELECT mentat_transact('[
+        Spi::run("SELECT edn_t('[
             {:db/id \"ceo\" :qj/name \"CEO\" :qj/dept \"exec\" :qj/val 200 :qj/flag true :qj/status :active}
             {:db/id \"vpe\" :qj/name \"VP-Eng\" :qj/dept \"eng\" :qj/val 180 :qj/flag true :qj/status :active :qj/mgr \"ceo\"}
             {:db/id \"vps\" :qj/name \"VP-Sales\" :qj/dept \"sales\" :qj/val 170 :qj/flag true :qj/status :active :qj/mgr \"ceo\"}
@@ -55,7 +55,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?mn . :where [?e :qj/name \"Alice\"] [?e :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?mn . :where [?e :qj/name \"Alice\"] [?e :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "Mgr-FE");
@@ -67,7 +67,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?m :qj/name \"Mgr-FE\"] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?m :qj/name \"Mgr-FE\"] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2); // Alice, Bob
@@ -79,7 +79,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?c :qj/name \"CEO\"] [?e :qj/mgr ?c] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?c :qj/name \"CEO\"] [?e :qj/mgr ?c] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2); // VP-Eng, VP-Sales
@@ -91,7 +91,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?m :qj/name \"Mgr-BE\"] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 120)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?m :qj/name \"Mgr-BE\"] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 120)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 1); // Frank (130)
@@ -103,7 +103,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?m :qj/name \"Mgr-FE\"] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?m :qj/name \"Mgr-FE\"] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 1); // Alice
@@ -115,7 +115,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?m :qj/name \"VP-Eng\"] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/status :active]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?m :qj/name \"VP-Eng\"] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/status :active]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2); // Mgr-FE, Mgr-BE
@@ -127,7 +127,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/mgr _] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/mgr _] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 11); // all except CEO
@@ -139,7 +139,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?en ?mn :where [?e :qj/name ?en] [?e :qj/mgr ?m] [?m :qj/name ?mn] [?e :qj/dept \"eng\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?en ?mn :where [?e :qj/name ?en] [?e :qj/mgr ?m] [?m :qj/name ?mn] [?e :qj/dept \"eng\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_array().expect("arr").len() > 3);
@@ -151,7 +151,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?en ?md :where [?e :qj/name ?en] [?e :qj/mgr ?m] [?m :qj/dept ?md] [?e :qj/dept \"eng\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?en ?md :where [?e :qj/name ?en] [?e :qj/mgr ?m] [?m :qj/dept ?md] [?e :qj/dept \"eng\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_array().expect("arr").len() > 0);
@@ -163,7 +163,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?mn . :where [?e :qj/name \"Carol\"] [?e :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?mn . :where [?e :qj/name \"Carol\"] [?e :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "Mgr-BE");
@@ -179,7 +179,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?gm . :where [?e :qj/name \"Alice\"] [?e :qj/mgr ?m] [?m :qj/mgr ?g] [?g :qj/name ?gm]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?gm . :where [?e :qj/name \"Alice\"] [?e :qj/mgr ?m] [?m :qj/mgr ?g] [?g :qj/name ?gm]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "VP-Eng");
@@ -191,7 +191,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?top . :where [?e :qj/name \"Alice\"] [?e :qj/mgr ?m] [?m :qj/mgr ?g] [?g :qj/mgr ?t] [?t :qj/name ?top]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?top . :where [?e :qj/name \"Alice\"] [?e :qj/mgr ?m] [?m :qj/mgr ?g] [?g :qj/mgr ?t] [?t :qj/name ?top]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "CEO");
@@ -203,7 +203,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Alice, Bob (under Mgr-FE), Carol, Frank (under Mgr-BE) = 4
@@ -216,7 +216,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 115)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 115)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Alice (120), Frank (130) = 2
@@ -229,7 +229,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Alice (true), Carol (true), Frank (true) = 3
@@ -242,7 +242,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?en ?mn :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?m :qj/name ?mn] [?e :qj/mgr ?m] [?e :qj/name ?en]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?en ?mn :where [?vp :qj/name \"VP-Eng\"] [?m :qj/mgr ?vp] [?m :qj/name ?mn] [?e :qj/mgr ?m] [?e :qj/name ?en]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let rows = v["result"].as_array().expect("arr");
@@ -258,7 +258,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?c :qj/name \"CEO\"] [?vp :qj/mgr ?c] [?m :qj/mgr ?vp] [?m :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?c :qj/name \"CEO\"] [?vp :qj/mgr ?c] [?m :qj/mgr ?vp] [?m :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Mgr-FE, Mgr-BE, Mgr-West = 3
@@ -271,7 +271,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?c :qj/name \"CEO\"] [?vp :qj/mgr ?c] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?c :qj/name \"CEO\"] [?vp :qj/mgr ?c] [?m :qj/mgr ?vp] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // All individual contributors: Alice, Bob, Carol, Dave, Eve, Frank = 6
@@ -288,7 +288,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?v :where [?e :qj/name ?n] [?e :qj/val ?v] [?e :qj/dept \"eng\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?v :where [?e :qj/name ?n] [?e :qj/val ?v] [?e :qj/dept \"eng\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_array().expect("arr").len() > 3);
@@ -300,7 +300,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?v ?d :where [?e :qj/name ?n] [?e :qj/val ?v] [?e :qj/dept ?d]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?v ?d :where [?e :qj/name ?n] [?e :qj/val ?v] [?e :qj/dept ?d]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 12);
@@ -312,7 +312,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?v ?d ?s :where [?e :qj/name ?n] [?e :qj/val ?v] [?e :qj/dept ?d] [?e :qj/status ?s] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?v ?d ?s :where [?e :qj/name ?n] [?e :qj/val ?v] [?e :qj/dept ?d] [?e :qj/status ?s] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_array().expect("arr").len() > 0);
@@ -324,7 +324,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"sales\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"sales\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 4); // VP-Sales, Mgr-West, Dave, Eve
@@ -336,7 +336,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/status :active]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/status :active]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // VP-Eng, Mgr-FE, Mgr-BE, Alice, Bob, Frank = 6
@@ -349,7 +349,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/status :active] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/status :active] [?e :qj/flag true]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // VP-Eng (true, active), Mgr-FE (true, active), Alice (true, active), Frank (true, active) = 4
@@ -362,7 +362,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/val ?v] [(> ?v 115)] [(< ?v 160)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/val ?v] [(> ?v 115)] [(< ?v 160)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Alice (120), Frank (130), Mgr-FE (150), Mgr-BE (150) = 4
@@ -375,7 +375,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/flag true] [?e :qj/status :active] [?e :qj/val ?v] [(> ?v 100)] [(< ?v 160)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/name ?n] [?e :qj/dept \"eng\"] [?e :qj/flag true] [?e :qj/status :active] [?e :qj/val ?v] [(> ?v 100)] [(< ?v 160)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // VP-Eng excluded (val=180 > 160), Mgr-FE (150, true, active, eng), Alice (120, true, active, eng), Frank (130, true, active, eng) = 3
@@ -392,7 +392,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n1 ?n2 :where [?e1 :qj/name ?n1] [?e2 :qj/name ?n2] [?e1 :qj/dept ?d] [?e2 :qj/dept ?d] [?e1 :qj/name \"Alice\"] [(!= ?n1 ?n2)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n1 ?n2 :where [?e1 :qj/name ?n1] [?e2 :qj/name ?n2] [?e1 :qj/dept ?d] [?e2 :qj/dept ?d] [?e1 :qj/name \"Alice\"] [(!= ?n1 ?n2)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_array().expect("arr").len() > 0);
@@ -404,7 +404,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?alice :qj/name \"Alice\"] [?alice :qj/mgr ?m] [?e :qj/mgr ?m] [?e :qj/name ?n] [(!= ?n \"Alice\")]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?alice :qj/name \"Alice\"] [?alice :qj/mgr ?m] [?e :qj/mgr ?m] [?e :qj/name ?n] [(!= ?n \"Alice\")]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 1); // Bob
@@ -416,7 +416,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [_ :qj/status :inactive] [?e :qj/status :inactive] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [_ :qj/status :inactive] [?e :qj/status :inactive] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2); // Mgr-West, Eve
@@ -428,7 +428,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?alice :qj/name \"Alice\"] [?alice :qj/val ?av] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v ?av)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?alice :qj/name \"Alice\"] [?alice :qj/val ?av] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v ?av)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Everyone with val > 120: CEO(200), VP-Eng(180), VP-Sales(170), Mgr-FE(150), Mgr-BE(150), Mgr-West(140), Frank(130) = 7
@@ -442,7 +442,7 @@ mod tests {
         setup_org_data();
         // Find people who share the same manager as Bob
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?bob :qj/name \"Bob\"] [?bob :qj/mgr ?m] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?bob :qj/name \"Bob\"] [?bob :qj/mgr ?m] [?e :qj/mgr ?m] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2); // Alice, Bob
@@ -454,7 +454,7 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?d :where [?e :qj/name ?n] [?e :qj/dept ?d] [?e :qj/val ?v] [(>= ?v 100)] [(<= ?v 120)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?d :where [?e :qj/name ?n] [?e :qj/dept ?d] [?e :qj/val ?v] [(>= ?v 100)] [(<= ?v 120)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         // Alice(120,eng), Bob(110,eng), Carol(115,eng), Dave(100,sales), Eve(105,sales) = 5
@@ -470,9 +470,9 @@ mod tests {
         setup();
         setup_qj_schema();
         setup_org_data();
-        Spi::run("SELECT mentat_transact('[{:db/id \"new\" :qj/name \"NewHire\" :qj/dept \"eng\" :qj/val 90 :qj/flag true :qj/status :active}]'::TEXT)").expect("add");
+        Spi::run("SELECT edn_t('[{:db/id \"new\" :qj/name \"NewHire\" :qj/dept \"eng\" :qj/val 90 :qj/flag true :qj/status :active}]'::TEXT)").expect("add");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/dept \"eng\"] [?e :qj/name ?n] [?e :qj/val ?v] [(< ?v 100)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/dept \"eng\"] [?e :qj/name ?n] [?e :qj/val ?v] [(< ?v 100)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 1); // NewHire
@@ -485,17 +485,19 @@ mod tests {
         setup_org_data();
         // Update Alice's val
         let q_eid = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :qj/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?e . :where [?e :qj/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q_eid).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :qj/val 999]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :qj/val 999]]'::TEXT)",
             eid
         ))
         .expect("update");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n . :where [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 500)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n . :where [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 500)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "Alice");
@@ -507,17 +509,19 @@ mod tests {
         setup_qj_schema();
         setup_org_data();
         let q_eid = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :qj/name \"Dave\"]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?e . :where [?e :qj/name \"Dave\"]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q_eid).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/dept \"sales\"] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/dept \"sales\"] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 3); // VP-Sales, Mgr-West, Eve (Dave removed)
@@ -538,13 +542,9 @@ mod tests {
                 if i % 2 == 0 { "true" } else { "false" }
             ));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("batch");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("batch");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :qj/dept \"eng\"] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 200)]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :qj/dept \"eng\"] [?e :qj/name ?n] [?e :qj/val ?v] [(> ?v 200)]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_array().expect("arr").len() >= 49);
@@ -555,7 +555,7 @@ mod tests {
         setup();
         setup_qj_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"p1\" :qj/pname \"ProjectA\"}
             {:db/id \"p2\" :qj/pname \"ProjectB\"}
             {:db/id \"e1\" :qj/name \"Alice\" :qj/proj \"p1\"}
@@ -565,7 +565,7 @@ mod tests {
         )
         .expect("tx");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?p :qj/pname \"ProjectA\"] [?e :qj/proj ?p] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?p :qj/pname \"ProjectA\"] [?e :qj/proj ?p] [?e :qj/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2);
@@ -576,7 +576,7 @@ mod tests {
         setup();
         setup_qj_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"p1\" :qj/pname \"ProjectA\"}
             {:db/id \"p2\" :qj/pname \"ProjectB\"}
             {:db/id \"p3\" :qj/pname \"ProjectC\"}
@@ -588,7 +588,7 @@ mod tests {
         )
         .expect("tx");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?pn ...] :where [?e :qj/name \"Alice\"] [?e :qj/projs ?p] [?p :qj/pname ?pn]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?pn ...] :where [?e :qj/name \"Alice\"] [?e :qj/projs ?p] [?p :qj/pname ?pn]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 3);
@@ -601,13 +601,13 @@ mod tests {
         setup_org_data();
         // Forward: who is Alice's manager?
         let q1 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?mn . :where [?a :qj/name \"Alice\"] [?a :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?mn . :where [?a :qj/name \"Alice\"] [?a :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v1: serde_json::Value = serde_json::from_str(&q1).expect("parse");
         assert_eq!(v1["result"].as_str().expect("s"), "Mgr-FE");
         // Reverse: who reports to Mgr-FE?
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?rn ...] :where [?m :qj/name \"Mgr-FE\"] [?r :qj/mgr ?m] [?r :qj/name ?rn]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?rn ...] :where [?m :qj/name \"Mgr-FE\"] [?r :qj/mgr ?m] [?r :qj/name ?rn]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         assert_eq!(v2["result"].as_array().expect("arr").len(), 2);
@@ -620,13 +620,13 @@ mod tests {
         setup_org_data();
         // First query: find all managers
         let q1 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?mn ...] :where [_ :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?mn ...] :where [_ :qj/mgr ?m] [?m :qj/name ?mn]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v1: serde_json::Value = serde_json::from_str(&q1).expect("parse");
         let mgr_count = v1["result"].as_array().expect("arr").len();
         // Second query: count their reports
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?en ...] :where [?e :qj/mgr _] [?e :qj/name ?en]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?en ...] :where [?e :qj/mgr _] [?e :qj/name ?en]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         let report_count = v2["result"].as_array().expect("arr").len();

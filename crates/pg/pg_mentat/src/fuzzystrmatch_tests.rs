@@ -46,13 +46,13 @@ mod tests {
 
     fn install_name_attr() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :p/n \"Alice\"}
                 {:db/id \"b\" :p/n \"Alyce\"}
                 {:db/id \"c\" :p/n \"Robert\"}
@@ -88,7 +88,7 @@ mod tests {
         }
         install_name_attr();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?d :where [?e :p/n ?n] [(levenshtein ?n \"Alice\") ?d]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?d :where [?e :p/n ?n] [(levenshtein ?n \"Alice\") ?d]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -119,7 +119,7 @@ mod tests {
         }
         install_name_attr();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?h :where [?e :p/n ?n] [(soundex ?n) ?h]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?h :where [?e :p/n ?n] [(soundex ?n) ?h]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -157,7 +157,7 @@ mod tests {
         }
         install_name_attr();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?h :where [?e :p/n ?n] [(metaphone ?n 5) ?h]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?h :where [?e :p/n ?n] [(metaphone ?n 5) ?h]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -184,7 +184,7 @@ mod tests {
         setup();
         install_name_attr();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?d :where [(levenshtein \"x\") ?d]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?d :where [(levenshtein \"x\") ?d]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("levenshtein"),
@@ -199,7 +199,7 @@ mod tests {
         setup();
         install_name_attr();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?h :where [(soundex 42) ?h]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?h :where [(soundex 42) ?h]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arg") && err.contains("soundex"),
@@ -222,7 +222,7 @@ mod tests {
         }
         install_name_attr();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?da :where [?e :p/n ?n] [(levenshtein ?n \"Alice\") ?d] [(* ?d 2) ?da]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?da :where [?e :p/n ?n] [(levenshtein ?n \"Alice\") ?d] [(* ?d 2) ?da]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");

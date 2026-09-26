@@ -60,16 +60,16 @@ mod tests {
     fn pg_test_pginfer_similar_arity_error() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :p/n \"X\"}]'::TEXT)").expect("data tx");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :p/n \"X\"}]'::TEXT)").expect("data tx");
 
         // 1-arg form is wrong (needs 2 or 3).
         let err = capture_error(
-            "SELECT mentat_query('[:find ?s :where [?e :p/n ?n] [(infer-similar ?n) ?s]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?s :where [?e :p/n ?n] [(infer-similar ?n) ?s]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("infer-similar"),
@@ -83,7 +83,7 @@ mod tests {
     fn pg_test_pginfer_similar_wrong_arg_type() {
         setup();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?s :where [(infer-similar 42 \"x\") ?s]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?s :where [(infer-similar 42 \"x\") ?s]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arg") && err.contains("infer-similar"),
@@ -97,14 +97,14 @@ mod tests {
     fn pg_test_pginfer_near_arity_error() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
 
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(infer-near $ :p/n) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(infer-near $ :p/n) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("infer-near"),
@@ -118,13 +118,13 @@ mod tests {
     fn pg_test_pginfer_near_k_must_be_positive() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(infer-near $ :p/n \"x\" 0) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(infer-near $ :p/n \"x\" 0) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arg") && err.contains("k must be > 0"),
@@ -178,15 +178,15 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :p/n \"X\"}]'::TEXT)").expect("data tx");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :p/n \"X\"}]'::TEXT)").expect("data tx");
 
         let err = capture_error(
-            "SELECT mentat_query('[:find ?n ?s :where [?e :p/n ?n] [(infer-similar ?n \"target\") ?s]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?s :where [?e :p/n ?n] [(infer-similar ?n \"target\") ?s]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         // The error must come from postgres, not from pg_mentat's parser.
         assert!(
@@ -204,14 +204,14 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
 
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(infer-near $ :p/n \"x\" 5) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(infer-near $ :p/n \"x\" 5) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         // Must mention the <~> operator (or its equivalent function) from postgres.
         assert!(
@@ -239,16 +239,15 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :p/n \"France\"}]'::TEXT)")
-            .expect("data tx");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :p/n \"France\"}]'::TEXT)").expect("data tx");
 
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?s :where [?e :p/n ?n] [(infer-similar ?n \"Paris\") ?s]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?s :where [?e :p/n ?n] [(infer-similar ?n \"Paris\") ?s]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");

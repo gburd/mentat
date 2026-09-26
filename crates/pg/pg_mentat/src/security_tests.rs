@@ -64,7 +64,7 @@ mod tests {
 
     fn setup_test_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :sec/name
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -87,7 +87,7 @@ mod tests {
 
         // Attempt SQL injection via string value
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :sec/name \"Robert''; DROP TABLE mentat.datoms; --\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :sec/name \"Robert''; DROP TABLE mentat.datoms; --\"]]'::TEXT)",
         );
 
         // Should either reject or safely escape the value
@@ -107,7 +107,7 @@ mod tests {
         setup_test_schema();
 
         Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :sec/name \"test; DELETE FROM mentat.datoms;\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :sec/name \"test; DELETE FROM mentat.datoms;\"]]'::TEXT)",
         )
         .ok(); // Don't care if it succeeds or fails
 
@@ -124,7 +124,7 @@ mod tests {
         setup_test_schema();
 
         Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :sec/name \"value/* injection */\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :sec/name \"value/* injection */\"]]'::TEXT)",
         )
         .ok();
 
@@ -139,12 +139,12 @@ mod tests {
         setup();
         setup_test_schema();
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :sec/name \"safe\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :sec/name \"safe\"]]'::TEXT)")
             .expect("data failed");
 
         // Attempt injection via query input
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?e
                  :in ?name
                  :where [?e :sec/name ?name]]'::TEXT,
@@ -173,7 +173,7 @@ mod tests {
         // the test's outer transaction. The injected SQL must never execute:
         // the datoms table must survive regardless of accept/reject.
         let _ = error_message(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"bad\" :db/ident :evil/name'';DROP TABLE mentat.datoms;--
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -195,7 +195,7 @@ mod tests {
     fn test_malformed_edn_unclosed_bracket() {
         setup();
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add \"e\" :db/ident :test'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :db/ident :test'::TEXT)"),
             "Malformed EDN with unclosed bracket should error"
         );
     }
@@ -205,7 +205,7 @@ mod tests {
         setup();
         // Extra trailing bracket: run in a subtransaction so a parse error
         // cannot poison the test's outer transaction. Accept either outcome.
-        let _ = error_message("SELECT mentat_transact('[[:db/add \"e\" :db/ident :test]]]'::TEXT)");
+        let _ = error_message("SELECT edn_t('[[:db/add \"e\" :db/ident :test]]]'::TEXT)");
     }
 
     #[pg_test]
@@ -213,7 +213,7 @@ mod tests {
         setup();
         // Deeply nested EDN that might cause stack overflow
         let deep = "[[[[[[[[[[[[[[[[[[[[\"deep\"]]]]]]]]]]]]]]]]]]]]";
-        let result = Spi::get_one::<String>(&format!("SELECT mentat_transact('{}'::TEXT)", deep));
+        let result = Spi::get_one::<String>(&format!("SELECT edn_t('{}'::TEXT)", deep));
         // Should handle without stack overflow
         drop(result);
     }
@@ -224,9 +224,7 @@ mod tests {
         // EDN with embedded null - should be rejected or handled safely.
         // Run in a subtransaction so a raised error cannot poison the outer
         // transaction.
-        let _ = error_message(
-            "SELECT mentat_transact(E'[[:db/add \"e\" :db/ident :test\\x00val]]'::TEXT)",
-        );
+        let _ = error_message("SELECT edn_t(E'[[:db/add \"e\" :db/ident :test\\x00val]]'::TEXT)");
     }
 
     // ========================================================================
@@ -241,7 +239,7 @@ mod tests {
         // 10KB string value
         let big_string = "A".repeat(10_000);
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add \"e\" :sec/name \"{}\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :sec/name \"{}\"]]'::TEXT)",
             big_string
         ))
         .expect("large string should work");
@@ -265,7 +263,7 @@ mod tests {
         // 100KB string value
         let big_string = "B".repeat(100_000);
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add \"e\" :sec/name \"{}\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :sec/name \"{}\"]]'::TEXT)",
             big_string
         ))
         .expect("very large string should work");
@@ -294,10 +292,7 @@ mod tests {
                 i, i, i, i
             ));
         }
-        let txn = format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            assertions.join("\n")
-        );
+        let txn = format!("SELECT edn_t('[{}]'::TEXT)", assertions.join("\n"));
         Spi::run(&txn).expect("200-entity batch failed");
 
         let count = Spi::get_one::<i64>(
@@ -321,7 +316,7 @@ mod tests {
         setup_test_schema();
 
         // Max i64 that EDN can represent (may be parser limited)
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :sec/val 9223372036854775]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :sec/val 9223372036854775]]'::TEXT)")
             .expect("large long failed");
     }
 
@@ -330,7 +325,7 @@ mod tests {
         setup();
         setup_test_schema();
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :sec/val -9223372036854775]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :sec/val -9223372036854775]]'::TEXT)")
             .expect("negative long failed");
     }
 
@@ -339,7 +334,7 @@ mod tests {
         setup();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :db/ident :sec/dbl
                  :db/valueType :db.type/double
                  :db/cardinality :db.cardinality/one}
@@ -349,7 +344,7 @@ mod tests {
 
         // NaN should be rejected or handled. Run in a subtransaction so a
         // raised error cannot poison the test's outer transaction.
-        let _ = error_message("SELECT mentat_transact('[[:db/add \"e\" :sec/dbl ##NaN]]'::TEXT)");
+        let _ = error_message("SELECT edn_t('[[:db/add \"e\" :sec/dbl ##NaN]]'::TEXT)");
     }
 
     // ========================================================================
@@ -361,7 +356,7 @@ mod tests {
         setup();
         setup_test_schema();
 
-        Spi::run(r#"SELECT mentat_transact('[[:db/add "e" :sec/name "test 🎉🚀💯"]]'::TEXT)"#)
+        Spi::run(r#"SELECT edn_t('[[:db/add "e" :sec/name "test 🎉🚀💯"]]'::TEXT)"#)
             .expect("emoji string failed");
 
         let v = Spi::get_one::<String>(
@@ -381,7 +376,7 @@ mod tests {
         setup_test_schema();
 
         // Zero-width joiner and similar invisible chars
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :sec/name \"a\u{200D}b\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :sec/name \"a\u{200D}b\"]]'::TEXT)")
             .expect("zero-width char failed");
     }
 
@@ -390,7 +385,7 @@ mod tests {
         setup();
         setup_test_schema();
 
-        Spi::run(r#"SELECT mentat_transact('[[:db/add "e" :sec/name "مرحبا بالعالم"]]'::TEXT)"#)
+        Spi::run(r#"SELECT edn_t('[[:db/add "e" :sec/name "مرحبا بالعالم"]]'::TEXT)"#)
             .expect("RTL text failed");
 
         let v = Spi::get_one::<String>(
@@ -409,10 +404,8 @@ mod tests {
         setup();
         setup_test_schema();
 
-        Spi::run(
-            r#"SELECT mentat_transact('[[:db/add "e" :sec/name "日本語テスト中文测试한국어"]]'::TEXT)"#,
-        )
-        .expect("CJK text failed");
+        Spi::run(r#"SELECT edn_t('[[:db/add "e" :sec/name "日本語テスト中文测试한국어"]]'::TEXT)"#)
+            .expect("CJK text failed");
     }
 
     // ========================================================================
@@ -425,9 +418,8 @@ mod tests {
 
         // Run in a subtransaction so the raised error does not poison the
         // test's outer transaction; capture the message for inspection.
-        let msg = error_message(
-            "SELECT mentat_transact('[[:db/add \"e\" :nonexistent/attr \"val\"]]'::TEXT)",
-        );
+        let msg =
+            error_message("SELECT edn_t('[[:db/add \"e\" :nonexistent/attr \"val\"]]'::TEXT)");
 
         if !msg.is_empty() {
             // Error message should not contain raw SQL
@@ -445,9 +437,8 @@ mod tests {
 
         // Run in a subtransaction so the raised error does not poison the
         // test's outer transaction; capture the message for inspection.
-        let msg = error_message(
-            "SELECT mentat_transact('[[:db/add \"e\" :nonexistent/attr \"val\"]]'::TEXT)",
-        );
+        let msg =
+            error_message("SELECT edn_t('[[:db/add \"e\" :nonexistent/attr \"val\"]]'::TEXT)");
 
         assert!(
             msg.contains(":db.error/"),
@@ -467,7 +458,7 @@ mod tests {
         // Define schema attributes one at a time to test schema cache invalidation
         for i in 0..10 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[
+                "SELECT edn_t('[
                     {{:db/id \"a{i}\" :db/ident :seq/attr{i}
                      :db/valueType :db.type/string
                      :db/cardinality :db.cardinality/one}}
@@ -497,7 +488,7 @@ mod tests {
 
         // Create some data
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e1\" :sec/name \"a\"] [:db/add \"e1\" :sec/val 1]
                 [:db/add \"e2\" :sec/name \"b\"] [:db/add \"e2\" :sec/val 2]
                 [:db/add \"e3\" :sec/name \"c\"] [:db/add \"e3\" :sec/val 3]
@@ -507,7 +498,7 @@ mod tests {
 
         // Well-structured join should work fine
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?n1 ?n2 ?v1 ?v2
                  :where
                  [?e1 :sec/name ?n1] [?e1 :sec/val ?v1]
@@ -532,7 +523,7 @@ mod tests {
         setup();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"bad\" :db/ident :sec/badcomp
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one
@@ -551,7 +542,7 @@ mod tests {
 
         // Unique on cardinality-many is unusual but may be allowed
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :sec/uniqmany
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/many

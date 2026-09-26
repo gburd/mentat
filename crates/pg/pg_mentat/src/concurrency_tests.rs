@@ -154,7 +154,7 @@ mod tests {
 
         // Define a test attribute
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\"
                  :db/ident :test/name
                  :db/valueType :db.type/string
@@ -167,7 +167,7 @@ mod tests {
         let mut entity_ids: Vec<i64> = Vec::new();
         for i in 0..50 {
             let txn = format!(
-                "SELECT mentat_transact('[[:db/add \"e{}\" :test/name \"person-{}\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{}\" :test/name \"person-{}\"]]'::TEXT)",
                 i, i
             );
             Spi::run(&txn).expect("Transaction failed");
@@ -222,7 +222,7 @@ mod tests {
 
         // Define a test attribute
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\"
                  :db/ident :test/counter
                  :db/valueType :db.type/long
@@ -234,7 +234,7 @@ mod tests {
         // Perform multiple transactions
         for i in 0..20 {
             let txn = format!(
-                "SELECT mentat_transact('[[:db/add \"e\" :test/counter {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e\" :test/counter {}]]'::TEXT)",
                 i
             );
             Spi::run(&txn).expect("Transaction failed");
@@ -303,7 +303,7 @@ mod tests {
 
         // Define test attribute
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\"
                  :db/ident :test/value
                  :db/valueType :db.type/long
@@ -318,15 +318,15 @@ mod tests {
             .expect("Consuming sequence IDs failed");
 
         // Now transact - should use IDs past the gap
-        Spi::run("SELECT mentat_transact('[[:db/add \"e1\" :test/value 42]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e1\" :test/value 42]]'::TEXT)")
             .expect("Transaction after gap failed");
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e2\" :test/value 99]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e2\" :test/value 99]]'::TEXT)")
             .expect("Second transaction after gap failed");
 
         // Query should still work correctly despite gaps in entity IDs
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?v
                   :where
                   [?e :test/value ?v]]'::TEXT,
@@ -522,7 +522,7 @@ mod tests {
 
         // Define test attribute
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\"
                  :db/ident :test/bench
                  :db/valueType :db.type/long
@@ -539,7 +539,7 @@ mod tests {
 
         for i in 0..100 {
             let txn = format!(
-                "SELECT mentat_transact('[[:db/add \"e{}\" :test/bench {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{}\" :test/bench {}]]'::TEXT)",
                 i, i
             );
             Spi::run(&txn).expect("Transaction failed");

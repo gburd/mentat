@@ -20,7 +20,7 @@ mod tests {
         // :p/seen is noHistory cardinality-one; :p/name is normal (full history);
         // :p/tag is noHistory cardinality-many.
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/ident :p/seen  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one :db/noHistory true}
                 {:db/ident :p/name  :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -51,14 +51,12 @@ mod tests {
     fn pg_test_nh_cardinality_one_no_trail() {
         setup();
         schema();
-        Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/seen 100}]'::TEXT)",
-        )
-        .expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/seen 100}]'::TEXT)")
+            .expect("tx");
         let e = eid();
         for v in 101..=110 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[{{:db/id {} :p/seen {}}}]'::TEXT)",
+                "SELECT edn_t('[{{:db/id {} :p/seen {}}}]'::TEXT)",
                 e, v
             ))
             .expect("update");
@@ -95,11 +93,11 @@ mod tests {
     fn pg_test_nh_normal_attr_keeps_history() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\"}]'::TEXT)")
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\"}]'::TEXT)")
             .expect("tx");
         let e = eid();
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :p/name \"Alyce\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :p/name \"Alyce\"}}]'::TEXT)",
             e
         ))
         .expect("update");
@@ -120,16 +118,16 @@ mod tests {
     fn pg_test_nh_query_returns_current() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/seen 1}]'::TEXT)")
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/seen 1}]'::TEXT)")
             .expect("tx");
         let e = eid();
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :p/seen 42}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :p/seen 42}}]'::TEXT)",
             e
         ))
         .expect("update");
         let raw = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?s :where [{} :p/seen ?s]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?s :where [{} :p/seen ?s]]'::TEXT, '{{}}'::jsonb)::TEXT",
             e
         ))
         .expect("query")
@@ -147,12 +145,12 @@ mod tests {
     fn pg_test_nh_idempotent_reassert() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/seen 7}]'::TEXT)")
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/seen 7}]'::TEXT)")
             .expect("tx");
         let e = eid();
         for _ in 0..5 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[{{:db/id {} :p/seen 7}}]'::TEXT)",
+                "SELECT edn_t('[{{:db/id {} :p/seen 7}}]'::TEXT)",
                 e
             ))
             .expect("reassert");
@@ -174,17 +172,18 @@ mod tests {
     fn pg_test_nh_cardinality_many() {
         setup();
         schema();
-        Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)",
-        )
-        .expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)")
+            .expect("tx");
         let e = eid();
         // Add two more tags, then re-assert x several times.
-        Spi::run(&format!("SELECT mentat_transact('[{{:db/id {} :p/tag \"y\"}} {{:db/id {} :p/tag \"z\"}}]'::TEXT)", e, e))
-            .expect("add");
+        Spi::run(&format!(
+            "SELECT edn_t('[{{:db/id {} :p/tag \"y\"}} {{:db/id {} :p/tag \"z\"}}]'::TEXT)",
+            e, e
+        ))
+        .expect("add");
         for _ in 0..3 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[{{:db/id {} :p/tag \"x\"}}]'::TEXT)",
+                "SELECT edn_t('[{{:db/id {} :p/tag \"x\"}}]'::TEXT)",
                 e
             ))
             .expect("reassert x");
@@ -218,13 +217,11 @@ mod tests {
     fn pg_test_nh_retract() {
         setup();
         schema();
-        Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)",
-        )
-        .expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)")
+            .expect("tx");
         let e = eid();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :p/tag \"x\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :p/tag \"x\"]]'::TEXT)",
             e
         ))
         .expect("retract");

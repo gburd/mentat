@@ -332,14 +332,14 @@ type PullError = Box<dyn std::error::Error + Send + Sync>;
 ///   - Defaults: `[(:person/email :default "none")]`
 ///   - Rename: `[(:person/name :as "Name")]`
 ///   - Wildcard with map overrides: `[* {:person/friends [:person/name]}]`
-#[pg_extern]
+#[pg_extern(name = "edn_pull")]
 pub fn mentat_pull(pattern: &str, entity_id: i64) -> Result<JsonB, PullError> {
     pull("default", pattern, entity_id)
 }
 
 /// Pull entity data using a pull pattern from a named store.
 ///
-/// Supports the same pull patterns as mentat_pull but operates on the specified store.
+/// Supports the same pull patterns as edn_pull but operates on the specified store.
 ///
 /// # Example
 /// ```sql
@@ -395,7 +395,7 @@ pub fn pull(store: &str, pattern: &str, entity_id: i64) -> Result<JsonB, PullErr
 
 /// Pull entity data for multiple entities using a pull pattern.
 ///
-/// This is the batched counterpart to `mentat_pull`. Instead of pulling one entity
+/// This is the batched counterpart to `edn_pull`. Instead of pulling one entity
 /// at a time (N+1 queries), this function batches attribute lookups for all entities,
 /// resulting in significantly fewer database round-trips.
 ///
@@ -2320,7 +2320,7 @@ mod tests {
         // all stay consistent (mentat.datoms is a VIEW now -- raw INSERT/INDEX
         // against it is no longer valid).
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
@@ -2329,7 +2329,7 @@ mod tests {
         // Create circular graph: A(1000)->B(1001)->C(1002)->A(1000) using
         // explicit entity IDs.
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 1000 :person/name \"Alice\"]
                 [:db/add 1001 :person/name \"Bob\"]
                 [:db/add 1002 :person/name \"Carol\"]
@@ -2340,7 +2340,7 @@ mod tests {
         )?;
 
         // Test 1: Pull with depth 10 - should not infinite loop
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friend 10}]', 1000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friend 10}]', 1000)")?;
 
         assert!(
             result.is_some(),
@@ -2363,7 +2363,7 @@ mod tests {
         }
 
         // Test 2: Pull with unbounded recursion (...) - should hit MAX_RECURSION_DEPTH
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friend ...}]', 1000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friend ...}]', 1000)")?;
 
         assert!(
             result.is_some(),
@@ -2385,17 +2385,17 @@ mod tests {
         }
 
         // Test 3: Pull with depth 1 - should get one level without cycles
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friend 1}]', 1000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friend 1}]', 1000)")?;
         assert!(result.is_some(), "Depth-1 pull should complete");
 
         // Test 4: Verify that non-cyclic paths in the same graph work correctly
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 1003 :person/friend 1000]
             ]'::TEXT)",
         )?;
 
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friend 5}]', 1003)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friend 5}]', 1003)")?;
         assert!(result.is_some(), "Diamond pattern pull should complete");
 
         Ok(())
@@ -2409,7 +2409,7 @@ mod tests {
 
         // :person/friends is a cardinality-many ref.
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/friends :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
             ]'::TEXT)",
         )?;
@@ -2419,7 +2419,7 @@ mod tests {
         // B has friends [C, A] (cycle to A)
         // C has friends [A]     (cycle to A)
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 2000 :person/friends 2001]
                 [:db/add 2000 :person/friends 2002]
                 [:db/add 2001 :person/friends 2002]
@@ -2429,7 +2429,7 @@ mod tests {
         )?;
 
         // Pull from A with depth 5
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friends 5}]', 2000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friends 5}]', 2000)")?;
 
         assert!(
             result.is_some(),
@@ -2466,7 +2466,7 @@ mod tests {
         // Schema: :order/items is a component ref (many), :item/name is a string,
         // :item/qty is a long, :order/name is a string.
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :order/items :db/valueType :db.type/ref :db/cardinality :db.cardinality/many :db/isComponent true}
                 {:db/ident :item/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :item/qty :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
@@ -2476,7 +2476,7 @@ mod tests {
 
         // Order 3000 has two line items: 3001 and 3002
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 3000 :order/name \"Order-1\"]
                 [:db/add 3001 :item/name \"Widget\"]
                 [:db/add 3002 :item/name \"Gadget\"]
@@ -2488,8 +2488,7 @@ mod tests {
         )?;
 
         // Pull :order/items -- should recursively expand component entities
-        let result =
-            Spi::get_one::<JsonB>("SELECT mentat_pull('[:order/name :order/items]', 3000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[:order/name :order/items]', 3000)")?;
 
         assert!(result.is_some(), "Component pull should succeed");
         if let Some(JsonB(json_val)) = result {
@@ -2528,14 +2527,14 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :person/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 4000 :person/name \"Alice\"]
                 [:db/add 4001 :person/name \"Bob\"]
                 [:db/add 4002 :person/name \"Carol\"]
@@ -2591,7 +2590,7 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
@@ -2599,7 +2598,7 @@ mod tests {
 
         // Chain: Alice -> Bob -> Carol (no cycle)
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 5000 :person/name \"Alice\"]
                 [:db/add 5001 :person/name \"Bob\"]
                 [:db/add 5002 :person/name \"Carol\"]
@@ -2608,7 +2607,7 @@ mod tests {
             ]'::TEXT)",
         )?;
 
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friend ...}]', 5000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friend ...}]', 5000)")?;
 
         assert!(result.is_some(), "Mixed recursive pull should succeed");
         if let Some(JsonB(json_val)) = result {
@@ -2664,7 +2663,7 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :node/next :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :node/label :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
@@ -2672,7 +2671,7 @@ mod tests {
 
         // Chain: N0 -> N1 -> N2 -> N3
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 6000 :node/label \"N0\"]
                 [:db/add 6001 :node/label \"N1\"]
                 [:db/add 6002 :node/label \"N2\"]
@@ -2684,7 +2683,7 @@ mod tests {
         )?;
 
         // Depth 2: should get N0 -> N1 -> N2, but N2 should NOT have :node/next
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:node/next 2}]', 6000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:node/next 2}]', 6000)")?;
 
         assert!(result.is_some(), "Bounded depth pull should succeed");
         if let Some(JsonB(json_val)) = result {
@@ -2727,7 +2726,7 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :mgr/reports-to :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :mgr/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
@@ -2735,7 +2734,7 @@ mod tests {
 
         // Org chart: Employee(7002) reports-to Manager(7001) reports-to VP(7000)
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 7000 :mgr/name \"VP\"]
                 [:db/add 7001 :mgr/name \"Manager\"]
                 [:db/add 7002 :mgr/name \"Employee\"]
@@ -2745,7 +2744,7 @@ mod tests {
         )?;
 
         // Reverse recursive: from VP, find who reports to them recursively
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:mgr/_reports-to 3}]', 7000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:mgr/_reports-to 3}]', 7000)")?;
 
         assert!(result.is_some(), "Reverse recursive pull should succeed");
         if let Some(JsonB(json_val)) = result {
@@ -2790,7 +2789,7 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :person/address :db/valueType :db.type/ref :db/cardinality :db.cardinality/one :db/isComponent true}
@@ -2801,7 +2800,7 @@ mod tests {
         // Alice(8000) -> addr(8010, city=NYC)
         // Alice friends Bob(8001) -> addr(8011, city=LA)
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 8000 :person/name \"Alice\"]
                 [:db/add 8001 :person/name \"Bob\"]
                 [:db/add 8010 :address/city \"NYC\"]
@@ -2812,7 +2811,7 @@ mod tests {
             ]'::TEXT)",
         )?;
 
-        let result = Spi::get_one::<JsonB>("SELECT mentat_pull('[{:person/friend ...}]', 8000)")?;
+        let result = Spi::get_one::<JsonB>("SELECT edn_pull('[{:person/friend ...}]', 8000)")?;
 
         assert!(result.is_some(), "Component+recursive pull should succeed");
         if let Some(JsonB(json_val)) = result {
@@ -2863,7 +2862,7 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :team/members :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :team/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
@@ -2871,7 +2870,7 @@ mod tests {
         )?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add 9000 :team/name \"Alpha\"]
                 [:db/add 9001 :team/name \"Beta\"]
                 [:db/add 9100 :person/name \"Alice\"]
@@ -2915,7 +2914,7 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()")?;
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :node/self :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :node/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
@@ -2927,7 +2926,7 @@ mod tests {
         // partition_user_seq, which starts at 1000000). A tempid avoids the
         // collision by using whatever the allocator returns.
         let report = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :node/val 42}
                 [:db/add \"n\" :node/self \"n\"]
             ]'::TEXT)",
@@ -2937,7 +2936,7 @@ mod tests {
         let nid = report["tempids"]["n"].as_i64().expect("tempid n");
 
         let result = Spi::get_one::<JsonB>(&format!(
-            "SELECT mentat_pull('[:node/val {{:node/self ...}}]', {})",
+            "SELECT edn_pull('[:node/val {{:node/self ...}}]', {})",
             nid
         ))?;
 

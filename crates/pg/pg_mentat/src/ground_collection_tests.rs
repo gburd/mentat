@@ -61,7 +61,7 @@ mod tests {
 
     fn setup_gc_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"id\"   :db/ident :gc/id   :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
                 {:db/id \"name\" :db/ident :gc/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"age\"  :db/ident :gc/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
@@ -71,7 +71,7 @@ mod tests {
         .expect("gc schema");
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :gc/id 1 :gc/name \"Alice\"   :gc/age 30 :gc/city \"Paris\"}
                 {:db/id \"b\" :gc/id 2 :gc/name \"Bob\"     :gc/age 25 :gc/city \"Berlin\"}
                 {:db/id \"c\" :gc/id 3 :gc/name \"Carol\"   :gc/age 40 :gc/city \"Paris\"}
@@ -93,7 +93,7 @@ mod tests {
         setup_gc_schema();
         // ages 22, 25, 35 -> Eve, Bob, Dave
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where \
+            "SELECT edn_q('[:find [?n ...] :where \
              [?e :gc/age ?a] \
              [(ground [22 25 35]) [?a ...]] \
              [?e :gc/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -117,7 +117,7 @@ mod tests {
         setup();
         setup_gc_schema();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where \
+            "SELECT edn_q('[:find [?n ...] :where \
              [?e :gc/age ?a] \
              [(ground [99 100 101]) [?a ...]] \
              [?e :gc/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -140,7 +140,7 @@ mod tests {
         setup_gc_schema();
         // The tuple (1, "Alice", 30) selects exactly entity "a".
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?id ?name ?age :where \
+            "SELECT edn_q('[:find ?id ?name ?age :where \
              [?e :gc/id ?id] \
              [?e :gc/name ?name] \
              [?e :gc/age ?age] \
@@ -163,7 +163,7 @@ mod tests {
         setup();
         setup_gc_schema();
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?id ?name :where \
+            "SELECT edn_q('[:find ?id ?name :where \
              [?e :gc/id ?id] \
              [?e :gc/name ?name] \
              [(ground [1 \"Bob\"]) [?id ?name]]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -185,7 +185,7 @@ mod tests {
         setup_gc_schema();
         // Cities "Paris" or "Lisbon" -> Alice, Carol, Dave
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where \
+            "SELECT edn_q('[:find [?n ...] :where \
              [?e :gc/city ?c] \
              [(ground [\"Paris\" \"Lisbon\"]) [?c ...]] \
              [?e :gc/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -214,7 +214,7 @@ mod tests {
         setup_gc_schema();
         // Rows (1,"Alice"), (2,"Bob"), (99,"Mismatch") -> Alice, Bob match
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?id ?name :where \
+            "SELECT edn_q('[:find ?id ?name :where \
              [?e :gc/id ?id] \
              [?e :gc/name ?name] \
              [(ground [[1 \"Alice\"] [2 \"Bob\"] [99 \"Mismatch\"]]) [[?id ?name]]]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -245,7 +245,7 @@ mod tests {
     fn pg_test_ground_mixed_type_rejected() {
         setup();
         setup_gc_schema();
-        let sql = "SELECT mentat_query('[:find ?n :where \
+        let sql = "SELECT edn_q('[:find ?n :where \
              [?e :gc/name ?n] \
              [(ground [1 \"two\"]) [?n ...]]]'::TEXT, '{}'::jsonb)::TEXT";
         assert!(
@@ -264,7 +264,7 @@ mod tests {
     fn pg_test_ground_tuple_arity_mismatch() {
         setup();
         setup_gc_schema();
-        let sql = "SELECT mentat_query('[:find ?id ?name ?age :where \
+        let sql = "SELECT edn_q('[:find ?id ?name ?age :where \
              [?e :gc/id ?id] \
              [?e :gc/name ?name] \
              [?e :gc/age ?age] \
@@ -286,7 +286,7 @@ mod tests {
         setup();
         setup_gc_schema();
         // Scalar arg with collection binding -> error.
-        let sql = "SELECT mentat_query('[:find ?n :where \
+        let sql = "SELECT edn_q('[:find ?n :where \
              [?e :gc/name ?n] \
              [(ground 42) [?n ...]]]'::TEXT, '{}'::jsonb)::TEXT";
         assert!(
@@ -305,7 +305,7 @@ mod tests {
     fn pg_test_ground_relation_row_arity_mismatch() {
         setup();
         setup_gc_schema();
-        let sql = "SELECT mentat_query('[:find ?id ?name :where \
+        let sql = "SELECT edn_q('[:find ?id ?name :where \
              [?e :gc/id ?id] \
              [?e :gc/name ?name] \
              [(ground [[1 \"Alice\"] [2]]) [[?id ?name]]]]'::TEXT, '{}'::jsonb)::TEXT";

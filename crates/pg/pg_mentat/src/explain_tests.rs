@@ -17,7 +17,7 @@ mod tests {
         crate::ensure_extension_loaded();
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap_schema failed");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
              ]'::TEXT)",
         )

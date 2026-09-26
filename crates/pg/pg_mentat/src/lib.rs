@@ -13,7 +13,7 @@ pub extern "C-unwind" fn _PG_init() {
     // Register monitoring GUC parameters (slow query threshold, logging)
     monitoring::register_monitoring_gucs();
 
-    // Register mentat_eval scripting limit GUCs (steps, heap, depth; PGC_SUSET)
+    // Register edn_eval scripting limit GUCs (steps, heap, depth; PGC_SUSET)
     #[cfg(feature = "script")]
     functions::script_gucs::register_script_gucs();
 }
@@ -237,7 +237,7 @@ extension_sql_file!(
 // functions/transact.rs `mod bootstrap_entids` (DB_IDENT=10, DB_VALUE_TYPE=11,
 // DB_CARDINALITY=12, DB_TX_INSTANT=50). Do NOT change either side without
 // updating the other — mismatched entids silently break every schema-defining
-// mentat_transact call.
+// edn_t call.
 extension_sql_file!(
     "../sql/06_bootstrap_data.sql",
     name = "bootstrap_data",
@@ -739,6 +739,8 @@ mod data_integrity_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod datalog_feature_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod deprecated_names_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod edge_case_query_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod entid_collision_tests;
@@ -1162,8 +1164,20 @@ extension_sql_file!(
     requires = ["narrow_storage", "current_projection"],
 );
 
+// Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /
+// mentat_pull) as thin SQL wrappers over edn_t / edn_q / edn_pull. The
+// deprecated mentat_eval wrapper lives next to edn_eval in
+// functions/script.rs so it only exists in `script` builds.
+// `requires` names the Rust fn idents (pgrx matches on those, not on the
+// `#[pg_extern(name = ...)]` SQL name).
+extension_sql_file!(
+    "../sql/26_deprecated_names.sql",
+    name = "deprecated_names",
+    requires = [mentat_transact, mentat_query, mentat_pull],
+);
+
 // Short-name SQL aliases (mentat.q, mentat.t, mentat.pull, etc.)
-// Must run after all mentat_* functions are created by pgrx.
+// Must run after all mentat_* / edn_* functions are created by pgrx.
 extension_sql_file!(
     "../sql/07_function_aliases.sql",
     name = "function_aliases",
@@ -1262,11 +1276,11 @@ mod tests {
     }
 
     /// Define common person attributes (:person/name, :person/age, :person/parent,
-    /// :person/status) via mentat_transact. Must be called after setup_test_db()
+    /// :person/status) via edn_t. Must be called after setup_test_db()
     /// and bootstrap_schema().
     fn setup_person_schema() {
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"name-attr\" :db/ident :person/name]
                  [:db/add \"name-attr\" :db/valueType :db.type/string]
                  [:db/add \"name-attr\" :db/cardinality :db.cardinality/one]
@@ -1344,7 +1358,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?x ?ident :where [?x :db/ident ?ident]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -1377,7 +1391,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?x . :where [?x :db/fulltext true]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -1399,7 +1413,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?ident . :where [10 :db/ident ?ident]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -1420,7 +1434,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find [?ident ?type] :where [10 :db/ident ?ident] [10 :db/valueType ?type]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -1445,7 +1459,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find [?ident ...] :where [?e :db/ident ?ident]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -1471,7 +1485,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"person1\" :person/name \"Alice\"]
                  [:db/add \"person1\" :person/age 30]]
             '::TEXT)",
@@ -1479,7 +1493,7 @@ mod tests {
         .expect("Transaction failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e :in ?name :where [?e :person/name ?name]]'::TEXT,
                 '{\"inputs\": [\"Alice\"]}'::jsonb
             )::TEXT",
@@ -1500,7 +1514,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?ident ?type
                   :where
                   [?e :db/ident ?ident]
@@ -1529,7 +1543,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e
                   :where
                   [?e :db/ident]
@@ -1556,7 +1570,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e
                   :where
                   (or [?e :db/ident :db/ident]
@@ -1580,7 +1594,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?ident
                   :where [?e :db/ident ?ident]
                   :order (asc ?e)]'::TEXT,
@@ -1609,7 +1623,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?ident
                   :where [?e :db/ident ?ident]
                   :limit 5]'::TEXT,
@@ -1632,7 +1646,7 @@ mod tests {
 
     fn setup_temporal_data() -> (i64, i64, i64) {
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"name-attr\" :db/ident :person/name]
                  [:db/add \"name-attr\" :db/valueType :db.type/string]
                  [:db/add \"name-attr\" :db/cardinality :db.cardinality/one]
@@ -1659,7 +1673,7 @@ mod tests {
 
         // Use Alice's actual entity ID to update her age
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :person/age 26]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :person/age 26]]'::TEXT)",
             alice_eid
         ))
         .expect("Transaction 2 failed");
@@ -1672,7 +1686,7 @@ mod tests {
         .expect("tx2 is null");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add {} :person/age 27]
                  [:db/add \"p2\" :person/name \"Bob\"]
                  [:db/add \"p2\" :person/age 30]]
@@ -1695,7 +1709,7 @@ mod tests {
         let (tx1, tx2, _tx3) = setup_temporal_data();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where
                  [?p :person/name \"Alice\"]
@@ -1712,7 +1726,7 @@ mod tests {
         assert_eq!(age, 25, "Age at tx1 should be 25");
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where
                  [?p :person/name \"Alice\"]
@@ -1735,7 +1749,7 @@ mod tests {
         let (tx1, _tx2, _tx3) = setup_temporal_data();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?e ?a ?v ?tx ?added
                  :where
                  [?e ?a ?v ?tx ?added]]'::TEXT, '{{\"since\": {}}}'::jsonb)::TEXT",
@@ -1764,7 +1778,7 @@ mod tests {
         let (_tx1, _tx2, _tx3) = setup_temporal_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age ?tx ?added
                  :where
                  [?p :person/name \"Alice\"]
@@ -1802,7 +1816,7 @@ mod tests {
         let (tx1, _tx2, _tx3) = setup_temporal_data();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where
                  [?p :person/name \"Bob\"]
@@ -1825,7 +1839,7 @@ mod tests {
 
         // Insert the initial data
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/status \"active\"]]
             '::TEXT)",
@@ -1846,13 +1860,13 @@ mod tests {
 
         // Retract using the actual entity ID
         let retract_tx = format!(
-            "SELECT mentat_transact('[[:db/retract {} :person/status \"active\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :person/status \"active\"]]'::TEXT)",
             entity_id
         );
         Spi::run(&retract_tx).expect("Retraction failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?status ?tx ?added
                  :where
                  [?p :person/name \"Alice\"]
@@ -1888,7 +1902,7 @@ mod tests {
         let (tx1, _tx2, tx3) = setup_temporal_data();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find (count ?p)
                  :where
                  [?p :person/name ?name]]'::TEXT, '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -1903,7 +1917,7 @@ mod tests {
         assert_eq!(count, 1, "Only Alice should exist at tx1");
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find (count ?p)
                  :where
                  [?p :person/name ?name]]'::TEXT, '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -1925,7 +1939,7 @@ mod tests {
         setup_temporal_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?tx ?instant
                  :where
                  [?tx :db/txInstant ?instant]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -1951,7 +1965,7 @@ mod tests {
 
     fn setup_family_schema() {
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"parent\" :db/ident :family/parent]
                  [:db/add \"parent\" :db/valueType :db.type/ref]
                  [:db/add \"parent\" :db/cardinality :db.cardinality/many]
@@ -1968,7 +1982,7 @@ mod tests {
 
     fn setup_family_data() {
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"grandma\" :person/name \"Grandma\"]
                  [:db/add \"mom\" :person/name \"Mom\"]
                  [:db/add \"dad\" :person/name \"Dad\"]
@@ -1992,7 +2006,7 @@ mod tests {
         setup_family_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?parent-name ?child-name
                  :where
                  [?p :family/child ?c]
@@ -2017,7 +2031,7 @@ mod tests {
         setup_family_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?ancestor-name ?descendant-name
                  :with
                  [[(ancestor ?a ?d)
@@ -2061,7 +2075,7 @@ mod tests {
         setup_family_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?sib1-name ?sib2-name
                  :where
                  [?p :family/child ?s1]
@@ -2087,7 +2101,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 25]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -2099,7 +2113,7 @@ mod tests {
         .expect("Failed to insert age data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?age
                  :where
                  [?p :person/name ?name]
@@ -2130,7 +2144,7 @@ mod tests {
         setup_family_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?p :person/name ?name]
@@ -2154,7 +2168,7 @@ mod tests {
         setup_family_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?parent-name (count ?child)
                  :where
                  [?p :family/child ?child]
@@ -2187,7 +2201,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"role-attr\" :db/ident :person/role]
                  [:db/add \"role-attr\" :db/valueType :db.type/string]
                  [:db/add \"role-attr\" :db/cardinality :db.cardinality/one]
@@ -2202,7 +2216,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?role
                  :where
                  [?p :person/name ?name]
@@ -2233,7 +2247,7 @@ mod tests {
 
         // Query schema attributes using OR with no shared base patterns
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e
                   :where
                   (or [?e :db/ident :db/ident]
@@ -2259,7 +2273,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"role-attr\" :db/ident :person/role]
                  [:db/add \"role-attr\" :db/valueType :db.type/string]
                  [:db/add \"role-attr\" :db/cardinality :db.cardinality/one]
@@ -2273,7 +2287,7 @@ mod tests {
 
         // The shared ?p variable binds consistently across OR branches
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?p :person/name ?name]
@@ -2308,7 +2322,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"role-attr\" :db/ident :person/role]
                  [:db/add \"role-attr\" :db/valueType :db.type/string]
                  [:db/add \"role-attr\" :db/cardinality :db.cardinality/one]
@@ -2327,7 +2341,7 @@ mod tests {
 
         // OR with AND: match (admin AND name=Alice) OR (moderator)
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?p :person/name ?name]
@@ -2371,7 +2385,7 @@ mod tests {
         // :db/ident attribute has entid 10; querying for it by two different
         // values that both resolve to the same entity should deduplicate.
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e
                   :where
                   (or [?e :db/ident :db/ident]
@@ -2403,7 +2417,7 @@ mod tests {
         // its :db/ident on a fresh tempid would create a second entity claiming the
         // same (unique-identity) ident and is correctly rejected. Just add people.
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/status \"active\"]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -2413,7 +2427,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?status
                  :where
                  [?p :person/name ?name]
@@ -2451,7 +2465,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"role-attr\" :db/ident :person/role]
                  [:db/add \"role-attr\" :db/valueType :db.type/string]
                  [:db/add \"role-attr\" :db/cardinality :db.cardinality/one]
@@ -2463,7 +2477,7 @@ mod tests {
 
         // Second branch matches nothing (no "superadmin" role exists)
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?p :person/name ?name]
@@ -2492,7 +2506,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"O''Brien\"]
                  [:db/add \"p2\" :person/name \"Alice\"]
                  [:db/add \"p3\" :person/name \"Bob\"]]
@@ -2502,7 +2516,7 @@ mod tests {
 
         // Test that string predicate with quotes works correctly
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?p :person/name ?name]
@@ -2529,7 +2543,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 25]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -2539,7 +2553,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?double-age
                  :where
                  [?p :person/name ?name]
@@ -2568,7 +2582,7 @@ mod tests {
 
     fn setup_fts_schema() {
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"person-name\" :db/ident :person/name]
                  [:db/add \"person-name\" :db/valueType :db.type/string]
                  [:db/add \"person-name\" :db/cardinality :db.cardinality/one]
@@ -2591,7 +2605,7 @@ mod tests {
         setup_fts_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice Johnson\"]
                  [:db/add \"p2\" :person/name \"Bob Smith\"]
                  [:db/add \"p3\" :person/name \"Alice Smith\"]]
@@ -2600,7 +2614,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?name ?score
                   :where
                   [(fulltext $ :person/name \"Alice\") [[?e ?name _ ?score]]]]'::TEXT,
@@ -2633,7 +2647,7 @@ mod tests {
         setup_fts_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"a1\" :article/content \"The quick brown fox jumps over the lazy dog\"]
                  [:db/add \"a2\" :article/content \"A quick study of foxes in the wild\"]
                  [:db/add \"a3\" :article/content \"Dogs are better than cats\"]]
@@ -2642,7 +2656,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?content
                   :where
                   [(fulltext $ :article/content \"quick fox\") [[?e ?content _ _]]]]'::TEXT,
@@ -2674,7 +2688,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?val
                   :where
                   [(fulltext $ :db/ident \"test\") [[?e ?val _ _]]]]'::TEXT,
@@ -2702,7 +2716,7 @@ mod tests {
         setup_fts_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p2\" :person/name \"Alice Alice Alice\"]
                  [:db/add \"p3\" :person/name \"Alice and Bob\"]]
@@ -2711,7 +2725,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?name ?score
                   :where
                   [(fulltext $ :person/name \"Alice\") [[?e ?name _ ?score]]]
@@ -2744,7 +2758,7 @@ mod tests {
         setup_fts_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"a1\" :article/content \"Hello, World! This is a test.\"]
                  [:db/add \"a2\" :article/content \"Testing: one-two-three\"]
                  [:db/add \"a3\" :article/content \"C++ programming\"]]
@@ -2753,7 +2767,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?content
                   :where
                   [(fulltext $ :article/content \"test\") [[?e ?content _ _]]]]'::TEXT,
@@ -2777,7 +2791,7 @@ mod tests {
         setup_fts_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"a1\" :article/content \"quick brown fox\"]
                  [:db/add \"a2\" :article/content \"brown quick fox\"]
                  [:db/add \"a3\" :article/content \"the quick brown fox jumps\"]]
@@ -2786,7 +2800,7 @@ mod tests {
         .expect("Failed to insert test data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?content
                   :where
                   [(fulltext $ :article/content \"\\\"quick brown\\\"\") [[?e ?content _ _]]]]'::TEXT,
@@ -2817,7 +2831,7 @@ mod tests {
         setup_fts_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?content
                   :where
                   [(fulltext $ :article/content \"\") [[?e ?content _ _]]]]'::TEXT,
@@ -2856,11 +2870,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create entity with multiple attributes
         let data_tx = r#"[
@@ -2870,12 +2881,10 @@ mod tests {
              :person/email "alice@example.com"}
         ]"#;
 
-        let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(data_tx)],
-        )
-        .expect("Data transaction failed")
-        .expect("Transaction returned NULL");
+        let tx_result =
+            Spi::get_one_with_args::<String>("SELECT edn_t($1)", &[DatumWithOid::from(data_tx)])
+                .expect("Data transaction failed")
+                .expect("Transaction returned NULL");
 
         let tx_json: serde_json::Value =
             serde_json::from_str(&tx_result).expect("Failed to parse transaction result");
@@ -2884,7 +2893,7 @@ mod tests {
 
         // Verify entity exists with all attributes
         let query_before = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?name ?age ?email
                       :where
                       [?e :person/name ?name]
@@ -2914,14 +2923,14 @@ mod tests {
         let retract_tx = format!(r"[[:db/retractEntity {}]]", alice_eid);
 
         Spi::run_with_args(
-            "SELECT mentat_transact($1)",
+            "SELECT edn_t($1)",
             &[DatumWithOid::from(retract_tx.as_str())],
         )
         .expect("Retract entity transaction failed");
 
         // Verify entity no longer has any attributes
         let query_after = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?name
                       :where
                       [?e :person/name ?name]
@@ -2949,7 +2958,7 @@ mod tests {
         // accepted in the 5th (added) pattern position, so bind ?added and count
         // the retraction rows (added = false) in Rust over the full history.
         let history_query = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?a ?added
                       :where
                       [{} ?a ?v ?tx ?added]]'::TEXT,
@@ -2994,11 +3003,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Transact two entities where one references the other
         let data_tx = r#"[
@@ -3009,12 +3015,10 @@ mod tests {
              :person/friend "alice"}
         ]"#;
 
-        let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(data_tx)],
-        )
-        .expect("Data transaction failed")
-        .expect("Transaction returned NULL");
+        let tx_result =
+            Spi::get_one_with_args::<String>("SELECT edn_t($1)", &[DatumWithOid::from(data_tx)])
+                .expect("Data transaction failed")
+                .expect("Transaction returned NULL");
 
         let tx_json: serde_json::Value =
             serde_json::from_str(&tx_result).expect("Failed to parse transaction result");
@@ -3024,7 +3028,7 @@ mod tests {
 
         // Test 1: Query the ref value - should return alice's entity ID
         let query_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?friend :where [?e :person/name \"Bob\"] [?e :person/friend ?friend]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -3049,7 +3053,7 @@ mod tests {
 
         // Test 2: Pull Bob's entity - should include :person/friend with correct entity ID
         let pull_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[* {{:person/friend [*]}}]', {})::TEXT",
+            "SELECT edn_pull('[* {{:person/friend [*]}}]', {})::TEXT",
             bob_eid
         ))
         .expect("Pull failed")
@@ -3106,7 +3110,7 @@ mod tests {
 
         // Define schema with ref attribute
         Spi::run_with_args(
-            "SELECT mentat_transact($1)",
+            "SELECT edn_t($1)",
             &[DatumWithOid::from(
                 r"[
                 {:db/ident :item/name
@@ -3122,7 +3126,7 @@ mod tests {
 
         // Transact entities with a ref between them
         let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)",
+            "SELECT edn_t($1)",
             &[DatumWithOid::from(
                 r#"[
                 {:db/id "target" :item/name "Target"}
@@ -3187,11 +3191,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create an entity with a unique email
         let data_tx = r#"[
@@ -3201,12 +3202,10 @@ mod tests {
              :person/age 25}
         ]"#;
 
-        let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(data_tx)],
-        )
-        .expect("Data transaction failed")
-        .expect("Transaction returned NULL");
+        let tx_result =
+            Spi::get_one_with_args::<String>("SELECT edn_t($1)", &[DatumWithOid::from(data_tx)])
+                .expect("Data transaction failed")
+                .expect("Transaction returned NULL");
 
         let tx_json: serde_json::Value =
             serde_json::from_str(&tx_result).expect("Failed to parse tx result");
@@ -3219,15 +3218,12 @@ mod tests {
             [:db/add [:person/email "alice@example.com"] :person/age 30]
         ]"#;
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(update_tx)],
-        )
-        .expect("Lookup ref transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(update_tx)])
+            .expect("Lookup ref transaction failed");
 
         // Verify the update happened on the correct entity
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?age .
                       :where
                       [{} :person/age ?age]]'::TEXT,
@@ -3266,11 +3262,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create an entity with a unique email
         let data_tx = r#"[
@@ -3280,12 +3273,10 @@ mod tests {
              :person/age 25}
         ]"#;
 
-        let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(data_tx)],
-        )
-        .expect("Data transaction failed")
-        .expect("Transaction returned NULL");
+        let tx_result =
+            Spi::get_one_with_args::<String>("SELECT edn_t($1)", &[DatumWithOid::from(data_tx)])
+                .expect("Data transaction failed")
+                .expect("Transaction returned NULL");
 
         let tx_json: serde_json::Value =
             serde_json::from_str(&tx_result).expect("Failed to parse tx result");
@@ -3299,15 +3290,12 @@ mod tests {
              :person/age 31}
         ]"#;
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(update_tx)],
-        )
-        .expect("Map-form lookup ref transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(update_tx)])
+            .expect("Map-form lookup ref transaction failed");
 
         // Verify the update happened on the correct entity
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?age .
                       :where
                       [{} :person/age ?age]]'::TEXT,
@@ -3349,15 +3337,12 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create Alice
         Spi::run_with_args(
-            "SELECT mentat_transact($1)",
+            "SELECT edn_t($1)",
             &[DatumWithOid::from(
                 r#"[
                 {:db/id "alice"
@@ -3370,7 +3355,7 @@ mod tests {
 
         // Create Bob with :person/friend pointing to Alice via lookup ref
         Spi::run_with_args(
-            "SELECT mentat_transact($1)",
+            "SELECT edn_t($1)",
             &[DatumWithOid::from(
                 r#"[
                 {:db/id "bob"
@@ -3384,7 +3369,7 @@ mod tests {
 
         // Verify Bob's friend is Alice by querying for Alice's name via the ref
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?friend-name .
                   :where [?bob :person/name \"Bob\"]
                          [?bob :person/friend ?friend]
@@ -3421,15 +3406,12 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create a product
         Spi::run_with_args(
-            "SELECT mentat_transact($1)",
+            "SELECT edn_t($1)",
             &[DatumWithOid::from(
                 r#"[
                 {:db/id "widget"
@@ -3445,15 +3427,12 @@ mod tests {
             [:db/add [:product/sku "WIDGET-001"] :product/name "Super Widget"]
         ]"#;
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(update_tx)],
-        )
-        .expect("Lookup ref with unique/value should succeed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(update_tx)])
+            .expect("Lookup ref with unique/value should succeed");
 
         // Verify the update
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name .
                   :where [?p :product/sku \"WIDGET-001\"]
                          [?p :product/name ?name]]'::TEXT,
@@ -3486,15 +3465,12 @@ mod tests {
              :db/unique :db.unique/identity}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Try to use lookup ref for non-existent entity - should fail
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add [:person/email \"nobody@example.com\"] :person/email \"new@example.com\"]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add [:person/email \"nobody@example.com\"] :person/email \"new@example.com\"]]'::TEXT)"),
             "Lookup ref for non-existent entity should fail"
         );
     }
@@ -3511,19 +3487,18 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create an entity
-        Spi::run("SELECT mentat_transact('[[:db/add \"p1\" :person/name \"Alice\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"p1\" :person/name \"Alice\"]]'::TEXT)")
             .expect("Data transaction failed");
 
         // Try to use lookup ref with non-unique attribute - should fail
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add [:person/name \"Alice\"] :person/name \"Bob\"]]'::TEXT)"),
+            raises_error(
+                "SELECT edn_t('[[:db/add [:person/name \"Alice\"] :person/name \"Bob\"]]'::TEXT)"
+            ),
             "Lookup ref with non-unique attribute should fail"
         );
     }
@@ -3551,11 +3526,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create an entity
         let data_tx = r#"[
@@ -3565,13 +3537,13 @@ mod tests {
              :person/age 30}
         ]"#;
 
-        Spi::run_with_args("SELECT mentat_transact($1)", &[DatumWithOid::from(data_tx)])
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(data_tx)])
             .expect("Data transaction failed");
 
         // Use lookup ref as :in binding for entity position
         // Query: find the name of the person with email "alice@example.com"
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name .
                   :in ?person
                   :where [?person :person/name ?name]]'::TEXT,
@@ -3610,11 +3582,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Create two entities: Alice and Bob, with Bob being Alice's friend
         let data_tx = r#"[
@@ -3627,13 +3596,13 @@ mod tests {
              :person/friend "alice"}
         ]"#;
 
-        Spi::run_with_args("SELECT mentat_transact($1)", &[DatumWithOid::from(data_tx)])
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(data_tx)])
             .expect("Data transaction failed");
 
         // Use lookup ref in value position: find who has Alice as a friend
         // The :in variable ?alice binds to a value-position (ref type) via lookup ref
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name .
                   :in ?alice
                   :where [?e :person/friend ?alice]
@@ -3665,7 +3634,7 @@ mod tests {
 
         // Define schema
         let schema_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :person/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
             ]')::TEXT"
@@ -3681,7 +3650,7 @@ mod tests {
         // Attempt transaction with invalid data (type mismatch on age)
         // This should ROLLBACK completely, leaving no partial data
         assert!(
-            raises_error("SELECT mentat_transact('[{:db/id \"alice\" :person/name \"Alice\" :person/age 30} {:db/id \"bob\" :person/name \"Bob\" :person/age \"thirty\"}]'::TEXT)"),
+            raises_error("SELECT edn_t('[{:db/id \"alice\" :person/name \"Alice\" :person/age 30} {:db/id \"bob\" :person/name \"Bob\" :person/age \"thirty\"}]'::TEXT)"),
             "Transaction with invalid data type should fail"
         );
 
@@ -3698,7 +3667,7 @@ mod tests {
 
         // Verify Alice was not partially inserted
         let alice_check = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find (count ?e) . :where [?e :person/name \"Alice\"]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -3720,14 +3689,14 @@ mod tests {
 
         // Define schema
         Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]')::TEXT"
         ).expect("Schema transaction should succeed");
 
         // Valid transaction should commit fully
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"alice\" :person/name \"Alice\"}
                 {:db/id \"bob\" :person/name \"Bob\"}
             ]')::TEXT",
@@ -3747,7 +3716,7 @@ mod tests {
 
         // Verify both entities committed
         let count_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find (count ?e) . :where [?e :person/name]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -3774,7 +3743,7 @@ mod tests {
 
         // Step 1: Add datoms with :db/add
         let tx1_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Bob\"]
                  [:db/add \"p1\" :person/age 25]
                  [:db/add \"p1\" :person/status \"active\"]]
@@ -3791,7 +3760,7 @@ mod tests {
 
         // Verify all attributes are present before retraction
         let query_before = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?status
                       :where
                       [{} :person/status ?status]]'::TEXT,
@@ -3814,14 +3783,14 @@ mod tests {
 
         // Step 2: Retract a specific value with :db/retract
         let retract_tx = format!(
-            "SELECT mentat_transact('[[:db/retract {} :person/status \"active\"]]'::TEXT)::TEXT",
+            "SELECT edn_t('[[:db/retract {} :person/status \"active\"]]'::TEXT)::TEXT",
             bob_eid
         );
         Spi::run(&retract_tx).expect("Retraction failed");
 
         // Step 3: Normal query should NOT find the retracted datom
         let query_after = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?status
                       :where
                       [{} :person/status ?status]]'::TEXT,
@@ -3843,7 +3812,7 @@ mod tests {
 
         // Non-retracted attributes should still be present
         let name_query = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?name
                       :where
                       [{} :person/name ?name]]'::TEXT,
@@ -3866,7 +3835,7 @@ mod tests {
 
         // Step 4: History query should show both assertion and retraction
         let history_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?status ?tx ?added
                       :where
                       [{} :person/status ?status ?tx ?added]]'::TEXT,
@@ -3911,7 +3880,7 @@ mod tests {
     /// Helper: define a cardinality-many string attribute :person/tag
     fn setup_cardinality_many_schema() {
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"name-attr\" :db/ident :person/name]
                  [:db/add \"name-attr\" :db/valueType :db.type/string]
                  [:db/add \"name-attr\" :db/cardinality :db.cardinality/one]
@@ -3934,7 +3903,7 @@ mod tests {
 
         // Add multiple tags to one entity
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]
                  [:db/add \"alice\" :person/tag \"smart\"]
@@ -3952,7 +3921,7 @@ mod tests {
 
         // Query should return all three tags
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?tag
                       :where
                       [{} :person/tag ?tag]]'::TEXT,
@@ -3993,7 +3962,7 @@ mod tests {
 
         // First transaction: add initial tags
         let tx1_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]]
             '::TEXT)::TEXT",
@@ -4009,21 +3978,21 @@ mod tests {
 
         // Second transaction: add more tags using entity ID
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :person/tag \"smart\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :person/tag \"smart\"]]'::TEXT)",
             alice_eid
         ))
         .expect("Transaction 2 failed");
 
         // Third transaction: add yet another tag
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :person/tag \"tall\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :person/tag \"tall\"]]'::TEXT)",
             alice_eid
         ))
         .expect("Transaction 3 failed");
 
         // Query should return all three tags from different transactions
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?tag
                       :where
                       [{} :person/tag ?tag]]'::TEXT,
@@ -4064,7 +4033,7 @@ mod tests {
 
         // Add multiple tags
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]
                  [:db/add \"alice\" :person/tag \"smart\"]
@@ -4082,14 +4051,14 @@ mod tests {
 
         // Retract just one value
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :person/tag \"smart\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :person/tag \"smart\"]]'::TEXT)",
             alice_eid
         ))
         .expect("Retraction failed");
 
         // Query should return only the two remaining tags
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?tag
                       :where
                       [{} :person/tag ?tag]]'::TEXT,
@@ -4132,7 +4101,7 @@ mod tests {
 
         // Add a tag
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]]
             '::TEXT)::TEXT",
@@ -4148,14 +4117,14 @@ mod tests {
 
         // Assert the same value again -- should be idempotent (no duplicate)
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :person/tag \"friendly\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :person/tag \"friendly\"]]'::TEXT)",
             alice_eid
         ))
         .expect("Idempotent assertion failed");
 
         // Should still have exactly one "friendly" tag, not two
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?tag
                       :where
                       [{} :person/tag ?tag]]'::TEXT,
@@ -4187,7 +4156,7 @@ mod tests {
 
         // Create entities and add multiple ref values (friends)
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"bob\" :person/name \"Bob\"]
                  [:db/add \"charlie\" :person/name \"Charlie\"]
@@ -4206,7 +4175,7 @@ mod tests {
 
         // Query all friends of Alice
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?friend-name
                       :where
                       [{} :person/friends ?f]
@@ -4246,7 +4215,7 @@ mod tests {
 
         // Add entity with cardinality-many values
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]
                  [:db/add \"alice\" :person/tag \"smart\"]]
@@ -4263,7 +4232,7 @@ mod tests {
 
         // Pull should return cardinality-many as an array
         let pull_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:person/name :person/tag]', {})::TEXT",
+            "SELECT edn_pull('[:person/name :person/tag]', {})::TEXT",
             alice_eid
         ))
         .expect("Pull failed")
@@ -4298,7 +4267,7 @@ mod tests {
 
         // Add tags across transactions
         let tx1_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]]
             '::TEXT)::TEXT",
@@ -4313,21 +4282,21 @@ mod tests {
             .expect("Missing alice tempid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :person/tag \"smart\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :person/tag \"smart\"]]'::TEXT)",
             alice_eid
         ))
         .expect("Transaction 2 failed");
 
         // Retract one tag
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :person/tag \"friendly\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :person/tag \"friendly\"]]'::TEXT)",
             alice_eid
         ))
         .expect("Retraction failed");
 
         // History should show all assertions and retractions
         let history_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?tag ?added
                       :where
                       [{} :person/tag ?tag _ ?added]]'::TEXT,
@@ -4387,7 +4356,7 @@ mod tests {
 
         // Add entity with both cardinality-one (name) and cardinality-many (tag)
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/tag \"friendly\"]]
             '::TEXT)::TEXT",
@@ -4403,7 +4372,7 @@ mod tests {
 
         // Update cardinality-one (should replace) and add cardinality-many (should accumulate)
         Spi::run(&format!(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add {} :person/name \"Alicia\"]
                  [:db/add {} :person/tag \"smart\"]]
             '::TEXT)",
@@ -4413,7 +4382,7 @@ mod tests {
 
         // cardinality-one: name should be replaced
         let name_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?name .
                       :where
                       [{} :person/name ?name]]'::TEXT,
@@ -4434,7 +4403,7 @@ mod tests {
 
         // cardinality-many: both tags should be present
         let tag_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                     '[:find ?tag
                       :where
                       [{} :person/tag ?tag]]'::TEXT,
@@ -4478,7 +4447,7 @@ mod tests {
 
         // Create entity with a name
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/age 25]]
             '::TEXT)::TEXT",
@@ -4494,14 +4463,14 @@ mod tests {
 
         // CAS: change name from "Alice" to "Alicia" (should succeed)
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/cas {} :person/name \"Alice\" \"Alicia\"]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/cas {} :person/name \"Alice\" \"Alicia\"]]'::TEXT)",
             alice_eid
         ))
         .expect("CAS transaction should succeed");
 
         // Verify the name was updated
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name .
                   :where [{} :person/name ?name]]'::TEXT,
                 '{{}}' ::jsonb
@@ -4521,7 +4490,7 @@ mod tests {
 
         // Verify age was not affected
         let age_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?age .
                   :where [{} :person/age ?age]]'::TEXT,
                 '{{}}' ::jsonb
@@ -4548,7 +4517,7 @@ mod tests {
 
         // Create entity
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]]
             '::TEXT)::TEXT",
         )
@@ -4564,7 +4533,7 @@ mod tests {
         // CAS with wrong old value: expect "Bob" but actual is "Alice"
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db.fn/cas {} :person/name \"Bob\" \"Charlie\"]]'::TEXT)::TEXT",
+                "SELECT edn_t('[[:db.fn/cas {} :person/name \"Bob\" \"Charlie\"]]'::TEXT)::TEXT",
                 alice_eid
             )),
             "CAS should fail when old value doesn't match"
@@ -4572,7 +4541,7 @@ mod tests {
 
         // Verify value was NOT changed
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name .
                   :where [{} :person/name ?name]]'::TEXT,
                 '{{}}' ::jsonb
@@ -4599,7 +4568,7 @@ mod tests {
 
         // Create entity with name but no age
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]]
             '::TEXT)::TEXT",
         )
@@ -4614,14 +4583,14 @@ mod tests {
 
         // CAS with nil old value: attribute doesn't exist yet (should succeed)
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/cas {} :person/age nil 30]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/cas {} :person/age nil 30]]'::TEXT)",
             alice_eid
         ))
         .expect("CAS with nil old value should succeed when attribute has no value");
 
         // Verify the age was set
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?age .
                   :where [{} :person/age ?age]]'::TEXT,
                 '{{}}' ::jsonb
@@ -4648,7 +4617,7 @@ mod tests {
 
         // Create entity WITH an age already set
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/age 25]]
             '::TEXT)::TEXT",
@@ -4665,7 +4634,7 @@ mod tests {
         // CAS with nil old value should fail because age already exists
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db.fn/cas {} :person/age nil 30]]'::TEXT)::TEXT",
+                "SELECT edn_t('[[:db.fn/cas {} :person/age nil 30]]'::TEXT)::TEXT",
                 alice_eid
             )),
             "CAS with nil old value should fail when attribute already has a value"
@@ -4680,7 +4649,7 @@ mod tests {
 
         // Create entity with age 25
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/age 25]]
             '::TEXT)::TEXT",
@@ -4696,14 +4665,14 @@ mod tests {
 
         // CAS: change age from 25 to 26
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/cas {} :person/age 25 26]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/cas {} :person/age 25 26]]'::TEXT)",
             alice_eid
         ))
         .expect("CAS on integer should succeed");
 
         // Verify age updated
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?age .
                   :where [{} :person/age ?age]]'::TEXT,
                 '{{}}' ::jsonb
@@ -4730,7 +4699,7 @@ mod tests {
 
         // Create entity
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]
                  [:db/add \"alice\" :person/age 25]]
             '::TEXT)::TEXT",
@@ -4748,7 +4717,7 @@ mod tests {
         // The entire transaction should be rolled back
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db/add {} :person/name \"Updated\"] \
+                "SELECT edn_t('[[:db/add {} :person/name \"Updated\"] \
                  [:db.fn/cas {} :person/age 999 30]]'::TEXT)::TEXT",
                 alice_eid, alice_eid
             )),
@@ -4757,7 +4726,7 @@ mod tests {
 
         // Verify name was NOT changed (rollback)
         let query_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name .
                   :where [{} :person/name ?name]]'::TEXT,
                 '{{}}' ::jsonb
@@ -4784,7 +4753,7 @@ mod tests {
 
         // Create entity
         let tx_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"alice\" :person/name \"Alice\"]]
             '::TEXT)::TEXT",
         )
@@ -4799,14 +4768,14 @@ mod tests {
 
         // CAS: change name from Alice to Alicia
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/cas {} :person/name \"Alice\" \"Alicia\"]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/cas {} :person/name \"Alice\" \"Alicia\"]]'::TEXT)",
             alice_eid
         ))
         .expect("CAS should succeed");
 
         // History should show both the original assertion and the CAS retraction+assertion
         let history_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?added
                   :where [{} :person/name ?name _ ?added]]'::TEXT,
                 '{{\"history\": true}}' ::jsonb
@@ -4886,7 +4855,7 @@ mod tests {
 
         // Run a query - should create a cache entry
         Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?x ?ident :where [?x :db/ident ?ident]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -4917,7 +4886,7 @@ mod tests {
         Spi::get_one::<String>("SELECT mentat_stmt_cache_clear()::TEXT")
             .expect("Cache clear failed");
 
-        let query = "SELECT mentat_query(
+        let query = "SELECT edn_q(
             '[:find ?x ?ident :where [?x :db/ident ?ident]]'::TEXT,
             '{}'::jsonb
         )::TEXT";
@@ -4957,7 +4926,7 @@ mod tests {
 
         // Query 1: find ident
         Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?ident . :where [1 :db/ident ?ident]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -4966,7 +4935,7 @@ mod tests {
 
         // Query 2: find valueType
         Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?type . :where [1 :db/valueType ?type]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -4991,7 +4960,7 @@ mod tests {
 
         // Run some queries to populate cache
         Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?x ?ident :where [?x :db/ident ?ident]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -5031,7 +5000,7 @@ mod tests {
         Spi::get_one::<String>("SELECT mentat_stmt_cache_clear()::TEXT")
             .expect("Cache clear failed");
 
-        let query = "SELECT mentat_query(
+        let query = "SELECT edn_q(
             '[:find ?ident . :where [10 :db/ident ?ident]]'::TEXT,
             '{}'::jsonb
         )::TEXT";
@@ -5078,11 +5047,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Test transact with double value
         let data_tx = r#"[
@@ -5097,7 +5063,7 @@ mod tests {
         ]"#;
 
         let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)::TEXT",
+            "SELECT edn_t($1)::TEXT",
             &[DatumWithOid::from(data_tx)],
         )
         .expect("Data transaction failed")
@@ -5111,7 +5077,7 @@ mod tests {
 
         // Test query filtering on double
         let query_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?val
                   :where [?e :measurement/value ?val]
                          [(> ?val 3.0)]]'::TEXT,
@@ -5131,7 +5097,7 @@ mod tests {
 
         // Test pull API returns correct format
         let pull_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:measurement/value]', {})::TEXT",
+            "SELECT edn_pull('[:measurement/value]', {})::TEXT",
             m1_eid
         ))
         .expect("Pull failed")
@@ -5176,11 +5142,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Test transact with instant values. Instant attributes require the
         // tagged EDN literal `#inst "..."`; a bare string is rejected as a
@@ -5196,7 +5159,7 @@ mod tests {
         ]"#;
 
         let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)::TEXT",
+            "SELECT edn_t($1)::TEXT",
             &[DatumWithOid::from(data_tx)],
         )
         .expect("Data transaction failed")
@@ -5208,12 +5171,12 @@ mod tests {
             .as_i64()
             .expect("Missing e1 tempid");
 
-        // Test query filtering on instant. mentat_query renders instants as
+        // Test query filtering on instant. edn_q renders instants as
         // ISO-8601 strings; pin the session TZ to UTC so the rendered text is
         // deterministic regardless of the test cluster's local timezone.
         Spi::run("SET TIME ZONE 'UTC'").expect("set tz");
         let query_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?ts
                   :where [?e :event/timestamp ?ts]]'::TEXT,
                 '{}'::jsonb
@@ -5245,11 +5208,11 @@ mod tests {
         assert!(rendered[1].contains("2024-01-15"), "got {rendered:?}");
         assert!(rendered[2].contains("2024-01-15"), "got {rendered:?}");
 
-        // Test pull API. mentat_pull returns instants as raw microsecond
+        // Test pull API. edn_pull returns instants as raw microsecond
         // counts (an integer), NOT an ISO string. 2024-01-15T10:30:00Z is
         // 1705314600000000 microseconds since the epoch.
         let pull_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:event/timestamp]', {})::TEXT",
+            "SELECT edn_pull('[:event/timestamp]', {})::TEXT",
             e1_eid
         ))
         .expect("Pull failed")
@@ -5294,11 +5257,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Test transact with uuid value. UUID attributes require the tagged
         // EDN literal `#uuid "..."`; a bare string is rejected as a type
@@ -5315,7 +5275,7 @@ mod tests {
         );
 
         let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)::TEXT",
+            "SELECT edn_t($1)::TEXT",
             &[DatumWithOid::from(data_tx.as_str())],
         )
         .expect("Data transaction failed")
@@ -5329,7 +5289,7 @@ mod tests {
 
         // Test query filtering on uuid
         let query_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?id
                   :where [?e :session/id ?id]]'::TEXT,
                 '{}'::jsonb
@@ -5351,7 +5311,7 @@ mod tests {
 
         // Test pull API returns correct format
         let pull_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:session/id]', {})::TEXT",
+            "SELECT edn_pull('[:session/id]', {})::TEXT",
             s1_eid
         ))
         .expect("Pull failed")
@@ -5390,11 +5350,8 @@ mod tests {
              :db/cardinality :db.cardinality/one}
         ]";
 
-        Spi::run_with_args(
-            "SELECT mentat_transact($1)",
-            &[DatumWithOid::from(schema_tx)],
-        )
-        .expect("Schema transaction failed");
+        Spi::run_with_args("SELECT edn_t($1)", &[DatumWithOid::from(schema_tx)])
+            .expect("Schema transaction failed");
 
         // Test transact with a bytes value. Bytes attributes require the
         // tagged EDN literal `#bytes <hex>`; the EDN reader parses the hex
@@ -5420,7 +5377,7 @@ mod tests {
         );
 
         let tx_result = Spi::get_one_with_args::<String>(
-            "SELECT mentat_transact($1)::TEXT",
+            "SELECT edn_t($1)::TEXT",
             &[DatumWithOid::from(data_tx.as_str())],
         )
         .expect("Data transaction failed")
@@ -5434,7 +5391,7 @@ mod tests {
 
         // Test query returns bytes
         let query_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?e ?data
                   :where [?e :file/data ?data]]'::TEXT,
                 '{}'::jsonb
@@ -5456,7 +5413,7 @@ mod tests {
 
         // Test pull API returns correct format (hex string)
         let pull_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:file/data]', {})::TEXT",
+            "SELECT edn_pull('[:file/data]', {})::TEXT",
             f1_eid
         ))
         .expect("Pull failed")
@@ -5495,7 +5452,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
         crate::cache::get_cache().invalidate();
 
-        let err = get_error_message("SELECT mentat_transact('42'::TEXT)");
+        let err = get_error_message("SELECT edn_t('42'::TEXT)");
         assert!(
             err.contains(":db.error/invalid-transaction"),
             "Error should contain error code, got: {err}"
@@ -5512,9 +5469,8 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
         crate::cache::get_cache().invalidate();
 
-        let err = get_error_message(
-            "SELECT mentat_transact('[[:db/add \"t\" :nonexistent/attr \"val\"]]'::TEXT)",
-        );
+        let err =
+            get_error_message("SELECT edn_t('[[:db/add \"t\" :nonexistent/attr \"val\"]]'::TEXT)");
         assert!(
             err.contains(":db.error/attribute-not-found"),
             "Error should contain error code, got: {err}"
@@ -5534,7 +5490,7 @@ mod tests {
 
         // :person/age is :db.type/long, so passing a string should fail
         let err = get_error_message(
-            "SELECT mentat_transact('[[:db/add \"p\" :person/age \"not-a-number\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"p\" :person/age \"not-a-number\"]]'::TEXT)",
         );
         assert!(
             err.contains(":db.error/wrong-type-for-attribute"),
@@ -5556,7 +5512,7 @@ mod tests {
         bootstrap_schema().expect("Failed to bootstrap schema");
         crate::cache::get_cache().invalidate();
 
-        let err = get_error_message("SELECT mentat_pull(':person/name'::TEXT, 1)");
+        let err = get_error_message("SELECT edn_pull(':person/name'::TEXT, 1)");
         assert!(
             err.contains(":db.error/invalid-pull-pattern"),
             "Error should contain pull pattern error code, got: {err}"
@@ -5574,7 +5530,7 @@ mod tests {
         crate::cache::get_cache().invalidate();
 
         let err = get_error_message(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find (median ?x) :where [?x :db/ident _]]'::TEXT,
                 '{}'::jsonb
             )::TEXT",
@@ -5623,7 +5579,7 @@ mod tests {
 
         // Insert people with various ages
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 25]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -5640,7 +5596,7 @@ mod tests {
 
         // Test: (> ?age 30) should return Bob(35) and Dave(100), NOT Eve(2)
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?p :person/name ?name]
@@ -5695,7 +5651,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 5]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -5710,7 +5666,7 @@ mod tests {
 
         // Test: (< ?age 10) should return Alice(5) and Dave(2) only
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?p :person/name ?name]
@@ -5758,7 +5714,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 1]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -5773,7 +5729,7 @@ mod tests {
 
         // Test: names > "Bob" should return Carol and Zara (lexicographic)
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name
                   :where
                   [?p :person/name ?name]
@@ -5820,7 +5776,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 2]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -5837,7 +5793,7 @@ mod tests {
         // With BYTEA, binary ordering would give: 2, 3, 10, 100 for small ints
         // but for larger values the ordering breaks.
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?p :person/name ?name]
@@ -5875,7 +5831,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 5]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -5892,7 +5848,7 @@ mod tests {
 
         // Test: 10 < age < 40 should return Bob(15), Carol(25), Dave(35)
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?p :person/name ?name]
@@ -5946,7 +5902,7 @@ mod tests {
 
         // Define schema with uuid attribute
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"uuid-attr\" :db/ident :item/id]
                  [:db/add \"uuid-attr\" :db/valueType :db.type/uuid]
                  [:db/add \"uuid-attr\" :db/cardinality :db.cardinality/one]
@@ -5960,7 +5916,7 @@ mod tests {
         // Insert 3 items with UUIDs that have a known lexicographic order:
         //   "11111111-..." < "55555555-..." < "aaaaaaaa-..."
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"i1\" :item/name \"First\"]
                  [:db/add \"i1\" :item/id #uuid \"55555555-5555-5555-5555-555555555555\"]
                  [:db/add \"i2\" :item/name \"Second\"]
@@ -5973,7 +5929,7 @@ mod tests {
 
         // Query all UUIDs with ORDER BY ascending
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?id
                   :where
                   [?e :item/name ?name]
@@ -6031,7 +5987,7 @@ mod tests {
 
         // Define schema with instant attribute
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"ts-attr\" :db/ident :event/timestamp]
                  [:db/add \"ts-attr\" :db/valueType :db.type/instant]
                  [:db/add \"ts-attr\" :db/cardinality :db.cardinality/one]
@@ -6046,7 +6002,7 @@ mod tests {
         // Instant attributes require the tagged EDN literal #inst "..."; a
         // bare string is rejected as a type mismatch.
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"e1\" :event/label \"Ancient\"]
                  [:db/add \"e1\" :event/timestamp #inst \"1999-06-15T12:00:00Z\"]
                  [:db/add \"e2\" :event/label \"Early\"]
@@ -6064,7 +6020,7 @@ mod tests {
 
         // Test ORDER BY timestamp ascending - should be chronological
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?label ?ts
                   :where
                   [?e :event/label ?label]
@@ -6105,7 +6061,7 @@ mod tests {
 
         // Test descending order
         let desc_result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?label ?ts
                   :where
                   [?e :event/label ?label]
@@ -6151,7 +6107,7 @@ mod tests {
         // BYTEA: "2" (0x32) > "10" (0x31 0x30) because 0x32 > 0x31
         // Native BIGINT: 2 < 10 < 100 (correct)
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"Alice\"]
                  [:db/add \"p1\" :person/age 2]
                  [:db/add \"p2\" :person/name \"Bob\"]
@@ -6166,7 +6122,7 @@ mod tests {
 
         // Query: find persons with age < 10 (should return Alice=2 and Diana=5)
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?e :person/name ?name]
@@ -6204,7 +6160,7 @@ mod tests {
 
         // Query: ascending order by age should be 2, 5, 10, 100
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?e :person/name ?name]
@@ -6235,7 +6191,7 @@ mod tests {
 
         // Insert values that test boundary conditions
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"One\"]
                  [:db/add \"p1\" :person/age 1]
                  [:db/add \"p2\" :person/name \"Nine\"]
@@ -6254,7 +6210,7 @@ mod tests {
 
         // Query: 5 <= age <= 50
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name ?age
                   :where
                   [?e :person/name ?name]
@@ -6286,7 +6242,7 @@ mod tests {
         setup_person_schema();
 
         Spi::run(
-            "SELECT mentat_transact('
+            "SELECT edn_t('
                 [[:db/add \"p1\" :person/name \"banana\"]
                  [:db/add \"p1\" :person/age 1]
                  [:db/add \"p2\" :person/name \"apple\"]
@@ -6301,7 +6257,7 @@ mod tests {
 
         // Query all names ordered ascending - should be alphabetical
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query(
+            "SELECT edn_q(
                 '[:find ?name
                   :where
                   [?e :person/name ?name]

@@ -199,8 +199,7 @@ fn value_type_name(value: &edn::Value) -> &'static str {
 fn get_available_attributes_hint() -> String {
     let available = error::get_available_attributes();
     if available.is_empty() {
-        "No schema attributes found. Did you forget to define schema with mentat_transact?"
-            .to_string()
+        "No schema attributes found. Did you forget to define schema with edn_t?".to_string()
     } else if available.len() > 20 {
         let shown: Vec<&str> = available.iter().take(20).map(|s| s.as_str()).collect();
         format!("Available attributes (first 20): {}", shown.join(", "))
@@ -235,14 +234,14 @@ fn get_available_attributes_hint() -> String {
 /// datom writes from persisting.
 ///
 /// This is the backwards-compatible version that operates on the default store.
-#[pg_extern]
+#[pg_extern(name = "edn_t")]
 pub fn mentat_transact(edn_tx: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     execute_transaction_body("mentat", edn_tx)
 }
 
 /// Process an EDN transaction against a named store.
 ///
-/// Like `mentat_transact` but targets a specific store created with
+/// Like `edn_t` but targets a specific store created with
 /// `mentat_create_store`. The `store_name` parameter selects which
 /// PostgreSQL schema to operate on.
 ///
@@ -270,7 +269,7 @@ pub fn t(
 /// of complex transactions before committing, and testing transaction logic
 /// without side effects.
 ///
-/// Returns the same JSON transaction report format as `mentat_transact`:
+/// Returns the same JSON transaction report format as `edn_t`:
 /// ```json
 /// {
 ///   "db-before": {"basis-t": <N>},
@@ -361,7 +360,7 @@ fn execute_speculative_transaction(
     // Strategy: Execute the real transaction, capture the JSON result, then
     // intentionally RAISE an exception to trigger rollback of the subtransaction.
     // The EXCEPTION handler catches our marker exception and returns the result.
-    // The writes from mentat_transact are rolled back by the exception mechanism.
+    // The writes from edn_t are rolled back by the exception mechanism.
     let escaped_edn = edn_tx.replace('\'', "''");
     let escaped_schema = schema.replace('\'', "''");
 
@@ -379,7 +378,7 @@ fn execute_speculative_transaction(
          BEGIN
              -- Execute in the appropriate schema
              IF p_schema = 'mentat' THEN
-                 SELECT mentat_transact(p_edn::TEXT)::TEXT INTO _result;
+                 SELECT edn_t(p_edn::TEXT)::TEXT INTO _result;
              ELSE
                  EXECUTE format('SELECT %I.transact($1::TEXT)::TEXT', p_schema)
                      INTO _result USING p_edn;
@@ -1849,7 +1848,8 @@ fn resolve_entity_place(
                 })
                 .ok_or_else(|| MentatError::EntityNotFound {
                     ident: ident_str.clone(),
-                    message: "Ensure this ident was previously defined via mentat_transact with :db/ident.".to_string(),
+                    message: "Ensure this ident was previously defined via edn_t with :db/ident."
+                        .to_string(),
                 })?;
             Ok(entid)
         }

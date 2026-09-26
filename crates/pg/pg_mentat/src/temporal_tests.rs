@@ -21,7 +21,7 @@ mod tests {
 
     fn setup_temporal_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :tt/name
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -43,7 +43,7 @@ mod tests {
     fn create_temporal_chain() -> (i64, i64, i64, i64) {
         // TX1: Create Alice age 25
         let result1 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"alice\" :tt/name \"Alice\"]
                 [:db/add \"alice\" :tt/age 25]
                 [:db/add \"alice\" :tt/status :active]
@@ -58,7 +58,7 @@ mod tests {
 
         // TX2: Update Alice age to 26
         let result2 = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('[[:db/add {} :tt/age 26]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :tt/age 26]]'::TEXT)",
             alice_eid
         ))
         .expect("tx2 failed")
@@ -69,7 +69,7 @@ mod tests {
 
         // TX3: Update Alice age to 27 and change status
         let result3 = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add {} :tt/age 27]
                 [:db/add {} :tt/status :senior]
             ]'::TEXT)",
@@ -95,7 +95,7 @@ mod tests {
         let (tx1, _, _, _) = create_temporal_chain();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?p :tt/name \"Alice\"] [?p :tt/age ?age]]'::TEXT,
                 '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -115,7 +115,7 @@ mod tests {
         let (_, tx2, _, _) = create_temporal_chain();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?p :tt/name \"Alice\"] [?p :tt/age ?age]]'::TEXT,
                 '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -135,7 +135,7 @@ mod tests {
         let (_, _, tx3, _) = create_temporal_chain();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?p :tt/name \"Alice\"] [?p :tt/age ?age]]'::TEXT,
                 '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -156,13 +156,13 @@ mod tests {
 
         // Create another entity in a later transaction
         Spi::run(
-            "SELECT mentat_transact('[[:db/add \"bob\" :tt/name \"Bob\"] [:db/add \"bob\" :tt/age 20]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"bob\" :tt/name \"Bob\"] [:db/add \"bob\" :tt/age 20]]'::TEXT)",
         )
         .expect("bob failed");
 
         // As-of tx1, Bob should not exist
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?p :tt/name \"Bob\"] [?p :tt/age ?age]]'::TEXT,
                 '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -183,7 +183,7 @@ mod tests {
 
         // At tx1, only Alice exists
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find [?name ...]
                  :where [?p :tt/name ?name]]'::TEXT,
                 '{{\"asOf\": {}}}'::jsonb)::TEXT",
@@ -209,7 +209,7 @@ mod tests {
         let (tx1, _, _, _) = create_temporal_chain();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?e ?a ?v ?tx ?added
                  :where [?e ?a ?v ?tx ?added]]'::TEXT,
                 '{{\"since\": {}}}'::jsonb)::TEXT",
@@ -236,7 +236,7 @@ mod tests {
         let (_, tx2, tx3, _) = create_temporal_chain();
 
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?e ?a ?v ?tx ?added
                  :where [?e ?a ?v ?tx ?added]]'::TEXT,
                 '{{\"since\": {}}}'::jsonb)::TEXT",
@@ -265,7 +265,7 @@ mod tests {
         let (_, _, _, _) = create_temporal_chain();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age ?tx ?added
                  :where
                  [?p :tt/name \"Alice\"]
@@ -295,7 +295,7 @@ mod tests {
         create_temporal_chain();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age ?added
                  :where
                  [?p :tt/name \"Alice\"]
@@ -326,7 +326,7 @@ mod tests {
         setup_temporal_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :tt/name \"TagEntity\"]
                 [:db/add \"e\" :tt/tags \"tag1\"]
                 [:db/add \"e\" :tt/tags \"tag2\"]
@@ -341,13 +341,13 @@ mod tests {
 
         // Retract one tag
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :tt/tags \"tag2\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :tt/tags \"tag2\"]]'::TEXT)",
             eid
         ))
         .expect("retract tag failed");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?tag ?added
                  :where
                  [?e :tt/name \"TagEntity\"]
@@ -379,7 +379,7 @@ mod tests {
         setup_temporal_schema();
 
         let r1 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"a\" :tt/name \"Alice\"]
                 [:db/add \"a\" :tt/age 20]
             ]'::TEXT)",
@@ -391,7 +391,7 @@ mod tests {
         let alice = j1["tempids"]["a"].as_i64().unwrap();
 
         let r2 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"b\" :tt/name \"Bob\"]
                 [:db/add \"b\" :tt/age 22]
             ]'::TEXT)",
@@ -403,14 +403,14 @@ mod tests {
 
         // Update Alice's age
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :tt/age 21]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :tt/age 21]]'::TEXT)",
             alice
         ))
         .expect("tx3");
 
         // As-of tx1: only Alice exists
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?name ...] :where [?p :tt/name ?name]]'::TEXT,
+            "SELECT edn_q('[:find [?name ...] :where [?p :tt/name ?name]]'::TEXT,
              '{{\"asOf\": {}}}'::jsonb)::TEXT",
             tx1
         ))
@@ -423,7 +423,7 @@ mod tests {
 
         // As-of tx2: both exist
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?name ...] :where [?p :tt/name ?name]]'::TEXT,
+            "SELECT edn_q('[:find [?name ...] :where [?p :tt/name ?name]]'::TEXT,
              '{{\"asOf\": {}}}'::jsonb)::TEXT",
             tx2
         ))
@@ -447,7 +447,7 @@ mod tests {
 
         // At tx1, Alice is 25. Predicate age > 20 should match.
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name .
                  :where
                  [?p :tt/name ?name]
@@ -475,7 +475,7 @@ mod tests {
 
         // At tx1, status should be :active
         let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?status .
                  :where [?p :tt/name \"Alice\"] [?p :tt/status ?status]]'::TEXT,
                 '{{\"asOf\": {}}}'::jsonb)::TEXT",

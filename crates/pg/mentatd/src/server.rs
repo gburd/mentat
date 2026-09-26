@@ -829,10 +829,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             // Timing: Execute PostgreSQL query
             let db_start = Instant::now();
             let row = client
-                .query_one(
-                    "SELECT mentat_query($1, $2::jsonb)",
-                    &[&query, &inputs_json],
-                )
+                .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &inputs_json])
                 .await?;
             let db_time = db_start.elapsed();
 
@@ -877,7 +874,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
 
             // Retry loop: handle serialization failures (SQLSTATE 40001) and
             // deadlocks (SQLSTATE 40P01) with exponential backoff. The
-            // mentat_transact() PG function uses SERIALIZABLE isolation, which
+            // edn_t() PG function uses SERIALIZABLE isolation, which
             // may raise 40001 when concurrent transactions conflict.
             let mut attempt: u32 = 0;
             let (report_str, total_pool_time, total_db_time) = loop {
@@ -888,9 +885,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
 
                 // Timing: Execute PostgreSQL function
                 let db_start = Instant::now();
-                let query_result = client
-                    .query_one("SELECT mentat_transact($1)", &[&tx_data])
-                    .await;
+                let query_result = client.query_one("SELECT edn_t($1)", &[&tx_data]).await;
                 let db_time = db_start.elapsed();
 
                 match query_result {
@@ -1024,7 +1019,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             let client = state.pool.get().await?;
 
             let row = client
-                .query_one("SELECT mentat_pull($1, $2)", &[&pattern, &entity_id])
+                .query_one("SELECT edn_pull($1, $2)", &[&pattern, &entity_id])
                 .await?;
 
             let result_json: serde_json::Value = row.get(0);
@@ -1066,7 +1061,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
 
             // Call mentat_with() which uses SAVEPOINT internally to apply
             // the transaction speculatively and roll back without persisting.
-            // This avoids the advisory lock overhead of mentat_transact and
+            // This avoids the advisory lock overhead of edn_t and
             // correctly reports tempids, tx-data, db-before/db-after.
             let row = client
                 .query_one("SELECT mentat.mentat_with($1)", &[&tx_data])
@@ -1115,10 +1110,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
 
             let result = async {
                 let row = client
-                    .query_one(
-                        "SELECT mentat_query($1, $2::jsonb)",
-                        &[&query, &inputs_json],
-                    )
+                    .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &inputs_json])
                     .await?;
                 let result_json: serde_json::Value = row.get(0);
                 parse_query_results(&result_json)
@@ -1212,10 +1204,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             let inputs_json = serde_json::Value::Object(inputs);
 
             let row = client
-                .query_one(
-                    "SELECT mentat_query($1, $2::jsonb)",
-                    &[&query, &inputs_json],
-                )
+                .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &inputs_json])
                 .await?;
 
             let result_json: serde_json::Value = row.get(0);
@@ -1239,10 +1228,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             let inputs_json = serde_json::Value::Object(inputs);
 
             let row = client
-                .query_one(
-                    "SELECT mentat_query($1, $2::jsonb)",
-                    &[&query, &inputs_json],
-                )
+                .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &inputs_json])
                 .await?;
 
             let result_json: serde_json::Value = row.get(0);
@@ -1266,10 +1252,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             let inputs_json = serde_json::Value::Object(inputs);
 
             let row = client
-                .query_one(
-                    "SELECT mentat_query($1, $2::jsonb)",
-                    &[&query, &inputs_json],
-                )
+                .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &inputs_json])
                 .await?;
 
             let result_json: serde_json::Value = row.get(0);
@@ -1369,10 +1352,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             };
 
             let row = client
-                .query_one(
-                    "SELECT mentat_query($1, $2::jsonb)",
-                    &[&query, &inputs_json],
-                )
+                .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &inputs_json])
                 .await?;
 
             let result_json: serde_json::Value = row.get(0);
@@ -1421,7 +1401,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
             let mut results = Vec::with_capacity(entity_ids.len());
             for entity_id in &entity_ids {
                 let row = client
-                    .query_one("SELECT mentat_pull($1, $2)", &[&pattern, entity_id])
+                    .query_one("SELECT edn_pull($1, $2)", &[&pattern, entity_id])
                     .await?;
 
                 let result_json: serde_json::Value = row.get(0);
@@ -1673,7 +1653,7 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
     result
 }
 
-/// Convert a JSON value from `mentat_query()` to a native `ResponseValue`.
+/// Convert a JSON value from `edn_q()` to a native `ResponseValue`.
 fn json_to_response_value(val: &serde_json::Value) -> ResponseValue {
     match val {
         serde_json::Value::String(s) => {
@@ -1740,7 +1720,7 @@ fn json_to_response_value(val: &serde_json::Value) -> ResponseValue {
     }
 }
 
-/// Parse the JSONB query result from `mentat_query()` into a vector of native EDN vectors.
+/// Parse the JSONB query result from `edn_q()` into a vector of native EDN vectors.
 ///
 /// The extension returns JSON like:
 /// ```json
@@ -1767,7 +1747,7 @@ fn parse_query_results(json: &serde_json::Value) -> Result<Vec<ResponseValue>, S
     Ok(edn_rows)
 }
 
-/// Parse the JSON string returned by `mentat_transact()` into a response map.
+/// Parse the JSON string returned by `edn_t()` into a response map.
 ///
 /// The extension returns a Datomic-compatible JSON string like:
 /// ```json

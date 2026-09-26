@@ -21,7 +21,7 @@ mod tests {
     /// Returns (p1..p5) entids resolved from the transaction's tempids.
     fn setup_or_rule_data() -> [i64; 5] {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"a\" :db/ident :person/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"r\" :db/ident :person/role :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
@@ -36,7 +36,7 @@ mod tests {
         // p4: 12, contributor, super       -> adult ✗, manager ✗, superuser
         // p5: 50, contributor, super       -> adult ✓, manager ✗, superuser
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"p1\" :person/name \"alice\" :person/age 30 :person/role :role/manager     :person/superuser? false}
                 {:db/id \"p2\" :person/name \"bob\"   :person/age 16 :person/role :role/manager     :person/superuser? false}
                 {:db/id \"p3\" :person/name \"carol\" :person/age 25 :person/role :role/contributor :person/superuser? false}
@@ -58,7 +58,7 @@ mod tests {
     /// Run a `:find ?p` (relation form) query and return the entid set.
     fn query_p_set(q: &str) -> HashSet<i64> {
         let sql = format!(
-            "SELECT mentat_query('{}'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('{}'::TEXT, '{{}}'::jsonb)::TEXT",
             q.replace('\'', "''")
         );
         let raw = Spi::get_one::<String>(&sql).expect("query").expect("NULL");

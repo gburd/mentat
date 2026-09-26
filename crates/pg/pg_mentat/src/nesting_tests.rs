@@ -2,7 +2,7 @@
 //
 // Before 1.6.2, deeply nested EDN overflowed the parser's stack. An
 // unprivileged role could run
-//   SELECT mentat_query('[:find ?e :where [?e :a/b <3000 nested vectors>]]', '{}')
+//   SELECT edn_q('[:find ?e :where [?e :a/b <3000 nested vectors>]]', '{}')
 // and the backend died with SIGSEGV; the postmaster then terminated every
 // server process and ran crash recovery. The `edn` crate now rejects input
 // nested deeper than `edn::MAX_NESTING` before the grammar runs, and the `edn`
@@ -71,7 +71,7 @@ mod tests {
     fn deep_query_is_an_error_not_a_crash() {
         setup();
         assert_rejected(&format!(
-            "SELECT mentat_query('[:find ?e :where [?e :a/b {}]]', '{{}}'::jsonb)",
+            "SELECT edn_q('[:find ?e :where [?e :a/b {}]]', '{{}}'::jsonb)",
             nested(DEPTH)
         ));
         // The backend is still serving.
@@ -82,16 +82,16 @@ mod tests {
     fn deep_transaction_is_an_error_not_a_crash() {
         setup();
         assert_rejected(&format!(
-            "SELECT mentat_transact('[[:db/add 1 :a/b {}]]')",
+            "SELECT edn_t('[[:db/add 1 :a/b {}]]')",
             nested(DEPTH)
         ));
-        assert_rejected(&format!("SELECT mentat_transact('{}')", nested(DEPTH)));
+        assert_rejected(&format!("SELECT edn_t('{}')", nested(DEPTH)));
     }
 
     #[pg_test]
     fn deep_pull_pattern_is_an_error_not_a_crash() {
         setup();
-        assert_rejected(&format!("SELECT mentat_pull('{}', 1)", nested(DEPTH)));
+        assert_rejected(&format!("SELECT edn_pull('{}', 1)", nested(DEPTH)));
         assert_rejected(&format!(
             "SELECT mentat_pull_many('{}', ARRAY[1::bigint])",
             nested(DEPTH)
@@ -115,13 +115,13 @@ mod tests {
     fn ordinary_queries_are_unaffected() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[{:db/ident :nest/name :db/valueType :db.type/string
+            "SELECT edn_t('[{:db/ident :nest/name :db/valueType :db.type/string
                                       :db/cardinality :db.cardinality/one}]')",
         )
         .expect("schema");
-        Spi::run("SELECT mentat_transact('[{:nest/name \"x\"}]')").expect("data");
+        Spi::run("SELECT edn_t('[{:nest/name \"x\"}]')").expect("data");
         let r = Spi::get_one::<pgrx::JsonB>(
-            "SELECT mentat_query('[:find ?n :where [?e :nest/name ?n]]', '{}'::jsonb)",
+            "SELECT edn_q('[:find ?n :where [?e :nest/name ?n]]', '{}'::jsonb)",
         )
         .unwrap()
         .unwrap();
@@ -129,7 +129,7 @@ mod tests {
     }
 
     /// Every pg_test runs as a superuser, so nothing else exercises the
-    /// ordinary-role path. Before 1.6.2, `mentat_query` set
+    /// ordinary-role path. Before 1.6.2, `edn_q` set
     /// `temp_file_limit` (a superuser-only parameter) on every call, so every
     /// query by a non-superuser failed with "permission denied to set
     /// parameter". The limit is now applied only when the caller may set it.
@@ -137,11 +137,11 @@ mod tests {
     fn ordinary_role_can_query() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[{:db/ident :nest/role :db/valueType :db.type/string
+            "SELECT edn_t('[{:db/ident :nest/role :db/valueType :db.type/string
                                       :db/cardinality :db.cardinality/one}]')",
         )
         .expect("schema");
-        Spi::run("SELECT mentat_transact('[{:nest/role \"y\"}]')").expect("data");
+        Spi::run("SELECT edn_t('[{:nest/role \"y\"}]')").expect("data");
         Spi::run(
             "DO $$ BEGIN
                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgm_plain_role') THEN
@@ -157,14 +157,14 @@ mod tests {
             .expect("grant");
         Spi::run("SET LOCAL ROLE pgm_plain_role").expect("set role");
         let r = Spi::get_one::<pgrx::JsonB>(
-            "SELECT mentat_query('[:find ?n . :where [?e :nest/role ?n]]', '{}'::jsonb)",
+            "SELECT edn_q('[:find ?n . :where [?e :nest/role ?n]]', '{}'::jsonb)",
         )
-        .expect("a non-superuser can run mentat_query")
+        .expect("a non-superuser can run edn_q")
         .unwrap();
         assert_eq!(r.0, serde_json::json!({ "result": "y" }));
         // And deep input is still an error, not a crash, for an ordinary role.
         assert_rejected(&format!(
-            "SELECT mentat_query('[:find ?e :where [?e :a/b {}]]', '{{}}'::jsonb)",
+            "SELECT edn_q('[:find ?e :where [?e :a/b {}]]', '{{}}'::jsonb)",
             nested(DEPTH)
         ));
         Spi::run("RESET ROLE").expect("reset role");

@@ -22,7 +22,7 @@ mod tests {
 
     fn setup_benchmark_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\"  :db/ident :bench/name    :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/id \"a\"  :db/ident :bench/age     :db/valueType :db.type/long    :db/cardinality :db.cardinality/one}
                 {:db/id \"e\"  :db/ident :bench/email   :db/valueType :db.type/string  :db/cardinality :db.cardinality/one}
@@ -60,11 +60,8 @@ mod tests {
                     cat = cat,
                 ));
             }
-            Spi::run(&format!(
-                "SELECT mentat_transact('[{}]'::TEXT)",
-                ops.join("\n")
-            ))
-            .unwrap_or_else(|e| panic!("populate batch at offset {}: {}", offset, e));
+            Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n")))
+                .unwrap_or_else(|e| panic!("populate batch at offset {}: {}", offset, e));
             offset = end;
         }
         start.elapsed().as_secs_f64() * 1000.0
@@ -73,16 +70,14 @@ mod tests {
     /// Run a Datalog query and return (result_count, elapsed_ms).
     fn timed_query(query: &str) -> (usize, f64) {
         let start = std::time::Instant::now();
-        let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('{}', '{{}}'::JSONB)::TEXT",
-            query
-        ))
-        .expect("query")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>(&format!("SELECT edn_q('{}', '{{}}'::JSONB)::TEXT", query))
+                .expect("query")
+                .expect("NULL");
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
         let parsed: serde_json::Value = serde_json::from_str(&result).expect("parse result");
-        // mentat_query returns {"columns": [...], "results": [[...], ...]} for relation queries
+        // edn_q returns {"columns": [...], "results": [[...], ...]} for relation queries
         // or {"result": ...} for scalar/tuple/collection queries
         let count = parsed["results"]
             .as_array()

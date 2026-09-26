@@ -180,19 +180,18 @@ mod tests {
     fn test_bs_transact_after_bootstrap() {
         crate::ensure_extension_loaded();
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :db/ident :bs/test :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema tx");
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :bs/test \"hello\"]]'::TEXT)")
-            .expect("data tx");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :db/ident :bs/test :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema tx");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :bs/test \"hello\"]]'::TEXT)").expect("data tx");
     }
 
     #[pg_test]
     fn test_bs_query_after_bootstrap() {
         crate::ensure_extension_loaded();
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :db/ident :bs/q :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :bs/q \"test\"]]'::TEXT)").expect("data");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :db/ident :bs/q :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :bs/q \"test\"]]'::TEXT)").expect("data");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?v . :where [?e :bs/q ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [?e :bs/q ?v]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -204,15 +203,14 @@ mod tests {
     fn test_bs_pull_after_bootstrap() {
         crate::ensure_extension_loaded();
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :db/ident :bs/p :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :bs/p \"pull-test\"]]'::TEXT)",
-        )
-        .expect("data")
-        .expect("NULL");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :db/ident :bs/p :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :bs/p \"pull-test\"]]'::TEXT)")
+                .expect("data")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:bs/p]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[:bs/p]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -223,7 +221,7 @@ mod tests {
     fn test_bs_schema_func_after_user_attrs() {
         crate::ensure_extension_loaded();
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :db/ident :bs/user :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :db/ident :bs/user :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
         let s = Spi::get_one::<String>("SELECT mentat_schema()::TEXT")
             .expect("schema")
             .expect("NULL");
@@ -235,17 +233,19 @@ mod tests {
     fn test_bs_10_txs_after_bootstrap() {
         crate::ensure_extension_loaded();
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :db/ident :bs/seq :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :db/ident :bs/seq :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]'::TEXT)").expect("schema");
         for i in 0..10 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add \"e{i}\" :bs/seq {i}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{i}\" :bs/seq {i}]]'::TEXT)",
                 i = i
             ))
             .expect("tx");
         }
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?v ...] :where [_ :bs/seq ?v]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("query").expect("NULL");
+            "SELECT edn_q('[:find [?v ...] :where [_ :bs/seq ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("query")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 10);
     }

@@ -40,7 +40,7 @@ mod tests {
 
     fn setup_entity_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :ent/name
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -81,7 +81,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :ent/name \"Alice\"]
                 [:db/add \"e\" :ent/age 30]
             ]'::TEXT)",
@@ -113,7 +113,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"my-person\" :ent/name \"Alice\"]
                 [:db/add \"my-person\" :ent/age 25]
             ]'::TEXT)",
@@ -131,7 +131,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"1\" :ent/name \"One\"]
                 [:db/add \"2\" :ent/name \"Two\"]
             ]'::TEXT)",
@@ -151,7 +151,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"alice\" :ent/name \"Alice\"]
                 [:db/add \"bob\" :ent/name \"Bob\"]
                 [:db/add \"alice\" :ent/friend \"bob\"]
@@ -187,7 +187,7 @@ mod tests {
         setup_entity_schema();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\"
                  :ent/name \"Multi-Type Entity\"
                  :ent/age 42
@@ -203,7 +203,7 @@ mod tests {
 
         // Verify via query
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?age ?email ?active ?score ?status
                  :where
                  [?e :ent/name ?name]
@@ -238,7 +238,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\" :ent/name \"ToDelete\" :ent/age 99 :ent/active false}
             ]'::TEXT)",
         )
@@ -259,7 +259,7 @@ mod tests {
 
         // Retract entity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity failed");
@@ -289,7 +289,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :ent/name \"TaggedEntity\"]
                 [:db/add \"e\" :ent/tags \"t1\"]
                 [:db/add \"e\" :ent/tags \"t2\"]
@@ -303,7 +303,7 @@ mod tests {
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
@@ -330,7 +330,7 @@ mod tests {
         setup_entity_schema();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :ent/email \"lookup@test.com\"]
                 [:db/add \"e\" :ent/name \"Looked Up\"]
             ]'::TEXT)",
@@ -339,14 +339,14 @@ mod tests {
 
         // Use lookup ref to update
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add [:ent/email \"lookup@test.com\"] :ent/age 42]
             ]'::TEXT)",
         )
         .expect("lookup ref update");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?e :ent/email \"lookup@test.com\"] [?e :ent/age ?age]]'::TEXT,
                 '{}'::jsonb)::TEXT",
@@ -365,7 +365,7 @@ mod tests {
 
         assert!(
             raises_error(
-                "SELECT mentat_transact('[
+                "SELECT edn_t('[
                 [:db/add [:ent/email \"nonexistent@test.com\"] :ent/age 99]
             ]'::TEXT)"
             ),
@@ -381,7 +381,7 @@ mod tests {
         // :ent/name is not unique, so lookup ref should fail
         assert!(
             raises_error(
-                "SELECT mentat_transact('[
+                "SELECT edn_t('[
                 [:db/add [:ent/name \"some name\"] :ent/age 99]
             ]'::TEXT)"
             ),
@@ -405,7 +405,7 @@ mod tests {
                 i = i
             ));
         }
-        let txn = format!("SELECT mentat_transact('[{}]'::TEXT)", ops.join("\n"));
+        let txn = format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"));
 
         let result = Spi::get_one::<String>(&txn)
             .expect("batch 100 entities failed")
@@ -417,7 +417,7 @@ mod tests {
 
         // Verify all are queryable
         let qresult = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name :where [?e :ent/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name :where [?e :ent/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -436,7 +436,7 @@ mod tests {
         setup_entity_schema();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e1\" :ent/name \"Premium\" :ent/status :premium}
                 {:db/id \"e2\" :ent/name \"Basic\" :ent/status :basic}
                 {:db/id \"e3\" :ent/name \"Trial\" :ent/status :trial}
@@ -445,7 +445,7 @@ mod tests {
         .expect("keyword data");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name .
                  :where [?e :ent/name ?name] [?e :ent/status :premium]]'::TEXT,
                 '{}'::jsonb)::TEXT",
@@ -467,7 +467,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\" :ent/name \"Alice\" :ent/age 25 :ent/active true}
             ]'::TEXT)",
         )
@@ -479,14 +479,14 @@ mod tests {
 
         // Update only age
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :ent/age 26]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :ent/age 26]]'::TEXT)",
             eid
         ))
         .expect("update age");
 
         // Name and active should still be there
         let qresult = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?age ?active
                  :where
                  [?e :ent/name ?name]
@@ -514,7 +514,7 @@ mod tests {
         setup_entity_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :ent/name \"Counter\" :ent/age 0}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :ent/name \"Counter\" :ent/age 0}]'::TEXT)",
         )
         .expect("insert")
         .expect("NULL");
@@ -525,7 +525,7 @@ mod tests {
         // Update 10 times
         for i in 1..=10 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add {} :ent/age {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add {} :ent/age {}]]'::TEXT)",
                 eid, i
             ))
             .expect("update");
@@ -533,7 +533,7 @@ mod tests {
 
         // Current age should be 10
         let qresult = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?age . :where [{} :ent/age ?age]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?age . :where [{} :ent/age ?age]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("query")

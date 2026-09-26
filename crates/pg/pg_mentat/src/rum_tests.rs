@@ -42,14 +42,14 @@ mod tests {
 
     fn install_body_attr_with_data() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :issue/body :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one :db/fulltext true}
             ]'::TEXT)",
         )
         .expect("schema tx");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :issue/body \"the database crashed last night\"}
                 {:db/id \"b\" :issue/body \"refactor the indexer for cache locality\"}
                 {:db/id \"c\" :issue/body \"database queries slower after upgrade\"}
@@ -75,7 +75,7 @@ mod tests {
         setup();
         install_body_attr_with_data();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?b :where \
+            "SELECT edn_q('[:find ?b :where \
              [(rum-fulltext $ :issue/body \"database\") [[?e ?b ?s]]]]'::TEXT, \
              '{}'::jsonb)::TEXT",
         )
@@ -118,7 +118,7 @@ mod tests {
         );
 
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?b ?s :where \
+            "SELECT edn_q('[:find ?b ?s :where \
              [(rum-fulltext $ :issue/body \"database\") [[?e ?b ?s]]] \
              :order (desc ?s)]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -173,7 +173,7 @@ mod tests {
         setup();
         install_body_attr_with_data();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?b :where [(rum-fulltext $) [[?e ?b ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?b :where [(rum-fulltext $) [[?e ?b ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("rum-fulltext"),

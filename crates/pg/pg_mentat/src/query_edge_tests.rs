@@ -43,7 +43,7 @@ mod tests {
 
     fn setup_department_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"dn\" :db/ident :dept/name
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one
@@ -76,7 +76,7 @@ mod tests {
 
     fn setup_department_data() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"eng\" :dept/name \"Engineering\"}
                 {:db/id \"mkt\" :dept/name \"Marketing\"}
                 {:db/id \"alice\" :emp/name \"Alice\" :emp/age 35 :emp/salary 120000.0 :emp/dept \"eng\" :emp/active true}
@@ -112,7 +112,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?ename ?dname ?salary ?age ?active
                  :where
                  [?e :emp/name ?ename]
@@ -143,7 +143,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?ename ?mname
                  :where
                  [?e :emp/name ?ename]
@@ -187,7 +187,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?salary
                  :where
                  [?e :emp/name ?name]
@@ -217,7 +217,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?e :emp/name ?name]
@@ -245,7 +245,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?e :emp/name ?name]
@@ -273,7 +273,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?e :emp/name ?name]
@@ -303,7 +303,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where
                  [?e :emp/name ?name]
@@ -339,7 +339,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?salary
                  :where [?e :emp/name ?name] [?e :emp/salary ?salary]
                  :order (desc ?salary)]'::TEXT, '{}'::jsonb)::TEXT",
@@ -372,7 +372,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where [?e :emp/name ?name]
                  :limit 3]'::TEXT, '{}'::jsonb)::TEXT",
@@ -393,7 +393,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where [?e :emp/name ?name]
                  :limit 100]'::TEXT, '{}'::jsonb)::TEXT",
@@ -414,7 +414,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?salary
                  :where [?e :emp/name ?name] [?e :emp/salary ?salary]
                  :order (desc ?salary)
@@ -445,7 +445,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?age
                  :where [?e :emp/name ?name] [?e :emp/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -464,7 +464,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?e :emp/name \"Alice\"] [?e :emp/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -483,7 +483,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find [?name ...]
                  :where [?e :emp/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -502,7 +502,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find [?name ?age]
                  :where [?e :emp/name ?name] [?e :emp/age ?age]
                  [?e :emp/name \"Alice\"]]'::TEXT, '{}'::jsonb)::TEXT",
@@ -528,7 +528,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :where [?e :emp/name ?name] [?e :emp/name \"Nobody\"]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -547,7 +547,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?e :emp/name \"Nobody\"] [?e :emp/age ?age]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -565,7 +565,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find [?name ...]
                  :where [?e :emp/name ?name] [?e :emp/name \"Nobody\"]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -588,7 +588,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name .
                  :in ?target-age
                  :where [?e :emp/name ?name] [?e :emp/age ?target-age]]'::TEXT,
@@ -608,7 +608,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name
                  :in ?dept-name ?min-age
                  :where
@@ -644,7 +644,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?name ?active
                  :where [?e :emp/name ?name] [?e :emp/active ?active]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -668,7 +668,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?salary .
                  :where [?e :emp/name \"Alice\"] [?e :emp/salary ?salary]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -687,7 +687,7 @@ mod tests {
         setup_department_data();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?dept .
                  :where [?e :emp/name \"Alice\"] [?e :emp/dept ?dept]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -708,7 +708,7 @@ mod tests {
         setup();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?ident
                  :where [?e :db/ident ?ident]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -728,7 +728,7 @@ mod tests {
         setup();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?ident ?vt
                  :where
                  [?e :db/ident ?ident]
@@ -750,9 +750,7 @@ mod tests {
     fn test_error_missing_find_clause() {
         setup();
         assert!(
-            raises_error(
-                "SELECT mentat_query('[:where [?e :db/ident ?i]]'::TEXT, '{}'::jsonb)::TEXT"
-            ),
+            raises_error("SELECT edn_q('[:where [?e :db/ident ?i]]'::TEXT, '{}'::jsonb)::TEXT"),
             "Should reject query without :find"
         );
     }
@@ -761,7 +759,7 @@ mod tests {
     fn test_error_missing_where_clause() {
         setup();
         assert!(
-            raises_error("SELECT mentat_query('[:find ?e]'::TEXT, '{}'::jsonb)::TEXT"),
+            raises_error("SELECT edn_q('[:find ?e]'::TEXT, '{}'::jsonb)::TEXT"),
             "Should reject query without :where"
         );
     }
@@ -771,7 +769,9 @@ mod tests {
         setup();
         // ?x is not bound in :where
         assert!(
-            raises_error("SELECT mentat_query('[:find ?x :where [?e :db/ident ?i]]'::TEXT, '{}'::jsonb)::TEXT"),
+            raises_error(
+                "SELECT edn_q('[:find ?x :where [?e :db/ident ?i]]'::TEXT, '{}'::jsonb)::TEXT"
+            ),
             "Should reject unbound variable in :find"
         );
     }
@@ -780,7 +780,7 @@ mod tests {
     fn test_error_invalid_query_syntax() {
         setup();
         assert!(
-            raises_error("SELECT mentat_query('not valid edn at all'::TEXT, '{}'::jsonb)::TEXT"),
+            raises_error("SELECT edn_q('not valid edn at all'::TEXT, '{}'::jsonb)::TEXT"),
             "Should reject invalid EDN syntax"
         );
     }

@@ -13,7 +13,7 @@ use serde_json::json;
 /// {
 ///   "functions": [
 ///     {
-///       "function": "mentat_query",
+///       "function": "edn_q",
 ///       "calls": 150,
 ///       "avg_duration_ms": 12.5,
 ///       "total_duration_ms": 1875.0,
@@ -49,7 +49,7 @@ pub fn mentat_query_stats() -> Result<JsonB, Box<dyn std::error::Error + Send + 
                    total_time::DOUBLE PRECISION,
                    self_time::DOUBLE PRECISION
             FROM pg_stat_user_functions
-            WHERE funcname LIKE 'mentat_%'
+            WHERE funcname LIKE 'mentat_%' OR funcname IN ('edn_t', 'edn_q', 'edn_pull', 'edn_eval')
             ORDER BY calls DESC
         ";
 
@@ -192,7 +192,7 @@ pub fn mentat_query_stats() -> Result<JsonB, Box<dyn std::error::Error + Send + 
 /// {
 ///   "slow_functions": [
 ///     {
-///       "function": "mentat_query",
+///       "function": "edn_q",
 ///       "calls": 150,
 ///       "avg_duration_ms": 125.3,
 ///       "total_duration_ms": 18795.0
@@ -228,7 +228,7 @@ pub fn mentat_slow_queries(
                    total_time::DOUBLE PRECISION,
                    self_time::DOUBLE PRECISION
             FROM pg_stat_user_functions
-            WHERE funcname LIKE 'mentat_%'
+            WHERE funcname LIKE 'mentat_%' OR funcname IN ('edn_t', 'edn_q', 'edn_pull', 'edn_eval')
               AND calls > 0
               AND (total_time / calls) > {threshold}
             ORDER BY (total_time / calls) DESC

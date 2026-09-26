@@ -22,7 +22,7 @@ mod tests {
 
     fn setup_batch_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :bat/name
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -58,11 +58,7 @@ mod tests {
                 age = 20 + i
             ));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("batch 10");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("batch 10");
 
         let count = Spi::get_one::<i64>(
             "SELECT COUNT(DISTINCT e) FROM mentat.datoms
@@ -87,11 +83,7 @@ mod tests {
                 age = 20 + i
             ));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("batch 50");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("batch 50");
 
         let count = Spi::get_one::<i64>(
             "SELECT COUNT(DISTINCT e) FROM mentat.datoms
@@ -115,11 +107,7 @@ mod tests {
                 i = i
             ));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("batch 200");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("batch 200");
 
         let count = Spi::get_one::<i64>(
             "SELECT COUNT(DISTINCT e) FROM mentat.datoms
@@ -142,7 +130,7 @@ mod tests {
 
         // First create some entities
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e1\" :bat/name \"Alice\"]
                 [:db/add \"e1\" :bat/age 25]
                 [:db/add \"e2\" :bat/name \"Bob\"]
@@ -158,7 +146,7 @@ mod tests {
 
         // Mix of add and retract in one transaction
         Spi::run(&format!(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add {} :bat/age 26]
                 [:db/retract {} :bat/name \"Bob\"]
                 [:db/add \"e3\" :bat/name \"Carol\"]
@@ -169,7 +157,7 @@ mod tests {
 
         // Alice's age should be 26
         let alice_age = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?age . :where [{} :bat/age ?age]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?age . :where [{} :bat/age ?age]]'::TEXT, '{{}}'::jsonb)::TEXT",
             e1
         ))
         .expect("query")
@@ -181,7 +169,7 @@ mod tests {
         // find variable in the value slot like ?name would never bind and the
         // scalar query would return NULL). Query the entity instead.
         let carol = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :bat/name \"Carol\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e . :where [?e :bat/name \"Carol\"]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -199,7 +187,7 @@ mod tests {
         setup_batch_schema();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :bat/name \"Tagged\"]
                 [:db/add \"e\" :bat/tags \"tag1\"]
                 [:db/add \"e\" :bat/tags \"tag2\"]
@@ -216,7 +204,7 @@ mod tests {
         .expect("batch many add");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find [?tag ...]
                  :where [?e :bat/name \"Tagged\"] [?e :bat/tags ?tag]]'::TEXT,
                 '{}'::jsonb)::TEXT",
@@ -235,7 +223,7 @@ mod tests {
         setup_batch_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :bat/name \"Pruned\"]
                 [:db/add \"e\" :bat/tags \"keep1\"]
                 [:db/add \"e\" :bat/tags \"keep2\"]
@@ -250,7 +238,7 @@ mod tests {
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/retract {} :bat/tags \"remove1\"]
                 [:db/retract {} :bat/tags \"remove2\"]
             ]'::TEXT)",
@@ -259,7 +247,7 @@ mod tests {
         .expect("partial retract");
 
         let qresult = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find [?tag ...]
                  :where [{} :bat/tags ?tag]]'::TEXT,
                 '{{}}'::jsonb)::TEXT",
@@ -290,7 +278,7 @@ mod tests {
 
         // Step 1: Create
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\" :bat/name \"Lifecycle\" :bat/age 1 :bat/email \"lc@test.com\"}
             ]'::TEXT)",
         )
@@ -303,7 +291,7 @@ mod tests {
         // Step 2: Update age 10 times
         for i in 2..=11 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add {} :bat/age {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add {} :bat/age {}]]'::TEXT)",
                 eid, i
             ))
             .expect("update");
@@ -311,7 +299,7 @@ mod tests {
 
         // Step 3: Verify current state
         let qresult = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?age . :where [{} :bat/age ?age]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?age . :where [{} :bat/age ?age]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("query")
@@ -321,14 +309,14 @@ mod tests {
 
         // Step 4: Retract entity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retract");
 
         // Step 5: Verify retraction
         let qresult = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?name . :where [{} :bat/name ?name]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?name . :where [{} :bat/name ?name]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("query")
@@ -349,7 +337,7 @@ mod tests {
         setup();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"attr\" :db/ident :bat/combo
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -361,7 +349,7 @@ mod tests {
         .expect("schema + data same tx");
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?v ...] :where [?e :bat/combo ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?v ...] :where [?e :bat/combo ?v]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -382,7 +370,7 @@ mod tests {
 
         // Insert initial data with unique identity emails
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e1\" :bat/email \"a@test.com\" :bat/name \"Alice\" :bat/age 25}
                 {:db/id \"e2\" :bat/email \"b@test.com\" :bat/name \"Bob\" :bat/age 30}
             ]'::TEXT)",
@@ -391,7 +379,7 @@ mod tests {
 
         // Upsert: update ages for existing entities via identity attribute
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"u1\" :bat/email \"a@test.com\" :bat/age 26}
                 {:db/id \"u2\" :bat/email \"b@test.com\" :bat/age 31}
             ]'::TEXT)",
@@ -400,7 +388,7 @@ mod tests {
 
         // Check Alice's age
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?e :bat/email \"a@test.com\"] [?e :bat/age ?age]]'::TEXT,
                 '{}'::jsonb)::TEXT",
@@ -413,7 +401,7 @@ mod tests {
 
         // Check Bob's age
         let result = Spi::get_one::<String>(
-            "SELECT mentat_query('
+            "SELECT edn_q('
                 [:find ?age .
                  :where [?e :bat/email \"b@test.com\"] [?e :bat/age ?age]]'::TEXT,
                 '{}'::jsonb)::TEXT",
@@ -442,7 +430,7 @@ mod tests {
     #[pg_test]
     fn test_batch_empty_transaction() {
         setup();
-        let _result = Spi::get_one::<String>("SELECT mentat_transact('[]'::TEXT)");
+        let _result = Spi::get_one::<String>("SELECT edn_t('[]'::TEXT)");
     }
 
     #[pg_test]
@@ -450,7 +438,7 @@ mod tests {
         setup();
         setup_batch_schema();
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :bat/name \"single\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :bat/name \"single\"]]'::TEXT)")
             .expect("single assertion");
     }
 
@@ -464,7 +452,7 @@ mod tests {
         setup_batch_schema();
 
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e1\" :bat/name \"Alice\" :bat/age 25}
                 {:db/id \"e2\" :bat/name \"Bob\" :bat/age 30}
                 {:db/id \"e3\" :bat/name \"Carol\" :bat/age 35}
@@ -475,7 +463,7 @@ mod tests {
         // Run 20 queries sequentially
         for _ in 0..20 {
             let result = Spi::get_one::<String>(
-                "SELECT mentat_query('[:find [?name ...] :where [?e :bat/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find [?name ...] :where [?e :bat/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
             )
             .expect("query")
             .expect("NULL");

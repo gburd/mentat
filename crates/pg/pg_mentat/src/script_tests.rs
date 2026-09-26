@@ -1,12 +1,12 @@
 // Tests for the optional mino scripting layer (`mentat.store/*`, exposed via
-// the `mentat_eval` SQL function). Gated behind the `script` feature.
+// the `edn_eval` SQL function). Gated behind the `script` feature.
 //
 // These mirror `mentat/tests/mino_script.rs`, proving the Datomic-a-like model
 // against the live Postgres-resident store: `db` yields an immutable database
 // VALUE carrying its basis-tx, reads take a db value, `with` is a pure
 // speculative `db -> db'` that does not commit, and `as-of`/`since` produce db
 // values whose reads reflect the basis. Unlike Mentat, pg_mentat backs full `q`
-// on a historical basis (its `mentat_query` accepts asOf/since inputs).
+// on a historical basis (its `edn_q` accepts asOf/since inputs).
 
 #![cfg(feature = "script")]
 
@@ -20,14 +20,14 @@ mod tests {
         Spi::run("SELECT bootstrap_schema()").expect("bootstrap_schema failed");
     }
 
-    /// Run a mino script through `mentat_eval`, returning its EDN result text.
+    /// Run a mino script through `edn_eval`, returning its EDN result text.
     fn eval(script: &str) -> String {
         Spi::get_one_with_args::<String>(
-            "SELECT mentat_eval($1)",
+            "SELECT edn_eval($1)",
             &[pgrx::datum::DatumWithOid::from(script)],
         )
-        .expect("mentat_eval SPI failed")
-        .expect("mentat_eval returned NULL")
+        .expect("edn_eval SPI failed")
+        .expect("edn_eval returned NULL")
     }
 
     /// Seed: define :person/name and assert Alice.

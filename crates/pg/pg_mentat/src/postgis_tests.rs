@@ -47,14 +47,14 @@ mod tests {
 
     fn install_places_with_geometry() -> (i64, i64, i64) {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :place/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :place/loc  :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :place/name \"Origin\" :place/loc \"side\"}
                 {:db/id \"b\" :place/name \"Boston\" :place/loc \"side\"}
                 {:db/id \"c\" :place/name \"NYC\"    :place/loc \"side\"}
@@ -113,7 +113,7 @@ mod tests {
         }
         install_places_with_geometry();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name ?d :where \
+            "SELECT edn_q('[:find ?name ?d :where \
              [(geom-near $ :place/loc \"POINT(-72 41)\" 2) [[?e ?d]]] \
              [?e :place/name ?name] :order (asc ?d)]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -141,7 +141,7 @@ mod tests {
         }
         install_places_with_geometry();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name :where \
+            "SELECT edn_q('[:find ?name :where \
              [(geom-within $ :place/loc \"POINT(-72 41)\" 5.0) [[?e ?d]]] \
              [?e :place/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -168,7 +168,7 @@ mod tests {
         }
         install_places_with_geometry();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?name :where \
+            "SELECT edn_q('[:find ?name :where \
              [(geom-intersects $ :place/loc \"POLYGON((-75 40, -70 40, -70 43, -75 43, -75 40))\") [[?e]]] \
              [?e :place/name ?name]]'::TEXT, '{}'::jsonb)::TEXT",
         )
@@ -194,7 +194,7 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/loc :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
@@ -221,7 +221,7 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/loc :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
@@ -259,7 +259,7 @@ mod tests {
     fn pg_test_postgis_arity_error() {
         setup();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(geom-near $ :p/loc \"POINT(0 0)\") [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(geom-near $ :p/loc \"POINT(0 0)\") [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("geom-near"),
@@ -273,7 +273,7 @@ mod tests {
     fn pg_test_postgis_unknown_attr() {
         setup();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?e :where [(geom-near $ :no/such \"POINT(0 0)\" 1) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e :where [(geom-near $ :no/such \"POINT(0 0)\" 1) [[?e ?d]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/unknown-attribute"),
@@ -290,7 +290,7 @@ mod tests {
             return;
         }
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/g :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )

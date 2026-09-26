@@ -34,7 +34,7 @@ mod tests {
 
     fn install_basic_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :person/employer :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
                 {:db/ident :company/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}

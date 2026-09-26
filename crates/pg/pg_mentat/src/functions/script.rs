@@ -4,7 +4,7 @@
 //! This module implements the shared [`mentat_script::ScriptBackend`] trait
 //! over the extension's own `#[pg_extern]` engine functions (`transact`,
 //! `query`, `pull`, `entity`) reached through SPI, and builds the sandboxed
-//! [`mino_rs`] interpreter for `mentat_eval`. The backend-independent
+//! [`mino_rs`] interpreter for `edn_eval`. The backend-independent
 //! `mentat.store/*` surface — the db-value shape, argument parsing, the
 //! tx-report / inst / uuid value builders, and the prim registration — lives in
 //! the `mentat_script` crate (plan § 1.19). What stays here is (a) the engine
@@ -13,7 +13,7 @@
 //!
 //! # Temporal honesty — pg_mentat's advantage
 //!
-//! Unlike Mentat's SQLite algebrizer, pg_mentat's `mentat_query` accepts
+//! Unlike Mentat's SQLite algebrizer, pg_mentat's `edn_q` accepts
 //! `{"asOf": T}` / `{"since": T}` temporal inputs, so arbitrary Datalog `q`
 //! runs faithfully against a historical basis: an as-of/since db forwards its
 //! bound into the query inputs.
@@ -34,13 +34,13 @@ use mentat_script::{DbRef, ScriptBackend, TxReport};
 /// A fresh sandboxed scripting interpreter with the `mentat.store/*` prims
 /// registered over the [`PgBackend`].
 ///
-/// Built per `mentat_eval` call. Uses [`Interpreter::sandboxed`](mino_rs::Interpreter::sandboxed):
+/// Built per `edn_eval` call. Uses [`Interpreter::sandboxed`](mino_rs::Interpreter::sandboxed):
 /// the language, regex, bignum, atoms and the in-memory store are installed,
 /// but every host-filesystem prim (`slurp`, `spit`, `rm-rf`, `mkdir-p`,
 /// `file-exists?`) and the file-backed store are *absent* (unbound) — so a
-/// hostile `mentat_eval` caller cannot touch the server's disk. The
+/// hostile `edn_eval` caller cannot touch the server's disk. The
 /// `mentat.store/*` prims are SPI-backed and run as the calling role, exactly
-/// like `mentat_query`/`mentat_transact`; sandboxing only removes host access,
+/// like `edn_q`/`edn_t`; sandboxing only removes host access,
 /// not the store surface.
 ///
 /// Three `PGC_SUSET` GUCs bound CPU, memory and stack; the check hook wires
@@ -65,7 +65,7 @@ pub fn build_interpreter() -> mino_rs::Interpreter {
     it.set_check_hook(Box::new(|| {
         pgrx::check_for_interrupts!();
         if unsafe { pgrx::pg_sys::stack_is_too_deep() } {
-            return Err(mino_rs::error::throw_str("mentat_eval: stack depth limit"));
+            return Err(mino_rs::error::throw_str("edn_eval: stack depth limit"));
         }
         Ok(())
     }));
@@ -74,14 +74,29 @@ pub fn build_interpreter() -> mino_rs::Interpreter {
 
 /// Evaluate a mino script and return its result as EDN (`pr-str`) text.
 ///
-/// Mirrors `mentat_transact`/`mentat_query`: EDN/text in, EDN text out. A mino
+/// Mirrors `edn_t`/`edn_q`: EDN/text in, EDN text out. A mino
 /// exception surfaces as a clean Postgres ERROR carrying the mino message.
-#[pg_extern]
+#[pg_extern(name = "edn_eval")]
 pub fn mentat_eval(script: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut it = build_interpreter();
     it.eval_to_string(script)
-        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(format!("mentat_eval: {e}")))
+        .map_err(|e| Box::<dyn std::error::Error + Send + Sync>::from(format!("edn_eval: {e}")))
 }
+
+// Deprecated pre-1.9.0 name, emitted only in `script` builds (this module is
+// cfg-gated). Same VOLATILE STRICT as the C function it wraps. The other three
+// deprecated wrappers are in sql/26_deprecated_names.sql.
+pgrx::extension_sql!(
+    r"
+CREATE FUNCTION public.mentat_eval(script TEXT)
+RETURNS TEXT
+LANGUAGE SQL VOLATILE STRICT
+AS $$ SELECT public.edn_eval(script); $$;
+COMMENT ON FUNCTION public.mentat_eval(TEXT) IS 'Deprecated since 1.9.0: use edn_eval';
+",
+    name = "deprecated_mentat_eval",
+    requires = [mentat_eval],
+);
 
 // ---------------------------------------------------------------------------
 // ScriptBackend over the pg_mentat engine
@@ -256,7 +271,7 @@ fn current_basis_tx() -> Result<i64, String> {
 }
 
 /// The query-inputs JSON carrying a db value's temporal bound (empty for the
-/// current basis). pg_mentat's `mentat_query` reads `asOf`/`since` from this.
+/// current basis). pg_mentat's `edn_q` reads `asOf`/`since` from this.
 fn temporal_inputs(db: &DbRef) -> J {
     let mut obj = serde_json::Map::new();
     if let Some(t) = db.as_of {
@@ -291,7 +306,7 @@ fn json_to_tx_report(report: &str) -> Result<TxReport, String> {
     Ok(TxReport { tx_id, tempids })
 }
 
-/// A `mentat_query` JSON envelope as a mino value in Datomic result shape:
+/// A `edn_q` JSON envelope as a mino value in Datomic result shape:
 /// scalar find -> the value; coll `[?x ...]` -> a vector; tuple `[?a ?b]` -> a
 /// vector; relation `?a ?b` -> a set of tuple-vectors.
 fn query_result_value(env: &J) -> Value {

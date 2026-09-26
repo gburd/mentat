@@ -43,13 +43,13 @@ mod tests {
 
     fn install_name_attr_with_data() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :p/n \"Alice\"}
                 {:db/id \"b\" :p/n \"Alyce\"}
                 {:db/id \"c\" :p/n \"Alicia\"}
@@ -81,7 +81,7 @@ mod tests {
         }
         install_name_attr_with_data();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?s :where [(similar-to $ :p/n \"Alice\" 0.3) [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?s :where [(similar-to $ :p/n \"Alice\" 0.3) [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -117,7 +117,7 @@ mod tests {
         }
         install_name_attr_with_data();
         let raw = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n :where [(similar-to $ :p/n \"Alice\" 0.95) [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n :where [(similar-to $ :p/n \"Alice\" 0.95) [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("query")
         .expect("NULL");
@@ -179,7 +179,7 @@ mod tests {
         setup();
         install_name_attr_with_data();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?n :where [(similar-to $ :p/n \"Alice\") [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n :where [(similar-to $ :p/n \"Alice\") [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arity") && err.contains("similar-to"),
@@ -194,7 +194,7 @@ mod tests {
         setup();
         install_name_attr_with_data();
         let err = capture_error(
-            "SELECT mentat_query('[:find ?n :where [(similar-to $ :p/n \"Alice\" 1.5) [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n :where [(similar-to $ :p/n \"Alice\" 1.5) [[?e ?n ?s]]]]'::TEXT, '{}'::jsonb)::TEXT",
         );
         assert!(
             err.contains(":db.error/fn-arg") && err.contains("threshold"),

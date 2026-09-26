@@ -39,7 +39,7 @@ mod tests {
 
     fn setup_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :spec/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :spec/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"t\" :db/ident :spec/tags :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
@@ -237,7 +237,7 @@ mod tests {
 
         // Run real transaction
         let real_result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :spec/name \"compare2\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :spec/name \"compare2\"]]'::TEXT)",
         )
         .expect("transact")
         .expect("NULL");
@@ -271,11 +271,9 @@ mod tests {
         setup_schema();
 
         // First, commit an entity with a value
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :spec/val 10]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :spec/val 10]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
@@ -298,7 +296,7 @@ mod tests {
 
         // Verify the committed value is unchanged (speculative didn't persist)
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :spec/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :spec/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -316,11 +314,9 @@ mod tests {
         setup();
         setup_schema();
 
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :spec/val 10]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :spec/val 10]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
@@ -339,11 +335,9 @@ mod tests {
         setup();
         setup_schema();
 
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :spec/val 100]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :spec/val 100]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
@@ -356,7 +350,7 @@ mod tests {
 
         // Real value should still be 100
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :spec/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :spec/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -375,8 +369,7 @@ mod tests {
         setup_schema();
 
         // Commit an entity with a unique identity value
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :spec/uid \"unique-1\"]]'::TEXT)")
-            .expect("tx");
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :spec/uid \"unique-1\"]]'::TEXT)").expect("tx");
 
         // Speculative tx that tries to add a different entity with the same unique value
         // should trigger upsert (same as committed tx behavior)
@@ -402,7 +395,7 @@ mod tests {
 
         // Commit an entity
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :spec/name \"Alice\"] [:db/add \"e\" :spec/val 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :spec/name \"Alice\"] [:db/add \"e\" :spec/val 42]]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
@@ -431,7 +424,7 @@ mod tests {
 
         // Verify the entity is still present in the real database
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :spec/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :spec/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -487,11 +480,10 @@ mod tests {
         setup();
         setup_schema();
 
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :spec/name \"Zap\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :spec/name \"Zap\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
@@ -519,10 +511,9 @@ mod tests {
         setup();
         setup_schema();
 
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :spec/val 5]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :spec/val 5]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 

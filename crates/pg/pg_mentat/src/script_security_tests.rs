@@ -1,6 +1,6 @@
-// Security tests for the open `mentat_eval` scripting surface (§ 1.1).
+// Security tests for the open `edn_eval` scripting surface (§ 1.1).
 //
-// `mentat_eval` is intentionally callable by every role (no REVOKE, not
+// `edn_eval` is intentionally callable by every role (no REVOKE, not
 // SECURITY DEFINER), so the sandbox and the three PGC_SUSET limit GUCs are the
 // entire defense against a hostile script. These tests prove, running as an
 // ordinary role, that a hostile script cannot touch the host filesystem, pin a
@@ -54,24 +54,24 @@ mod tests {
             .unwrap_or_else(|| panic!("expected an error from: {}", &sql[..sql.len().min(120)]))
     }
 
-    /// The error from `mentat_eval(script)`. The script arg is passed via a
+    /// The error from `edn_eval(script)`. The script arg is passed via a
     /// dollar-quoted literal so nested quotes/brackets survive.
     fn eval_error(script: &str) -> String {
-        error_of(&format!("SELECT mentat_eval($mm${script}$mm$)"))
+        error_of(&format!("SELECT edn_eval($mm${script}$mm$)"))
     }
 
-    /// The EDN result of a successful `mentat_eval(script)`.
+    /// The EDN result of a successful `edn_eval(script)`.
     fn eval_ok(script: &str) -> String {
         Spi::get_one_with_args::<String>(
-            "SELECT mentat_eval($1)",
+            "SELECT edn_eval($1)",
             &[pgrx::datum::DatumWithOid::from(script)],
         )
-        .expect("mentat_eval SPI failed")
-        .expect("mentat_eval returned NULL")
+        .expect("edn_eval SPI failed")
+        .expect("edn_eval returned NULL")
     }
 
     /// Create (once) an ordinary NOSUPERUSER role that may reach the schema and
-    /// call mentat_eval + the error helper, then `SET LOCAL ROLE` to it. Reset
+    /// call edn_eval + the error helper, then `SET LOCAL ROLE` to it. Reset
     /// with `RESET ROLE`. `SET LOCAL` scopes to the current transaction, so the
     /// pg_test's transaction rolls it back.
     fn as_ordinary_role() {
@@ -93,7 +93,7 @@ mod tests {
     // ---- Host access: capability gating (sandboxed interpreter) ----
 
     /// Every host-filesystem prim is unbound (absent), not merely refused, when
-    /// mentat_eval builds a sandboxed interpreter. mino reports an unbound
+    /// edn_eval builds a sandboxed interpreter. mino reports an unbound
     /// symbol. Run as an ordinary role: this is the hostile-caller path.
     #[pg_test]
     fn host_filesystem_prims_are_absent() {
@@ -197,7 +197,7 @@ mod tests {
     /// hook, not just the step counter.
     ///
     /// IGNORED in the pgrx test harness: a `#[pg_test]` runs inside one
-    /// long-lived transaction and drives `mentat_eval` through SPI, and
+    /// long-lived transaction and drives `edn_eval` through SPI, and
     /// `SET statement_timeout` does not reliably arm the per-statement timer
     /// for that nested SPI statement — so the loop is not cancelled and the
     /// test hangs (verified: the backend spins at 100% CPU past 3 minutes).
@@ -213,7 +213,7 @@ mod tests {
         setup();
         Spi::run("SET mentat.script_max_steps = 2000000000").expect("raise steps");
         Spi::run("SET statement_timeout = '300ms'").expect("set timeout");
-        let msg = error_of("SELECT mentat_eval($mm$(loop [] (recur))$mm$)");
+        let msg = error_of("SELECT edn_eval($mm$(loop [] (recur))$mm$)");
         Spi::run("RESET statement_timeout").expect("reset timeout");
         Spi::run("RESET mentat.script_max_steps").expect("reset steps");
         assert!(

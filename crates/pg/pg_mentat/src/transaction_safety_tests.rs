@@ -32,7 +32,7 @@ mod tests {
 
     fn setup_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :safety/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :safety/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"c\" :db/ident :safety/counter :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
@@ -52,11 +52,11 @@ mod tests {
 
         // Run a transaction -- the advisory lock should be acquired and released
         // within the transaction. If this succeeds, the lock mechanism works.
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :safety/name \"lock-test\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :safety/name \"lock-test\"]]'::TEXT)")
             .expect("transact with advisory lock");
 
         // Run another -- if locks weren't released, this would deadlock
-        Spi::run("SELECT mentat_transact('[[:db/add \"e\" :safety/name \"lock-test-2\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e\" :safety/name \"lock-test-2\"]]'::TEXT)")
             .expect("second transact should not deadlock");
     }
 
@@ -69,7 +69,7 @@ mod tests {
 
         for i in 0..10 {
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"e{}\" :safety/name \"seq-{}\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{}\" :safety/name \"seq-{}\"]]'::TEXT)",
                 i, i
             ))
             .expect("tx")
@@ -97,7 +97,7 @@ mod tests {
 
         // First transaction
         let r1 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :safety/name \"first\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :safety/name \"first\"]]'::TEXT)",
         )
         .expect("tx1")
         .expect("NULL");
@@ -106,7 +106,7 @@ mod tests {
 
         // Second transaction -- its db-before should be the same as first's db-after
         let r2 = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"f\" :safety/name \"second\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"f\" :safety/name \"second\"]]'::TEXT)",
         )
         .expect("tx2")
         .expect("NULL");
@@ -130,18 +130,16 @@ mod tests {
         setup_schema();
 
         // Create a counter entity
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"c\" :safety/counter 0]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"c\" :safety/counter 0]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["c"].as_i64().expect("eid");
 
         // Increment counter 20 times using CAS
         for i in 0..20 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db.fn/cas {} :safety/counter {} {}]]'::TEXT)",
+                "SELECT edn_t('[[:db.fn/cas {} :safety/counter {} {}]]'::TEXT)",
                 eid,
                 i,
                 i + 1
@@ -151,7 +149,7 @@ mod tests {
 
         // Verify final value
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :safety/counter ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :safety/counter ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -165,18 +163,17 @@ mod tests {
         setup();
         setup_schema();
 
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :safety/counter 100]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :safety/counter 100]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         // CAS with wrong old value -- should fail even with advisory locks
         assert!(
             raises_error(&format!(
-                "SELECT mentat_transact('[[:db.fn/cas {} :safety/counter 999 200]]'::TEXT)",
+                "SELECT edn_t('[[:db.fn/cas {} :safety/counter 999 200]]'::TEXT)",
                 eid
             )),
             "CAS with wrong old value should fail"
@@ -184,7 +181,7 @@ mod tests {
 
         // Value should remain unchanged
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :safety/counter ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :safety/counter ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -202,23 +199,21 @@ mod tests {
         setup();
         setup_schema();
 
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :safety/val 1]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :safety/val 1]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         // Use :db/cas instead of :db.fn/cas
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :safety/val 1 2]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :safety/val 1 2]]'::TEXT)",
             eid
         ))
         .expect(":db/cas should work");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :safety/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :safety/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -233,7 +228,7 @@ mod tests {
         setup_schema();
 
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :safety/name \"will-be-retracted\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :safety/name \"will-be-retracted\"]]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
@@ -242,14 +237,14 @@ mod tests {
 
         // Use :db.fn/retractEntity instead of :db/retractEntity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect(":db.fn/retractEntity should work");
 
         // Entity should be retracted
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :safety/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :safety/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -268,7 +263,7 @@ mod tests {
         setup_schema();
 
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :safety/name \"retract-me\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :safety/name \"retract-me\"]]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
@@ -277,7 +272,7 @@ mod tests {
 
         // Use original :db/retractEntity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect(":db/retractEntity should still work");

@@ -154,7 +154,7 @@ impl From<StreamError> for Anomaly {
 /// Execute the query and return `(column_names, row_values)` where each row
 /// is a `Vec<ResponseValue>`.
 ///
-/// The `PostgreSQL` function `mentat_query` returns a JSON object with `columns`
+/// The `PostgreSQL` function `edn_q` returns a JSON object with `columns`
 /// and `results` arrays. We parse the full result and then the caller chunks
 /// it for SSE delivery.
 async fn execute_streaming_query(
@@ -201,7 +201,7 @@ async fn execute_streaming_query(
     let client = state.pool().get().await?;
 
     let row = client
-        .query_one("SELECT mentat_query($1, $2::jsonb)", &[&query, &args_json])
+        .query_one("SELECT edn_q($1, $2::jsonb)", &[&query, &args_json])
         .await?;
 
     let result_json: serde_json::Value = row.get(0);

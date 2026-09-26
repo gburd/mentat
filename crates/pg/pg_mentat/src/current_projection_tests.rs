@@ -20,7 +20,7 @@ mod tests {
 
     fn schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/ident :p/name  :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :p/age   :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
@@ -56,7 +56,7 @@ mod tests {
         setup();
         schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\" :p/age 30 :p/score 9.5 :p/admin true :p/tag \"x\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\" :p/age 30 :p/score 9.5 :p/admin true :p/tag \"x\"}]'::TEXT)",
         )
         .expect("tx");
         verify_clean();
@@ -93,15 +93,16 @@ mod tests {
     fn pg_test_proj_cardinality_one_replace() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\"}]'::TEXT)").expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\"}]'::TEXT)")
+            .expect("tx");
         let e = email_eid("a@x.io");
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :p/name \"Alyce\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :p/name \"Alyce\"}}]'::TEXT)",
             e
         ))
         .expect("r1");
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :p/name \"Alicia\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :p/name \"Alicia\"}}]'::TEXT)",
             e
         ))
         .expect("r2");
@@ -131,12 +132,14 @@ mod tests {
     fn pg_test_proj_cardinality_many_add_retract() {
         setup();
         schema();
-        Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)",
-        )
-        .expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)")
+            .expect("tx");
         let e = email_eid("a@x.io");
-        Spi::run(&format!("SELECT mentat_transact('[{{:db/id {} :p/tag \"y\"}} {{:db/id {} :p/tag \"z\"}}]'::TEXT)", e, e)).expect("add");
+        Spi::run(&format!(
+            "SELECT edn_t('[{{:db/id {} :p/tag \"y\"}} {{:db/id {} :p/tag \"z\"}}]'::TEXT)",
+            e, e
+        ))
+        .expect("add");
         // Three tags now.
         let cnt = Spi::get_one::<i64>(&format!(
             "SELECT count(*) FROM mentat.current_text WHERE e={} AND a=mentat.attr_id(':p/tag')",
@@ -148,7 +151,7 @@ mod tests {
 
         // Retract one.
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :p/tag \"y\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :p/tag \"y\"]]'::TEXT)",
             e
         ))
         .expect("retract");
@@ -171,13 +174,11 @@ mod tests {
     fn pg_test_proj_retract_then_reassert() {
         setup();
         schema();
-        Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)",
-        )
-        .expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/tag \"x\"}]'::TEXT)")
+            .expect("tx");
         let e = email_eid("a@x.io");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :p/tag \"x\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :p/tag \"x\"]]'::TEXT)",
             e
         ))
         .expect("retract");
@@ -190,7 +191,7 @@ mod tests {
 
         // Re-assert.
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :p/tag \"x\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :p/tag \"x\"}}]'::TEXT)",
             e
         ))
         .expect("reassert");
@@ -209,10 +210,10 @@ mod tests {
     fn pg_test_proj_retract_entity() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\" :p/age 30 :p/tag \"x\"}]'::TEXT)").expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\" :p/age 30 :p/tag \"x\"}]'::TEXT)").expect("tx");
         let e = email_eid("a@x.io");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             e
         ))
         .expect("retractEntity");
@@ -234,8 +235,7 @@ mod tests {
     fn pg_test_proj_txinstant_present() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\"}]'::TEXT)")
-            .expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\"}]'::TEXT)").expect("tx");
         // Every transaction's txInstant datom should be in current_instant.
         let txinstant_rows =
             Spi::get_one::<i64>("SELECT count(*) FROM mentat.current_instant WHERE a = 50")
@@ -251,10 +251,10 @@ mod tests {
     fn pg_test_proj_rebuild_idempotent() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\" :p/tag \"x\" :p/tag \"y\"}]'::TEXT)").expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\" :p/tag \"x\" :p/tag \"y\"}]'::TEXT)").expect("tx");
         let e = email_eid("a@x.io");
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :p/name \"Alyce\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :p/name \"Alyce\"}}]'::TEXT)",
             e
         ))
         .expect("replace");
@@ -276,7 +276,8 @@ mod tests {
     fn pg_test_proj_verify_detects_drift() {
         setup();
         schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\"}]'::TEXT)").expect("tx");
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :p/email \"a@x.io\" :p/name \"Alice\"}]'::TEXT)")
+            .expect("tx");
         verify_clean();
 
         // Corrupt: delete a projection row that the log says is live.

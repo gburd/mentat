@@ -20,7 +20,7 @@ mod tests {
     /// Returns the (p1..p5) entids resolved from the transaction's tempids.
     fn setup_or_not_data() -> [i64; 5] {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"a\" :db/ident :person/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"b\" :db/ident :person/banned? :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
@@ -30,7 +30,7 @@ mod tests {
         .expect("schema tx");
 
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"p1\" :person/name \"alice\" :person/age 30 :person/banned? false :person/superuser? false}
                 {:db/id \"p2\" :person/name \"bob\"   :person/age 25 :person/banned? true  :person/superuser? false}
                 {:db/id \"p3\" :person/name \"carol\" :person/age 30 :person/banned? true  :person/superuser? false}
@@ -53,7 +53,7 @@ mod tests {
     /// entids in the first column.
     fn query_p_set(q: &str) -> HashSet<i64> {
         let sql = format!(
-            "SELECT mentat_query('{}'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('{}'::TEXT, '{{}}'::jsonb)::TEXT",
             q.replace('\'', "''")
         );
         let raw = Spi::get_one::<String>(&sql).expect("query").expect("NULL");

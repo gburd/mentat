@@ -13,7 +13,7 @@ mod tests {
 
     fn setup_ce_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :ce/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :ce/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"p\" :db/ident :ce/parent :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
@@ -36,7 +36,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"parent\" :ce/name \"Parent\"]
                 [:db/add \"child\" :ce/name \"Child\"]
                 [:db/add \"child\" :ce/parent \"parent\"]
@@ -49,8 +49,11 @@ mod tests {
         let child = j["tempids"]["child"].as_i64().expect("child");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?p . :where [{} :ce/parent ?p]]'::TEXT, '{{}}'::jsonb)::TEXT", child
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?p . :where [{} :ce/parent ?p]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            child
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("p"), parent);
     }
@@ -64,14 +67,10 @@ mod tests {
             ops.push(format!("[:db/add \"c{}\" :ce/name \"Child-{}\"]", i, i));
             ops.push(format!("[:db/add \"root\" :ce/children \"c{}\"]", i));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("tx");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("tx");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?c ...] :where [?r :ce/name \"Root\"] [?r :ce/children ?c]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?c ...] :where [?r :ce/name \"Root\"] [?r :ce/children ?c]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 10);
@@ -82,7 +81,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"gp\" :ce/name \"Grandparent\"]
                 [:db/add \"p\" :ce/name \"Parent\"]
                 [:db/add \"c\" :ce/name \"Child\"]
@@ -98,7 +97,7 @@ mod tests {
 
         // Navigate child -> parent -> grandparent
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?gp . :where [{} :ce/parent ?p] [?p :ce/parent ?gp]]'::TEXT, '{{}}'::jsonb)::TEXT", c
+            "SELECT edn_q('[:find ?gp . :where [{} :ce/parent ?p] [?p :ce/parent ?gp]]'::TEXT, '{{}}'::jsonb)::TEXT", c
         )).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("gp"), gp);
@@ -113,7 +112,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"ceo\" :ce/name \"CEO\" :ce/type :executive :ce/dept \"C-Suite\"}
                 {:db/id \"vp\" :ce/name \"VP\" :ce/type :executive :ce/dept \"Engineering\" :ce/manager \"ceo\"}
                 {:db/id \"dir\" :ce/name \"Director\" :ce/type :manager :ce/dept \"Engineering\" :ce/manager \"vp\"}
@@ -126,14 +125,14 @@ mod tests {
 
         // Find all people who report (directly) to the Director
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?d :ce/name \"Director\"] [?e :ce/manager ?d] [?e :ce/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?d :ce/name \"Director\"] [?e :ce/manager ?d] [?e :ce/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 2); // Alice, Bob
 
         // Navigate from Alice up to CEO (3 levels)
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?top . :where [?a :ce/name \"Alice\"] [?a :ce/manager ?m1] [?m1 :ce/manager ?m2] [?m2 :ce/manager ?top]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?top . :where [?a :ce/name \"Alice\"] [?a :ce/manager ?m1] [?m1 :ce/manager ?m2] [?m2 :ce/manager ?top]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         assert_eq!(v2["result"].as_i64().expect("top"), ceo);
@@ -148,7 +147,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"a\" :ce/name \"Alice\"]
                 [:db/add \"b\" :ce/name \"Bob\"]
                 [:db/add \"a\" :ce/friends \"b\"]
@@ -163,7 +162,7 @@ mod tests {
 
         // Alice's friends include Bob
         let q1 = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", a
+            "SELECT edn_q('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", a
         )).expect("q").expect("NULL");
         let v1: serde_json::Value = serde_json::from_str(&q1).expect("parse");
         assert!(v1["result"]
@@ -174,7 +173,7 @@ mod tests {
 
         // Bob's friends include Alice
         let q2 = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", b
+            "SELECT edn_q('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", b
         )).expect("q").expect("NULL");
         let v2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         assert!(v2["result"]
@@ -190,7 +189,7 @@ mod tests {
         setup_ce_schema();
         // Star topology: center connected to 4 others
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"center\" :ce/name \"Center\"]
                 [:db/add \"n1\" :ce/name \"N1\"]
                 [:db/add \"n2\" :ce/name \"N2\"]
@@ -208,7 +207,7 @@ mod tests {
         let center = j["tempids"]["center"].as_i64().expect("center");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", center
+            "SELECT edn_q('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", center
         )).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 4);
@@ -223,7 +222,7 @@ mod tests {
         setup();
         setup_ce_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e1\" :ce/name \"Alice\" :ce/dept \"Engineering\" :ce/val 100}
                 {:db/id \"e2\" :ce/name \"Bob\" :ce/dept \"Engineering\" :ce/val 110}
                 {:db/id \"e3\" :ce/name \"Carol\" :ce/dept \"Design\" :ce/val 95}
@@ -233,7 +232,7 @@ mod tests {
         .expect("tx");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :ce/name ?n] [?e :ce/dept \"Engineering\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :ce/name ?n] [?e :ce/dept \"Engineering\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 3);
@@ -244,7 +243,7 @@ mod tests {
         setup();
         setup_ce_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e1\" :ce/name \"A\" :ce/type :engineer :ce/val 100}
                 {:db/id \"e2\" :ce/name \"B\" :ce/type :designer :ce/val 90}
                 {:db/id \"e3\" :ce/name \"C\" :ce/type :engineer :ce/val 110}
@@ -255,7 +254,7 @@ mod tests {
         .expect("tx");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :ce/name ?n] [?e :ce/type :engineer]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?n ...] :where [?e :ce/name ?n] [?e :ce/type :engineer]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 3);
@@ -270,7 +269,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"p\" :ce/name \"Parent\"]
                 [:db/add \"c1\" :ce/name \"Child1\"]
                 [:db/add \"c2\" :ce/name \"Child2\"]
@@ -286,15 +285,18 @@ mod tests {
 
         // Retract parent
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             p
         ))
         .expect("retract parent");
 
         // Children should still exist
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?n . :where [{} :ce/name ?n]]'::TEXT, '{{}}'::jsonb)::TEXT", c1
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?n . :where [{} :ce/name ?n]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            c1
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("n"), "Child1");
     }
@@ -315,16 +317,14 @@ mod tests {
                 ops.push(format!("[:db/add \"n{}\" :ce/parent \"n{}\"]", i, i - 1));
             }
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("tx");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("tx");
 
         // Count all nodes
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?n ...] :where [?e :ce/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find [?n ...] :where [?e :ce/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 20);
     }
@@ -338,14 +338,10 @@ mod tests {
             ops.push(format!("[:db/add \"s{}\" :ce/name \"Spoke-{}\"]", i, i));
             ops.push(format!("[:db/add \"hub\" :ce/children \"s{}\"]", i));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("tx");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("tx");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find [?c ...] :where [?h :ce/name \"Hub\"] [?h :ce/children ?c]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?c ...] :where [?h :ce/name \"Hub\"] [?h :ce/children ?c]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 50);
@@ -359,23 +355,25 @@ mod tests {
     fn test_ce_self_reference() {
         setup();
         setup_ce_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :ce/name \"SelfRef\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :ce/name \"SelfRef\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :ce/parent {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :ce/parent {}]]'::TEXT)",
             eid, eid
         ))
         .expect("self-ref");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?p . :where [{} :ce/parent ?p]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?p . :where [{} :ce/parent ?p]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_i64().expect("p"), eid);
     }
@@ -385,7 +383,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :ce/name \"Narcissist\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add \"e\" :ce/name \"Narcissist\"]]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
@@ -393,13 +391,13 @@ mod tests {
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :ce/friends {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :ce/friends {}]]'::TEXT)",
             eid, eid
         ))
         .expect("self-friend");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
+            "SELECT edn_q('[:find [?f ...] :where [{} :ce/friends ?f]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
         )).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"]
@@ -418,7 +416,7 @@ mod tests {
         setup();
         setup_ce_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"target\" :ce/name \"Target\" :ce/val 99}
                 {:db/id \"e\" :ce/name \"Full\" :ce/val 42 :ce/type :engineer :ce/dept \"Eng\" :ce/score 88.5 :ce/parent \"target\"}
                 [:db/add \"e\" :ce/friends \"target\"]

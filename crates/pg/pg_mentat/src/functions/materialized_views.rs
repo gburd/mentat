@@ -289,9 +289,7 @@ pub fn materialize(
                 "Materialized views support up to 8 columns, but this query has {}.",
                 col_count
             ),
-            suggestion: Some(
-                "Use mentat_query() for queries with more than 8 columns.".to_string(),
-            ),
+            suggestion: Some("Use edn_q() for queries with more than 8 columns.".to_string()),
         }));
     }
 

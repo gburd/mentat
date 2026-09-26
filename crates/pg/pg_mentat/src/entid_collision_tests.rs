@@ -22,12 +22,11 @@ mod tests {
     fn test_ec_healthy_store_reports_zero() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[{:db/ident :ec/name :db/valueType :db.type/string \
+            "SELECT edn_t('[{:db/ident :ec/name :db/valueType :db.type/string \
              :db/cardinality :db.cardinality/one}]'::TEXT)",
         )
         .expect("schema");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :ec/name \"Alice\"}]'::TEXT)")
-            .expect("data");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :ec/name \"Alice\"}]'::TEXT)").expect("data");
 
         let n = Spi::get_one::<i64>("SELECT mentat.entid_collision_count()")
             .expect("count")
@@ -42,15 +41,14 @@ mod tests {
     fn test_ec_detect_and_repair() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[{:db/ident :ec/tag :db/valueType :db.type/string \
+            "SELECT edn_t('[{:db/ident :ec/tag :db/valueType :db.type/string \
              :db/cardinality :db.cardinality/one}]'::TEXT)",
         )
         .expect("schema");
-        let report = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"u\" :ec/tag \"needle\"}]'::TEXT)",
-        )
-        .expect("data")
-        .expect("NULL");
+        let report =
+            Spi::get_one::<String>("SELECT edn_t('[{:db/id \"u\" :ec/tag \"needle\"}]'::TEXT)")
+                .expect("data")
+                .expect("NULL");
         let report: serde_json::Value = serde_json::from_str(&report).expect("parse");
         let uid = report["tempids"]["u"].as_i64().expect("uid");
 
@@ -124,7 +122,7 @@ mod tests {
 
         // The user entity's data survives (queryable under its new id).
         let found = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?v :where [?e :ec/tag ?v] [(= ?v \"needle\")]]'::TEXT, \
+            "SELECT edn_q('[:find ?v :where [?e :ec/tag ?v] [(= ?v \"needle\")]]'::TEXT, \
              '{}'::jsonb)::TEXT",
         )
         .expect("q")

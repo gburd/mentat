@@ -15,7 +15,7 @@ mod tests {
 
     fn install_person_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :person/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/ident :person/name  :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/ident :person/age   :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
@@ -54,7 +54,7 @@ mod tests {
         setup();
         install_person_schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :person/email \"a@x.io\" :person/name \"Alice\" :person/age 30}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"p\" :person/email \"a@x.io\" :person/name \"Alice\" :person/age 30}]'::TEXT)",
         )
         .expect("data tx");
         let e = entity_by_email("a@x.io");
@@ -71,7 +71,7 @@ mod tests {
 
         // After a replace, current() reflects the new value.
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :person/name \"Alyce\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :person/name \"Alyce\"}}]'::TEXT)",
             e
         ))
         .expect("replace tx");
@@ -86,7 +86,7 @@ mod tests {
     fn pg_test_ops_current_null_for_absent() {
         setup();
         install_person_schema();
-        Spi::run("SELECT mentat_transact('[{:db/id \"p\" :person/email \"b@x.io\"}]'::TEXT)")
+        Spi::run("SELECT edn_t('[{:db/id \"p\" :person/email \"b@x.io\"}]'::TEXT)")
             .expect("data tx");
         let e = entity_by_email("b@x.io");
         // No :person/name asserted for this entity.
@@ -106,19 +106,19 @@ mod tests {
         setup();
         install_person_schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :person/email \"c@x.io\" :person/name \"Carol\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"p\" :person/email \"c@x.io\" :person/name \"Carol\"}]'::TEXT)",
         )
         .expect("data tx");
         let e = entity_by_email("c@x.io");
 
         // Replace twice.
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :person/name \"Caroline\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :person/name \"Caroline\"}}]'::TEXT)",
             e
         ))
         .expect("r1");
         Spi::run(&format!(
-            "SELECT mentat_transact('[{{:db/id {} :person/name \"Carrie\"}}]'::TEXT)",
+            "SELECT edn_t('[{{:db/id {} :person/name \"Carrie\"}}]'::TEXT)",
             e
         ))
         .expect("r2");
@@ -153,7 +153,7 @@ mod tests {
         setup();
         install_person_schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"p\" :person/email \"d@x.io\" :person/name \"Dave\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"p\" :person/email \"d@x.io\" :person/name \"Dave\"}]'::TEXT)",
         )
         .expect("data tx");
         let e = entity_by_email("d@x.io");
@@ -161,7 +161,7 @@ mod tests {
         // Re-assert the identical value three times.
         for _ in 0..3 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[{{:db/id {} :person/name \"Dave\"}}]'::TEXT)",
+                "SELECT edn_t('[{{:db/id {} :person/name \"Dave\"}}]'::TEXT)",
                 e
             ))
             .expect("reassert");
@@ -193,7 +193,7 @@ mod tests {
         setup();
         install_person_schema();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"p1\" :person/email \"e1@x.io\" :person/name \"E1\"}
                 {:db/id \"p2\" :person/email \"e2@x.io\" :person/name \"E2\"}
             ]'::TEXT)",

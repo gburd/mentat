@@ -1,7 +1,7 @@
 -- Short-name SQL function aliases for pg_mentat
 -- Following Datomic conventions: q, t, pull, entity, schema, etc.
 --
--- These thin wrappers delegate to the full mentat_* functions so that
+-- These thin wrappers delegate to the full edn_* / mentat_* functions so that
 -- users can write concise queries such as:
 --
 --   SELECT mentat.q('[:find ?e :where [?e :person/name "Alice"]]', '{}'::jsonb);
@@ -12,19 +12,19 @@
 CREATE OR REPLACE FUNCTION mentat.q(query TEXT, inputs JSONB DEFAULT '{}'::JSONB)
 RETURNS JSONB
 LANGUAGE SQL STABLE
-AS $$ SELECT public.mentat_query(query, inputs); $$;
+AS $$ SELECT public.edn_q(query, inputs); $$;
 
 -- t: transact EDN data
 CREATE OR REPLACE FUNCTION mentat.t(edn_tx TEXT)
 RETURNS TEXT
 LANGUAGE SQL VOLATILE
-AS $$ SELECT public.mentat_transact(edn_tx); $$;
+AS $$ SELECT public.edn_t(edn_tx); $$;
 
 -- pull: pull an attribute pattern for a single entity
 CREATE OR REPLACE FUNCTION mentat.pull(pattern TEXT, entity_id BIGINT)
 RETURNS JSONB
 LANGUAGE SQL STABLE
-AS $$ SELECT public.mentat_pull(pattern, entity_id); $$;
+AS $$ SELECT public.edn_pull(pattern, entity_id); $$;
 
 -- pull_many: pull an attribute pattern for multiple entities
 CREATE OR REPLACE FUNCTION mentat.pull_many(pattern TEXT, entity_ids BIGINT[])

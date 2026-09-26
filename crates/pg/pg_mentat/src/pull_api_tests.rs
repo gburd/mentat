@@ -1,4 +1,4 @@
-// Pull API tests: comprehensive testing of the mentat_pull() function
+// Pull API tests: comprehensive testing of the edn_pull() function
 // including attribute selection, nested refs, wildcard, and edge cases.
 
 #[cfg(any(test, feature = "pg_test"))]
@@ -13,7 +13,7 @@ mod tests {
 
     fn setup_pa_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :pa/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :pa/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"d\" :db/ident :pa/dbl :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
@@ -35,13 +35,13 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Alice\" :pa/val 42}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Alice\" :pa/val 42}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:pa/name]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[:pa/name]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -53,13 +53,13 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Test\" :pa/val 99}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Test\" :pa/val 99}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:pa/val]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[:pa/val]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -71,13 +71,13 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Test\" :pa/flag true}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Test\" :pa/flag true}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:pa/flag]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[:pa/flag]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -89,13 +89,13 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Test\" :pa/kw :active}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Test\" :pa/kw :active}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:pa/kw]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[:pa/kw]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -111,14 +111,14 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Alice\" :pa/val 42}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Alice\" :pa/val 42}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -133,12 +133,14 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Bob\" :pa/val 10 :pa/flag false}]'::TEXT)",
-        ).expect("tx").expect("NULL");
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Bob\" :pa/val 10 :pa/flag false}]'::TEXT)",
+        )
+        .expect("tx")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val :pa/flag]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val :pa/flag]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -154,12 +156,12 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Mix\" :pa/val 7 :pa/dbl 1.5 :pa/flag true :pa/kw :test}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Mix\" :pa/val 7 :pa/dbl 1.5 :pa/flag true :pa/kw :test}]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val :pa/dbl :pa/flag :pa/kw]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val :pa/dbl :pa/flag :pa/kw]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -178,14 +180,16 @@ mod tests {
         setup();
         setup_pa_schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Tagged\"} [:db/add \"e\" :pa/tags \"a\"] [:db/add \"e\" :pa/tags \"b\"] [:db/add \"e\" :pa/tags \"c\"]]'::TEXT)"
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Tagged\"} [:db/add \"e\" :pa/tags \"a\"] [:db/add \"e\" :pa/tags \"b\"] [:db/add \"e\" :pa/tags \"c\"]]'::TEXT)"
         ).expect("tx");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :pa/name \"Tagged\"]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?e . :where [?e :pa/name \"Tagged\"]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:pa/tags]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[:pa/tags]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -197,15 +201,17 @@ mod tests {
         setup();
         setup_pa_schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Both\" :pa/val 42} [:db/add \"e\" :pa/tags \"x\"] [:db/add \"e\" :pa/tags \"y\"]]'::TEXT)"
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Both\" :pa/val 42} [:db/add \"e\" :pa/tags \"x\"] [:db/add \"e\" :pa/tags \"y\"]]'::TEXT)"
         ).expect("tx");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :pa/name \"Both\"]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?e . :where [?e :pa/name \"Both\"]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val :pa/tags]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val :pa/tags]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -225,13 +231,13 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Wild\" :pa/val 42}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Wild\" :pa/val 42}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[*]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[*]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -245,11 +251,11 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Multi\" :pa/val 10 :pa/flag true :pa/kw :test}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Multi\" :pa/val 10 :pa/flag true :pa/kw :test}]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
-        let p = Spi::get_one::<String>(&format!("SELECT mentat_pull('[*]', {})::TEXT", eid))
+        let p = Spi::get_one::<String>(&format!("SELECT edn_pull('[*]', {})::TEXT", eid))
             .expect("pull")
             .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&p).expect("parse");
@@ -265,12 +271,12 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"p\" :pa/name \"Parent\"} {:db/id \"c\" :pa/name \"Child\" :pa/ref \"p\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"p\" :pa/name \"Parent\"} {:db/id \"c\" :pa/name \"Child\" :pa/ref \"p\"}]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let child = j["tempids"]["c"].as_i64().expect("child");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/ref]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/ref]', {})::TEXT",
             child
         ))
         .expect("pull")
@@ -284,12 +290,12 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"p\" :pa/name \"Parent\"} {:db/id \"c\" :pa/name \"Child\" :pa/ref \"p\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"p\" :pa/name \"Parent\"} {:db/id \"c\" :pa/name \"Child\" :pa/ref \"p\"}]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let child = j["tempids"]["c"].as_i64().expect("child");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name {{:pa/ref [:pa/name]}}]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name {{:pa/ref [:pa/name]}}]', {})::TEXT",
             child
         ))
         .expect("pull")
@@ -309,12 +315,12 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"hub\" :pa/name \"Hub\"} {:db/id \"s1\" :pa/name \"S1\"} {:db/id \"s2\" :pa/name \"S2\"} [:db/add \"hub\" :pa/refs \"s1\"] [:db/add \"hub\" :pa/refs \"s2\"]]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"hub\" :pa/name \"Hub\"} {:db/id \"s1\" :pa/name \"S1\"} {:db/id \"s2\" :pa/name \"S2\"} [:db/add \"hub\" :pa/refs \"s1\"] [:db/add \"hub\" :pa/refs \"s2\"]]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let hub = j["tempids"]["hub"].as_i64().expect("hub");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/refs]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/refs]', {})::TEXT",
             hub
         ))
         .expect("pull")
@@ -331,15 +337,14 @@ mod tests {
     fn test_pa_pull_missing_attr() {
         setup();
         setup_pa_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Sparse\"}]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[{:db/id \"e\" :pa/name \"Sparse\"}]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -354,19 +359,19 @@ mod tests {
         setup();
         setup_pa_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Test\" :pa/val 42}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Test\" :pa/val 42}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :pa/val 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :pa/val 42]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -384,15 +389,15 @@ mod tests {
         setup();
         setup_pa_schema();
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"e\" :pa/name \"Queryable\" :pa/val 42 :pa/flag true}]'::TEXT)"
+            "SELECT edn_t('[{:db/id \"e\" :pa/name \"Queryable\" :pa/val 42 :pa/flag true}]'::TEXT)"
         ).expect("tx");
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :pa/name \"Queryable\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e . :where [?e :pa/name \"Queryable\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = j["result"].as_i64().expect("eid");
         let p = Spi::get_one::<String>(&format!(
-            "SELECT mentat_pull('[:pa/name :pa/val :pa/flag]', {})::TEXT",
+            "SELECT edn_pull('[:pa/name :pa/val :pa/flag]', {})::TEXT",
             eid
         ))
         .expect("pull")
@@ -413,17 +418,14 @@ mod tests {
                 i = i
             ));
         }
-        let r = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n")))
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         for i in 0..10 {
             let eid = j["tempids"][&format!("e{}", i)].as_i64().expect("eid");
             let p = Spi::get_one::<String>(&format!(
-                "SELECT mentat_pull('[:pa/name :pa/val]', {})::TEXT",
+                "SELECT edn_pull('[:pa/name :pa/val]', {})::TEXT",
                 eid
             ))
             .expect("pull")

@@ -91,13 +91,13 @@ mod tests {
     fn pg_test_pgque_build_tx_payload_shape() {
         setup();
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :p/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :p/n \"Alice\"}
             ]'::TEXT)",
         )
@@ -158,13 +158,13 @@ mod tests {
 
         // Three transactions.
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/ident :pq/n :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
             ]'::TEXT)",
         )
         .expect("schema tx");
-        Spi::run("SELECT mentat_transact('[{:db/id \"a\" :pq/n \"A\"}]'::TEXT)").expect("tx 2");
-        Spi::run("SELECT mentat_transact('[{:db/id \"b\" :pq/n \"B\"}]'::TEXT)").expect("tx 3");
+        Spi::run("SELECT edn_t('[{:db/id \"a\" :pq/n \"A\"}]'::TEXT)").expect("tx 2");
+        Spi::run("SELECT edn_t('[{:db/id \"b\" :pq/n \"B\"}]'::TEXT)").expect("tx 3");
 
         // Force a tick so events become consumer-visible. This is a
         // PgQue API call (no pg_mentat wrapper).

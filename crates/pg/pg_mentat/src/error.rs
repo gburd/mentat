@@ -168,7 +168,10 @@ impl fmt::Display for MentatError {
                         write!(f, " Available attributes: {}.", shown.join(", "))?;
                     }
                 } else {
-                    write!(f, " No schema attributes found. Did you forget to define schema with mentat_transact?")?;
+                    write!(
+                        f,
+                        " No schema attributes found. Did you forget to define schema with edn_t?"
+                    )?;
                 }
                 if let Some(ref s) = suggestion {
                     write!(f, " Did you mean '{}'?", s)?;

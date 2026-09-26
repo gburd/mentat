@@ -13,7 +13,7 @@ mod tests {
 
     fn setup_retract_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"n\" :db/ident :rt/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                 {:db/id \"v\" :db/ident :rt/val :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                 {:db/id \"f\" :db/ident :rt/flag :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
@@ -28,7 +28,7 @@ mod tests {
 
     fn create_entity() -> i64 {
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :rt/name \"Entity\" :rt/val 42 :rt/flag true :rt/dbl 3.14 :rt/kw :active}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :rt/name \"Entity\" :rt/val 42 :rt/flag true :rt/dbl 3.14 :rt/kw :active}]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         j["tempids"]["e"].as_i64().expect("eid")
@@ -44,13 +44,16 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/name \"Entity\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/name \"Entity\"]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :rt/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].is_null());
     }
@@ -65,12 +68,12 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/val 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/val 42]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :rt/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -89,13 +92,16 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/flag true]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/flag true]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :rt/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].is_null());
     }
@@ -110,12 +116,12 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/dbl 3.14]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/dbl 3.14]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/dbl ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :rt/dbl ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -134,12 +140,12 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/kw :active]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/kw :active]]'::TEXT)",
             eid
         ))
         .expect("retract");
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/kw ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :rt/kw ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -157,7 +163,7 @@ mod tests {
         setup();
         setup_retract_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :rt/name \"tagged\"]
                 [:db/add \"e\" :rt/tags \"a\"]
                 [:db/add \"e\" :rt/tags \"b\"]
@@ -170,14 +176,17 @@ mod tests {
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/tags \"b\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/tags \"b\"]]'::TEXT)",
             eid
         ))
         .expect("retract one");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?v ...] :where [{} :rt/tags ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find [?v ...] :where [{} :rt/tags ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let arr = v["result"].as_array().expect("arr");
         assert_eq!(arr.len(), 2);
@@ -192,7 +201,7 @@ mod tests {
         setup();
         setup_retract_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"e\" :rt/name \"all-gone\"]
                 [:db/add \"e\" :rt/tags \"x\"]
                 [:db/add \"e\" :rt/tags \"y\"]
@@ -204,7 +213,7 @@ mod tests {
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/retract {} :rt/tags \"x\"]
                 [:db/retract {} :rt/tags \"y\"]
             ]'::TEXT)",
@@ -213,8 +222,11 @@ mod tests {
         .expect("retract all");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?v ...] :where [{} :rt/tags ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find [?v ...] :where [{} :rt/tags ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 0);
     }
@@ -229,7 +241,7 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
@@ -237,7 +249,7 @@ mod tests {
         // All attributes should be gone
         for attr in &[":rt/name", ":rt/val", ":rt/flag", ":rt/dbl", ":rt/kw"] {
             let q = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} {} ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} {} ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid, attr
             ))
             .expect("q")
@@ -256,7 +268,7 @@ mod tests {
         setup();
         setup_retract_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\" :rt/name \"Full\" :rt/val 99 :rt/flag true :rt/dbl 9.9 :rt/kw :doomed}
                 [:db/add \"e\" :rt/tags \"t1\"]
                 [:db/add \"e\" :rt/tags \"t2\"]
@@ -269,7 +281,7 @@ mod tests {
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
@@ -292,7 +304,7 @@ mod tests {
         setup();
         setup_retract_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"target\" :rt/name \"target\"]
                 [:db/add \"s0\" :rt/name \"spoke0\"]
                 [:db/add \"s1\" :rt/name \"spoke1\"]
@@ -308,14 +320,14 @@ mod tests {
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
 
         // Ref should be gone
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/ref ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :rt/ref ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -332,29 +344,31 @@ mod tests {
     fn test_rt_retract_then_readd_string() {
         setup();
         setup_retract_schema();
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :rt/name \"original\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :rt/name \"original\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/name \"original\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/name \"original\"]]'::TEXT)",
             eid
         ))
         .expect("retract");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :rt/name \"revived\"]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :rt/name \"revived\"]]'::TEXT)",
             eid
         ))
         .expect("re-add");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :rt/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("s"), "revived");
     }
@@ -365,17 +379,16 @@ mod tests {
         setup_retract_schema();
         let eid = create_entity();
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
 
         // Create a completely new entity (old eid should not be reused)
-        let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"new\" :rt/name \"Fresh\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let r =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"new\" :rt/name \"Fresh\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let new_eid = j["tempids"]["new"].as_i64().expect("new eid");
         assert_ne!(new_eid, eid, "New entity should get a different ID");
@@ -389,15 +402,14 @@ mod tests {
     fn test_rt_retract_and_add_same_tx() {
         setup();
         setup_retract_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :rt/val 10]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :rt/val 10]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/retract {} :rt/val 10]
                 [:db/add {} :rt/val 20]
             ]'::TEXT)",
@@ -406,7 +418,7 @@ mod tests {
         .expect("retract+add");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :rt/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :rt/val ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -423,15 +435,14 @@ mod tests {
     fn test_rt_retraction_creates_history() {
         setup();
         setup_retract_schema();
-        let r =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :rt/val 42]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let r = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :rt/val 42]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :rt/val 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :rt/val 42]]'::TEXT)",
             eid
         ))
         .expect("retract");
@@ -459,12 +470,9 @@ mod tests {
         for i in 0..10 {
             ops.push(format!("[:db/add \"e{i}\" :rt/name \"entity-{i}\"]", i = i));
         }
-        let r = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("tx")
-        .expect("NULL");
+        let r = Spi::get_one::<String>(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n")))
+            .expect("tx")
+            .expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
 
         // Retract all 10
@@ -474,7 +482,7 @@ mod tests {
             retract_ops.push(format!("[:db/retractEntity {}]", eid));
         }
         Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
+            "SELECT edn_t('[{}]'::TEXT)",
             retract_ops.join("\n")
         ))
         .expect("batch retract");
@@ -483,8 +491,11 @@ mod tests {
         for i in 0..10 {
             let eid = j["tempids"][&format!("e{}", i)].as_i64().expect("eid");
             let q = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :rt/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-            )).expect("q").expect("NULL");
+                "SELECT edn_q('[:find ?v . :where [{} :rt/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                eid
+            ))
+            .expect("q")
+            .expect("NULL");
             let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
             assert!(v["result"].is_null(), "Entity {} should be retracted", i);
         }

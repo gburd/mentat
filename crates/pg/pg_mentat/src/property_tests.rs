@@ -44,7 +44,7 @@ mod tests {
 
     fn setup_prop_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"sn\" :db/ident :prop/str
                  :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one}
@@ -90,15 +90,14 @@ mod tests {
     fn test_prop_string_roundtrip_empty() {
         setup();
         setup_prop_schema();
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/str \"\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/str \"\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -111,15 +110,14 @@ mod tests {
     fn test_prop_string_roundtrip_single_char() {
         setup();
         setup_prop_schema();
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/str \"x\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/str \"x\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -136,7 +134,7 @@ mod tests {
         for &len in &[1, 10, 100, 1000, 5000] {
             let s: String = (0..len).map(|i| (b'a' + (i % 26) as u8) as char).collect();
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"e{}\" :prop/str \"{}\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{}\" :prop/str \"{}\"]]'::TEXT)",
                 len, s
             ))
             .expect("tx")
@@ -144,7 +142,7 @@ mod tests {
             let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
             let eid = r["tempids"][&format!("e{}", len)].as_i64().expect("eid");
             let qr = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid
             ))
             .expect("q")
@@ -162,14 +160,13 @@ mod tests {
     fn test_prop_long_roundtrip_zero() {
         setup();
         setup_prop_schema();
-        let result =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :prop/num 0]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let result = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/num 0]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -184,7 +181,7 @@ mod tests {
         setup_prop_schema();
         for &val in &[1i64, 42, 100, 1000, 1_000_000, 1_000_000_000, i64::MAX] {
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"e{}\" :prop/num {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{}\" :prop/num {}]]'::TEXT)",
                 val, val
             ))
             .expect("tx")
@@ -192,7 +189,7 @@ mod tests {
             let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
             let eid = r["tempids"][&format!("e{}", val)].as_i64().expect("eid");
             let qr = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid
             ))
             .expect("q")
@@ -217,7 +214,7 @@ mod tests {
         ] {
             let label = format!("en{}", val.unsigned_abs());
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"{}\" :prop/num {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"{}\" :prop/num {}]]'::TEXT)",
                 label, val
             ))
             .expect("tx")
@@ -225,7 +222,7 @@ mod tests {
             let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
             let eid = r["tempids"][&label].as_i64().expect("eid");
             let qr = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid
             ))
             .expect("q")
@@ -248,7 +245,7 @@ mod tests {
             .enumerate()
         {
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"d{}\" :prop/dbl {:?}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"d{}\" :prop/dbl {:?}]]'::TEXT)",
                 i, val
             ))
             .expect("tx")
@@ -256,7 +253,7 @@ mod tests {
             let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
             let eid = r["tempids"][&format!("d{}", i)].as_i64().expect("eid");
             let qr = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :prop/dbl ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} :prop/dbl ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid
             ))
             .expect("q")
@@ -281,15 +278,14 @@ mod tests {
     fn test_prop_boolean_true_roundtrip() {
         setup();
         setup_prop_schema();
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/flag true]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/flag true]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -302,15 +298,14 @@ mod tests {
     fn test_prop_boolean_false_roundtrip() {
         setup();
         setup_prop_schema();
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/flag false]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/flag false]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/flag ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -331,7 +326,7 @@ mod tests {
         let mut prev_tx: i64 = 0;
         for i in 0..20 {
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"e{}\" :prop/str \"val-{}\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"e{}\" :prop/str \"val-{}\"]]'::TEXT)",
                 i, i
             ))
             .expect("tx")
@@ -360,17 +355,16 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result =
-            Spi::get_one::<String>("SELECT mentat_transact('[[:db/add \"e\" :prop/num 0]]'::TEXT)")
-                .expect("tx")
-                .expect("NULL");
+        let result = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/num 0]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         // Update 50 times
         for i in 1..=50 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add {} :prop/num {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add {} :prop/num {}]]'::TEXT)",
                 eid, i
             ))
             .expect("update");
@@ -378,7 +372,7 @@ mod tests {
 
         // Should have exactly one current value = 50
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -411,25 +405,24 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/str \"holder\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/str \"holder\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         // Add 30 distinct tags across 30 transactions
         for i in 0..30 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add {} :prop/tags \"tag-{}\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add {} :prop/tags \"tag-{}\"]]'::TEXT)",
                 eid, i
             ))
             .expect("add tag");
         }
 
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?t ...] :where [{} :prop/tags ?t]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find [?t ...] :where [{} :prop/tags ?t]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -444,18 +437,17 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/str \"holder\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/str \"holder\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         // Add same tag 10 times (should be idempotent)
         for _ in 0..10 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[[:db/add {} :prop/tags \"same-tag\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add {} :prop/tags \"same-tag\"]]'::TEXT)",
                 eid
             ))
             .expect("add tag");
@@ -481,18 +473,17 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/str \"test\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/str \"test\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         // Retract a value that was never asserted
         // This should either succeed silently or produce a clear error
         let retract_result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :prop/num 999]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :prop/num 999]]'::TEXT)",
             eid
         ));
         // Either it succeeds (retract of non-asserted is no-op) or fails clearly
@@ -501,7 +492,7 @@ mod tests {
 
         // Original value should still be there
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -520,15 +511,13 @@ mod tests {
         setup_prop_schema();
 
         // Create entity with unique identity
-        Spi::run(
-            "SELECT mentat_transact('[{:db/id \"e\" :prop/uid \"user-1\" :prop/num 10}]'::TEXT)",
-        )
-        .expect("initial");
+        Spi::run("SELECT edn_t('[{:db/id \"e\" :prop/uid \"user-1\" :prop/num 10}]'::TEXT)")
+            .expect("initial");
 
         // Upsert same identity 10 times with different num values
         for i in 0..10 {
             Spi::run(&format!(
-                "SELECT mentat_transact('[{{:db/id \"u\" :prop/uid \"user-1\" :prop/num {}}}]'::TEXT)",
+                "SELECT edn_t('[{{:db/id \"u\" :prop/uid \"user-1\" :prop/num {}}}]'::TEXT)",
                 100 + i
             ))
             .expect("upsert");
@@ -546,7 +535,7 @@ mod tests {
 
         // Final value should be 109
         let qr = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n . :where [?e :prop/uid \"user-1\"] [?e :prop/num ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n . :where [?e :prop/uid \"user-1\"] [?e :prop/num ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("q")
         .expect("NULL");
@@ -574,11 +563,7 @@ mod tests {
                 i = i
             ));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("schema");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("schema");
 
         // Verify via mentat_schema
         let result = Spi::get_one::<String>("SELECT mentat_schema()::TEXT")
@@ -611,14 +596,12 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        Spi::run("SELECT mentat_transact('[[:db/add \"e1\" :prop/code \"CODE-001\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e1\" :prop/code \"CODE-001\"]]'::TEXT)")
             .expect("first insert");
 
         // Second entity with same unique-value code should fail
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e2\" :prop/code \"CODE-001\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e2\" :prop/code \"CODE-001\"]]'::TEXT)"),
             "Duplicate unique-value should be rejected"
         );
     }
@@ -629,13 +612,13 @@ mod tests {
         setup_prop_schema();
 
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"e1\" :prop/uid \"UID-001\" :prop/str \"original\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e1\" :prop/uid \"UID-001\" :prop/str \"original\"}]'::TEXT)",
         )
         .expect("first insert");
 
         // Second entity with same unique-identity should upsert
         Spi::run(
-            "SELECT mentat_transact('[{:db/id \"e2\" :prop/uid \"UID-001\" :prop/str \"updated\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e2\" :prop/uid \"UID-001\" :prop/str \"updated\"}]'::TEXT)",
         )
         .expect("upsert");
 
@@ -649,7 +632,7 @@ mod tests {
         assert_eq!(count, 1, "Identity upsert should not create new entity");
 
         let qr = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?s . :where [?e :prop/uid \"UID-001\"] [?e :prop/str ?s]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?s . :where [?e :prop/uid \"UID-001\"] [?e :prop/str ?s]]'::TEXT, '{}'::jsonb)::TEXT",
         )
         .expect("q")
         .expect("NULL");
@@ -674,7 +657,7 @@ mod tests {
 
         // Attempt a transaction with a valid op followed by invalid op
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add \"e1\" :prop/str \"valid\"] [:db/add \"e2\" :prop/nonexistent \"invalid\"]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add \"e1\" :prop/str \"valid\"] [:db/add \"e2\" :prop/nonexistent \"invalid\"]]'::TEXT)"),
             "Transaction with bad attr should fail"
         );
 
@@ -708,7 +691,7 @@ mod tests {
 
         for (i, kw) in keywords.iter().enumerate() {
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"k{}\" :prop/kw {}]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"k{}\" :prop/kw {}]]'::TEXT)",
                 i, kw
             ))
             .expect("tx")
@@ -717,7 +700,7 @@ mod tests {
             let eid = r["tempids"][&format!("k{}", i)].as_i64().expect("eid");
 
             let qr = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :prop/kw ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} :prop/kw ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid
             ))
             .expect("q")
@@ -743,7 +726,7 @@ mod tests {
         setup_prop_schema();
 
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/add \"a\" :prop/str \"parent\"]
                 [:db/add \"b\" :prop/str \"child\"]
                 [:db/add \"b\" :prop/ref \"a\"]
@@ -757,7 +740,7 @@ mod tests {
 
         // Query the ref
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?ref . :where [{} :prop/ref ?ref]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?ref . :where [{} :prop/ref ?ref]]'::TEXT, '{{}}'::jsonb)::TEXT",
             b_eid
         ))
         .expect("q")
@@ -771,11 +754,10 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"root\" :prop/str \"root\"]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result =
+            Spi::get_one::<String>("SELECT edn_t('[[:db/add \"root\" :prop/str \"root\"]]'::TEXT)")
+                .expect("tx")
+                .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let root = r["tempids"]["root"].as_i64().expect("root");
 
@@ -789,11 +771,7 @@ mod tests {
         }
         // Also add refs from root to children
         // We do this in reverse for variety
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            child_ops.join("\n")
-        ))
-        .expect("children");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", child_ops.join("\n"))).expect("children");
 
         // Count entities that ref root via :prop/refs
         let count = Spi::get_one::<i64>(&format!(
@@ -824,11 +802,7 @@ mod tests {
                 i, i
             ));
         }
-        Spi::run(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("batch");
+        Spi::run(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n"))).expect("batch");
 
         let count = Spi::get_one::<i64>(
             "SELECT COUNT(DISTINCT e) FROM mentat.datoms
@@ -849,30 +823,28 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/num 42]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/num 42]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         // Retract
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retract {} :prop/num 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/retract {} :prop/num 42]]'::TEXT)",
             eid
         ))
         .expect("retract");
 
         // Re-assert same value
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/add {} :prop/num 42]]'::TEXT)",
+            "SELECT edn_t('[[:db/add {} :prop/num 42]]'::TEXT)",
             eid
         ))
         .expect("reassert");
 
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -886,17 +858,15 @@ mod tests {
         setup();
         setup_prop_schema();
 
-        let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[[:db/add \"e\" :prop/num 42]]'::TEXT)",
-        )
-        .expect("tx")
-        .expect("NULL");
+        let result = Spi::get_one::<String>("SELECT edn_t('[[:db/add \"e\" :prop/num 42]]'::TEXT)")
+            .expect("tx")
+            .expect("NULL");
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let eid = r["tempids"]["e"].as_i64().expect("eid");
 
         // Retract old, add new
         Spi::run(&format!(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 [:db/retract {} :prop/num 42]
                 [:db/add {} :prop/num 99]
             ]'::TEXT)",
@@ -905,7 +875,7 @@ mod tests {
         .expect("retract+add");
 
         let qr = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [{} :prop/num ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -933,7 +903,7 @@ mod tests {
 
         for (label, val) in &unicode_strings {
             let result = Spi::get_one::<String>(&format!(
-                "SELECT mentat_transact('[[:db/add \"{}\" :prop/str \"{}\"]]'::TEXT)",
+                "SELECT edn_t('[[:db/add \"{}\" :prop/str \"{}\"]]'::TEXT)",
                 label, val
             ))
             .expect("tx")
@@ -942,7 +912,7 @@ mod tests {
             let eid = r["tempids"][*label].as_i64().expect("eid");
 
             let qr = Spi::get_one::<String>(&format!(
-                "SELECT mentat_query('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+                "SELECT edn_q('[:find ?v . :where [{} :prop/str ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
                 eid
             ))
             .expect("q")
@@ -965,9 +935,7 @@ mod tests {
         setup();
         setup_prop_schema();
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e\" :prop/num \"not-a-number\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :prop/num \"not-a-number\"]]'::TEXT)"),
             "String to long attr should fail"
         );
     }
@@ -977,7 +945,7 @@ mod tests {
         setup();
         setup_prop_schema();
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add \"e\" :prop/str 42]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :prop/str 42]]'::TEXT)"),
             "Long to string attr should fail"
         );
     }
@@ -987,9 +955,7 @@ mod tests {
         setup();
         setup_prop_schema();
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e\" :prop/flag \"not-a-bool\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :prop/flag \"not-a-bool\"]]'::TEXT)"),
             "String to boolean attr should fail"
         );
     }
@@ -999,9 +965,7 @@ mod tests {
         setup();
         setup_prop_schema();
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e\" :prop/dbl \"not-a-double\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :prop/dbl \"not-a-double\"]]'::TEXT)"),
             "String to double attr should fail"
         );
     }
@@ -1011,7 +975,7 @@ mod tests {
         setup();
         setup_prop_schema();
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add \"e\" :prop/flag 42]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :prop/flag 42]]'::TEXT)"),
             "Long to boolean attr should fail"
         );
     }
@@ -1021,7 +985,7 @@ mod tests {
         setup();
         setup_prop_schema();
         assert!(
-            raises_error("SELECT mentat_transact('[[:db/add \"e\" :prop/num true]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db/add \"e\" :prop/num true]]'::TEXT)"),
             "Boolean to long attr should fail"
         );
     }
@@ -1043,12 +1007,9 @@ mod tests {
                 i, i
             ));
         }
-        let result = Spi::get_one::<String>(&format!(
-            "SELECT mentat_transact('[{}]'::TEXT)",
-            ops.join("\n")
-        ))
-        .expect("batch")
-        .expect("NULL");
+        let result = Spi::get_one::<String>(&format!("SELECT edn_t('[{}]'::TEXT)", ops.join("\n")))
+            .expect("batch")
+            .expect("NULL");
 
         let r: serde_json::Value = serde_json::from_str(&result).expect("parse");
         let tempids = r["tempids"].as_object().expect("tempids");
@@ -1072,7 +1033,7 @@ mod tests {
 
         // Create entity with multiple attributes
         let result = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\"
                  :prop/str \"doomed\"
                  :prop/num 42
@@ -1104,7 +1065,7 @@ mod tests {
 
         // Retract entire entity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retract");

@@ -38,7 +38,7 @@ mod tests {
 
     fn setup_schema() {
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"uid\" :db/ident :df/uid :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/id \"email\" :db/ident :df/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/id \"code\" :db/ident :df/code :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/value}
@@ -64,7 +64,7 @@ mod tests {
         // Two tempids, same :df/uid value, same transaction.
         // They should resolve to the same entity.
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :df/uid \"MERGE1\" :df/name \"Alice\"}
                 {:db/id \"b\" :df/uid \"MERGE1\" :df/val 42}
             ]'::TEXT)",
@@ -78,7 +78,7 @@ mod tests {
 
         // Verify both attributes landed on the merged entity
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?v :where [?e :df/uid \"MERGE1\"] [?e :df/name ?n] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?v :where [?e :df/uid \"MERGE1\"] [?e :df/name ?n] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -93,7 +93,7 @@ mod tests {
         setup_schema();
         // Three tempids all referencing the same unique/identity value
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :df/uid \"MERGE3\" :df/name \"Alice\"}
                 {:db/id \"b\" :df/uid \"MERGE3\" :df/val 10}
                 [:db/add \"c\" :df/uid \"MERGE3\"]
@@ -115,11 +115,14 @@ mod tests {
         setup();
         setup_schema();
         // First: create an entity in the DB
-        Spi::run("SELECT mentat_transact('[{:db/id \"e\" :df/uid \"EXISTING1\" :df/name \"Original\"}]'::TEXT)").expect("create");
+        Spi::run(
+            "SELECT edn_t('[{:db/id \"e\" :df/uid \"EXISTING1\" :df/name \"Original\"}]'::TEXT)",
+        )
+        .expect("create");
 
         // Second tx: two new tempids reference the same uid as the existing entity
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"x\" :df/uid \"EXISTING1\" :df/val 100}
                 {:db/id \"y\" :df/uid \"EXISTING1\" :df/tags \"updated\"}
             ]'::TEXT)",
@@ -136,7 +139,7 @@ mod tests {
 
         // Verify the original name is preserved and new attrs added
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?v :where [?e :df/uid \"EXISTING1\"] [?e :df/name ?n] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?v :where [?e :df/uid \"EXISTING1\"] [?e :df/name ?n] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let results = v["results"].as_array().expect("arr");
@@ -159,7 +162,7 @@ mod tests {
         // Both tempids assert the same uid value; after merging they produce
         // duplicate [e, :df/uid, "DEDUP1", true] datoms that must be deduped.
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"a\" :df/uid \"DEDUP1\" :df/name \"Alice\"}
                 {:db/id \"b\" :df/uid \"DEDUP1\" :df/name \"Alice\"}
             ]'::TEXT)",
@@ -173,7 +176,7 @@ mod tests {
 
         // Verify only one name datom exists (not duplicated)
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n . :where [?e :df/uid \"DEDUP1\"] [?e :df/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n . :where [?e :df/uid \"DEDUP1\"] [?e :df/name ?n]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("name"), "Alice");
@@ -193,7 +196,7 @@ mod tests {
         setup_schema();
         // Create two separate entities with different unique attrs
         Spi::run(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
             {:db/id \"e1\" :df/uid \"CONFLICT-UID\" :df/name \"Entity1\"}
             {:db/id \"e2\" :df/email \"conflict@test.com\" :df/name \"Entity2\"}
         ]'::TEXT)",
@@ -203,7 +206,7 @@ mod tests {
         // Now try to assert a single tempid with both unique values.
         // This should fail because :df/uid resolves to e1 and :df/email resolves to e2.
         assert!(
-            raises_error("SELECT mentat_transact('[{:db/id \"x\" :df/uid \"CONFLICT-UID\" :df/email \"conflict@test.com\" :df/name \"Merged\"}]'::TEXT)"),
+            raises_error("SELECT edn_t('[{:db/id \"x\" :df/uid \"CONFLICT-UID\" :df/email \"conflict@test.com\" :df/name \"Merged\"}]'::TEXT)"),
             "Should fail: tempid resolves to two different entities"
         );
     }
@@ -216,12 +219,10 @@ mod tests {
     fn test_df_unique_value_no_upsert() {
         setup();
         setup_schema();
-        Spi::run("SELECT mentat_transact('[[:db/add \"e1\" :df/code \"UNIQUE-CODE\"]]'::TEXT)")
+        Spi::run("SELECT edn_t('[[:db/add \"e1\" :df/code \"UNIQUE-CODE\"]]'::TEXT)")
             .expect("first");
         assert!(
-            raises_error(
-                "SELECT mentat_transact('[[:db/add \"e2\" :df/code \"UNIQUE-CODE\"]]'::TEXT)"
-            ),
+            raises_error("SELECT edn_t('[[:db/add \"e2\" :df/code \"UNIQUE-CODE\"]]'::TEXT)"),
             "unique/value should error, not upsert"
         );
     }
@@ -232,7 +233,7 @@ mod tests {
         setup_schema();
         // Two tempids with same unique/value in same tx should error
         assert!(
-            raises_error("SELECT mentat_transact('[{:db/id \"a\" :df/code \"SAME-CODE\" :df/name \"A\"} {:db/id \"b\" :df/code \"SAME-CODE\" :df/name \"B\"}]'::TEXT)"),
+            raises_error("SELECT edn_t('[{:db/id \"a\" :df/code \"SAME-CODE\" :df/name \"A\"} {:db/id \"b\" :df/code \"SAME-CODE\" :df/name \"B\"}]'::TEXT)"),
             "unique/value should not merge tempids"
         );
     }
@@ -248,21 +249,21 @@ mod tests {
         setup();
         setup_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :df/name \"ToDelete\" :df/val 42 :df/tags \"t1\"}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :df/name \"ToDelete\" :df/val 42 :df/tags \"t1\"}]'::TEXT)",
         ).expect("tx").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         // Retract the entity
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
 
         // All attributes should be gone
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?a ?v :where [{} ?a ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?a ?v :where [{} ?a ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
             eid
         ))
         .expect("q")
@@ -277,7 +278,7 @@ mod tests {
         setup();
         setup_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"keep\" :df/name \"Keep\" :df/val 1}
                 {:db/id \"del\" :df/name \"Delete\" :df/val 2}
             ]'::TEXT)",
@@ -289,15 +290,18 @@ mod tests {
         let del_id = j["tempids"]["del"].as_i64().expect("del");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/retractEntity {}]]'::TEXT)",
             del_id
         ))
         .expect("retractEntity");
 
         // "keep" entity should still have its attributes
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?n . :where [{} :df/name ?n]]'::TEXT, '{{}}'::jsonb)::TEXT", keep_id
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?n . :where [{} :df/name ?n]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            keep_id
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_str().expect("name"), "Keep");
     }
@@ -307,7 +311,7 @@ mod tests {
         setup();
         setup_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[
+            "SELECT edn_t('[
                 {:db/id \"e\" :df/name \"Multi\" :df/val 99}
                 [:db/add \"e\" :df/tags \"alpha\"]
                 [:db/add \"e\" :df/tags \"beta\"]
@@ -320,15 +324,18 @@ mod tests {
         let eid = j["tempids"]["e"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity");
 
         // Verify tags are all gone
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find [?t ...] :where [{} :df/tags ?t]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find [?t ...] :where [{} :df/tags ?t]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let tags = v["result"].as_array().expect("arr");
         assert_eq!(tags.len(), 0, "All cardinality-many values retracted");
@@ -339,7 +346,7 @@ mod tests {
         setup();
         setup_schema();
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e\" :df/name \"AltKW\" :df/val 7}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e\" :df/name \"AltKW\" :df/val 7}]'::TEXT)",
         )
         .expect("tx")
         .expect("NULL");
@@ -348,14 +355,17 @@ mod tests {
 
         // Use :db/retractEntity (alternative keyword form)
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retractEntity via :db/retractEntity");
 
         let q = Spi::get_one::<String>(&format!(
-            "SELECT mentat_query('[:find ?v . :where [{} :df/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT", eid
-        )).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?v . :where [{} :df/name ?v]]'::TEXT, '{{}}'::jsonb)::TEXT",
+            eid
+        ))
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].is_null(), "Entity should be fully retracted");
     }
@@ -371,24 +381,26 @@ mod tests {
         setup();
         setup_schema();
         // Create entity via upsert
-        Spi::run("SELECT mentat_transact('[{:db/id \"e\" :df/uid \"CAS-UP1\" :df/val 10}]'::TEXT)")
+        Spi::run("SELECT edn_t('[{:db/id \"e\" :df/uid \"CAS-UP1\" :df/val 10}]'::TEXT)")
             .expect("create");
 
         // Upsert to get the entity ID, then CAS
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :df/uid \"CAS-UP1\"]]'::TEXT, '{}'::jsonb)::TEXT",
-        ).expect("q").expect("NULL");
+            "SELECT edn_q('[:find ?e . :where [?e :df/uid \"CAS-UP1\"]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = v["result"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db/cas {} :df/val 10 20]]'::TEXT)",
+            "SELECT edn_t('[[:db/cas {} :df/val 10 20]]'::TEXT)",
             eid
         ))
         .expect("cas");
 
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?v . :where [?e :df/uid \"CAS-UP1\"] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?v . :where [?e :df/uid \"CAS-UP1\"] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         assert_eq!(v2["result"].as_i64().expect("v"), 20);
@@ -399,28 +411,28 @@ mod tests {
         setup();
         setup_schema();
         // Create, retract, then create again with same uid
-        Spi::run("SELECT mentat_transact('[{:db/id \"e\" :df/uid \"RECREATE1\" :df/name \"V1\" :df/val 1}]'::TEXT)").expect("create");
+        Spi::run("SELECT edn_t('[{:db/id \"e\" :df/uid \"RECREATE1\" :df/name \"V1\" :df/val 1}]'::TEXT)").expect("create");
 
         let q = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?e . :where [?e :df/uid \"RECREATE1\"]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?e . :where [?e :df/uid \"RECREATE1\"]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         let eid = v["result"].as_i64().expect("eid");
 
         Spi::run(&format!(
-            "SELECT mentat_transact('[[:db.fn/retractEntity {}]]'::TEXT)",
+            "SELECT edn_t('[[:db.fn/retractEntity {}]]'::TEXT)",
             eid
         ))
         .expect("retract");
 
         // Recreate with same uid - should create a new entity (old one is retracted)
         let r = Spi::get_one::<String>(
-            "SELECT mentat_transact('[{:db/id \"e2\" :df/uid \"RECREATE1\" :df/name \"V2\" :df/val 2}]'::TEXT)",
+            "SELECT edn_t('[{:db/id \"e2\" :df/uid \"RECREATE1\" :df/name \"V2\" :df/val 2}]'::TEXT)",
         ).expect("recreate").expect("NULL");
         let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
         // The new entity should exist with the new values
         let q2 = Spi::get_one::<String>(
-            "SELECT mentat_query('[:find ?n ?v :where [?e :df/uid \"RECREATE1\"] [?e :df/name ?n] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
+            "SELECT edn_q('[:find ?n ?v :where [?e :df/uid \"RECREATE1\"] [?e :df/name ?n] [?e :df/val ?v]]'::TEXT, '{}'::jsonb)::TEXT",
         ).expect("q").expect("NULL");
         let v2: serde_json::Value = serde_json::from_str(&q2).expect("parse");
         let results = v2["results"].as_array().expect("arr");
@@ -436,7 +448,7 @@ mod tests {
         setup();
         setup_schema();
         assert!(
-            raises_error("SELECT mentat_transact('[[:db.fn/nonexistent 12345]]'::TEXT)"),
+            raises_error("SELECT edn_t('[[:db.fn/nonexistent 12345]]'::TEXT)"),
             "Unknown transaction function should error"
         );
     }

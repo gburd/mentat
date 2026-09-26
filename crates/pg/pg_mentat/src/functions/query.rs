@@ -726,7 +726,7 @@ fn set_local_guc(name: &str, value: &str) {
     // explicitly; set_config_option returns 0 on refusal.
     //
     // Before 1.6.2 this passed PGC_USERSET with elevel 0, so every
-    // mentat_query by a non-superuser failed with `permission denied to set
+    // edn_q by a non-superuser failed with `permission denied to set
     // parameter "temp_file_limit"` (on PG15+ superusers passed the ACL check;
     // on PG13/14 even superusers failed).
     //
@@ -1344,7 +1344,7 @@ pub(crate) fn mentat_query_internal(
 ///
 /// When both a Datalog `:limit` clause and an inputs `limit` are specified,
 /// the inputs `limit` takes precedence (it wraps the generated SQL).
-#[pg_extern]
+#[pg_extern(name = "edn_q")]
 pub fn mentat_query(
     query: &str,
     inputs: JsonB,
@@ -1401,7 +1401,7 @@ pub fn mentat_q_full(
 
 /// Execute a Datalog query against the default store (backwards-compatible alias).
 ///
-/// Equivalent to `mentat_query(query, inputs)`.
+/// Equivalent to `edn_q(query, inputs)`.
 ///
 /// # Example
 /// ```sql
@@ -1439,7 +1439,7 @@ fn mentat_explain_internal(
         schema_prefix,
     )?;
 
-    // Apply pagination (same logic as mentat_query)
+    // Apply pagination (same logic as edn_q)
     if let Some(limit) = pagination.limit {
         if let Some(pos) = sql_query.rfind(" LIMIT ") {
             sql_query.truncate(pos);
@@ -1596,7 +1596,7 @@ pub fn mentat_stmt_cache_stats() -> JsonB {
 /// Clear the prepared statement cache.
 ///
 /// Should be called after schema changes (e.g., new attributes defined via
-/// `mentat_transact`) that may invalidate cached query plans.
+/// `edn_t`) that may invalidate cached query plans.
 #[pg_extern]
 pub fn mentat_stmt_cache_clear() -> &'static str {
     clear_stmt_cache();
@@ -1721,7 +1721,7 @@ fn mentat_query_view_internal(
                 "query_view supports up to 8 columns, but this query has {}",
                 num_cols
             ),
-            suggestion: Some("Use mentat_query() for queries with more than 8 columns".to_string()),
+            suggestion: Some("Use edn_q() for queries with more than 8 columns".to_string()),
         }));
     }
 
@@ -5951,9 +5951,9 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
             pat.push(']');
             let pat_param = builder.bind_text(pat);
-            // mentat_pull(pattern TEXT, entity_id BIGINT) -> jsonb; cast to
+            // edn_pull(pattern TEXT, entity_id BIGINT) -> jsonb; cast to
             // text so it flows through the TEXT result-column path.
-            select_exprs.push(format!("mentat_pull({pat_param}, {entity_expr})::TEXT"));
+            select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
             if has_aggregates {
                 group_by_exprs.push(format!("{}", col_idx + 1));
             }
