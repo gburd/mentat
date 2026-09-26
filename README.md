@@ -7,6 +7,8 @@ builds three backends that share the same Datalog/EDN front-end:
 
 - **Embedded (`mentat`)** — a Rust library store on SQLite. `cargo build`,
   no external services. Drop it into an application the way you would SQLite.
+  Also a **SQLite loadable extension** (`mentat_sqlite_ext`) so any SQLite host
+  can call mentat from SQL.
 - **PostgreSQL extension (`pg_mentat`)** — the same data model implemented
   inside PostgreSQL via [pgrx](https://github.com/pgcentralfoundation/pgrx),
   reached through SQL functions. Plus **`mentatd`**, an HTTP/WebSocket server
@@ -15,7 +17,23 @@ builds three backends that share the same Datalog/EDN front-end:
   and exposes the embedded store as SQL functions, so Datalog results join
   against native DuckDB tables.
 
-Both backends parse queries, transactions, and schema with one copy of the
+All three expose the same four SQL functions:
+
+| Function | Does | PostgreSQL | SQLite ext | DuckDB |
+|---|---|---|---|---|
+| `edn_t` | transact EDN, return a JSON tx-report | `edn_t(edn)` | `edn_t(db_path, edn)` | `edn_t(db_path, edn)` |
+| `edn_q` | run a Datalog query | `edn_q(query, inputs jsonb)` → JSONB | `edn_q(db_path, query, inputs)` → JSON text | `edn_q(db_path, query, inputs)` → rows (table function) |
+| `edn_pull` | pull a pattern for one entity, as JSON | `edn_pull(pattern, entity)` | `edn_pull(db_path, pattern, entity)` | `edn_pull(db_path, pattern, entity)` |
+| `edn_eval` | run a sandboxed mino script | `edn_eval(script)` (`script` feature) | `edn_eval(db_path, script)` | `edn_eval(db_path, script)` |
+
+`inputs` is the same JSON everywhere: `{"inputs": [...]}` binds the query's `:in`
+forms positionally (scalars, `[?x ...]` collections, `[?a ?b]` tuples, `[[?a ?b]]`
+relations, in any mix), `{"asOf": tx}` / `{"since": tx}` query the database as of
+or since a transaction, and `{}` means none. The SQLite and DuckDB functions take
+the mentat store's file path first; that store is separate from whatever database
+the host has open.
+
+All backends parse queries, transactions, and schema with one copy of the
 `edn`, `core-traits`, and `core` crates, so a query means the same thing on
 every backend. They descend from Mozilla's
 [Project Mentat](https://github.com/mozilla/mentat); the PostgreSQL backend was
@@ -47,7 +65,7 @@ PostgreSQL cookbook, operations, and the scripting layer) is an mdBook under
 - [Architecture](docs/src/architecture.md) — the front-end/backend split, the
   crate map, and which features live on which backend.
 - [Scripting](docs/src/scripting.md) — the mino `mentat.store/*` surface and
-  `mentat_eval`, with the full security model.
+  `edn_eval`, with the full security model.
 
 ---
 
@@ -132,28 +150,36 @@ nix build .#pg_mentat-pg16     # or .#pg_mentat-pg13 … .#pg_mentat-pg18
 ```sql
 CREATE EXTENSION pg_mentat;
 
--- Define a schema attribute. mentat_transact takes EDN transaction text.
-SELECT mentat_transact('[
+-- Define a schema attribute. edn_t takes EDN transaction text.
+SELECT edn_t('[
   {:db/ident       :person/name
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one}
 ]');
 
 -- Assert a fact.
-SELECT mentat_transact('[{:person/name "Alice"}]');
+SELECT edn_t('[{:person/name "Alice"}]');
 
--- Query. mentat_query takes an EDN query and a JSONB inputs map; returns JSONB.
-SELECT mentat_query(
+-- Query. edn_q takes an EDN query and a JSONB inputs map; returns JSONB.
+SELECT edn_q(
   '[:find ?name :where [?e :person/name ?name]]',
   '{}'::jsonb
 );
 
+-- Bind :in inputs, or query the database as of an earlier transaction.
+SELECT edn_q('[:find ?e :in ?name :where [?e :person/name ?name]]',
+             '{"inputs": ["Alice"]}');
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]', '{"asOf": 268435457}');
+
 -- Pull all attributes for an entity (entity id 10001 here).
-SELECT mentat_pull('[*]', 10001);
+SELECT edn_pull('[*]', 10001);
 ```
 
-`mentat.q`, `mentat.t`, and `mentat.pull` are shorter aliases for
-`mentat_query`, `mentat_transact`, and `mentat_pull`. As of 1.8.0 the embedded
+`mentat.q`, `mentat.t`, and `mentat.pull` are shorter aliases for `edn_q`,
+`edn_t`, and `edn_pull`. The pre-1.9.0 names `mentat_transact`, `mentat_query`,
+`mentat_pull`, and `mentat_eval` still work as deprecated aliases and will be
+removed in a future major release; `ALTER EXTENSION pg_mentat UPDATE` adds the new
+names to an existing 1.8.0 install. As of 1.8.0 the embedded
 SQLite backend also does historical (`as-of`/`since`) Datalog queries, `?added`
 history patterns, and collection/tuple/relation `:in` bindings. The PostgreSQL
 backend adds features unique to it: LISTEN/NOTIFY reactive subscriptions and
@@ -205,41 +231,94 @@ LOAD './build/debug/mentat.duckdb_extension';
 
 -- Define a schema attribute and assert facts into an embedded mentat store.
 -- Every function takes the store's file path as its first argument.
-SELECT mentat_transact('/tmp/demo.mentat', '[
+SELECT edn_t('/tmp/demo.mentat', '[
   {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
 ]');
-SELECT mentat_transact('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
+SELECT edn_t('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
 
--- mentat_query is a table function: run Datalog and get rows back.
-SELECT * FROM mentat_query('/tmp/demo.mentat',
+-- edn_q is a table function: run Datalog and get rows back.
+SELECT * FROM edn_q('/tmp/demo.mentat',
   '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
 
 -- ...so it joins against native DuckDB tables.
+CREATE TABLE ages(name VARCHAR, age INT);
+INSERT INTO ages VALUES ('Alice', 30), ('Bob', 25);
 SELECT m.name, a.age
-FROM mentat_query('/tmp/demo.mentat',
+FROM edn_q('/tmp/demo.mentat',
        '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name)
 JOIN ages a ON a.name = m.name;
+
+-- :in inputs and time travel use the same options JSON as PostgreSQL.
+SELECT * FROM edn_q('/tmp/demo.mentat',
+  '[:find ?e :in [?name ...] :where [?e :person/name ?name]]',
+  '{"inputs": [["Alice", "Bob"]]}');
+SELECT * FROM edn_q('/tmp/demo.mentat',
+  '[:find ?name :where [?e :person/name ?name]]', '{"asOf": 268435458}');
+
+-- Pull an entity as JSON, or run a sandboxed mino script against the store.
+SELECT edn_pull('/tmp/demo.mentat', '[*]', 65537);
+SELECT edn_eval('/tmp/demo.mentat',
+  '(mentat.store/q (mentat.store/db (mentat.store/open))
+                   (quote [:find (count ?e) . :where [?e :person/name]]))');
 ```
 
-`mentat_transact` returns a JSON tx-report; `mentat_query` returns rows with all
-columns as `VARCHAR` in this first release. A DuckDB-native storage backend,
-typed result columns, `mentat_pull`, and `mentat_eval` are planned; see
+`edn_t` returns a JSON tx-report. `edn_q` returns rows with every column as
+`VARCHAR` (cast for arithmetic, e.g. `e::BIGINT`); strings come back as plain
+text, keywords keep their leading colon. `edn_pull` returns JSON keyed by
+attribute (`":person/name"`, plus `":db/id"`). `edn_eval` runs in the same sandbox
+as PostgreSQL's (no filesystem access, step/heap/depth limits) and is on by
+default (`--no-default-features` drops it). A DuckDB-native storage backend and
+typed result columns are planned; see
 [`docs/duckdb-extension-plan.md`](docs/duckdb-extension-plan.md). Publishing to
 the DuckDB Community Extensions registry is documented in
 [`docs/registry-publishing.md`](docs/registry-publishing.md).
 
 ---
 
-## Scripting: mino
+## SQLite loadable extension (`mentat_sqlite_ext`)
 
-Both backends embed [mino](docs/src/scripting.md), a Clojure-dialect
-interpreter (`crates/mino`), which exposes a `mentat.store/*` primitive surface
-for scripting transactions and queries. In `pg_mentat` it is the SQL function
-`mentat_eval`, behind the optional `script` cargo feature:
+`crates/sqlite/ext` builds `libmentat_sqlite.so`, a SQLite loadable extension
+with the same four functions. Any SQLite host can load it: the `sqlite3` CLI,
+Python's `sqlite3`, or an application that calls `sqlite3_load_extension`. It
+embeds its own copy of the mentat engine (with its own SQLite) and reaches the
+host only through the host's API table, so it never shares a file handle with
+the host. For that reason `db_path` must not be the host's own database file.
+
+```bash
+cargo build --release -p mentat_sqlite_ext   # -> target/release/libmentat_sqlite.so
+```
 
 ```sql
--- Build with --features script (off by default).
-SELECT mentat_eval($$
+-- sqlite3
+.load ./target/release/libmentat_sqlite
+SELECT edn_t('/tmp/demo.mentat', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+SELECT edn_t('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
+
+-- edn_q returns JSON, so json_each() turns it into rows you can join.
+SELECT json_extract(r.value, '$[1]') AS name
+FROM json_each(edn_q('/tmp/demo.mentat',
+       '[:find ?e ?name :where [?e :person/name ?name]]', '{}'), '$.results') AS r;
+```
+
+The functions are registered `SQLITE_DIRECTONLY`, so they can't be called from
+views or triggers in a database schema you don't control. Host SQLite 3.30 or
+newer is required. Like the DuckDB extension, it is a workspace member but not a
+default member. See [`crates/sqlite/ext/README.md`](crates/sqlite/ext/README.md).
+
+---
+
+## Scripting: mino
+
+Every backend embeds [mino](docs/src/scripting.md), a Clojure-dialect
+interpreter (`crates/mino`), which exposes a `mentat.store/*` primitive surface
+for scripting transactions and queries. It is the SQL function `edn_eval` on all
+three: in `pg_mentat` behind the optional `script` cargo feature, and on by
+default in the SQLite and DuckDB extensions, where `(mentat.store/open)` with no
+argument opens the `db_path` you passed.
+
+```sql
+-- pg_mentat, built with --features script (off by default).
+SELECT edn_eval($$
   (let [conn (mentat.store/open)]
     (mentat.store/transact conn [{:person/name "Bob"}])
     (mentat.store/q (mentat.store/db conn)
@@ -247,9 +326,9 @@ SELECT mentat_eval($$
 $$);
 ```
 
-### Security — `mentat_eval`
+### Security — `edn_eval`
 
-`mentat_eval` is **callable by every role by design** — the extension issues no
+`edn_eval` is **callable by every role by design** — the extension issues no
 `REVOKE`, so PostgreSQL's default grants `EXECUTE` to `PUBLIC`. That is safe
 because the interpreter is **sandboxed** and **resource-limited**:
 
@@ -269,8 +348,13 @@ because the interpreter is **sandboxed** and **resource-limited**:
   on top, via an interrupt check hook.
 - **No privilege gain.** A script runs through SPI as the calling role, so it
   reaches only the stores that role can already query with
-  `mentat_query`/`mentat_transact`. It must **not** be made `SECURITY DEFINER` —
+  `edn_q`/`edn_t`. It must **not** be made `SECURITY DEFINER` —
   that would turn it into a privilege escalation.
+
+The SQLite and DuckDB extensions build the same sandboxed interpreter with fixed
+limits (10M steps, 64 MiB heap, depth 1000). They run inside your own process, so the sandbox mainly stops a script
+from reaching the host filesystem; the script can read and write only the store
+at `db_path`.
 
 ---
 

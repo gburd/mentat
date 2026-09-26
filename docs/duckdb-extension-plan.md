@@ -1,6 +1,12 @@
 # Plan: a `mentat` DuckDB extension in Rust (`crates/duckdb`)
 
-**Status:** research / plan only. No extension code is written yet. This
+**Status (1.9.0): implemented.** This is the original design record, kept as
+written. Since then the functions were renamed `edn_t` / `edn_q` / `edn_pull` /
+`edn_eval` (the `mentat_*` names below are the pre-1.9.0 plan), `mentat_pull`
+and `mentat_eval` shipped as `edn_pull` / `edn_eval`, and `edn_q` takes the
+options JSON (`inputs`, `asOf`, `since`). Current usage: `crates/duckdb/README.md`.
+
+**Original status:** research / plan only. No extension code is written yet. This
 document is the concrete implementation plan and the research report behind it.
 
 **Goal:** a third consumer of the embedded `mentat` engine — load `mentat` into

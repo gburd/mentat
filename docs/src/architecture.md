@@ -62,33 +62,33 @@ with `cargo build -p mentatd`.
 
 ## Features by backend
 
-| Feature | Embedded (`mentat`) | PostgreSQL (`pg_mentat`) | DuckDB (`mentat_duckdb`) |
-|---|---|---|---|
-| Embedded EAV store, Datalog `q`, pull, schema | yes | yes | `q` + `transact` (embeds the SQLite store) |
-| `:db.fn/cas`, `:db/retractEntity` | yes | yes | via the embedded store |
-| C ABI (`ffi`) | yes | — | — |
-| `?added` / history patterns in `:where` | yes | yes | via the embedded store |
-| Historical `q` (as-of / since) | yes | yes | via the embedded store |
-| `:in` collection / tuple / relation bindings | yes | yes | scalar `:in` only (planned) |
-| Join Datalog results against native SQL tables | — | — | yes |
-| Reactive subscriptions (LISTEN/NOTIFY) | — | yes | — |
-| BM25 full-text, pgvector, pg_trgm, PostGIS, rum | — | yes | — |
-| Materialized / virtual views, multi-store, excision | — | yes | — |
-| `mentatd` HTTP/WebSocket server | — | yes | — |
+| Feature | Embedded (`mentat`) | PostgreSQL (`pg_mentat`) | SQLite ext (`mentat_sqlite_ext`) | DuckDB (`mentat_duckdb`) |
+|---|---|---|---|---|
+| SQL functions `edn_t` / `edn_q` / `edn_pull` / `edn_eval` | Rust API | yes | yes | yes |
+| Datalog `q`, pull, schema, transact | yes | yes | yes | yes |
+| `:db.fn/cas`, `:db/retractEntity` | yes | yes | yes | yes |
+| `?added` / history patterns in `:where` | yes | yes | yes | yes |
+| Historical `q` (as-of / since) | yes | yes | yes | yes |
+| `:in` scalar / collection / tuple / relation, mixed | yes | yes | yes | yes |
+| mino scripting (`edn_eval`) | `mino` feature | `script` feature | on by default | on by default |
+| C ABI (`ffi`) | yes | — | — | — |
+| Join Datalog results against native SQL tables | — | via JSONB | via `json_each` | yes (table function) |
+| Reactive subscriptions (LISTEN/NOTIFY) | — | yes | — | — |
+| BM25 full-text, pgvector, pg_trgm, PostGIS, rum | — | yes | — | — |
+| Materialized / virtual views, multi-store, excision | — | yes | — | — |
+| `mentatd` HTTP/WebSocket server | — | yes | — | — |
 
-`:db.fn/cas`, `:db/retractEntity`, `?added` history patterns, historical
-(`as-of`/`since`) Datalog `q`, and non-scalar `:in` bindings are on **both** the
-embedded and PostgreSQL backends as of 1.8.0. Historical `q` on the embedded
-side is `Store::q_once_as_of(tx, …)` / `q_once_since(tx, …)` (and the `Conn`
-equivalents), which evaluate a query against the transaction log at, or since, a
-transaction.
+The SQLite and DuckDB extensions embed the SQLite-backed store, so they support
+whatever the embedded engine supports; each call takes the store's file path
+first. On the embedded Rust API, historical `q` is `Store::q_once_as_of(tx, …)` /
+`q_once_since(tx, …)`, and mixed `:in` inputs are built with
+`QueryInputs::merge`. The SQL functions all take the same options JSON:
+`{"inputs": [...]}`, `{"asOf": tx}`, `{"since": tx}`.
 
-The **DuckDB** backend (`mentat_duckdb`, added 1.8.0) is a loadable DuckDB
-extension that embeds the SQLite store and exposes it through `mentat_transact`
-(scalar) and `mentat_query` (table function), so Datalog results join against
-native DuckDB tables. It inherits whatever the embedded store supports; a
-DuckDB-native storage backend, typed result columns, `mentat_pull`, and
-`mentat_eval` are planned. See `duckdb-extension-plan.md`.
+The DuckDB `edn_q` returns every column as `VARCHAR` for now; typed columns and
+a DuckDB-native storage backend are planned (see `duckdb-extension-plan.md`).
+The SQLite extension's `edn_q` returns JSON text in pg_mentat's
+`{"columns": [...], "results": [...]}` shape.
 
 ---
 
