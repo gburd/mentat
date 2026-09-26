@@ -2,7 +2,7 @@
   "name": "pg_mentat",
   "abstract": "Datomic-compatible Datalog query engine for PostgreSQL",
   "description": "pg_mentat implements the Datomic/Mentat data model (entity-attribute-value with time-travel) entirely within PostgreSQL. Provides Datalog query execution, pull API, temporal queries, and transaction processing via SQL functions.",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "maintainer": [
     "Gregory Burd <greg@burd.me>"
   ],
@@ -10,9 +10,9 @@
   "provides": {
     "pg_mentat": {
       "abstract": "Datomic-compatible Datalog query engine",
-      "file": "pg_mentat/pg_mentat.control",
+      "file": "crates/pg/pg_mentat/pg_mentat.control",
       "docfile": "README.md",
-      "version": "1.7.0"
+      "version": "1.8.0"
     }
   },
   "prereqs": {

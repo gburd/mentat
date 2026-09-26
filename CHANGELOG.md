@@ -8,6 +8,38 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-09-26 — DuckDB backend + embedded feature parity
+
+### Added
+
+- **DuckDB extension (`crates/duckdb`, `mentat_duckdb`)** — a third way to use
+  mentat, alongside the embedded SQLite library/CLI and the PostgreSQL
+  extension. Load it into DuckDB (`LOAD mentat;`) and query the embedded mentat
+  store from SQL: `mentat_transact(db_path, edn)` (scalar, returns a JSON
+  tx-report) and `mentat_query(db_path, query, inputs)` (table function,
+  returns rows), so Datalog results join against native DuckDB tables. Built
+  with duckdb-rs against **DuckDB v1.5.5** (pinned via the unstable C API); the
+  first cut embeds the SQLite store and a DuckDB-native storage backend is
+  future work. See `docs/duckdb-extension-plan.md`.
+- **Embedded (SQLite) temporal + input parity with the PostgreSQL backend**:
+  - History patterns `[?e ?a ?v ?tx ?added]` in `:where`, over the transactions
+    log (assertions and retractions).
+  - Historical queries: `Store::q_once_as_of(tx, …)` / `Store::q_once_since(tx, …)`
+    (and the `Conn` equivalents) evaluate a query against the database as of, or
+    since, a transaction.
+  - Non-scalar `:in` bindings — collection `[?x ...]`, tuple `[?a ?b]`, and
+    relation `[[?a ?b]]` inputs (previously accepted by the parser but dropped).
+- **`mentat-script` shared crate (`crates/script`)** — the mino `mentat.store/*`
+  scripting layer, previously duplicated in the SQLite and PostgreSQL backends,
+  is now one crate behind a `ScriptBackend` trait, exercised by a single model
+  test suite that runs against both backends (and an in-memory fake). The
+  sandboxed, resource-limited `mentat_eval` on the PostgreSQL side is unchanged.
+
+### Changed
+
+- The scripting `transact` tx-report now carries `:mentat.store/db-after` on
+  both backends (previously PostgreSQL only) — the Datomic-faithful shape.
+
 ## [1.7.0] — 2026-09-26 — merged repository
 
 ### Changed

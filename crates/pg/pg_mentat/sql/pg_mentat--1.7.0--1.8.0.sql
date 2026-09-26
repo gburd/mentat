@@ -1,0 +1,19 @@
+-- pg_mentat 1.7.0 -> 1.8.0 upgrade.
+--
+-- 1.8.0 adds a third consumer of the mentat engine (a DuckDB loadable
+-- extension, crates/duckdb) and completes the embedded-SQLite feature parity
+-- (history patterns, as-of/since queries, non-scalar :in bindings, plus the
+-- shared mentat-script scripting crate). For the PostgreSQL extension itself
+-- the changes relative to 1.7.0 are all in the compiled module (Rust) — there
+-- is no change to the default-build SQL objects, schema, or catalog:
+--
+-- * The mino scripting glue was extracted into a shared `mentat-script` crate
+--   that both backends implement via a `ScriptBackend` trait. `mentat_eval`'s
+--   behaviour and its sandbox (the three superuser-only limit GUCs +
+--   interrupt/stack check hook from 1.6.3/1.7.0) are unchanged; the tx-report
+--   returned by the scripting `transact` now also carries
+--   `:mentat.store/db-after`, matching the embedded backend.
+--
+-- This migration intentionally does nothing to the catalog; it exists so that
+-- `ALTER EXTENSION pg_mentat UPDATE TO '1.8.0'` succeeds and the recompiled
+-- module is picked up.

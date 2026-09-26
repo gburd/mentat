@@ -217,3 +217,105 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ------------------------------------------------------------------------
+  # Registry publishing (see docs/registry-publishing.md).
+  # ------------------------------------------------------------------------
+
+  # PGXN: fully automated. Bundles the repo per META.json and uploads to the
+  # PGXN Manager. One-time setup: create + get a PGXN account approved and add
+  # the PGXN_USERNAME / PGXN_PASSWORD repo secrets. If the secrets are absent
+  # (e.g. before the account exists) the job no-ops instead of failing.
+  pgxn-release:
+    name: Publish to PGXN
+    needs: [gate, release]
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    steps:
+      - name: Skip if PGXN secrets are not configured
+        id: check
+        env:
+          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
+          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
+        run: |
+          if [ -z "${PGXN_USERNAME}" ] || [ -z "${PGXN_PASSWORD}" ]; then
+            echo "::notice::PGXN_USERNAME/PGXN_PASSWORD not set; skipping PGXN release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != 'true'
+        with:
+          submodules: false
+      - name: Verify META.json version matches the tag
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          MJSON_VER="$(perl -MJSON::PP -E 'say decode_json(join q{}, <>)->{version}' META.json)"
+          if [ "$MJSON_VER" != "$VER" ]; then
+            echo "ERROR: META.json version ($MJSON_VER) != tag ($VER). Bump META.json." >&2
+            exit 1
+          fi
+      - name: Bundle
+        if: steps.check.outputs.skip != 'true'
+        run: pgxn-bundle
+      - name: Release on PGXN
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
+          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
+        run: pgxn-release
+
+  # DuckDB Community Extensions: opens/updates a PR to
+  # duckdb/community-extensions bumping extensions/mentat/description.yml to
+  # this tag's version + commit SHA. The upstream merge is a human gate; the
+  # FIRST submission is done by hand (add the descriptor there once). One-time
+  # setup: a maintainer fork gburd/community-extensions and a COMMUNITY_EXT_PAT
+  # secret (repo + pull-requests scope). No-ops if the PAT is absent.
+  duckdb-registry-pr:
+    name: PR to duckdb/community-extensions
+    needs: [gate, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if the community-extensions PAT is not configured
+        id: check
+        env:
+          COMMUNITY_EXT_PAT: ${{ secrets.COMMUNITY_EXT_PAT }}
+        run: |
+          if [ -z "${COMMUNITY_EXT_PAT}" ]; then
+            echo "::notice::COMMUNITY_EXT_PAT not set; skipping DuckDB registry PR."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != 'true'
+        with:
+          path: mentat
+      - name: Check out the maintainer's fork of community-extensions
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: gburd/community-extensions
+          token: ${{ secrets.COMMUNITY_EXT_PAT }}
+          path: community-extensions
+      - name: Update the mentat descriptor to this tag
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          SHA="${GITHUB_SHA}"
+          mkdir -p community-extensions/extensions/mentat
+          sed -e "s/^  version:.*/  version: ${VER}/" \
+              -e "s/^  ref:.*/  ref: ${SHA}/" \
+              mentat/crates/duckdb/community-extensions/description.yml \
+              > community-extensions/extensions/mentat/description.yml
+      - name: Open/update the upstream PR
+        if: steps.check.outputs.skip != 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.COMMUNITY_EXT_PAT }}
+          path: community-extensions
+          push-to-fork: gburd/community-extensions
+          branch: mentat-${{ github.ref_name }}
+          commit-message: "mentat ${{ github.ref_name }}"
+          title: "Update mentat to ${{ github.ref_name }}"
+          body: |
+            Automated descriptor bump for mentat ${{ github.ref_name }}
+            (commit ${{ github.sha }}). Built against DuckDB v1.5.5.

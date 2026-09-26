@@ -1,0 +1,48 @@
+# DuckDB Community Extensions descriptor for `mentat`.
+#
+# This is the file that registers `mentat_duckdb` with the DuckDB Community
+# Extensions registry (https://github.com/duckdb/community-extensions): the
+# FIRST submission is a manual, human-reviewed PR that adds this file (as
+# `extensions/mentat/description.yml`) to that repo. Subsequent version bumps
+# are opened automatically by `.github/workflows/release.yml` (job
+# `duckdb-registry-pr`), which rewrites `extension.version` + `repo.ref` and
+# opens a PR to the upstream repo — the merge there is a human gate.
+#
+# Their CI builds and signs the extension centrally, cloning `repo.github` at
+# `repo.ref` and building against DuckDB v1.5.5 (which is exactly what this
+# extension is pinned to). See docs/registry-publishing.md.
+extension:
+  name: mentat
+  description: Datomic-compatible Datalog query engine as a DuckDB extension
+  version: 1.8.0
+  language: Rust
+  build: cargo
+  license: Apache-2.0
+  maintainers:
+    - gburd
+  requires_toolchains: "rust;python3"
+  # rusqlite (bundled sqlite) + openssl make musl/mingw/wasm impractical for the
+  # first release; relax these once cross-builds are proven.
+  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl"
+repo:
+  # Their CI clones from GitHub, so this points at the mirror, not Codeberg.
+  github: gburd/mentat
+  # A commit SHA (release.yml fills the tag's SHA in the automated bump PR).
+  ref: PLACEHOLDER_SHA
+docs:
+  hello_world: |
+    LOAD mentat;
+    -- transact a schema + data into an embedded mentat store, then query it:
+    SELECT mentat_transact('/tmp/demo.mentat',
+      '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+    SELECT mentat_transact('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
+    SELECT * FROM mentat_query('/tmp/demo.mentat',
+      '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
+  extended_description: |
+    mentat is a Datomic-compatible database: an EDN/Datalog front-end over an
+    entity-attribute-value store with history. This extension embeds the mentat
+    SQLite store and exposes it to DuckDB as a scalar function
+    (`mentat_transact`) and a table function (`mentat_query`), so Datalog query
+    results can be joined against native DuckDB tables. The same engine is also
+    available as an embedded Rust library, a CLI, and a PostgreSQL extension
+    (`pg_mentat`). Source: https://codeberg.org/gregburd/mentat
