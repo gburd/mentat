@@ -614,7 +614,7 @@ pub fn set_prim(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 /// `(hash-map k v k v ...)`.
 pub fn hash_map(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    if args.len() % 2 != 0 {
+    if !args.len().is_multiple_of(2) {
         return Err(throw_str("hash-map requires an even number of arguments"));
     }
     let mut m = PMap::empty();
@@ -798,7 +798,7 @@ pub fn concat(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 
 /// `(assoc coll k v k v ...)`: map or vector.
 pub fn assoc(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
-    if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+    if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
         return Err(throw_str("assoc requires a coll and key/value pairs"));
     }
     let mut coll = args[0].clone();

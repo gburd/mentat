@@ -8,6 +8,10 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
+// This REPL's display-only query timing uses the `time` crate's `Instant`/
+// `Duration` (still shipped; the crate only nudges toward `std::time`).
+#![allow(deprecated)]
+
 use std::io::Write;
 
 use anyhow::Error;
@@ -213,7 +217,7 @@ impl Repl {
                     }
                     break;
                 }
-                Err(e) => eprintln!("{}", e.to_string()),
+                Err(e) => eprintln!("{}", e),
             }
         }
 
@@ -258,7 +262,7 @@ impl Repl {
             Command::Open(db) => {
                 match self.open(db) {
                     Ok(_) => println!("Database {:?} opened", self.db_name()),
-                    Err(e) => eprintln!("{}", e.to_string()),
+                    Err(e) => eprintln!("{}", e),
                 };
             }
             Command::OpenEncrypted(db, encryption_key) => {
@@ -268,7 +272,7 @@ impl Repl {
                         self.db_name(),
                         encryption_key
                     ),
-                    Err(e) => eprintln!("{}", e.to_string()),
+                    Err(e) => eprintln!("{}", e),
                 }
             }
             Command::Query(query) => {

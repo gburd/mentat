@@ -134,7 +134,7 @@ pub fn realized_p(_it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 /// `atom_validate`.
 fn validate(it: &mut Interp, validator: &Option<Value>, new_val: &Value) -> Result<(), Throw> {
     if let Some(vfn) = validator {
-        let ok = apply(it, vfn, &[new_val.clone()])?;
+        let ok = apply(it, vfn, std::slice::from_ref(new_val))?;
         if !ok.is_truthy() {
             return Err(throw_classified(
                 "eval/contract",
@@ -231,7 +231,7 @@ pub fn atom(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
     }
     // Reject a bad initial value up front (Clojure contract).
     if let Some(vfn) = &validator {
-        let ok = apply(it, vfn, &[initial.clone()])?;
+        let ok = apply(it, vfn, std::slice::from_ref(initial))?;
         if !ok.is_truthy() {
             return Err(throw_classified(
                 "eval/contract",

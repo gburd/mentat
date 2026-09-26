@@ -335,7 +335,7 @@ fn print_float(s: &mut String, x: f64) {
         return;
     }
     let absx = x.abs();
-    let use_sci = x != 0.0 && (absx < 1e-3 || absx >= 1e7);
+    let use_sci = x != 0.0 && !(1e-3..1e7).contains(&absx);
     if use_sci {
         // Rust "{:E}" -> "1.5E2" / "1E5" (no '+' , no leading exponent zero),
         // which already matches JVM's shape. Ensure a decimal point.
@@ -368,7 +368,7 @@ fn print_float32(s: &mut String, x: f32) {
         return;
     }
     let absx = x.abs();
-    let use_sci = x != 0.0 && (absx < 1e-3 || absx >= 1e7);
+    let use_sci = x != 0.0 && !(1e-3..1e7).contains(&absx);
     if use_sci {
         let raw = format!("{x:E}");
         match raw.split_once('E') {

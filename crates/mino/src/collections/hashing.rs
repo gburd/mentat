@@ -254,7 +254,7 @@ fn eq_step<'a>(a: &'a Value, b: &'a Value, work: &mut Vec<(&'a Value, &'a Value)
         }
         (Value::PrimClosure(x), Value::PrimClosure(y)) => {
             // Closure-prim identity: same Gc allocation.
-            &**x as *const _ == &**y as *const _
+            std::ptr::eq(&**x, &**y)
         }
         // Atoms: identity. Two distinct atoms are never `=`, even with equal
         // contents; the same atom compares equal to itself.

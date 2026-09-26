@@ -337,7 +337,7 @@ impl<'a, 'c> InProgress<'a, 'c> {
     ) -> Result<()> {
         let attribute_entid: Entid = self
             .schema
-            .attribute_for_ident(&attribute)
+            .attribute_for_ident(attribute)
             .ok_or_else(|| MentatError::UnknownAttribute(attribute.to_string()))?
             .1
             .into();
@@ -471,9 +471,9 @@ impl<'a, 'c> Queryable for InProgress<'a, 'c> {
     {
         if self.use_caching {
             let known = Known::new(&self.schema, Some(&self.cache));
-            q_once(&*(self.transaction), known, query, inputs)
+            q_once(&(self.transaction), known, query, inputs)
         } else {
-            q_uncached(&*(self.transaction), &self.schema, query, inputs)
+            q_uncached(&(self.transaction), &self.schema, query, inputs)
         }
     }
 
@@ -482,7 +482,7 @@ impl<'a, 'c> Queryable for InProgress<'a, 'c> {
         T: Into<Option<QueryInputs>>,
     {
         let known = Known::new(&self.schema, Some(&self.cache));
-        q_prepare(&*(self.transaction), known, query, inputs)
+        q_prepare(&(self.transaction), known, query, inputs)
     }
 
     fn q_explain<T>(&self, query: &str, inputs: T) -> Result<QueryExplanation>
@@ -490,7 +490,7 @@ impl<'a, 'c> Queryable for InProgress<'a, 'c> {
         T: Into<Option<QueryInputs>>,
     {
         let known = Known::new(&self.schema, Some(&self.cache));
-        q_explain(&*(self.transaction), known, query, inputs)
+        q_explain(&(self.transaction), known, query, inputs)
     }
 
     fn lookup_values_for_attribute<E>(
@@ -502,7 +502,7 @@ impl<'a, 'c> Queryable for InProgress<'a, 'c> {
         E: Into<Entid>,
     {
         let known = Known::new(&self.schema, Some(&self.cache));
-        lookup_values_for_attribute(&*(self.transaction), known, entity, attribute)
+        lookup_values_for_attribute(&(self.transaction), known, entity, attribute)
     }
 
     fn lookup_value_for_attribute<E>(
@@ -514,7 +514,7 @@ impl<'a, 'c> Queryable for InProgress<'a, 'c> {
         E: Into<Entid>,
     {
         let known = Known::new(&self.schema, Some(&self.cache));
-        lookup_value_for_attribute(&*(self.transaction), known, entity, attribute)
+        lookup_value_for_attribute(&(self.transaction), known, entity, attribute)
     }
 }
 
@@ -528,7 +528,7 @@ impl<'a, 'c> Pullable for InProgress<'a, 'c> {
         E: IntoIterator<Item = Entid>,
         A: IntoIterator<Item = Entid>,
     {
-        pull_attributes_for_entities(&self.schema, &*(self.transaction), entities, attributes)
+        pull_attributes_for_entities(&self.schema, &(self.transaction), entities, attributes)
             .map_err(|e| e.into())
     }
 
@@ -536,7 +536,7 @@ impl<'a, 'c> Pullable for InProgress<'a, 'c> {
     where
         A: IntoIterator<Item = Entid>,
     {
-        pull_attributes_for_entity(&self.schema, &*(self.transaction), entity, attributes)
+        pull_attributes_for_entity(&self.schema, &(self.transaction), entity, attributes)
             .map_err(|e| e.into())
     }
 }

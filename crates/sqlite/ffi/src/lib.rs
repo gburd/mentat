@@ -173,7 +173,7 @@ impl<'a, 'c> InProgressTransactResult<'a, 'c> {
 pub unsafe extern "C" fn store_open(uri: *const c_char, error: *mut ExternError) -> *mut Store {
     assert_not_null!(uri);
     let uri = c_char_to_string(uri);
-    translate_result(Store::open(&uri), error)
+    translate_result(Store::open(uri), error)
 }
 
 /// Variant of store_open that opens an encrypted database.
@@ -322,7 +322,7 @@ pub unsafe extern "C" fn in_progress_entity_builder_from_temp_id<'m>(
     assert_not_null!(in_progress);
     let in_progress = Box::from_raw(in_progress);
     let temp_id = c_char_to_string(temp_id);
-    Box::into_raw(Box::new(in_progress.builder().describe_tempid(&temp_id)))
+    Box::into_raw(Box::new(in_progress.builder().describe_tempid(temp_id)))
 }
 
 /// Creates a builder for an entity with `entid` using the in progress transaction to
@@ -383,7 +383,7 @@ pub unsafe extern "C" fn store_entity_builder_from_temp_id<'a, 'c>(
     let temp_id = c_char_to_string(temp_id);
     let result = store
         .begin_transaction()
-        .map(|in_progress| in_progress.builder().describe_tempid(&temp_id));
+        .map(|in_progress| in_progress.builder().describe_tempid(temp_id));
     translate_result(result, error)
 }
 
@@ -1462,7 +1462,7 @@ pub unsafe extern "C" fn query_builder_bind_long(
     assert_not_null!(query_builder);
     let var = c_char_to_string(var);
     let query_builder = &mut *query_builder;
-    query_builder.bind_long(&var, value);
+    query_builder.bind_long(var, value);
 }
 
 /// Binds a [TypedValue::Ref](mentat::TypedValue::Ref) to a [Variable](mentat::Variable) with the given name.
@@ -1477,7 +1477,7 @@ pub unsafe extern "C" fn query_builder_bind_ref(
     assert_not_null!(query_builder);
     let var = c_char_to_string(var);
     let query_builder = &mut *query_builder;
-    query_builder.bind_ref(&var, value);
+    query_builder.bind_ref(var, value);
 }
 
 /// Binds a [TypedValue::Ref](mentat::TypedValue::Ref) to a [Variable](mentat::Variable) with the given name. Takes a keyword as a c string in the format
@@ -1498,7 +1498,7 @@ pub unsafe extern "C" fn query_builder_bind_ref_kw(
     let var = c_char_to_string(var);
     let kw = kw_from_string(c_char_to_string(value));
     let query_builder = &mut *query_builder;
-    if let Some(err) = query_builder.bind_ref_from_kw(&var, kw).err() {
+    if let Some(err) = query_builder.bind_ref_from_kw(var, kw).err() {
         std::panic::panic_any(err);
     }
 }
@@ -1517,7 +1517,7 @@ pub unsafe extern "C" fn query_builder_bind_kw(
     let var = c_char_to_string(var);
     let query_builder = &mut *query_builder;
     let kw = kw_from_string(c_char_to_string(value));
-    query_builder.bind_value(&var, kw);
+    query_builder.bind_value(var, kw);
 }
 
 /// Binds a [TypedValue::Boolean](mentat::TypedValue::Boolean) to a [Variable](mentat::Variable) with the given name.
@@ -1532,7 +1532,7 @@ pub unsafe extern "C" fn query_builder_bind_boolean(
     assert_not_null!(query_builder);
     let var = c_char_to_string(var);
     let query_builder = &mut *query_builder;
-    query_builder.bind_value(&var, value);
+    query_builder.bind_value(var, value);
 }
 
 /// Binds a [TypedValue::Double](mentat::TypedValue::Double) to a [Variable](mentat::Variable) with the given name.
@@ -1547,7 +1547,7 @@ pub unsafe extern "C" fn query_builder_bind_double(
     assert_not_null!(query_builder);
     let var = c_char_to_string(var);
     let query_builder = &mut *query_builder;
-    query_builder.bind_value(&var, value);
+    query_builder.bind_value(var, value);
 }
 
 /// Binds a [TypedValue::Instant](mentat::TypedValue::Instant) to a [Variable](mentat::Variable) with the given name.
@@ -1563,7 +1563,7 @@ pub unsafe extern "C" fn query_builder_bind_timestamp(
     assert_not_null!(query_builder);
     let var = c_char_to_string(var);
     let query_builder = &mut *query_builder;
-    query_builder.bind_instant(&var, value);
+    query_builder.bind_instant(var, value);
 }
 
 /// Binds a [TypedValue::String](mentat::TypedValue::String) to a [Variable](mentat::Variable) with the given name.
@@ -1579,7 +1579,7 @@ pub unsafe extern "C" fn query_builder_bind_string(
     let var = c_char_to_string(var);
     let value = c_char_to_string(value);
     let query_builder = &mut *query_builder;
-    query_builder.bind_value(&var, value);
+    query_builder.bind_value(var, value);
 }
 
 /// Binds a [TypedValue::Uuid](mentat::TypedValue::Uuid) to a [Variable](mentat::Variable) with the given name.
@@ -1597,7 +1597,7 @@ pub unsafe extern "C" fn query_builder_bind_uuid(
     let value = &*value;
     let value = Uuid::from_slice(value).expect("valid uuid");
     let query_builder = &mut *query_builder;
-    query_builder.bind_value(&var, value);
+    query_builder.bind_value(var, value);
 }
 
 /// Executes a query and returns the results as a [Scalar](mentat::QueryResults::Scalar).
@@ -2260,6 +2260,7 @@ macro_rules! define_destructor (
         #[no_mangle]
         pub unsafe extern "C" fn $name(obj: *mut $t) {
             if !obj.is_null() {
+                #[allow(clippy::from_raw_with_void_ptr)]
                 let _ = Box::from_raw(obj);
             }
         }
@@ -2278,6 +2279,7 @@ macro_rules! define_destructor_with_lifetimes (
         #[no_mangle]
         pub unsafe extern "C" fn $name<'a, 'c>(obj: *mut $t) {
             if !obj.is_null() {
+                #[allow(clippy::from_raw_with_void_ptr)]
                 let _ = Box::from_raw(obj);
             }
         }

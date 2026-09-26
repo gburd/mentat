@@ -895,9 +895,7 @@ where
         if let Some(entid) = self.get_entid(name) {
             match self.lookup_value_for_attribute(entid, &DB_SCHEMA_VERSION)? {
                 None => Ok(None),
-                Some(TypedValue::Long(version))
-                    if version > 0 && (version < u32::max_value() as i64) =>
-                {
+                Some(TypedValue::Long(version)) if version > 0 && (version < u32::MAX as i64) => {
                     let version = version as u32;
                     let attributes = self
                         .lookup_values_for_attribute(entid, &DB_SCHEMA_ATTRIBUTE)?
@@ -937,9 +935,7 @@ where
                 (
                     &Binding::Scalar(TypedValue::Ref(vocab)),
                     &Binding::Scalar(TypedValue::Long(version)),
-                ) if version > 0 && (version < u32::max_value() as i64) => {
-                    Some((vocab, version as u32))
-                }
+                ) if version > 0 && (version < u32::MAX as i64) => Some((vocab, version as u32)),
                 (_, _) => None,
             })
             .collect();

@@ -78,7 +78,7 @@ impl<'sqlite> PreparedQuery<'sqlite> {
             PreparedQuery::Bound {
                 ref mut statement,
                 ref schema,
-                ref connection,
+                connection,
                 ref args,
                 ref projector,
             } => {
@@ -159,8 +159,8 @@ where
     Ok(algebrized)
 }
 
-fn fetch_values<'sqlite>(
-    sqlite: &'sqlite rusqlite::Connection,
+fn fetch_values(
+    sqlite: &rusqlite::Connection,
     known: Known,
     entity: Entid,
     attribute: Entid,
@@ -202,8 +202,8 @@ fn lookup_attribute(schema: &Schema, attribute: &Keyword) -> Result<KnownEntid> 
 /// If no value is present for that entity, `None` is returned.
 /// If `attribute` isn't an attribute, `None` is returned.
 #[allow(clippy::extra_unused_lifetimes)]
-pub fn lookup_value<'sqlite, 'schema, 'cache, E, A>(
-    sqlite: &'sqlite rusqlite::Connection,
+pub fn lookup_value<'schema, 'cache, E, A>(
+    sqlite: &rusqlite::Connection,
     known: Known,
     entity: E,
     attribute: A,
@@ -227,8 +227,8 @@ where
     }
 }
 
-pub fn lookup_values<'sqlite, E, A>(
-    sqlite: &'sqlite rusqlite::Connection,
+pub fn lookup_values<E, A>(
+    sqlite: &rusqlite::Connection,
     known: Known,
     entity: E,
     attribute: A,
@@ -257,11 +257,11 @@ where
 /// If the attribute is multi-valued, an arbitrary value is returned.
 /// If no value is present for that entity, `None` is returned.
 /// If `attribute` doesn't name an attribute, an error is returned.
-pub fn lookup_value_for_attribute<'sqlite, 'attribute, E>(
-    sqlite: &'sqlite rusqlite::Connection,
+pub fn lookup_value_for_attribute<E>(
+    sqlite: &rusqlite::Connection,
     known: Known,
     entity: E,
-    attribute: &'attribute Keyword,
+    attribute: &Keyword,
 ) -> Result<Option<TypedValue>>
 where
     E: Into<Entid>,
@@ -270,11 +270,11 @@ where
     lookup_value(sqlite, known, entity.into(), attribute)
 }
 
-pub fn lookup_values_for_attribute<'sqlite, 'attribute, E>(
-    sqlite: &'sqlite rusqlite::Connection,
+pub fn lookup_values_for_attribute<E>(
+    sqlite: &rusqlite::Connection,
     known: Known,
     entity: E,
-    attribute: &'attribute Keyword,
+    attribute: &Keyword,
 ) -> Result<Vec<TypedValue>>
 where
     E: Into<Entid>,
@@ -309,19 +309,15 @@ where
     F: FnMut(&rusqlite::Row) -> T,
 {
     let mut statement = sqlite.prepare(sql)?;
-    let mut rows = run_statement(&mut statement, &bindings)?;
+    let mut rows = run_statement(&mut statement, bindings)?;
     let mut result = vec![];
     while let Some(row_or_error) = rows.next().unwrap() {
-        result.push(mapper(&row_or_error));
+        result.push(mapper(row_or_error));
     }
     Ok(result)
 }
 
-fn algebrize_query_str<'query, T>(
-    known: Known,
-    query: &'query str,
-    inputs: T,
-) -> Result<AlgebraicQuery>
+fn algebrize_query_str<T>(known: Known, query: &str, inputs: T) -> Result<AlgebraicQuery>
 where
     T: Into<Option<QueryInputs>>,
 {
@@ -329,9 +325,9 @@ where
     algebrize_query(known, parsed, inputs)
 }
 
-fn run_algebrized_query<'sqlite>(
+fn run_algebrized_query(
     known: Known,
-    sqlite: &'sqlite rusqlite::Connection,
+    sqlite: &rusqlite::Connection,
     algebrized: AlgebraicQuery,
 ) -> QueryExecutionResult {
     assert!(
@@ -368,10 +364,10 @@ fn run_algebrized_query<'sqlite>(
 /// instances.
 /// The caller is responsible for ensuring that the SQLite connection has an open transaction if
 /// isolation is required.
-pub fn q_once<'sqlite, 'query, T>(
-    sqlite: &'sqlite rusqlite::Connection,
+pub fn q_once<T>(
+    sqlite: &rusqlite::Connection,
     known: Known,
-    query: &'query str,
+    query: &str,
     inputs: T,
 ) -> QueryExecutionResult
 where
@@ -442,10 +438,10 @@ where
     }
 }
 
-pub fn q_explain<'sqlite, 'query, T>(
-    sqlite: &'sqlite rusqlite::Connection,
+pub fn q_explain<T>(
+    sqlite: &rusqlite::Connection,
     known: Known,
-    query: &'query str,
+    query: &str,
     inputs: T,
 ) -> Result<QueryExplanation>
 where

@@ -117,13 +117,11 @@ impl Interp {
         let core_replace = self.root.get(&Symbol::plain("replace"));
         let src = include_str!("../../resources/clojure/string.clj");
         let env = self.root.clone();
-        for slot in crate::reader::read_all_resilient(src) {
-            if let Ok(form) = slot {
-                if let Err(t) = self.eval(&form, &env) {
-                    let summary = form_summary(&form);
-                    self.core_failures
-                        .push((summary, crate::printer::print_str(&t.0)));
-                }
+        for form in crate::reader::read_all_resilient(src).into_iter().flatten() {
+            if let Err(t) = self.eval(&form, &env) {
+                let summary = form_summary(&form);
+                self.core_failures
+                    .push((summary, crate::printer::print_str(&t.0)));
             }
         }
         // `reverse`/`replace` are the only clojure.string names that collide
@@ -439,13 +437,14 @@ impl Interp {
   (cons 'do (map (fn [n] (list 'def n)) names)))
 "#;
         let env = self.root.clone();
-        for slot in crate::reader::read_all_resilient(SUPPLEMENT) {
-            if let Ok(form) = slot {
-                if let Err(t) = self.eval(&form, &env) {
-                    let summary = form_summary(&form);
-                    self.core_failures
-                        .push((summary, crate::printer::print_str(&t.0)));
-                }
+        for form in crate::reader::read_all_resilient(SUPPLEMENT)
+            .into_iter()
+            .flatten()
+        {
+            if let Err(t) = self.eval(&form, &env) {
+                let summary = form_summary(&form);
+                self.core_failures
+                    .push((summary, crate::printer::print_str(&t.0)));
             }
         }
     }

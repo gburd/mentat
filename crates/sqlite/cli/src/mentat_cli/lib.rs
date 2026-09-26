@@ -36,10 +36,9 @@ extern crate termion;
 extern crate thiserror;
 extern crate time;
 
+extern crate core_traits;
 extern crate edn;
 extern crate mentat;
-#[macro_use]
-extern crate core_traits;
 extern crate mentat_db;
 
 use getopts::Options;
@@ -164,7 +163,7 @@ pub fn run() -> i32 {
                 Some(command_parser::Command::Transact(arg.clone()))
             }
             Some(_) | None => {
-                last_arg = Some(&arg);
+                last_arg = Some(arg);
                 None
             }
         })

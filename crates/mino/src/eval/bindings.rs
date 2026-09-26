@@ -298,7 +298,7 @@ fn bind_map_destructure(
     };
 
     // :keys [a b] -> look up :a :b.
-    if let Some(Value::Vector(kv)) = keys_vec.as_ref().map(|v| v.clone()).as_ref() {
+    if let Some(Value::Vector(kv)) = keys_vec.clone().as_ref() {
         for ksym in kv.iter() {
             let Value::Sym(s) = ksym else {
                 return Err(throw_str(":keys elements must be symbols"));
@@ -313,7 +313,7 @@ fn bind_map_destructure(
     }
 
     // :strs [a b] -> look up "a" "b".
-    if let Some(Value::Vector(sv)) = strs_vec.as_ref().map(|v| v.clone()).as_ref() {
+    if let Some(Value::Vector(sv)) = strs_vec.clone().as_ref() {
         for ssym in sv.iter() {
             let Value::Sym(s) = ssym else {
                 return Err(throw_str(":strs elements must be symbols"));
@@ -328,7 +328,7 @@ fn bind_map_destructure(
     }
 
     // :syms [a b] -> look up 'a 'b.
-    if let Some(Value::Vector(sv)) = syms_vec.as_ref().map(|v| v.clone()).as_ref() {
+    if let Some(Value::Vector(sv)) = syms_vec.clone().as_ref() {
         for ssym in sv.iter() {
             let Value::Sym(s) = ssym else {
                 return Err(throw_str(":syms elements must be symbols"));
@@ -372,7 +372,7 @@ fn binding_pairs(bindings: &Value, what: &str) -> Result<Vec<(Value, Value)>, Th
         Value::Vector(v) => v.iter().cloned().collect(),
         _ => return Err(throw_str(&format!("{what} requires a vector binding form"))),
     };
-    if items.len() % 2 != 0 {
+    if !items.len().is_multiple_of(2) {
         return Err(throw_str(&format!(
             "{what} vector bindings must have even number of forms"
         )));

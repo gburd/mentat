@@ -21,24 +21,24 @@ use anyhow::Error;
 use combine::error::StringStreamError;
 use mentat::CacheDirection;
 
-pub static COMMAND_CACHE: &str = &"cache";
-pub static COMMAND_CLOSE: &str = &"close";
-pub static COMMAND_EXIT_LONG: &str = &"exit";
-pub static COMMAND_EXIT_SHORT: &str = &"e";
-pub static COMMAND_HELP: &str = &"help";
-pub static COMMAND_IMPORT_LONG: &str = &"import";
-pub static COMMAND_IMPORT_SHORT: &str = &"i";
-pub static COMMAND_OPEN: &str = &"open";
-pub static COMMAND_OPEN_ENCRYPTED: &str = &"open_encrypted";
-pub static COMMAND_QUERY_LONG: &str = &"query";
-pub static COMMAND_QUERY_SHORT: &str = &"q";
-pub static COMMAND_QUERY_EXPLAIN_LONG: &str = &"explain_query";
-pub static COMMAND_QUERY_EXPLAIN_SHORT: &str = &"eq";
-pub static COMMAND_QUERY_PREPARED_LONG: &str = &"query_prepared";
-pub static COMMAND_SCHEMA: &str = &"schema";
-pub static COMMAND_TIMER_LONG: &str = &"timer";
-pub static COMMAND_TRANSACT_LONG: &str = &"transact";
-pub static COMMAND_TRANSACT_SHORT: &str = &"t";
+pub static COMMAND_CACHE: &str = "cache";
+pub static COMMAND_CLOSE: &str = "close";
+pub static COMMAND_EXIT_LONG: &str = "exit";
+pub static COMMAND_EXIT_SHORT: &str = "e";
+pub static COMMAND_HELP: &str = "help";
+pub static COMMAND_IMPORT_LONG: &str = "import";
+pub static COMMAND_IMPORT_SHORT: &str = "i";
+pub static COMMAND_OPEN: &str = "open";
+pub static COMMAND_OPEN_ENCRYPTED: &str = "open_encrypted";
+pub static COMMAND_QUERY_LONG: &str = "query";
+pub static COMMAND_QUERY_SHORT: &str = "q";
+pub static COMMAND_QUERY_EXPLAIN_LONG: &str = "explain_query";
+pub static COMMAND_QUERY_EXPLAIN_SHORT: &str = "eq";
+pub static COMMAND_QUERY_PREPARED_LONG: &str = "query_prepared";
+pub static COMMAND_SCHEMA: &str = "schema";
+pub static COMMAND_TIMER_LONG: &str = "timer";
+pub static COMMAND_TRANSACT_LONG: &str = "transact";
+pub static COMMAND_TRANSACT_SHORT: &str = "t";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
@@ -67,7 +67,7 @@ impl Command {
             &Command::Query(ref args)
             | &Command::QueryExplain(ref args)
             | &Command::QueryPrepared(ref args)
-            | &Command::Transact(ref args) => edn::parse::value(&args).is_ok(),
+            | &Command::Transact(ref args) => edn::parse::value(args).is_ok(),
             &Command::Cache(_, _)
             | &Command::Close
             | &Command::Exit
