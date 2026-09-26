@@ -369,7 +369,10 @@ impl ConjoiningClauses {
 
             let types = column_types
                 .into_iter()
-                .map(|x| x.exemplar().expect("non-empty collection has a column type"))
+                .map(|x| {
+                    x.exemplar()
+                        .expect("non-empty collection has a column type")
+                })
                 .collect();
             self.collect_named_bindings(schema, names, types, matrix);
         }

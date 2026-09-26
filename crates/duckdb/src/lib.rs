@@ -29,9 +29,7 @@ use std::{
     sync::Mutex,
 };
 
-use mentat::{
-    Binding, QueryResults, Queryable, Store, StructuredMap, TxReport, TypedValue,
-};
+use mentat::{Binding, QueryResults, Queryable, Store, StructuredMap, TxReport, TypedValue};
 
 // ---------------------------------------------------------------------------
 // Value rendering (plan §2.4 v1: all-VARCHAR, stringified like the SQLite CLI's
@@ -187,10 +185,7 @@ impl VScalar for MentatTransactScalar {
 
     fn signatures() -> Vec<ScalarFunctionSignature> {
         vec![ScalarFunctionSignature::exact(
-            vec![
-                LogicalTypeId::Varchar.into(),
-                LogicalTypeId::Varchar.into(),
-            ],
+            vec![LogicalTypeId::Varchar.into(), LogicalTypeId::Varchar.into()],
             LogicalTypeId::Varchar.into(),
         )]
     }
@@ -222,10 +217,7 @@ struct MentatQueryInitData {
 /// Normalize the four QueryResults arms into rows-of-columns of strings.
 fn results_to_rows(results: QueryResults) -> Vec<Vec<std::string::String>> {
     match results {
-        QueryResults::Scalar(v) => v
-            .into_iter()
-            .map(|b| vec![binding_as_string(&b)])
-            .collect(),
+        QueryResults::Scalar(v) => v.into_iter().map(|b| vec![binding_as_string(&b)]).collect(),
         QueryResults::Coll(vs) => vs
             .into_iter()
             .map(|b| vec![binding_as_string(&b)])

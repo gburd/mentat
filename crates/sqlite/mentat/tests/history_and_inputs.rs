@@ -18,9 +18,7 @@ extern crate mentat;
 
 use core_traits::Entid;
 
-use mentat::{
-    HasSchema, IntoResult, QueryInputs, Queryable, Store, TypedValue, Variable,
-};
+use mentat::{HasSchema, IntoResult, QueryInputs, Queryable, Store, TypedValue, Variable};
 
 fn setup() -> Store {
     let mut store = Store::open("").expect("opened");
@@ -127,7 +125,11 @@ fn test_history_pattern_shows_assertions_and_retractions() {
     }
     asserted.sort();
     retracted.sort();
-    assert_eq!(asserted, vec![1, 2, 3], "all asserted values are in history");
+    assert_eq!(
+        asserted,
+        vec![1, 2, 3],
+        "all asserted values are in history"
+    );
     assert_eq!(retracted, vec![1, 2], "superseded values are retracted");
 }
 
@@ -139,7 +141,9 @@ fn test_history_pattern_shows_assertions_and_retractions() {
 #[test]
 fn test_as_of_sees_value_at_that_tx() {
     let mut store = setup();
-    let r1 = store.transact(r#"[[:db/add "e" :hi/val 25]]"#).expect("tx1");
+    let r1 = store
+        .transact(r#"[[:db/add "e" :hi/val 25]]"#)
+        .expect("tx1");
     let e = *r1.tempids.get("e").unwrap();
     let tx1 = r1.tx_id;
     let tx2 = store
@@ -192,7 +196,11 @@ fn test_as_of_respects_explicit_retraction() {
             .expect("q")
             .and_then(|b| b.into_long())
     };
-    assert_eq!(at(tx1), Some(7), "before the retraction, the value is present");
+    assert_eq!(
+        at(tx1),
+        Some(7),
+        "before the retraction, the value is present"
+    );
     assert_eq!(at(tx2), None, "as-of the retracting tx, the value is gone");
 }
 
@@ -200,7 +208,9 @@ fn test_as_of_respects_explicit_retraction() {
 #[test]
 fn test_as_of_before_entity_created() {
     let mut store = setup();
-    let r1 = store.transact(r#"[[:db/add "a" :hi/name "Alice"]]"#).expect("tx1");
+    let r1 = store
+        .transact(r#"[[:db/add "a" :hi/name "Alice"]]"#)
+        .expect("tx1");
     let tx1 = r1.tx_id;
     store
         .transact(r#"[[:db/add "b" :hi/name "Bob"]]"#)
@@ -208,11 +218,7 @@ fn test_as_of_before_entity_created() {
 
     // At tx1, Bob does not yet exist.
     let names = store
-        .q_once_as_of(
-            "[:find [?n ...] :where [?e :hi/name ?n]]",
-            None,
-            tx1,
-        )
+        .q_once_as_of("[:find [?n ...] :where [?e :hi/name ?n]]", None, tx1)
         .into_coll_result()
         .expect("q")
         .into_iter()
@@ -252,13 +258,20 @@ fn test_since_returns_only_later_txs() {
 // ============================================================================
 
 fn setup_people(store: &mut Store) -> (Entid, Entid, Entid, Entid) {
-    let mut e = |body: &str| -> Entid {
-        *store.transact(body).expect("tx").tempids.get("e").unwrap()
-    };
-    let a = e(r#"[[:db/add "e" :hi/name "Alice"] [:db/add "e" :hi/val 100] [:db/add "e" :hi/dept "Eng"]]"#);
-    let b = e(r#"[[:db/add "e" :hi/name "Bob"]   [:db/add "e" :hi/val 200] [:db/add "e" :hi/dept "Eng"]]"#);
-    let c = e(r#"[[:db/add "e" :hi/name "Carol"] [:db/add "e" :hi/val 150] [:db/add "e" :hi/dept "Design"]]"#);
-    let d = e(r#"[[:db/add "e" :hi/name "Dave"]  [:db/add "e" :hi/val 300] [:db/add "e" :hi/dept "Product"]]"#);
+    let mut e =
+        |body: &str| -> Entid { *store.transact(body).expect("tx").tempids.get("e").unwrap() };
+    let a = e(
+        r#"[[:db/add "e" :hi/name "Alice"] [:db/add "e" :hi/val 100] [:db/add "e" :hi/dept "Eng"]]"#,
+    );
+    let b = e(
+        r#"[[:db/add "e" :hi/name "Bob"]   [:db/add "e" :hi/val 200] [:db/add "e" :hi/dept "Eng"]]"#,
+    );
+    let c = e(
+        r#"[[:db/add "e" :hi/name "Carol"] [:db/add "e" :hi/val 150] [:db/add "e" :hi/dept "Design"]]"#,
+    );
+    let d = e(
+        r#"[[:db/add "e" :hi/name "Dave"]  [:db/add "e" :hi/val 300] [:db/add "e" :hi/dept "Product"]]"#,
+    );
     (a, b, c, d)
 }
 
@@ -297,7 +310,10 @@ fn test_in_tuple_binding() {
 
     let inputs = QueryInputs::with_tuple(
         vec![var("?name"), var("?dept")],
-        vec![TypedValue::typed_string("Bob"), TypedValue::typed_string("Eng")],
+        vec![
+            TypedValue::typed_string("Bob"),
+            TypedValue::typed_string("Eng"),
+        ],
     );
     let v = store
         .q_once(
@@ -319,10 +335,19 @@ fn test_in_relation_binding() {
     let inputs = QueryInputs::with_relation(
         vec![var("?name"), var("?dept")],
         vec![
-            vec![TypedValue::typed_string("Alice"), TypedValue::typed_string("Eng")],
-            vec![TypedValue::typed_string("Carol"), TypedValue::typed_string("Design")],
+            vec![
+                TypedValue::typed_string("Alice"),
+                TypedValue::typed_string("Eng"),
+            ],
+            vec![
+                TypedValue::typed_string("Carol"),
+                TypedValue::typed_string("Design"),
+            ],
             // Bob is in Eng but this pair says Design -- should not match.
-            vec![TypedValue::typed_string("Bob"), TypedValue::typed_string("Design")],
+            vec![
+                TypedValue::typed_string("Bob"),
+                TypedValue::typed_string("Design"),
+            ],
         ],
     );
     let mut names = store

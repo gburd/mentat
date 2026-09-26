@@ -147,7 +147,8 @@ fn algebrize_query<T>(known: Known, query: FindQuery, inputs: T) -> Result<Algeb
 where
     T: Into<Option<QueryInputs>>,
 {
-    let algebrized = algebrize_with_inputs(known, query, 0, inputs.into().unwrap_or_default())?;    let unbound = algebrized.unbound_variables();
+    let algebrized = algebrize_with_inputs(known, query, 0, inputs.into().unwrap_or_default())?;
+    let unbound = algebrized.unbound_variables();
     // Because we are running once, we can check that all of our `:in` variables are bound at this point.
     // If they aren't, the user has made an error -- perhaps writing the wrong variable in `:in`, or
     // not binding in the `QueryInput`.

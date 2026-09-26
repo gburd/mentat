@@ -743,17 +743,12 @@ impl ConjoiningClauses {
         // (if known) says, extracting a type tag otherwise.
         match pattern.entity {
             EvolvedNonValuePlace::Placeholder => {}
-            EvolvedNonValuePlace::Variable(ref v) => self.bind_column_to_var(
-                schema,
-                col.clone(),
-                TransactionsColumn::Entity,
-                v.clone(),
-            ),
-            EvolvedNonValuePlace::Entid(entid) => self.constrain_column_to_entity(
-                col.clone(),
-                TransactionsColumn::Entity,
-                entid,
-            ),
+            EvolvedNonValuePlace::Variable(ref v) => {
+                self.bind_column_to_var(schema, col.clone(), TransactionsColumn::Entity, v.clone())
+            }
+            EvolvedNonValuePlace::Entid(entid) => {
+                self.constrain_column_to_entity(col.clone(), TransactionsColumn::Entity, entid)
+            }
         }
 
         match pattern.attribute {
@@ -764,11 +759,9 @@ impl ConjoiningClauses {
                 TransactionsColumn::Attribute,
                 v.clone(),
             ),
-            EvolvedNonValuePlace::Entid(entid) => self.constrain_column_to_entity(
-                col.clone(),
-                TransactionsColumn::Attribute,
-                entid,
-            ),
+            EvolvedNonValuePlace::Entid(entid) => {
+                self.constrain_column_to_entity(col.clone(), TransactionsColumn::Attribute, entid)
+            }
         }
 
         // The value type may be constrained by a known attribute.
@@ -858,8 +851,7 @@ impl ConjoiningClauses {
             }
         }
 
-        self.from
-            .push(SourceAlias(DatomsTable::Transactions, col));
+        self.from.push(SourceAlias(DatomsTable::Transactions, col));
         Ok(())
     }
 
@@ -923,19 +915,14 @@ impl ConjoiningClauses {
                     // at a tx after this one and still at or before t.
                     let inner_alias = self.next_alias_for_table(DatomsTable::Transactions);
                     let mut sub = ConjoiningClauses::default();
-                    sub.from.push(SourceAlias(
-                        DatomsTable::Transactions,
-                        inner_alias.clone(),
-                    ));
+                    sub.from
+                        .push(SourceAlias(DatomsTable::Transactions, inner_alias.clone()));
 
                     let inner = |c: TransactionsColumn| {
                         QualifiedAlias(inner_alias.clone(), Column::Transactions(c))
                     };
                     let outer = |c: TransactionsColumn| {
-                        QueryValue::Column(QualifiedAlias(
-                            col.clone(),
-                            Column::Transactions(c),
-                        ))
+                        QueryValue::Column(QualifiedAlias(col.clone(), Column::Transactions(c)))
                     };
 
                     // Correlate e, a, v with the outer row.
