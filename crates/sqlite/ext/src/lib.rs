@@ -48,7 +48,7 @@ type XFunc = unsafe extern "C" fn(Ctx, c_int, *mut Val);
 
 /// Slot indices into `struct sqlite3_api_routines` (sqlite3ext.h). The struct
 /// is append-only across SQLite releases, so these never move; every slot used
-/// here exists since SQLite 3.7.10.
+/// here exists since SQLite 3.7.16 (below the 3.30 floor checked at load).
 mod slot {
     pub const LIBVERSION_NUMBER: usize = 67;
     pub const MALLOC: usize = 68;

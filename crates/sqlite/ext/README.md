@@ -200,7 +200,7 @@ store.
 **Option (a) is what this crate does.** It never depends on rusqlite's
 `loadable_extension`. `src/lib.rs` reads the twelve C API slots it needs
 directly from the raw `sqlite3_api_routines` pointer, by fixed index. The
-struct is append-only, and every slot used here exists since SQLite 3.7.10.
+struct is append-only, and every slot used here exists since SQLite 3.7.16 (below the 3.30 floor checked at load).
 The engine keeps its own statically bundled SQLite (rusqlite `bundled`,
 currently 3.53) for the store. rustc links a cdylib with a version script
 that exports only `#[no_mangle]` items, so the bundled `sqlite3_*` symbols
