@@ -30,13 +30,26 @@ User is handling: GitHub mirror enable + pg_mentat archive/pointer.
   UnsupportedSource. 9 tests in crates/sqlite/mentat/tests/history_and_inputs.rs. UnsupportedInputBinding
   never existed (plan premise wrong). Combined green: 79 test binaries.
 
-## TODO NEXT (after T12 lands, to avoid crates/sqlite/mentat overlap)
-- **T7** (mentat-script shared crate): extract crates/script with ScriptBackend
-  trait; mentat + pg_mentat both implement it; one model test suite. Plan §1.19/Task 7.
-  Can drop the inst/uuid output-only workaround (mino now round-trips them - Task 8).
-- Then: full green gate (workspace + pg16 + duckdb + mino), fmt/clippy/deny, commit.
-- Decide: does DuckDB extension go into 1.7.1 or a 1.8.0? (new consumer = minor bump).
-- TERMINATE EC2.
+## ALL THREE DONE + CERTIFIED (branch master, floki, NOT pushed)
+- **T7 DONE** (74fa9ad8/774b2cb2/432f4eeb + fmt): crates/script (mentat_script) extracted.
+  ScriptBackend trait, install(), DbRef, value builders. mentat impl over Store (script.rs
+  1018->638), pg_mentat impl over engine (759->489). One model suite (10 tests) runs on
+  fake + SQLite + pg backends. pg Task-1c sandbox PRESERVED (6 sandbox tests green). inst/uuid
+  builders emit real round-tripping values (dropped workaround). tx-report now carries
+  :mentat.store/db-after on both backends.
+- **T12 DONE** (8a0d1758): history/asof-q/coll-bindings on SQLite (above).
+- **DuckDB DONE** (90b082c2/4fa10af5): crates/duckdb extension, above.
+- **CERTIFIED on EC2**: workspace 83 test binaries green; pg16 with script 1888 pass 1 ignored;
+  DuckDB extension rebuilt (v1.5.5) + smoke test PASS (load, transact, query, JOIN vs native);
+  fmt clean; clippy --workspace --exclude pg_mentat --exclude mentat_duckdb -D warnings 0 errors;
+  cargo deny advisories/bans/licenses/sources ok (added CDLA-Permissive-2.0 for webpki-roots).
+  Fixed the extension-ci-tools submodule on floki (was rsync-polluted; now proper gitlink 20bad04c).
+
+## REMAINING
+- User handles: GitHub mirror + pg_mentat archive/pointer (1.7.0).
+- Decide with user: release these as 1.7.1 (bugfix+features) or 1.8.0 (DuckDB = new consumer,
+  arguably minor bump). NOT yet version-bumped or released - these are on master unpushed.
+- TERMINATE EC2 i-0370864337eef216f + delete SG sg-099437a586cc7e4f4 + key when user says done.
 
 ## Gotchas (from the 1.7.0 session, still apply)
 - Don't run pgrx matrix concurrently with other cargo on EC2 (shm/mutex cascade).
