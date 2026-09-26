@@ -12,7 +12,7 @@ DELETE FROM mentat.idents WHERE entid > 10;
 
 -- Test 1: Define a cardinality-many attribute
 \echo 'Test 1: Define :person/hobby as cardinality-many'
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :person/hobby
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/many}
@@ -25,7 +25,7 @@ WHERE ident = ':person/hobby';
 
 -- Test 2: Assert multiple hobbies in a single transaction using map notation
 \echo 'Test 2: Assert multiple hobbies for Alice in one transaction'
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/id "alice"
    :person/name "Alice"
    :person/hobby "chess"
@@ -35,7 +35,7 @@ SELECT mentat_transact('[
 
 -- Query to verify all three hobbies were stored
 \echo 'Verify all three hobbies are stored:'
-SELECT mentat_query('[:find ?hobby :where [?e :person/name "Alice"] [?e :person/hobby ?hobby]]', '{}');
+SELECT edn_q('[:find ?hobby :where [?e :person/name "Alice"] [?e :person/hobby ?hobby]]', '{}');
 
 -- Count the hobbies
 SELECT COUNT(*) as hobby_count
@@ -50,14 +50,14 @@ WHERE i.ident = ':person/hobby'
 
 -- Test 3: Add more hobbies in a subsequent transaction
 \echo 'Test 3: Add more hobbies to Alice'
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add [:person/name "Alice"] :person/hobby "painting"]
   [:db/add [:person/name "Alice"] :person/hobby "gardening"]
 ]');
 
 -- Query all hobbies (should now be 5)
 \echo 'Verify all five hobbies are stored:'
-SELECT mentat_query('[:find ?hobby :where [?e :person/name "Alice"] [?e :person/hobby ?hobby]]', '{}');
+SELECT edn_q('[:find ?hobby :where [?e :person/name "Alice"] [?e :person/hobby ?hobby]]', '{}');
 
 -- Count again
 SELECT COUNT(*) as hobby_count
@@ -72,13 +72,13 @@ WHERE i.ident = ':person/hobby'
 
 -- Test 4: Retract one specific hobby (should keep the others)
 \echo 'Test 4: Retract "chess" hobby'
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/retract [:person/name "Alice"] :person/hobby "chess"]
 ]');
 
 -- Query remaining hobbies (should be 4, without chess)
 \echo 'Verify chess was removed but others remain:'
-SELECT mentat_query('[:find ?hobby :where [?e :person/name "Alice"] [?e :person/hobby ?hobby]]', '{}');
+SELECT edn_q('[:find ?hobby :where [?e :person/name "Alice"] [?e :person/hobby ?hobby]]', '{}');
 
 -- Count again (should be 4)
 SELECT COUNT(*) as hobby_count
@@ -93,7 +93,7 @@ WHERE i.ident = ':person/hobby'
 
 -- Test 5: Test duplicate values (should be idempotent)
 \echo 'Test 5: Re-assert an existing hobby (should be idempotent)'
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add [:person/name "Alice"] :person/hobby "reading"]
 ]');
 
@@ -110,21 +110,21 @@ WHERE i.ident = ':person/hobby'
 
 -- Test 6: Define cardinality-many ref attribute
 \echo 'Test 6: Define :person/friend as cardinality-many ref'
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :person/friend
    :db/valueType :db.type/ref
    :db/cardinality :db.cardinality/many}
 ]');
 
 -- Create multiple people and establish friendships
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/id "bob" :person/name "Bob"}
   {:db/id "carol" :person/name "Carol"}
   {:db/id "dave" :person/name "Dave"}
 ]');
 
 -- Alice befriends multiple people
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add [:person/name "Alice"] :person/friend [:person/name "Bob"]]
   [:db/add [:person/name "Alice"] :person/friend [:person/name "Carol"]]
   [:db/add [:person/name "Alice"] :person/friend [:person/name "Dave"]]
@@ -132,7 +132,7 @@ SELECT mentat_transact('[
 
 -- Query Alice's friends
 \echo 'Verify Alice has three friends:'
-SELECT mentat_query('[:find ?fname :where
+SELECT edn_q('[:find ?fname :where
   [?alice :person/name "Alice"]
   [?alice :person/friend ?friend]
   [?friend :person/name ?fname]]', '{}');
@@ -140,7 +140,7 @@ SELECT mentat_query('[:find ?fname :where
 -- Test 7: Cardinality-one should still work (for comparison)
 \echo 'Test 7: Verify cardinality-one still auto-retracts old values'
 -- :person/name should be cardinality-one (defined in bootstrap)
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add [:person/name "Alice"] :person/name "Alice Smith"]
 ]');
 
@@ -156,13 +156,13 @@ WHERE i.ident = ':person/name'
   AND d1.added = true;
 
 \echo 'Verify the name was updated (not accumulated):'
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name] [?e :person/hobby "reading"]]', '{}');
+SELECT edn_q('[:find ?name :where [?e :person/name ?name] [?e :person/hobby "reading"]]', '{}');
 
 -- Test 8: Test invalid cardinality-one with multiple values in same transaction
 \echo 'Test 8: Attempt to assert multiple values for cardinality-one attribute (should fail)'
 DO $$
 BEGIN
-  PERFORM mentat_transact('[
+  PERFORM edn_t('[
     {:db/id "test-person"
      :person/name "John"
      :person/name "Johnny"}

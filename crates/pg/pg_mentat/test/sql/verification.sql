@@ -45,7 +45,7 @@ SELECT mentat_drop_store('verify_renamed');
 \echo ''
 \echo '--- 4. Schema + Transact + Query ---'
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :verify/name
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one}
@@ -54,13 +54,13 @@ SELECT mentat_transact('[
      :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "v1" :verify/name "Alpha" :verify/value 100}
     {:db/id "v2" :verify/name "Beta"  :verify/value 200}
     {:db/id "v3" :verify/name "Gamma" :verify/value 300}
 ]');
 
-SELECT mentat_query('[:find ?name ?val :where [?e :verify/name ?name] [?e :verify/value ?val]]', '{}');
+SELECT edn_q('[:find ?name ?val :where [?e :verify/name ?name] [?e :verify/value ?val]]', '{}');
 \echo 'Schema + Transact + Query: OK'
 
 -- =========================================================================
@@ -103,10 +103,10 @@ DECLARE
     pull_result JSONB;
     entity_result JSONB;
 BEGIN
-    SELECT (mentat_query('[:find ?e . :where [?e :verify/name "Alpha"]]', '{}')::JSONB)::TEXT::BIGINT INTO eid;
+    SELECT (edn_q('[:find ?e . :where [?e :verify/name "Alpha"]]', '{}')::JSONB)::TEXT::BIGINT INTO eid;
     RAISE NOTICE 'Entity ID for Alpha: %', eid;
 
-    SELECT mentat_pull('[*]', eid)::JSONB INTO pull_result;
+    SELECT edn_pull('[*]', eid)::JSONB INTO pull_result;
     RAISE NOTICE 'Pull result: %', pull_result;
 
     SELECT mentat_entity(eid)::JSONB INTO entity_result;
@@ -153,7 +153,7 @@ BEGIN
     RAISE NOTICE 'Current max TX: %', tx1;
 
     -- Update a value
-    PERFORM mentat_transact('[[:db/add [:verify/name "Alpha"] :verify/value 999]]');
+    PERFORM edn_t('[[:db/add [:verify/name "Alpha"] :verify/value 999]]');
 
     -- As-of query should show old value
     SELECT mentat_as_of(tx1,
@@ -190,12 +190,12 @@ SELECT mentat_unsubscribe('verify_sub');
 \echo ''
 \echo '--- 12. Recursive queries ---'
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :cat/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
     {:db/ident :cat/parent :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "root" :cat/name "Root"}
     {:db/id "a" :cat/name "A" :cat/parent "root"}
     {:db/id "b" :cat/name "B" :cat/parent "a"}

@@ -5,7 +5,7 @@
 --   2. Install-time SQL errors such as ROUND(float, int) or i16/i32 mismatches
 --      between Rust pg_extern signatures and the generated SQL wrapper.
 --   3. Silent drift between the Rust bootstrap entids and the SQL bootstrap
---      rows, which breaks every later mentat_transact call.
+--      rows, which breaks every later edn_t call.
 --
 -- Every step must succeed or the script aborts with a non-zero status.
 -- RAISE EXCEPTION is used for assertions so the error appears in CI logs.
@@ -154,8 +154,8 @@ BEGIN
     RAISE NOTICE 'Step 6 OK: mentat.datoms is a view with INSTEAD OF INSERT+DELETE triggers';
 END $$;
 
--- Step 7: define :person/name and :person/age via mentat_transact -----------
-SELECT mentat_transact('[
+-- Step 7: define :person/name and :person/age via edn_t -----------
+SELECT edn_t('[
   {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
   {:db/ident :person/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
 ]') \gset tx1_
@@ -174,7 +174,7 @@ BEGIN
 END $$;
 
 -- Step 9: assert a fact for alice -------------------------------------------
-SELECT mentat_transact('[{:db/id "alice" :person/name "Alice" :person/age 30}]') \gset tx2_
+SELECT edn_t('[{:db/id "alice" :person/name "Alice" :person/age 30}]') \gset tx2_
 \echo 'Step 9 OK: alice asserted'
 
 -- Step 10: query returns exactly one row [["Alice", 30]] --------------------
@@ -184,13 +184,13 @@ DECLARE
     rows    jsonb;
     first   jsonb;
 BEGIN
-    SELECT mentat_query(
+    SELECT edn_q(
         '[:find ?n ?a :where [?e :person/name ?n] [?e :person/age ?a]]',
         '{}'::jsonb
     )::jsonb INTO result;
     rows := result->'results';
     IF jsonb_typeof(rows) <> 'array' THEN
-        RAISE EXCEPTION 'mentat_query returned no results array: %', result;
+        RAISE EXCEPTION 'edn_q returned no results array: %', result;
     END IF;
     IF jsonb_array_length(rows) <> 1 THEN
         RAISE EXCEPTION 'expected exactly 1 result row, got %: %',

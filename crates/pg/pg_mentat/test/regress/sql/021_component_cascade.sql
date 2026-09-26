@@ -4,7 +4,7 @@
 -- Define component attribute
 \echo Setup: component attribute schema
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :comp/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -20,19 +20,19 @@ SELECT mentat_transact('[
 -- Create parent -> child chain
 \echo Test: create parent with component children
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:comp/name "parent"
    :comp/child [{:comp/label "child-1"}
                 {:comp/label "child-2"}]}
 ]');
 
 -- Verify parent and children exist
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :where [?e :comp/name ?name]]',
   '{}'::jsonb
 );
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?label :where [?e :comp/label ?label] :order (asc ?label)]',
   '{}'::jsonb
 );
@@ -40,18 +40,18 @@ SELECT mentat_query(
 -- Retract parent entity
 \echo Test: retract parent cascades to children
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db.fn/retractEntity [:comp/name "parent"]]
 ]');
 
 -- Verify parent is gone
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :where [?e :comp/name ?name]]',
   '{}'::jsonb
 );
 
 -- Verify children are also retracted (component cascade)
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?label :where [?e :comp/label ?label]]',
   '{}'::jsonb
 );

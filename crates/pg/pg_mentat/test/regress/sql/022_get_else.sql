@@ -4,7 +4,7 @@
 -- Setup: schema with optional attribute
 \echo Setup: schema for get-else tests
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :ge/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -13,7 +13,7 @@ SELECT mentat_transact('[
    :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:ge/name "Alice" :ge/nickname "Ali"}
   {:ge/name "Bob"}
 ]');
@@ -21,7 +21,7 @@ SELECT mentat_transact('[
 -- Test: get-else with present attribute returns actual value
 \echo Test: get-else returns actual value when present
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?nick :where [?e :ge/name ?name] [(get-else $ ?e :ge/nickname "N/A") ?nick] :order (asc ?name)]',
   '{}'::jsonb
 );
@@ -30,7 +30,7 @@ SELECT mentat_query(
 \echo Test: get-else returns default when attribute missing
 
 -- Bob has no :ge/nickname, should get "N/A"
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?nick :where [?e :ge/name ?name] [(get-else $ ?e :ge/nickname "unknown") ?nick] [(= ?name "Bob")]]',
   '{}'::jsonb
 );

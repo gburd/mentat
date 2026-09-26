@@ -31,7 +31,7 @@ Query the database as it appeared at a specific transaction. Only datoms with `t
 ### Via Query Input
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?age
     :where
     [?e :person/name ?name]
@@ -60,7 +60,7 @@ SELECT mentat_as_of('default', 1050,
 Query only datoms asserted after a specific transaction. This shows what has changed.
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e ?name
     :where
     [?e :person/name ?name]]',
@@ -164,13 +164,13 @@ Currently, the pull API always operates on the current state. To pull at a speci
 -- Find entities as of tx 1000
 WITH historical_people AS (
   SELECT (jsonb_array_elements(
-    (SELECT mentat_query(
+    (SELECT edn_q(
       '[:find [?e ...] :where [?e :person/name]]',
       '{"as_of": 1000}'
     ))->'results')
   )::bigint AS eid
 )
-SELECT mentat_pull('[*]', eid) FROM historical_people;
+SELECT edn_pull('[*]', eid) FROM historical_people;
 ```
 
 ### Subscriptions with Since
@@ -179,7 +179,7 @@ Subscriptions notify on new transactions. Combine with `since` to process missed
 
 ```sql
 -- On reconnect, catch up from last known tx
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e ?name :where [?e :person/name ?name]]',
   '{"since": 1050}'
 );

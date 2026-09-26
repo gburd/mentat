@@ -6,11 +6,11 @@ The Pull API provides a declarative way to retrieve structured data from entitie
 
 ```sql
 -- Pull specific attributes
-SELECT mentat_pull('[:person/name :person/age]', 10001);
+SELECT edn_pull('[:person/name :person/age]', 10001);
 -- {"person/name": "Alice", "person/age": 30}
 
 -- Pull all attributes
-SELECT mentat_pull('[*]', 10001);
+SELECT edn_pull('[*]', 10001);
 -- {"db/id": 10001, "person/name": "Alice", "person/age": 30, "person/email": ["a@b.com"]}
 ```
 
@@ -41,7 +41,7 @@ Where each `<attr-spec>` can be:
 ### Simple Attributes
 
 ```sql
-SELECT mentat_pull('[:person/name :person/age :person/email]', 10001);
+SELECT edn_pull('[:person/name :person/age :person/email]', 10001);
 ```
 
 Returns only the specified attributes. Missing attributes are omitted from the result.
@@ -49,7 +49,7 @@ Returns only the specified attributes. Missing attributes are omitted from the r
 ### Wildcard
 
 ```sql
-SELECT mentat_pull('[*]', 10001);
+SELECT edn_pull('[*]', 10001);
 ```
 
 Returns all attributes for the entity, including `:db/id`. Reference attributes return entity IDs (not expanded).
@@ -59,7 +59,7 @@ Returns all attributes for the entity, including `:db/id`. Reference attributes 
 Combine wildcard with specific navigation for refs:
 
 ```sql
-SELECT mentat_pull('[* {:person/friends [:person/name]}]', 10001);
+SELECT edn_pull('[* {:person/friends [:person/name]}]', 10001);
 ```
 
 ## Reference Navigation
@@ -69,7 +69,7 @@ SELECT mentat_pull('[* {:person/friends [:person/name]}]', 10001);
 Navigate a reference attribute and pull sub-attributes from the referenced entity:
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[{:person/friends [:person/name :person/age]}]',
   10001
 );
@@ -79,7 +79,7 @@ SELECT mentat_pull(
 Map specs can be nested arbitrarily deep:
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[{:person/friends [:person/name {:person/friends [:person/name]}]}]',
   10001
 );
@@ -91,14 +91,14 @@ Use the `_` prefix on a reference attribute to find entities that reference the 
 
 ```sql
 -- Find who has entity 10001 as a friend
-SELECT mentat_pull('[:person/name :person/_friends]', 10001);
+SELECT edn_pull('[:person/name :person/_friends]', 10001);
 -- {"person/name": "Alice", "person/_friends": [{"db/id": 10002}]}
 ```
 
 Reverse references can also use map specs:
 
 ```sql
-SELECT mentat_pull('[{:person/_friends [:person/name]}]', 10001);
+SELECT edn_pull('[{:person/_friends [:person/name]}]', 10001);
 ```
 
 ## Recursion
@@ -108,7 +108,7 @@ SELECT mentat_pull('[{:person/_friends [:person/name]}]', 10001);
 Use `...` to traverse a reference attribute to arbitrary depth. Cycle detection prevents infinite loops.
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[:person/name {:person/manager ...}]',
   10001
 );
@@ -120,7 +120,7 @@ SELECT mentat_pull(
 Specify a maximum depth as an integer:
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[:person/name {:person/friends 2}]',
   10001
 );
@@ -138,7 +138,7 @@ When traversing cyclic graphs (e.g., mutual friendships), pg_mentat tracks visit
 Provide a fallback value when an attribute is missing:
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[(default :person/nickname "N/A") :person/name]',
   10001
 );
@@ -150,7 +150,7 @@ SELECT mentat_pull(
 Rename an attribute in the output:
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[(:person/name :as :name) (:person/age :as :years)]',
   10001
 );
@@ -162,7 +162,7 @@ SELECT mentat_pull(
 Cap the number of values returned for cardinality-many attributes:
 
 ```sql
-SELECT mentat_pull(
+SELECT edn_pull(
   '[(limit :person/email 3)]',
   10001
 );
@@ -175,7 +175,7 @@ Attributes marked with `:db/isComponent true` in the schema are automatically ex
 
 ```sql
 -- If :order/line-items is a component attribute:
-SELECT mentat_pull('[*]', 20001);
+SELECT edn_pull('[*]', 20001);
 -- Line items are fully expanded, not just entity IDs
 ```
 
@@ -201,11 +201,11 @@ While pg_mentat does not currently support pull expressions directly inside `:fi
 -- First, find entity IDs
 WITH people AS (
   SELECT jsonb_array_elements(
-    (SELECT mentat_query('[:find [?e ...] :where [?e :person/age ?a] [(> ?a 21)]]', '{}'))->'results'
+    (SELECT edn_q('[:find [?e ...] :where [?e :person/age ?a] [(> ?a 21)]]', '{}'))->'results'
   )::bigint AS eid
 )
 -- Then pull full details
-SELECT mentat_pull('[:person/name :person/age :person/email]', eid)
+SELECT edn_pull('[:person/name :person/age :person/email]', eid)
 FROM people;
 ```
 
@@ -213,5 +213,5 @@ FROM people;
 
 - **Wildcard** queries scan all nine type tables for the entity -- use specific attributes when you know what you need.
 - **Deep recursion** can generate many SPI calls. Use bounded recursion in production.
-- **Pull many** is more efficient than calling `mentat_pull` in a loop because it batches schema lookups.
+- **Pull many** is more efficient than calling `edn_pull` in a loop because it batches schema lookups.
 - The pull implementation uses the schema cache, so the first call after a schema change may be slightly slower.

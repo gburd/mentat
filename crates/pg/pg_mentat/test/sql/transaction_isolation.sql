@@ -1,5 +1,5 @@
 -- Transaction Isolation and Rollback Tests
--- Tests that mentat_transact() properly handles transaction failures and rollbacks
+-- Tests that edn_t() properly handles transaction failures and rollbacks
 
 -- Setup: Initialize mentat extension
 CREATE EXTENSION IF NOT EXISTS pg_mentat CASCADE;
@@ -13,7 +13,7 @@ SELECT COUNT(*) AS initial_datom_count FROM mentat.datoms;
 -- Try to transact invalid EDN (should fail and rollback)
 DO $$
 BEGIN
-    PERFORM mentat.mentat_transact('[[:db/add "tempid" :person/name "Alice"]');
+    PERFORM mentat.edn_t('[[:db/add "tempid" :person/name "Alice"]');
     RAISE EXCEPTION 'Should have failed with invalid EDN';
 EXCEPTION
     WHEN OTHERS THEN
@@ -36,7 +36,7 @@ BEGIN
 
     -- Try to transact with non-existent attribute
     BEGIN
-        PERFORM mentat.mentat_transact('[[:db/add "tempid" :nonexistent/attr "value"]]');
+        PERFORM mentat.edn_t('[[:db/add "tempid" :nonexistent/attr "value"]]');
         RAISE EXCEPTION 'Should have failed with unknown attribute';
     EXCEPTION
         WHEN OTHERS THEN
@@ -53,7 +53,7 @@ END $$;
 
 \echo '=== Test 3: Transaction rollback on type mismatch ==='
 -- First, define a test attribute
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
     {:db/id "attr"
      :db/ident :test/number
      :db/valueType :db.type/long
@@ -70,7 +70,7 @@ BEGIN
 
     -- Try to transact with wrong type
     BEGIN
-        PERFORM mentat.mentat_transact('[[:db/add "entity1" :test/number "not-a-number"]]');
+        PERFORM mentat.edn_t('[[:db/add "entity1" :test/number "not-a-number"]]');
         RAISE EXCEPTION 'Should have failed with type mismatch';
     EXCEPTION
         WHEN OTHERS THEN
@@ -87,7 +87,7 @@ END $$;
 
 \echo '=== Test 4: Transaction rollback on unique constraint violation ==='
 -- Define an attribute with unique constraint
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
     {:db/id "unique-attr"
      :db/ident :test/email
      :db/valueType :db.type/string
@@ -96,7 +96,7 @@ SELECT mentat.mentat_transact('[
 ]');
 
 -- Add first entity with email
-SELECT mentat.mentat_transact('[[:db/add "user1" :test/email "alice@example.com"]]');
+SELECT mentat.edn_t('[[:db/add "user1" :test/email "alice@example.com"]]');
 
 -- Try to add another entity with same email (should fail and rollback)
 DO $$
@@ -116,7 +116,7 @@ BEGIN
 
     -- Try to transact duplicate email
     BEGIN
-        PERFORM mentat.mentat_transact('[[:db/add "user2" :test/email "alice@example.com"]]');
+        PERFORM mentat.edn_t('[[:db/add "user2" :test/email "alice@example.com"]]');
         RAISE EXCEPTION 'Should have failed with unique constraint violation';
     EXCEPTION
         WHEN OTHERS THEN
@@ -144,7 +144,7 @@ END $$;
 
 \echo '=== Test 5: Transaction rollback on cardinality violation ==='
 -- Define cardinality-one attribute
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
     {:db/id "card-one-attr"
      :db/ident :test/age
      :db/valueType :db.type/long
@@ -161,7 +161,7 @@ BEGIN
 
     -- Try to transact multiple values for cardinality-one attribute
     BEGIN
-        PERFORM mentat.mentat_transact('[
+        PERFORM mentat.edn_t('[
             [:db/add "entity1" :test/age 25]
             [:db/add "entity1" :test/age 30]
         ]');
@@ -181,14 +181,14 @@ END $$;
 
 \echo '=== Test 6: Successful transaction commits properly ==='
 -- Verify that successful transactions do commit
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
     {:db/id "success-attr"
      :db/ident :test/success
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat.mentat_transact('[[:db/add "success-entity" :test/success "committed"]]');
+SELECT mentat.edn_t('[[:db/add "success-entity" :test/success "committed"]]');
 
 -- Verify the data exists
 DO $$
@@ -207,7 +207,7 @@ END $$;
 -- This test verifies that SERIALIZABLE isolation level prevents race conditions
 -- Note: This is a basic test; full concurrency testing would require multiple sessions
 
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
     {:db/id "concurrent-attr"
      :db/ident :test/concurrent
      :db/valueType :db.type/long
@@ -215,7 +215,7 @@ SELECT mentat.mentat_transact('[
 ]');
 
 -- Transaction should complete atomically
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
     [:db/add "concurrent-entity" :test/concurrent 1]
 ]');
 
@@ -237,7 +237,7 @@ END $$;
 
 \echo ''
 \echo '=== All transaction isolation tests passed! ==='
-\echo 'Critical fix verified: mentat_transact() now has proper ACID guarantees'
+\echo 'Critical fix verified: edn_t() now has proper ACID guarantees'
 \echo '- Atomicity: Failed transactions rollback completely'
 \echo '- Consistency: Constraint violations prevent partial updates'
 \echo '- Isolation: SERIALIZABLE level prevents race conditions'

@@ -2,7 +2,7 @@
 -- Define attributes and transact test data
 
 -- Define schema attributes
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :person/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -16,7 +16,7 @@ SELECT mentat_transact('[
 ]');
 
 -- Insert test entities
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:person/name "Alice" :person/age 30 :person/email "alice@example.com"}
   {:person/name "Bob" :person/age 25 :person/email "bob@example.com"}
   {:person/name "Carol" :person/age 35 :person/email "carol@example.com"}

@@ -7,7 +7,7 @@ In pg_mentat, schema is data. Attributes are defined by transacting schema entit
 An attribute is defined by transacting a map with `:db/ident` and at minimum `:db/valueType` and `:db/cardinality`:
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident       :person/name
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -17,7 +17,7 @@ SELECT mentat_transact('[
 Multiple attributes can be defined in a single transaction:
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident       :person/name
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
@@ -85,7 +85,7 @@ pg_mentat supports nine value types, each stored in a dedicated narrow table wit
 ### Type Examples
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   ;; Boolean
   {:db/ident :user/active :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
 
@@ -123,9 +123,9 @@ The attribute holds at most one value per entity. Asserting a new value for an e
 
 ```sql
 -- Sets name to "Alice"
-SELECT mentat_transact('[[:db/add 10001 :person/name "Alice"]]');
+SELECT edn_t('[[:db/add 10001 :person/name "Alice"]]');
 -- Implicitly retracts "Alice", asserts "Alicia"
-SELECT mentat_transact('[[:db/add 10001 :person/name "Alicia"]]');
+SELECT edn_t('[[:db/add 10001 :person/name "Alicia"]]');
 ```
 
 ### `:db.cardinality/many`
@@ -133,7 +133,7 @@ SELECT mentat_transact('[[:db/add 10001 :person/name "Alicia"]]');
 The attribute holds a set of values per entity. Asserting a value adds to the set; explicit retraction is required to remove values.
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add 10001 :person/email "alice@work.com"]
   [:db/add 10001 :person/email "alice@home.com"]
 ]');
@@ -166,7 +166,7 @@ Same uniqueness guarantee as `:db.unique/value`, but additionally enables **upse
 
 ```sql
 -- Creates entity if email is new; updates existing entity if email exists
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:person/email "alice@example.com"
    :person/name "Alice Updated"}
 ]');
@@ -215,7 +215,7 @@ Existing attribute properties can be modified by transacting against the attribu
 
 ```sql
 -- Add an index to an existing attribute
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/id :person/age
    :db/index true}
 ]');
@@ -232,7 +232,7 @@ SELECT mentat_transact('[
 SELECT mentat_schema();
 
 -- Query schema as data
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?ident ?type
     :where
     [?a :db/ident ?ident]

@@ -9,7 +9,7 @@ BEGIN;
 -- Setup: Ensure schema and test data exist
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :employee/name
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one}
@@ -21,7 +21,7 @@ SELECT mentat_transact('[
      :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "e1" :employee/name "Alice" :employee/dept "Engineering" :employee/salary 120000}
     {:db/id "e2" :employee/name "Bob" :employee/dept "Engineering" :employee/salary 110000}
     {:db/id "e3" :employee/name "Carol" :employee/dept "Sales" :employee/salary 95000}
@@ -110,7 +110,7 @@ BEGIN
     SELECT COUNT(*) INTO cnt_before FROM mentat.matview_engineers;
 
     -- Add a new engineer
-    PERFORM mentat_transact('[
+    PERFORM edn_t('[
         {:db/id "e5" :employee/name "Eve" :employee/dept "Engineering" :employee/salary 130000}
     ]');
 

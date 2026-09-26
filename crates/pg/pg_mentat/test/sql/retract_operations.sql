@@ -4,7 +4,7 @@
 BEGIN;
 
 -- Test 1: Setup - Add a person with multiple attributes
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [{:db/id "alice"
   :person/name "Alice Smith"
   :person/age 30
@@ -12,26 +12,26 @@ SELECT mentat.mentat_transact('
 ');
 
 -- Verify all attributes were added
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?attr ?value
  :where
  ["alice" ?attr ?value]]
 ', '{}'::jsonb);
 
 -- Test 2: Retract a single attribute value
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retract "alice" :person/age 30]]
 ');
 
 -- Verify age is gone but other attributes remain
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?attr ?value
  :where
  ["alice" ?attr ?value]]
 ', '{}'::jsonb);
 
 -- Verify age query returns empty result
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?age
  :where
  ["alice" :person/age ?age]]
@@ -39,7 +39,7 @@ SELECT mentat.mentat_query('
 -- Expected: {"columns": ["?age"], "results": []}
 
 -- Test 3: Verify history shows both add and retract
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?age ?tx ?added
  :where
  ["alice" :person/age ?age ?tx ?added]]
@@ -48,17 +48,17 @@ SELECT mentat.mentat_query('
 
 -- Test 4: Retract a wrong value should have no effect
 -- First re-add the age
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/add "alice" :person/age 31]]
 ');
 
 -- Try to retract with wrong value
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retract "alice" :person/age 30]]
 ');
 
 -- Verify age 31 is still present (wrong value was not retracted)
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?age
  :where
  ["alice" :person/age ?age]]
@@ -66,12 +66,12 @@ SELECT mentat.mentat_query('
 -- Expected: {"columns": ["?age"], "results": [[31]]}
 
 -- Test 5: Retract the correct value
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retract "alice" :person/age 31]]
 ');
 
 -- Verify age is now gone
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?age
  :where
  ["alice" :person/age ?age]]
@@ -79,13 +79,13 @@ SELECT mentat.mentat_query('
 -- Expected: {"columns": ["?age"], "results": []}
 
 -- Test 6: Retract and re-add in same transaction
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retract "alice" :person/email "alice@example.com"]
  [:db/add "alice" :person/email "alice.smith@example.com"]]
 ');
 
 -- Verify new email is present
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?email
  :where
  ["alice" :person/email ?email]]
@@ -102,12 +102,12 @@ AND d.added = true
 LIMIT 1 \gset alice_
 
 -- Retract using numeric entity ID
-SELECT mentat.mentat_transact(format('
+SELECT mentat.edn_t(format('
 [[:db/retract %s :person/name "Alice Smith"]]
 ', :'alice_e'));
 
 -- Verify name is gone
-SELECT mentat.mentat_query(format('
+SELECT mentat.edn_q(format('
 [:find ?name
  :where
  [%s :person/name ?name]]
@@ -116,19 +116,19 @@ SELECT mentat.mentat_query(format('
 
 -- Test 8: Verify :db/retractEntity still works alongside :db/retract
 -- Add new entity with multiple attributes
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [{:db/id "bob"
   :person/name "Bob Jones"
   :person/age 25}]
 ');
 
 -- Retract entire entity
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retractEntity "bob"]]
 ');
 
 -- Verify all attributes are gone
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?attr ?value
  :where
  ["bob" ?attr ?value]]
@@ -137,7 +137,7 @@ SELECT mentat.mentat_query('
 
 -- Test 9: Test retract with different value types
 -- Add entity with various value types
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [{:db/id "test"
   :db/ident :test/entity
   :db/doc "Test entity"
@@ -145,12 +145,12 @@ SELECT mentat.mentat_transact('
 ');
 
 -- Retract the string value
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retract "test" :db/doc "Test entity"]]
 ');
 
 -- Verify doc is gone
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?doc
  :where
  ["test" :db/doc ?doc]]
@@ -158,12 +158,12 @@ SELECT mentat.mentat_query('
 -- Expected: {"columns": ["?doc"], "results": []}
 
 -- Retract the keyword reference value
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/retract "test" :db/cardinality :db.cardinality/one]]
 ');
 
 -- Verify cardinality is gone
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?card
  :where
  ["test" :db/cardinality ?card]]

@@ -1,7 +1,7 @@
 -- Test suite: Time-travel queries
 --
 -- Tests mentat_as_of, mentat_since, mentat_history, and the temporal
--- query modifiers in mentat_query inputs JSON.
+-- query modifiers in edn_q inputs JSON.
 
 BEGIN;
 
@@ -9,7 +9,7 @@ BEGIN;
 -- Setup: Create schema and build a mutation history
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :config/key
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one
@@ -20,7 +20,7 @@ SELECT mentat_transact('[
 ]');
 
 -- TX 1: Initial data
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "c1" :config/key "db_version" :config/value "1.0"}
     {:db/id "c2" :config/key "feature_flag" :config/value "disabled"}
 ]');
@@ -37,7 +37,7 @@ END;
 $$;
 
 -- TX 2: Update values
-SELECT mentat_transact('[
+SELECT edn_t('[
     [:db/add [:config/key "db_version"] :config/value "2.0"]
     [:db/add [:config/key "feature_flag"] :config/value "enabled"]
 ]');
@@ -53,7 +53,7 @@ END;
 $$;
 
 -- TX 3: Another update
-SELECT mentat_transact('[
+SELECT edn_t('[
     [:db/add [:config/key "db_version"] :config/value "3.0"]
 ]');
 
@@ -117,7 +117,7 @@ DECLARE
     result JSONB;
     val TEXT;
 BEGIN
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?val .
          :where
          [?e :config/key "db_version"]
@@ -129,7 +129,7 @@ BEGIN
 END;
 $$;
 
--- Test 4: mentat_query with asOf input parameter
+-- Test 4: edn_q with asOf input parameter
 DO $$
 DECLARE
     result JSONB;
@@ -137,7 +137,7 @@ DECLARE
     val TEXT;
 BEGIN
     tx1 := current_setting('test.tx1')::BIGINT;
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?val .
          :where
          [?e :config/key "db_version"]
@@ -145,7 +145,7 @@ BEGIN
     ', ('{"asOf": ' || tx1 || '}')::JSONB)::JSONB INTO result;
     val := result::TEXT;
     ASSERT val LIKE '%1.0%', 'asOf input should return TX1 value, got: ' || val;
-    RAISE NOTICE 'PASS: mentat_query with asOf input';
+    RAISE NOTICE 'PASS: edn_q with asOf input';
 END;
 $$;
 
@@ -175,7 +175,7 @@ BEGIN
 END;
 $$;
 
--- Test 6: mentat_query with since input parameter
+-- Test 6: edn_q with since input parameter
 DO $$
 DECLARE
     result JSONB;
@@ -183,14 +183,14 @@ DECLARE
     cnt INT;
 BEGIN
     tx2 := current_setting('test.tx2')::BIGINT;
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?key ?val
          :where
          [?e :config/key ?key]
          [?e :config/value ?val]]
     ', ('{"since": ' || tx2 || '}')::JSONB)::JSONB INTO result;
     ASSERT result IS NOT NULL, 'since input should return results';
-    RAISE NOTICE 'PASS: mentat_query with since input';
+    RAISE NOTICE 'PASS: edn_q with since input';
 END;
 $$;
 
@@ -218,13 +218,13 @@ BEGIN
 END;
 $$;
 
--- Test 8: mentat_query with history input parameter
+-- Test 8: edn_q with history input parameter
 DO $$
 DECLARE
     result JSONB;
     cnt INT;
 BEGIN
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?e ?val ?tx ?added
          :where
          [?e :config/key "db_version"]
@@ -233,7 +233,7 @@ BEGIN
     ASSERT result IS NOT NULL, 'history input should return results';
     cnt := jsonb_array_length(result->'results');
     ASSERT cnt >= 3, 'history should have entries, got: ' || cnt;
-    RAISE NOTICE 'PASS: mentat_query with history input (% entries)', cnt;
+    RAISE NOTICE 'PASS: edn_q with history input (% entries)', cnt;
 END;
 $$;
 

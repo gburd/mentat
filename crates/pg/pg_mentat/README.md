@@ -41,7 +41,7 @@ cargo pgrx run pg16
 CREATE EXTENSION pg_mentat;
 
 -- Define schema
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :person/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -55,19 +55,19 @@ SELECT mentat_transact('[
 ]');
 
 -- Transact data
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/id "alice" :person/name "Alice" :person/email "alice@example.com" :person/age 30}
   {:db/id "bob"   :person/name "Bob"   :person/email "bob@example.com"   :person/age 25}
 ]');
 
 -- Query
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name ?email
    :where [?e :person/name ?name] [?e :person/email ?email]]
 ', '{}');
 
 -- Pull
-SELECT mentat_pull('[*]', 10000);
+SELECT edn_pull('[*]', 10000);
 
 -- Entity
 SELECT mentat_entity(10000);
@@ -79,13 +79,17 @@ SELECT mentat_entity(10000);
 
 | Function | Description |
 |----------|-------------|
-| `mentat_transact(edn TEXT)` | Process EDN transactions (assert, retract, retractEntity) |
-| `mentat_query(query TEXT, inputs JSONB)` | Execute Datalog queries with temporal and pagination options |
-| `mentat_pull(pattern TEXT, entity_id BIGINT)` | Pull entity attributes by pattern |
+| `edn_t(edn TEXT)` | Process EDN transactions (assert, retract, retractEntity) |
+| `edn_q(query TEXT, inputs JSONB)` | Execute Datalog queries with temporal and pagination options |
+| `edn_pull(pattern TEXT, entity_id BIGINT)` | Pull entity attributes by pattern |
 | `mentat_pull_many(pattern TEXT, entity_ids BIGINT[])` | Pull attributes for multiple entities |
 | `mentat_entity(entity_id BIGINT)` | Get all attributes of an entity as JSONB |
 | `mentat_schema()` | Return current schema as JSONB |
 | `mentat_explain(query TEXT, inputs JSONB)` | Show query execution plan and generated SQL |
+
+Since 1.9.0 the core functions use the `edn_*` names shared with the SQLite and
+DuckDB extensions. The old names `mentat_transact`, `mentat_query`,
+`mentat_pull` and `mentat_eval` remain as deprecated SQL wrappers.
 
 ### Scripting API (optional `script` feature)
 
@@ -96,18 +100,18 @@ and exposes a `mentat.store/*` namespace — a Datomic-in-Clojure surface where 
 
 | Function | Description |
 |----------|-------------|
-| `mentat_eval(script TEXT)` | Evaluate a mino script; returns its result as EDN (`pr-str`) text |
+| `edn_eval(script TEXT)` | Evaluate a mino script; returns its result as EDN (`pr-str`) text |
 
 ```sql
 -- Transact a schema, then query. `db` is an immutable value carrying its basis.
-SELECT mentat_eval($$
+SELECT edn_eval($$
   (mentat.store/transact (mentat.store/open)
     [{:db/ident :person/name
       :db/valueType :db.type/string
       :db/cardinality :db.cardinality/one}])
 $$);
 
-SELECT mentat_eval($$
+SELECT edn_eval($$
   (mentat.store/q (mentat.store/db (mentat.store/open))
     '[:find ?n :where [?e :person/name ?n]])
 $$);
@@ -116,7 +120,7 @@ $$);
 The `mentat.store/*` primitives: `open` (conn handle), `db` (immutable db value
 at the current basis), `transact` (commits), `with` (speculative `db -> db'`,
 no commit), `q`/`q-once`, `pull`, `entity`, `read`, `datoms`, and `as-of` /
-`since` (temporal db values). Because `mentat_query` accepts `asOf`/`since`
+`since` (temporal db values). Because `edn_q` accepts `asOf`/`since`
 inputs, **full Datalog `q` runs against a historical basis** — an advantage over
 the standalone Mentat crate. Default off; a build without the feature pulls and
 costs nothing.
@@ -170,7 +174,7 @@ pg_mentat functions return standard PostgreSQL types (JSONB, TEXT, BIGINT), maki
 -- CTEs with Datalog
 WITH engineers AS (
   SELECT elem->>0 AS eid, elem->>1 AS name
-  FROM mentat_query('[:find ?e ?name :where
+  FROM edn_q('[:find ?e ?name :where
     [?e :person/department ?d] [?d :dept/name "Engineering"]
     [?e :person/name ?name]]', '{}') AS q,
   jsonb_array_elements(q->'results') AS elem
@@ -180,7 +184,7 @@ SELECT * FROM engineers;
 -- Window functions
 WITH salaries AS (
   SELECT (elem->>1)::text AS name, (elem->>2)::int AS salary
-  FROM mentat_query('[:find ?e ?name ?salary :where
+  FROM edn_q('[:find ?e ?name ?salary :where
     [?e :person/name ?name] [?e :person/salary ?salary]]', '{}') AS q,
   jsonb_array_elements(q->'results') AS elem
 )
@@ -189,7 +193,7 @@ SELECT name, salary, RANK() OVER (ORDER BY salary DESC) FROM salaries;
 -- Join with relational tables
 WITH people AS (
   SELECT elem->>0 AS name, elem->>1 AS email
-  FROM mentat_query('[:find ?name ?email :where
+  FROM edn_q('[:find ?name ?email :where
     [?e :person/name ?name] [?e :person/email ?email]]', '{}') AS q,
   jsonb_array_elements(q->'results') AS elem
 )
@@ -209,9 +213,9 @@ src/
     edn.rs              -- Edn impl, edn_in/edn_out/edn_send/edn_recv
   operators.rs          -- EDN operators and accessor functions
   functions/
-    transact.rs         -- mentat_transact() - EDN transaction processing
-    query.rs            -- mentat_query(), mentat_explain() - Datalog to SQL compilation
-    pull.rs             -- mentat_pull(), mentat_pull_many() - Pull API
+    transact.rs         -- edn_t() - EDN transaction processing
+    query.rs            -- edn_q(), mentat_explain() - Datalog to SQL compilation
+    pull.rs             -- edn_pull(), mentat_pull_many() - Pull API
     entity.rs           -- mentat_entity() - Entity retrieval
     schema.rs           -- mentat_schema() - Schema introspection
     stats.rs            -- mentat_query_stats(), mentat_storage_stats(), mentat_slow_queries()

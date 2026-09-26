@@ -1,6 +1,6 @@
 # Datalog Query Language
 
-pg_mentat implements the Datomic dialect of Datalog. Queries are written in EDN (Extensible Data Notation) and passed to `mentat_query()` as text strings.
+pg_mentat implements the Datomic dialect of Datalog. Queries are written in EDN (Extensible Data Notation) and passed to `edn_q()` as text strings.
 
 ## Query Structure
 
@@ -22,7 +22,7 @@ The `:find` clause determines the shape of the result.
 Returns a collection of tuples (array of arrays):
 
 ```sql
-SELECT mentat_query('[:find ?name ?age
+SELECT edn_q('[:find ?name ?age
                       :where
                       [?e :person/name ?name]
                       [?e :person/age ?age]]', '{}');
@@ -34,7 +34,7 @@ SELECT mentat_query('[:find ?name ?age
 Returns a flat array of values (single variable, all matches):
 
 ```sql
-SELECT mentat_query('[:find [?name ...]
+SELECT edn_q('[:find [?name ...]
                       :where [?e :person/name ?name]]', '{}');
 -- Result: {"results":["Alice","Bob","Carol"]}
 ```
@@ -44,7 +44,7 @@ SELECT mentat_query('[:find [?name ...]
 Returns a single tuple (first match only):
 
 ```sql
-SELECT mentat_query('[:find [?name ?age]
+SELECT edn_q('[:find [?name ?age]
                       :where
                       [?e :person/name ?name]
                       [?e :person/age ?age]]', '{}');
@@ -56,7 +56,7 @@ SELECT mentat_query('[:find [?name ?age]
 Returns a single value (first match, first variable):
 
 ```sql
-SELECT mentat_query('[:find ?name .
+SELECT edn_q('[:find ?name .
                       :where [?e :person/name ?name]]', '{}');
 -- Result: {"results":"Alice"}
 ```
@@ -76,7 +76,7 @@ A pattern matches datoms against the EAV model:
 Each position can be a variable (`?x`), a literal, or blank (`_`).
 
 ```sql
-SELECT mentat_query('[:find ?e
+SELECT edn_q('[:find ?e
                       :where
                       [?e :person/name "Alice"]]', '{}');
 ```
@@ -86,7 +86,7 @@ SELECT mentat_query('[:find ?e
 Multiple patterns in `:where` are joined -- a variable must unify across all patterns:
 
 ```sql
-SELECT mentat_query('[:find ?name ?email
+SELECT edn_q('[:find ?name ?email
                       :where
                       [?e :person/name ?name]
                       [?e :person/email ?email]]', '{}');
@@ -261,7 +261,7 @@ Rules are named, reusable query fragments. Define them in the `:in` clause with 
 ### Basic Rules
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name
     :in $ %
     :where (adult ?e)
@@ -276,7 +276,7 @@ Rules can reference themselves for graph traversal:
 
 ```sql
 -- Find all ancestors (transitive parent-of)
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?ancestor
     :in $ % ?person
     :where (ancestor ?person ?ancestor)]',
@@ -314,7 +314,7 @@ The `:in` clause declares external parameters. The implicit first input is alway
 ```
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :in $ ?min-age :where [?e :person/name ?name] [?e :person/age ?age] [(>= ?age ?min-age)]]',
   '{"inputs": [null, 21]}'
 );
@@ -333,7 +333,7 @@ Match against a set of values:
 ```
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :in $ [?city ...] :where [?e :person/name ?name] [?e :person/city ?city]]',
   '{"inputs": [null, ["NYC", "SF", "LA"]]}'
 );
@@ -367,7 +367,7 @@ Pass a table of values:
 ```
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?score :in $ [[?name ?score]] :where [?e :person/name ?name] [(> ?score 80)]]',
   '{"inputs": [null, [["Alice", 95], ["Bob", 72], ["Carol", 88]]]}'
 );
@@ -399,7 +399,7 @@ Options are passed in the JSON `inputs` parameter:
 | `"limit"` | integer | Maximum result rows |
 
 ```sql
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :where [?e :person/name ?name]]',
   '{"as_of": 1000, "limit": 10}'
 );

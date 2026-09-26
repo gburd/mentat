@@ -9,9 +9,9 @@ The same surface is available on both backends:
 
 - **Embedded** — `mentat::ScriptInterpreter` (in the `mentat` crate) runs mino
   scripts against SQLite-backed `Store`s.
-- **PostgreSQL** — the SQL function `mentat_eval(TEXT)` runs a script against the
+- **PostgreSQL** — the SQL function `edn_eval(TEXT)` runs a script against the
   current database. It is behind the optional `script` cargo feature (off by
-  default).
+  default). `mentat_eval(TEXT)` is its deprecated pre-1.9.0 name.
 
 ## The Datomic-style model
 
@@ -64,7 +64,7 @@ registers `mentat.store/q-once` as an alias of `q`.
 From SQL:
 
 ```sql
-SELECT mentat_eval($$
+SELECT edn_eval($$
   (let [conn (mentat.store/open)]
     (mentat.store/transact conn [{:person/name "Bob"}])
     (mentat.store/q (mentat.store/db conn)
@@ -72,7 +72,7 @@ SELECT mentat_eval($$
 $$);
 ```
 
-`mentat_eval` returns the result as EDN text (`pr-str`). A mino exception
+`edn_eval` returns the result as EDN text (`pr-str`). A mino exception
 surfaces as a clean PostgreSQL `ERROR` carrying the mino message.
 
 ### Temporal reads across backends
@@ -86,9 +86,9 @@ on the embedded backend a historical `mentat.store/q` is an error. The
 `datoms`/`entity`/`read`/`pull` paths still honor `as-of`/`since` by replaying
 the transaction log; only arbitrary Datalog `q` against a past basis is the gap.
 
-## Security — `mentat_eval`
+## Security — `edn_eval`
 
-`mentat_eval` is **callable by every role by design**. The extension issues no
+`edn_eval` is **callable by every role by design**. The extension issues no
 `REVOKE`, so PostgreSQL's default grants `EXECUTE` to `PUBLIC`. That makes the
 sandbox the entire defense, so it is built to hold against a hostile caller, not
 just a careless one.
@@ -117,7 +117,7 @@ just a careless one.
   `pg_cancel_backend()` and `stack_is_too_deep()`.
 - **No privilege gain.** A script runs through SPI as the calling role, so it
   reaches only the stores that role can already query with
-  `mentat_query`/`mentat_transact`. It must **not** be made `SECURITY DEFINER` —
+  `edn_q`/`edn_t`. It must **not** be made `SECURITY DEFINER` —
   that would turn it into a privilege escalation.
 
 The embedded `ScriptInterpreter` uses the same sandboxed interpreter with

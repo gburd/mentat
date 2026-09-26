@@ -11,7 +11,7 @@ BEGIN;
 -- Setup: Create schema and test data in the default store
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :test/name
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one
@@ -30,12 +30,12 @@ SELECT mentat_transact('[
      :db/cardinality :db.cardinality/many}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "e1" :test/name "Alice" :test/age 30 :test/active true :test/score 95.5}
     {:db/id "e2" :test/name "Bob" :test/age 25 :test/active false :test/score 87.3}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     [:db/add "e1" :test/tag :priority/high]
     [:db/add "e1" :test/tag :status/active]
 ]');

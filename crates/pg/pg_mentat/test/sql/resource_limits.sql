@@ -50,41 +50,41 @@ RESET mentat.temp_file_limit;
 SET mentat.max_result_rows = 5;
 
 -- First, define schema and insert enough test data
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :test.limit/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
 ]');
 
 -- Insert 10 entities
-SELECT mentat_transact('[{:test.limit/name "limit-test-1"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-2"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-3"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-4"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-5"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-6"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-7"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-8"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-9"}]');
-SELECT mentat_transact('[{:test.limit/name "limit-test-10"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-1"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-2"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-3"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-4"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-5"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-6"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-7"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-8"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-9"}]');
+SELECT edn_t('[{:test.limit/name "limit-test-10"}]');
 
 -- This query returns 10 rows but limit is 5 -- should produce an error
 -- containing "result-limit"
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e ?name :where [?e :test.limit/name ?name]]',
   '{}'::jsonb
 );
 -- Expected: ERROR containing ":db.error/result-limit-exceeded"
 
 -- With an explicit :limit, the GUC limit should not trigger
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e ?name :where [?e :test.limit/name ?name] :limit 3]',
   '{}'::jsonb
 );
 -- Expected: Success, 3 rows
 
 -- With a pagination limit, the GUC limit should not trigger
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e ?name :where [?e :test.limit/name ?name]]',
   '{"limit": 3}'::jsonb
 );
@@ -92,7 +92,7 @@ SELECT mentat_query(
 
 -- Unlimited (set to 0)
 SET mentat.max_result_rows = 0;
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e ?name :where [?e :test.limit/name ?name]]',
   '{}'::jsonb
 );

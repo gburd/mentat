@@ -7,9 +7,9 @@ This guide covers the complete SQL function API, EDN helper functions, batch ope
 ## Table of Contents
 
 - [Core API Functions](#core-api-functions)
-  - [mentat_transact](#mentat_transact)
-  - [mentat_query](#mentat_query)
-  - [mentat_pull](#mentat_pull)
+  - [edn_t](#edn_t)
+  - [edn_q](#edn_q)
+  - [edn_pull](#edn_pull)
   - [mentat_pull_many](#mentat_pull_many)
   - [mentat_entity](#mentat_entity)
   - [mentat_schema](#mentat_schema)
@@ -45,18 +45,22 @@ This guide covers the complete SQL function API, EDN helper functions, batch ope
 
 ## Core API Functions
 
-### mentat_transact
+> Since 1.9.0 the core functions are `edn_t`, `edn_q`, `edn_pull` (and
+> `edn_eval` in `script` builds). The pre-1.9.0 names `mentat_transact`,
+> `mentat_query`, `mentat_pull`, `mentat_eval` still work as deprecated wrappers.
+
+### edn_t
 
 Process EDN transactions: assert facts, retract facts, and retract entire entities.
 
 ```sql
-mentat_transact(edn_tx TEXT) -> TEXT
+edn_t(edn_tx TEXT) -> TEXT
 ```
 
 **Schema definition:**
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :person/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -76,7 +80,7 @@ SELECT mentat_transact('[
 **Assert facts (map form):**
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/id "alice"
    :person/name "Alice"
    :person/email "alice@example.com"
@@ -91,7 +95,7 @@ SELECT mentat_transact('[
 **Assert facts (list form):**
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add "alice" :person/name "Alice"]
   [:db/add "alice" :person/email "alice@example.com"]
 ]');
@@ -100,7 +104,7 @@ SELECT mentat_transact('[
 **Retract individual facts:**
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/retract 10042 :person/name "Alice"]
 ]');
 ```
@@ -108,7 +112,7 @@ SELECT mentat_transact('[
 **Retract entity (all facts):**
 
 ```sql
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/retractEntity 10042]
 ]');
 ```
@@ -131,18 +135,18 @@ SELECT mentat_transact('[
 
 ---
 
-### mentat_query
+### edn_q
 
 Execute a Datalog query with optional inputs and temporal modifiers.
 
 ```sql
-mentat_query(query TEXT, inputs JSONB) -> JSONB
+edn_q(query TEXT, inputs JSONB) -> JSONB
 ```
 
 **Basic query:**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name ?email
    :where
    [?e :person/name ?name]
@@ -153,7 +157,7 @@ SELECT mentat_query('
 **With input parameters:**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name
    :in $ ?min-age
    :where
@@ -175,7 +179,7 @@ SELECT mentat_query('
 **Aggregates:**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find (count ?e) (avg ?age) (max ?age) (min ?age)
    :where
    [?e :person/age ?age]]
@@ -187,7 +191,7 @@ Supported aggregates: `count`, `sum`, `avg`, `min`, `max`.
 **Predicates:**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name
    :where
    [?e :person/name ?name]
@@ -202,7 +206,7 @@ Supported predicates: `>`, `<`, `>=`, `<=`, `=`, `!=`.
 **OR and NOT clauses:**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name
    :where
    [?e :person/name ?name]
@@ -215,7 +219,7 @@ SELECT mentat_query('
 **Rules (recursive):**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?boss-name
    :in $ ?emp-name
    :where
@@ -233,7 +237,7 @@ SELECT mentat_query('
 **Full-text search:**
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name ?score
    :where
    [(fulltext $ :person/bio "database systems") [[?e _ ?score]]]
@@ -245,30 +249,30 @@ SELECT mentat_query('
 
 ---
 
-### mentat_pull
+### edn_pull
 
 Pull attributes for a single entity using a pull pattern.
 
 ```sql
-mentat_pull(pattern TEXT, entity_id BIGINT) -> JSONB
+edn_pull(pattern TEXT, entity_id BIGINT) -> JSONB
 ```
 
 **Wildcard pull (all attributes):**
 
 ```sql
-SELECT mentat_pull('[*]', 10042);
+SELECT edn_pull('[*]', 10042);
 ```
 
 **Specific attributes:**
 
 ```sql
-SELECT mentat_pull('[:person/name :person/email]', 10042);
+SELECT edn_pull('[:person/name :person/email]', 10042);
 ```
 
 **Nested ref traversal:**
 
 ```sql
-SELECT mentat_pull('[
+SELECT edn_pull('[
   :person/name
   {:person/department [:dept/name :dept/budget]}
   {:person/friends [:person/name :person/email]}
@@ -278,13 +282,13 @@ SELECT mentat_pull('[
 **Reverse lookups (who references this entity?):**
 
 ```sql
-SELECT mentat_pull('[:person/name :person/_friends]', 10042);
+SELECT edn_pull('[:person/name :person/_friends]', 10042);
 ```
 
 **Limits and defaults:**
 
 ```sql
-SELECT mentat_pull('[
+SELECT edn_pull('[
   (:person/friends :limit 5)
   (:person/bio :default "N/A")
 ]', 10042);
@@ -294,7 +298,7 @@ SELECT mentat_pull('[
 
 ```sql
 -- Pull manager chain up to 3 levels
-SELECT mentat_pull('[
+SELECT edn_pull('[
   :person/name
   {:person/manager 3}
 ]', 10042);
@@ -450,7 +454,7 @@ SELECT mentat.export_edn(ARRAY[10042, 10043]);
 -- ]
 ```
 
-The output can be fed directly into `mentat_transact` or `mentat.import_edn` on another database for data migration.
+The output can be fed directly into `edn_t` or `mentat.import_edn` on another database for data migration.
 
 ### mentat.import_edn
 
@@ -470,7 +474,7 @@ SELECT mentat.import_edn('[
 ]');
 ```
 
-This is equivalent to calling `mentat_transact` but returns a JSONB transaction report.
+This is equivalent to calling `edn_t` but returns a JSONB transaction report.
 
 ### mentat.query_export_edn
 
@@ -604,7 +608,7 @@ Returns:
 ```json
 {
   "functions": [
-    {"function": "mentat_query", "calls": 150, "avg_duration_ms": 12.5, ...}
+    {"function": "edn_q", "calls": 150, "avg_duration_ms": 12.5, ...}
   ],
   "database_stats": {
     "total_datoms": 5000,
@@ -726,7 +730,7 @@ pg_mentat supports three temporal modes via the `inputs` JSONB parameter.
 See the database as it was at a specific transaction.
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name :where [?e :person/name ?name]]
 ', '{"asOf": 1000005}');
 ```
@@ -736,7 +740,7 @@ SELECT mentat_query('
 See only facts asserted since a specific transaction.
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name :where [?e :person/name ?name]]
 ', '{"since": 1000005}');
 ```
@@ -746,7 +750,7 @@ SELECT mentat_query('
 See all datoms including retractions. The query must bind `?tx` and `?added` variables.
 
 ```sql
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?e ?name ?tx ?added
    :where [?e :person/name ?name ?tx ?added]]
 ', '{"history": true}');
@@ -760,13 +764,13 @@ The `inputs` JSONB parameter supports `limit` and `offset` for pagination.
 
 ```sql
 -- First page (10 results)
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name ?email
    :where [?e :person/name ?name] [?e :person/email ?email]]
 ', '{"limit": 10}');
 
 -- Second page
-SELECT mentat_query('
+SELECT edn_q('
   [:find ?name ?email
    :where [?e :person/name ?name] [?e :person/email ?email]]
 ', '{"limit": 10, "offset": 10}');
@@ -785,7 +789,7 @@ pg_mentat functions return standard SQL types (JSONB, TEXT), so they compose nat
 ```sql
 WITH engineers AS (
   SELECT (r->>'results') AS results
-  FROM mentat_query('
+  FROM edn_q('
     [:find ?e ?name ?salary
      :where
      [?e :person/department ?d]
@@ -805,7 +809,7 @@ WITH salaries AS (
     elem->>0 AS entity_id,
     elem->>1 AS name,
     (elem->>2)::int AS salary
-  FROM mentat_query('
+  FROM edn_q('
     [:find ?e ?name ?salary
      :where
      [?e :person/name ?name]
@@ -828,7 +832,7 @@ WITH mentat_people AS (
   SELECT
     elem->>0 AS name,
     elem->>1 AS email
-  FROM mentat_query('
+  FROM edn_q('
     [:find ?name ?email
      :where
      [?e :person/name ?name]
@@ -852,7 +856,7 @@ ORDER BY total_hours DESC;
 -- Get detailed entity info for query results
 WITH entity_ids AS (
   SELECT elem->>0 AS eid
-  FROM mentat_query('
+  FROM edn_q('
     [:find ?e
      :where
      [?e :person/salary ?s]
@@ -860,7 +864,7 @@ WITH entity_ids AS (
   ', '{}') AS q,
   jsonb_array_elements(q->'results') AS elem
 )
-SELECT mentat_pull('[*]', eid::bigint)
+SELECT edn_pull('[*]', eid::bigint)
 FROM entity_ids;
 ```
 
@@ -874,7 +878,7 @@ pg_mentat exposes several GUC (Grand Unified Configuration) parameters for tunin
 |-----------|------|---------|-------------|
 | `mentat.enable_optimizer_hints` | boolean | `true` | Enable automatic SET LOCAL optimizer hints during query execution |
 | `mentat.default_work_mem` | string | `64MB` | The `work_mem` value applied during complex queries |
-| `mentat.max_result_rows` | integer | `0` (unlimited) | Maximum rows returned by `mentat_query` before raising an error |
+| `mentat.max_result_rows` | integer | `0` (unlimited) | Maximum rows returned by `edn_q` before raising an error |
 
 Set parameters per-session or in `postgresql.conf`:
 
@@ -1010,9 +1014,9 @@ Every core function has a `*_in_store` variant that targets a specific named sto
 
 | Default Function | Store-Aware Variant |
 |-----------------|---------------------|
-| `mentat_transact(edn)` | `mentat_transact_in_store(store, edn)` |
-| `mentat_query(query, inputs)` | `mentat_query_in_store(store, query, inputs)` |
-| `mentat_pull(pattern, eid)` | `mentat_pull_in_store(store, pattern, eid)` |
+| `edn_t(edn)` | `mentat_transact_in_store(store, edn)` |
+| `edn_q(query, inputs)` | `mentat_query_in_store(store, query, inputs)` |
+| `edn_pull(pattern, eid)` | `mentat_pull_in_store(store, pattern, eid)` |
 | `mentat_pull_many(pattern, eids)` | `mentat_pull_many_in_store(store, pattern, eids)` |
 | `mentat_entity(eid)` | `mentat_entity_in_store(store, eid)` |
 | `mentat_schema()` | `mentat_schema_in_store(store)` |
@@ -1248,15 +1252,15 @@ Time-travel can also be specified via the `inputs` JSON parameter:
 
 ```sql
 -- As-of via inputs
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name]]',
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]',
     '{"asOf": 1000005}');
 
 -- Since via inputs
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name]]',
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]',
     '{"since": 1000005}');
 
 -- History via inputs (query must bind ?tx and ?added)
-SELECT mentat_query(
+SELECT edn_q(
     '[:find ?e ?name ?tx ?added :where [?e :person/name ?name ?tx ?added]]',
     '{"history": true}');
 ```

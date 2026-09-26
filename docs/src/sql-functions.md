@@ -14,25 +14,28 @@ SELECT mentat.q('[:find ?e :where [?e :person/name "Alice"]]');
 SELECT mentat.pull('[*]', 10001);
 ```
 
-**Full-name functions** use a `mentat_` prefix. These read naturally when installed into a custom schema:
+**Core functions** use the cross-backend `edn_*` names shared with the SQLite
+and DuckDB extensions (since 1.9.0):
 
 ```sql
--- If you install into a custom schema:
-CREATE EXTENSION pg_mentat SCHEMA myapp;
-SELECT myapp.mentat_transact('[{:person/name "Alice"}]');
-SELECT myapp.mentat_query('[:find ?e :where [?e :person/name "Alice"]]');
-SELECT myapp.mentat_pull('[*]', 10001);
+SELECT edn_t('[{:person/name "Alice"}]');
+SELECT edn_q('[:find ?e :where [?e :person/name "Alice"]]', '{}');
+SELECT edn_pull('[*]', 10001);
+SELECT edn_eval('(+ 1 2)');   -- only in builds with the `script` feature
 ```
 
-The full-name functions exist because pgrx derives the SQL function name from the Rust function name. Since any schema can host the extension, the `mentat_` prefix ensures the function names read sensibly regardless of the schema choice. The convenience aliases eliminate redundancy for the common default case.
+**Deprecated names.** Before 1.9.0 these were `mentat_transact`, `mentat_query`,
+`mentat_pull` and `mentat_eval`. The old names still work: they are thin SQL
+wrappers over the `edn_*` functions (`COMMENT`ed as deprecated) and will be
+removed in a future major release. Other functions keep their `mentat_` prefix.
 
 ### Quick Reference
 
 | Convenience alias | Full function | Description |
 |-------------------|--------------|-------------|
-| `mentat.t(edn)` | `mentat_transact(edn)` | Transact EDN data |
-| `mentat.q(query, inputs)` | `mentat_query(query, inputs)` | Run a Datalog query |
-| `mentat.pull(pattern, eid)` | `mentat_pull(pattern, eid)` | Pull entity attributes |
+| `mentat.t(edn)` | `edn_t(edn)` | Transact EDN data |
+| `mentat.q(query, inputs)` | `edn_q(query, inputs)` | Run a Datalog query |
+| `mentat.pull(pattern, eid)` | `edn_pull(pattern, eid)` | Pull entity attributes |
 | `mentat.pull_many(pattern, eids)` | `mentat_pull_many(pattern, eids)` | Pull multiple entities |
 | `mentat.entity(eid)` | `mentat_entity(eid)` | All attributes as JSON |
 | `mentat.schema()` | `mentat_schema()` | Current schema |
@@ -46,7 +49,7 @@ The full-name functions exist because pgrx derives the SQL function name from th
 
 ## Transaction Functions
 
-### `mentat.t(edn)` / `mentat_transact(edn)`
+### `mentat.t(edn)` / `edn_t(edn)`
 
 Execute a transaction. Returns a JSON transaction report with `tx_id`, `tx_instant`, and `tempids`.
 
@@ -78,7 +81,7 @@ SELECT mentat.mentat_with('[
 
 ## Query Functions
 
-### `mentat.q(query, inputs)` / `mentat_query(query, inputs)`
+### `mentat.q(query, inputs)` / `edn_q(query, inputs)`
 
 Execute a Datalog query. Returns JSONB with `columns` and `results`.
 
@@ -142,7 +145,7 @@ SELECT * FROM mentat.people_over_30 WHERE name LIKE 'A%';
 
 ## Pull Functions
 
-### `mentat.pull(pattern, eid)` / `mentat_pull(pattern, eid)`
+### `mentat.pull(pattern, eid)` / `edn_pull(pattern, eid)`
 
 Pull attributes for a single entity. Returns a nested JSON document.
 

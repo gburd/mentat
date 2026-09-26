@@ -1,5 +1,5 @@
 -- Test suite for pg_mentat SQL API functions
--- Tests mentat_schema(), mentat_entity(), and mentat_query()
+-- Tests mentat_schema(), mentat_entity(), and edn_q()
 
 -- Setup: Create test schema and data
 BEGIN;
@@ -14,7 +14,7 @@ SELECT jsonb_typeof(mentat.mentat_schema());
 
 -- Test 2: mentat_entity() - Fetch entity data
 -- First, create a test entity via transaction
-SELECT mentat.mentat_transact('
+SELECT mentat.edn_t('
 [[:db/add "person1" :person/name "Alice"]
  [:db/add "person1" :person/age 30]]
 ');
@@ -40,16 +40,16 @@ SELECT jsonb_typeof(mentat.mentat_entity(100));
 SELECT mentat.mentat_entity(100) ? ':db/id';
 -- Should return true
 
--- Test 3: mentat_query() - Execute datalog queries
+-- Test 3: edn_q() - Execute datalog queries
 -- Simple query to find all person names
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?name
  :where
  [?e :person/name ?name]]
 ', '{}'::jsonb);
 
 -- Query with multiple variables
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?name ?age
  :where
  [?e :person/name ?name]
@@ -61,7 +61,7 @@ SELECT
     result->>'columns' as columns,
     jsonb_array_length(result->'results') as result_count
 FROM (
-    SELECT mentat.mentat_query('
+    SELECT mentat.edn_q('
         [:find ?name
          :where
          [?e :person/name ?name]]
@@ -70,7 +70,7 @@ FROM (
 
 -- Test 4: Empty result cases
 -- Query for non-existent attribute
-SELECT mentat.mentat_query('
+SELECT mentat.edn_q('
 [:find ?x
  :where
  [?e :nonexistent/attr ?x]]

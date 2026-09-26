@@ -29,7 +29,7 @@ Two halves of the same application:
 
 ```sql
 -- pg_mentat side: schema for users and issues
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :user/email
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one
@@ -70,7 +70,7 @@ CREATE TABLE app.subscriptions (
 ```
 
 (Skipped here: the obvious `INSERT`s into `app.users`/`app.subscriptions` and
-`mentat_transact(...)` calls that create users and issues. The full sample in
+`edn_t(...)` calls that create users and issues. The full sample in
 `docs/examples/cookbook-postgres-join.sql` populates four users — Alice, Bob,
 Carol, Dan — with matching billing rows and five issues.)
 
@@ -146,7 +146,7 @@ and subscription rows resolve through their existing primary/unique indexes.
 
 ```sql
 WITH q AS (
-  SELECT mentat_query(
+  SELECT edn_q(
     '[:find ?title ?state ?email
       :where
         [?i :issue/title ?title]
@@ -192,7 +192,7 @@ express — `not`/`or` clauses, rules, recursion, aggregates with `:find`. The
 materialised CTE is a coarse-grained boundary; the planner cannot push the
 `s.status = 'active'` predicate through it.
 
-Note one wart: `mentat_query` keyword results render as `:issue.state/open`
+Note one wart: `edn_q` keyword results render as `:issue.state/open`
 (with the leading colon), but raw datom storage in `datoms_keyword_new` strips
 the colon (`issue.state/open`). Pattern B compares against the JSON form,
 Pattern A against the storage form.
@@ -231,7 +231,7 @@ WITH closed_issues AS (
          (r->>1)         AS title,
          (r->>2)         AS assignee_email
   FROM   jsonb_array_elements(
-           (mentat_query(
+           (edn_q(
              '[:find ?i ?title ?email
                :where
                  [?i :issue/title ?title]
@@ -276,7 +276,7 @@ INSERT INTO app.users (email, stripe_customer_id)
   VALUES ('eve@example.com', 'cus_eve');
 INSERT INTO app.subscriptions
   VALUES ('cus_eve', 'pro', 'active', now() + interval '14 days');
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/id "u-eve" :user/email "eve@example.com" :user/display-name "Eve"}
   {:issue/title "Slack integration is silently failing"
    :issue/state :issue.state/open
@@ -288,7 +288,7 @@ COMMIT;
 ```
 
 There is no second connection, no two-phase commit, no compensating
-transaction. `mentat_transact` runs inside the surrounding `BEGIN`/`COMMIT`
+transaction. `edn_t` runs inside the surrounding `BEGIN`/`COMMIT`
 exactly like any other function call; the narrow tables participate in
 WAL, replication, and logical decoding the same way every other Postgres
 table does.
@@ -366,7 +366,7 @@ choose the narrow table dynamically rather than statically.
   covering indexes are partial on `added = true`. Predicates without it
   fall back to the primary key and pay for a full row fetch.
 
-* **The datalog engine does not see your `app.*` tables.** `mentat_query`
+* **The datalog engine does not see your `app.*` tables.** `edn_q`
   compiles to SQL that references the narrow tables and `mentat.idents` only;
   it has no awareness of `app.users` or `app.subscriptions`. If you want
   bidirectional queries — e.g., "find me datoms whose `:issue/assignee`
@@ -386,8 +386,8 @@ choose the narrow table dynamically rather than statically.
 
 * **Keyword rendering differs by surface.** Datoms in `datoms_keyword_new`
   store the value without a leading colon (`issue.state/open`); the JSON
-  produced by `mentat_query` reattaches it (`:issue.state/open`); EDN input
-  to `mentat_transact` of course uses the colon form. Match the surface in
+  produced by `edn_q` reattaches it (`:issue.state/open`); EDN input
+  to `edn_t` of course uses the colon form. Match the surface in
   whichever predicate you are writing.
 
 * **The compatibility view's `INSTEAD OF` triggers do not apply to JOINs.**

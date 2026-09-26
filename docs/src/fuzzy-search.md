@@ -122,7 +122,7 @@ the planner picks it; otherwise pg_tre's heap-recheck path runs.
 
 The index is partial: `WHERE store_id = 0 AND a = <attr_entid> AND added`.
 That keeps it small (only live datoms of the chosen attribute) and lets
-the planner use it for `mentat_query` calls automatically.
+the planner use it for `edn_q` calls automatically.
 
 ## Errors and how to fix them
 

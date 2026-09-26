@@ -4,7 +4,7 @@
 -- Setup: entity to CAS on
 \echo Setup: schema for CAS tests
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :cas/counter
    :db/valueType :db.type/long
    :db/cardinality :db.cardinality/one}
@@ -13,12 +13,12 @@ SELECT mentat_transact('[
    :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:cas/label "test-entity" :cas/counter 100}
 ]');
 
 -- Verify initial state
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?v :where [?e :cas/label "test-entity"] [?e :cas/counter ?v]]',
   '{}'::jsonb
 );
@@ -26,12 +26,12 @@ SELECT mentat_query(
 -- Test: successful CAS (old value matches)
 \echo Test: CAS succeeds when old value matches
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db.fn/cas [:cas/label "test-entity"] :cas/counter 100 200]
 ]');
 
 -- Counter should now be 200
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?v :where [?e :cas/label "test-entity"] [?e :cas/counter ?v]]',
   '{}'::jsonb
 );
@@ -42,7 +42,7 @@ SELECT mentat_query(
 -- Try to swap 999 -> 300, but current value is 200 (should error)
 DO $$
 BEGIN
-  PERFORM mentat_transact('[
+  PERFORM edn_t('[
     [:db.fn/cas [:cas/label "test-entity"] :cas/counter 999 300]
   ]');
 EXCEPTION WHEN OTHERS THEN
@@ -50,7 +50,7 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 
 -- Value should still be 200 (unchanged after failed CAS)
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?v :where [?e :cas/label "test-entity"] [?e :cas/counter ?v]]',
   '{}'::jsonb
 );
@@ -58,18 +58,18 @@ SELECT mentat_query(
 -- Test: CAS with nil old-value (assert attribute not set)
 \echo Test: CAS with nil asserts no current value
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :cas/optional
    :db/valueType :db.type/long
    :db/cardinality :db.cardinality/one}
 ]');
 
 -- CAS nil -> 42 should succeed (attribute not set on this entity)
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db.fn/cas [:cas/label "test-entity"] :cas/optional nil 42]
 ]');
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?v :where [?e :cas/label "test-entity"] [?e :cas/optional ?v]]',
   '{}'::jsonb
 );

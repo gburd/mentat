@@ -4,7 +4,7 @@
 -- Setup: baseline data
 \echo Setup: schema for speculative transaction tests
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :spec/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -13,12 +13,12 @@ SELECT mentat_transact('[
    :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:spec/name "baseline" :spec/count 10}
 ]');
 
 -- Verify baseline exists
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?c :where [?e :spec/name ?name] [?e :spec/count ?c]]',
   '{}'::jsonb
 );
@@ -31,13 +31,13 @@ SELECT mentat_with('[
 ]');
 
 -- Verify the speculative entity was NOT actually stored
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :where [?e :spec/name ?name] :order (asc ?name)]',
   '{}'::jsonb
 );
 
 -- Only "baseline" should exist, not "speculative"
-SELECT mentat_query(
+SELECT edn_q(
   '[:find (count ?e) :where [?e :spec/name _]]',
   '{}'::jsonb
 );
@@ -50,7 +50,7 @@ SELECT mentat_with('[
 ]');
 
 -- Original data should still be intact
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?c :where [?e :spec/name ?name] [?e :spec/count ?c]]',
   '{}'::jsonb
 );

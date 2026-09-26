@@ -75,7 +75,7 @@ This drops you into a `psql` session where you can interactively test:
 
 ```sql
 CREATE EXTENSION pg_mentat;
-SELECT mentat_transact('[{:db/ident :test/attr :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+SELECT edn_t('[{:db/ident :test/attr :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
 ```
 
 ## Project Structure

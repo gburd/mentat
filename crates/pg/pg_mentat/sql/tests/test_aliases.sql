@@ -4,9 +4,9 @@
 -- underlying mentat_* functions and produce identical results.
 --
 -- Functions tested:
---   mentat.q()          -> mentat.mentat_query()
---   mentat.t()          -> mentat.mentat_transact()
---   mentat.pull()       -> mentat.mentat_pull()
+--   mentat.q()          -> mentat.edn_q()
+--   mentat.t()          -> mentat.edn_t()
+--   mentat.pull()       -> mentat.edn_pull()
 --   mentat.pull_many()  -> mentat.mentat_pull_many()
 --   mentat.entity()     -> mentat.mentat_entity()
 --   mentat.schema()     -> mentat.mentat_schema()
@@ -22,7 +22,7 @@ BEGIN;
 -- =========================================================================
 -- Setup: Install a test schema with sample data
 -- =========================================================================
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
   {:db/ident       :person/name
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
@@ -36,7 +36,7 @@ SELECT mentat.mentat_transact('[
    :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat.mentat_transact('[
+SELECT mentat.edn_t('[
   {:db/id "alice" :person/name "Alice" :person/age 30 :person/email "alice@example.com"}
   {:db/id "bob"   :person/name "Bob"   :person/age 25}
 ]');
@@ -58,7 +58,7 @@ END;
 $$;
 
 -- =========================================================================
--- Test 2: mentat.q() == mentat.mentat_query()
+-- Test 2: mentat.q() == mentat.edn_q()
 -- =========================================================================
 DO $$
 DECLARE
@@ -67,10 +67,10 @@ DECLARE
     query_str TEXT := '[:find ?name :where [?e :person/name ?name]]';
 BEGIN
     alias_result := mentat.q(query_str, '{}'::jsonb);
-    full_result  := mentat.mentat_query(query_str, '{}'::jsonb);
+    full_result  := mentat.edn_q(query_str, '{}'::jsonb);
     ASSERT alias_result = full_result,
-        'q() alias should return same result as mentat_query()';
-    RAISE NOTICE 'PASS: q() alias matches mentat_query()';
+        'q() alias should return same result as edn_q()';
+    RAISE NOTICE 'PASS: q() alias matches edn_q()';
 END;
 $$;
 
@@ -88,7 +88,7 @@ END;
 $$;
 
 -- =========================================================================
--- Test 4: mentat.t() == mentat.mentat_transact()
+-- Test 4: mentat.t() == mentat.edn_t()
 --         (both transact and return a report string)
 -- =========================================================================
 DO $$
@@ -113,7 +113,7 @@ DECLARE
     eid BIGINT;
 BEGIN
     -- Find Alice's entity ID
-    SELECT (mentat.mentat_query(
+    SELECT (mentat.edn_q(
         '[:find ?e . :where [?e :person/name "Alice"]]',
         '{}'::jsonb
     )->'results'->0->0)::BIGINT INTO eid;
@@ -131,7 +131,7 @@ END;
 $$;
 
 -- =========================================================================
--- Test 6: mentat.pull() == mentat.mentat_pull()
+-- Test 6: mentat.pull() == mentat.edn_pull()
 -- =========================================================================
 DO $$
 DECLARE
@@ -139,17 +139,17 @@ DECLARE
     full_result  JSONB;
     eid BIGINT;
 BEGIN
-    SELECT (mentat.mentat_query(
+    SELECT (mentat.edn_q(
         '[:find ?e . :where [?e :person/name "Alice"]]',
         '{}'::jsonb
     )->'results'->0->0)::BIGINT INTO eid;
 
     IF eid IS NOT NULL THEN
         alias_result := mentat.pull('[:person/name :person/age]', eid);
-        full_result  := mentat.mentat_pull('[:person/name :person/age]', eid);
+        full_result  := mentat.edn_pull('[:person/name :person/age]', eid);
         ASSERT alias_result = full_result,
-            'pull() alias should return same result as mentat_pull()';
-        RAISE NOTICE 'PASS: pull() alias matches mentat_pull()';
+            'pull() alias should return same result as edn_pull()';
+        RAISE NOTICE 'PASS: pull() alias matches edn_pull()';
     ELSE
         RAISE NOTICE 'SKIP: could not find Alice entity ID';
     END IF;
@@ -168,7 +168,7 @@ BEGIN
     SELECT ARRAY(
         SELECT (elem->0)::BIGINT
         FROM jsonb_array_elements(
-            (mentat.mentat_query(
+            (mentat.edn_q(
                 '[:find ?e :where [?e :person/name]]',
                 '{}'::jsonb
             ))->'results'

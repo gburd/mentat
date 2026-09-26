@@ -4,7 +4,7 @@
 -- Setup: define schema and insert test entities
 \echo Setup: schema for excision tests
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :exc/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -13,7 +13,7 @@ SELECT mentat_transact('[
    :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:exc/name "target-entity"}
   {:exc/name "other-entity"}
 ]');
@@ -23,7 +23,7 @@ UPDATE mentat.partitions SET allow_excision = true
   WHERE part = ':db.part/user';
 
 -- Find the entity id of "target-entity"
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e :where [?e :exc/name "target-entity"]]',
   '{}'::jsonb
 );
@@ -36,7 +36,7 @@ DO $$
 DECLARE
   eid bigint;
 BEGIN
-  SELECT (mentat_query(
+  SELECT (edn_q(
     '[:find ?e . :where [?e :exc/name "target-entity"]]',
     '{}'::jsonb
   ))::jsonb->>0 INTO eid;
@@ -47,13 +47,13 @@ BEGIN
 END $$;
 
 -- Verify entity is gone
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?e :where [?e :exc/name "target-entity"]]',
   '{}'::jsonb
 );
 
 -- Other entity should still exist
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :where [?e :exc/name ?name]]',
   '{}'::jsonb
 );
@@ -67,7 +67,7 @@ SELECT mentat_excise('default', ARRAY[1]::bigint[], 'should fail');
 -- Test: excise with dangling references fails
 \echo Test: excise with dangling refs denied
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:exc/name "parent"}
 ]');
 
@@ -76,7 +76,7 @@ DO $$
 DECLARE
   parent_eid bigint;
 BEGIN
-  SELECT (mentat_query(
+  SELECT (edn_q(
     '[:find ?e . :where [?e :exc/name "parent"]]',
     '{}'::jsonb
   ))::jsonb->>0 INTO parent_eid;
@@ -84,7 +84,7 @@ BEGIN
   IF parent_eid IS NOT NULL THEN
     -- Add a reference from another entity to parent
     EXECUTE format(
-      'SELECT mentat_transact(''[{:exc/name "child" :exc/ref %s}]'')',
+      'SELECT edn_t(''[{:exc/name "child" :exc/ref %s}]'')',
       parent_eid
     );
     -- Now try to excise parent (should fail due to dangling ref)

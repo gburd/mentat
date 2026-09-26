@@ -9,7 +9,7 @@ BEGIN;
 -- Setup
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :sensor/id
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one
@@ -22,7 +22,7 @@ SELECT mentat_transact('[
      :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "s1" :sensor/id "sensor-001" :sensor/temp 22.5 :sensor/status :ok}
     {:db/id "s2" :sensor/id "sensor-002" :sensor/temp 25.0 :sensor/status :ok}
 ]');
@@ -108,7 +108,7 @@ DECLARE
     result TEXT;
 BEGIN
     -- First, insert data that matches the hot_sensors query
-    PERFORM mentat_transact('[
+    PERFORM edn_t('[
         {:db/id "s3" :sensor/id "sensor-003" :sensor/temp 35.0 :sensor/status :warning}
     ]');
 

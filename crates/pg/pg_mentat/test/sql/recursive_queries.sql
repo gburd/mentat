@@ -9,7 +9,7 @@ BEGIN;
 -- Setup: Build an organizational hierarchy
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :org/name
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one
@@ -31,7 +31,7 @@ SELECT mentat_transact('[
 --       East
 --       West
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/id "corp"       :org/name "Corp"        :org/level :company}
     {:db/id "eng"        :org/name "Engineering"  :org/level :division  :org/parent "corp"}
     {:db/id "sales"      :org/name "Sales"        :org/level :division  :org/parent "corp"}

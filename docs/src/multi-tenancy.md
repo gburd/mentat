@@ -167,7 +167,7 @@ VALUES (2, 1, 1, 1, 1, true);                  -- ERROR: WITH CHECK violation
 * The `mentat.datoms` compatibility view is currently hard-coded to
   `store_id = 0`. Code that still reads from the view sees only the
   default store regardless of the session's `mentat.current_store_id`.
-  Migrate to the narrow tables (or to `mentat_query` / `mentat_pull`)
+  Migrate to the narrow tables (or to `edn_q` / `edn_pull`)
   for multi-store access.
 * Schema metadata (`mentat.schema`, `mentat.idents`,
   `mentat.partitions`, `mentat.transactions`) is not yet under RLS.

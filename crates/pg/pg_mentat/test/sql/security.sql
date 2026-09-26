@@ -82,7 +82,7 @@ DECLARE
     result TEXT;
 BEGIN
     -- This should be treated as EDN, not as SQL
-    result := mentat_transact('[{:db/id "test" :test/name "Robert''); DROP TABLE mentat.datoms;--"}]');
+    result := edn_t('[{:db/id "test" :test/name "Robert''); DROP TABLE mentat.datoms;--"}]');
     -- If we get here, the EDN parser handled the quotes safely
     RAISE NOTICE 'PASS: EDN with SQL injection characters handled safely';
 EXCEPTION WHEN OTHERS THEN
@@ -112,7 +112,7 @@ DO $$
 DECLARE
     result JSONB;
 BEGIN
-    SELECT mentat_query(
+    SELECT edn_q(
         '[:find ?e :where [?e :person/name ?n]]',
         '{"test''; DROP TABLE mentat.datoms;--": 1}'
     )::JSONB INTO result;
@@ -127,7 +127,7 @@ DO $$
 DECLARE
     result JSONB;
 BEGIN
-    SELECT mentat_query(
+    SELECT edn_q(
         '[:find ?e :in $ ?name :where [?e :person/name ?name]]',
         '{"name": "Robert''); DROP TABLE mentat.datoms;--"}'
     )::JSONB INTO result;
@@ -146,7 +146,7 @@ DO $$
 DECLARE
     result JSONB;
 BEGIN
-    SELECT mentat_query(
+    SELECT edn_q(
         '[:find ?e :where [?e :person/name "test"]] UNION SELECT * FROM pg_shadow;--',
         '{}'
     )::JSONB INTO result;
@@ -194,7 +194,7 @@ $$;
 -- Test 14: NULL EDN input to transact
 DO $$
 BEGIN
-    PERFORM mentat_transact(NULL);
+    PERFORM edn_t(NULL);
     RAISE EXCEPTION 'Should reject NULL transact input';
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'PASS: rejects NULL transact input (%)', SQLERRM;
@@ -204,7 +204,7 @@ $$;
 -- Test 15: Empty string EDN input to transact
 DO $$
 BEGIN
-    PERFORM mentat_transact('');
+    PERFORM edn_t('');
     RAISE EXCEPTION 'Should reject empty transact input';
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'PASS: rejects empty transact input (%)', SQLERRM;
@@ -214,7 +214,7 @@ $$;
 -- Test 16: NULL query input
 DO $$
 BEGIN
-    PERFORM mentat_query(NULL, '{}');
+    PERFORM edn_q(NULL, '{}');
     RAISE EXCEPTION 'Should reject NULL query input';
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'PASS: rejects NULL query input (%)', SQLERRM;
@@ -224,7 +224,7 @@ $$;
 -- Test 17: NULL inputs JSON
 DO $$
 BEGIN
-    PERFORM mentat_query('[:find ?e :where [?e :person/name _]]', NULL);
+    PERFORM edn_q('[:find ?e :where [?e :person/name _]]', NULL);
     RAISE EXCEPTION 'Should reject NULL inputs JSON';
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'PASS: rejects NULL inputs JSON (%)', SQLERRM;

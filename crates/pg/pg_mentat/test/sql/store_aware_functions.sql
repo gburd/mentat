@@ -254,7 +254,7 @@ DECLARE
     result_default JSONB;
     result_sa JSONB;
 BEGIN
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?name
          :where [?e :product/name ?name]]
     ', '{}')::JSONB INTO result_default;
@@ -273,7 +273,7 @@ END;
 $$;
 
 -- =========================================================================
--- Default store shorthand: mentat_transact() == mentat_transact_in_store('default', ...)
+-- Default store shorthand: edn_t() == mentat_transact_in_store('default', ...)
 -- =========================================================================
 
 -- Test 13: Default store functions work as expected

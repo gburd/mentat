@@ -8,7 +8,7 @@ BEGIN;
 -- Setup: Ensure some data exists for meaningful stats
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :monitor/name
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one}
@@ -17,13 +17,13 @@ SELECT mentat_transact('[
      :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:monitor/name "test1" :monitor/count 100}
     {:monitor/name "test2" :monitor/count 200}
 ]');
 
 -- Run a query to populate per-backend stats
-SELECT mentat_query('[:find ?n :where [?e :monitor/name ?n]]');
+SELECT edn_q('[:find ?n :where [?e :monitor/name ?n]]');
 
 -- =========================================================================
 -- GUC parameters
@@ -223,7 +223,7 @@ BEGIN
     SET mentat.slow_query_threshold_ms = 0;
 
     -- Run a query (should trigger slow query warning since threshold is 0)
-    PERFORM mentat_query('[:find ?n :where [?e :monitor/name ?n]]');
+    PERFORM edn_q('[:find ?n :where [?e :monitor/name ?n]]');
 
     -- Reset threshold
     SET mentat.slow_query_threshold_ms = 100;

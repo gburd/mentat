@@ -58,7 +58,7 @@ SELECT mentat.pull('[*]', 10001);
 ```
 
 > **Note:** `mentat.t`, `mentat.q`, and `mentat.pull` are convenience aliases for the
-> underlying `mentat.mentat_transact`, `mentat.mentat_query`, and `mentat.mentat_pull`
-> functions. The `mentat_` prefix exists so names read naturally when the extension is
-> installed into a non-default schema (e.g., `myapp.mentat_query(...)`). See
+> core `edn_t`, `edn_q`, and `edn_pull` functions (the names shared with the SQLite
+> and DuckDB extensions). The pre-1.9.0 names `mentat_transact`, `mentat_query`, and
+> `mentat_pull` still work as deprecated aliases. See
 > [SQL Function Reference](sql-functions.md) for the full mapping.

@@ -105,7 +105,7 @@ Your existing data in the `mentat` schema is preserved. The existing `mentat` sc
 
 ```sql
 -- Verify existing data is accessible
-SELECT mentat_query('[:find ?e :where [?e :person/name _]]', '{}');
+SELECT edn_q('[:find ?e :where [?e :person/name _]]', '{}');
 
 -- This is equivalent to:
 SELECT mentat_query_in_store('default', '[:find ?e :where [?e :person/name _]]', '{}');
@@ -117,9 +117,9 @@ All existing function signatures remain unchanged. The non-suffixed functions co
 
 ```sql
 -- These still work exactly as before:
-SELECT mentat_transact('[{:db/id "t" :person/name "Test"}]');
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name]]', '{}');
-SELECT mentat_pull('[*]', 12345);
+SELECT edn_t('[{:db/id "t" :person/name "Test"}]');
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]', '{}');
+SELECT edn_pull('[*]', 12345);
 SELECT mentat_entity(12345);
 SELECT mentat_schema();
 ```
@@ -153,7 +153,7 @@ SELECT mentat_create_store('tenant_b', 'Tenant B data');
 -- Export entities for tenant A
 SELECT mentat.export_edn(ARRAY(
     SELECT DISTINCT (elem->>0)::BIGINT
-    FROM mentat_query('[:find ?e :where [?e :tenant/id "A"]]', '{}') q,
+    FROM edn_q('[:find ?e :where [?e :tenant/id "A"]]', '{}') q,
          jsonb_array_elements(q->'results') elem
 ));
 ```
@@ -184,7 +184,7 @@ SELECT mentat_query_in_store('tenant_a',
 
 ### Temporal Query Inputs
 
-The `inputs` JSONB parameter for `mentat_query` now accepts additional keys:
+The `inputs` JSONB parameter for `edn_q` now accepts additional keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
@@ -198,7 +198,7 @@ The `inputs` JSONB parameter for `mentat_query` now accepts additional keys:
 ```sql
 -- Before: temporal queries not available
 -- After: temporal queries via inputs
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name]]',
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]',
     '{"asOf": 1000005}');
 ```
 
@@ -208,7 +208,7 @@ For clarity, dedicated functions are also available:
 
 ```sql
 -- These are equivalent:
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name]]', '{"asOf": 1000005}');
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]', '{"asOf": 1000005}');
 SELECT mentat_as_of(1000005, '[:find ?name :where [?e :person/name ?name]]', '{}');
 ```
 
@@ -247,8 +247,8 @@ ALTER EXTENSION pg_mentat UPDATE;
 
 ```sql
 -- Test basic operations
-SELECT mentat_transact('[{:db/id "test" :person/name "Migration Test"}]');
-SELECT mentat_query('[:find ?name :where [?e :person/name ?name]]', '{}');
+SELECT edn_t('[{:db/id "test" :person/name "Migration Test"}]');
+SELECT edn_q('[:find ?name :where [?e :person/name ?name]]', '{}');
 ```
 
 ### 4. Generate Virtual Tables
@@ -301,9 +301,9 @@ If your application uses pg_mentat, update it to take advantage of new features:
 
 | Feature | Pre-Store | Current | Notes |
 |---------|-----------|---------|-------|
-| `mentat_transact` | Supported | Supported | Unchanged |
-| `mentat_query` | Supported | Supported | New input keys: asOf, since, history |
-| `mentat_pull` | Supported | Supported | Unchanged |
+| `edn_t` | Supported | Supported | Unchanged |
+| `edn_q` | Supported | Supported | New input keys: asOf, since, history |
+| `edn_pull` | Supported | Supported | Unchanged |
 | `mentat_entity` | Supported | Supported | Unchanged |
 | `mentat_schema` | Supported | Supported | Unchanged |
 | `edn_pretty` | `mentat.edn_pretty` | `public.edn_pretty` | Alias in mentat schema preserved |

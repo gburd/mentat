@@ -2,7 +2,7 @@
 -- Phase D: Collection bindings generate IN clauses
 
 -- Setup: create test attributes and data
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add "attr1" :db/ident :person/age]
   [:db/add "attr1" :db/valueType :db.type/long]
   [:db/add "attr1" :db/cardinality :db.cardinality/one]
@@ -12,7 +12,7 @@ SELECT mentat_transact('[
 ]');
 
 -- Insert test people
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add "p1" :person/name "Alice"]
   [:db/add "p1" :person/age 25]
   [:db/add "p2" :person/name "Bob"]
@@ -25,25 +25,25 @@ SELECT mentat_transact('[
 
 -- Test: collection binding with multiple ages
 -- Expected: returns names for ages 25, 30, 35
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :in [?age ...] :where [?e :person/age ?age] [?e :person/name ?name]]',
   '{"inputs": [[25, 30, 35]]}'
 );
 
 -- Test: collection binding with single value (degenerates to equality)
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :in [?age ...] :where [?e :person/age ?age] [?e :person/name ?name]]',
   '{"inputs": [[30]]}'
 );
 
 -- Test: collection binding with string values
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?age :in [?name ...] :where [?e :person/name ?name] [?e :person/age ?age]]',
   '{"inputs": [["Alice", "Charlie"]]}'
 );
 
 -- Test: empty collection returns no results
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :in [?age ...] :where [?e :person/age ?age] [?e :person/name ?name]]',
   '{"inputs": [[]]}'
 );

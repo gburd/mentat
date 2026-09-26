@@ -10,7 +10,7 @@ BEGIN;
 -- Setup: Create a moderately sized dataset
 -- =========================================================================
 
-SELECT mentat_transact('[
+SELECT edn_t('[
     {:db/ident :perf/name
      :db/valueType :db.type/string
      :db/cardinality :db.cardinality/one
@@ -44,7 +44,7 @@ BEGIN
             );
         END LOOP;
         batch := batch || ']';
-        PERFORM mentat_transact(batch);
+        PERFORM edn_t(batch);
     END LOOP;
     RAISE NOTICE 'SETUP: inserted 100 test entities';
 END;
@@ -63,7 +63,7 @@ DECLARE
     cnt INT;
 BEGIN
     start_ts := clock_timestamp();
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?name ?val
          :where
          [?e :perf/name ?name]
@@ -90,7 +90,7 @@ DECLARE
     cnt INT;
 BEGIN
     start_ts := clock_timestamp();
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find ?name ?val
          :where
          [?e :perf/name ?name]
@@ -116,10 +116,10 @@ DECLARE
     start_ts TIMESTAMPTZ;
     elapsed_ms DOUBLE PRECISION;
 BEGIN
-    SELECT (mentat_query('[:find ?e . :where [?e :perf/name "Item 50"]]', '{}')::JSONB)::TEXT::BIGINT INTO eid;
+    SELECT (edn_q('[:find ?e . :where [?e :perf/name "Item 50"]]', '{}')::JSONB)::TEXT::BIGINT INTO eid;
 
     start_ts := clock_timestamp();
-    SELECT mentat_pull('[*]', eid)::JSONB INTO result;
+    SELECT edn_pull('[*]', eid)::JSONB INTO result;
     elapsed_ms := EXTRACT(EPOCH FROM (clock_timestamp() - start_ts)) * 1000;
 
     ASSERT result IS NOT NULL, 'Pull should return a result';
@@ -139,7 +139,7 @@ DECLARE
     elapsed_ms DOUBLE PRECISION;
 BEGIN
     start_ts := clock_timestamp();
-    SELECT mentat_query('
+    SELECT edn_q('
         [:find (count ?e) (avg ?val) (min ?val) (max ?val)
          :where
          [?e :perf/value ?val]]
@@ -257,7 +257,7 @@ BEGIN
     batch := batch || ']';
 
     start_ts := clock_timestamp();
-    PERFORM mentat_transact(batch);
+    PERFORM edn_t(batch);
     elapsed_ms := EXTRACT(EPOCH FROM (clock_timestamp() - start_ts)) * 1000;
     RAISE NOTICE 'PASS: batch insert of 50 entities in %.1f ms', elapsed_ms;
 END;
@@ -279,7 +279,7 @@ BEGIN
     SELECT max(tx) INTO tx_id FROM mentat.transactions;
 
     start_ts := clock_timestamp();
-    SELECT mentat_query('[:find (count ?e) :where [?e :perf/name _]]', '{}')::JSONB INTO result;
+    SELECT edn_q('[:find (count ?e) :where [?e :perf/name _]]', '{}')::JSONB INTO result;
     current_ms := EXTRACT(EPOCH FROM (clock_timestamp() - start_ts)) * 1000;
 
     start_ts := clock_timestamp();

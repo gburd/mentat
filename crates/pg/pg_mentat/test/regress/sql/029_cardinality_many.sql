@@ -4,7 +4,7 @@
 -- Setup: cardinality/many attribute
 \echo Setup: cardinality many attribute
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :cm/name
    :db/valueType :db.type/string
    :db/cardinality :db.cardinality/one}
@@ -16,18 +16,18 @@ SELECT mentat_transact('[
 -- Add entity with multiple tags
 \echo Test: add multiple values to cardinality/many
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:cm/name "article" :cm/tag "rust"}
 ]');
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add [:cm/name "article"] :cm/tag "postgres"]
   [:db/add [:cm/name "article"] :cm/tag "extension"]
   [:db/add [:cm/name "article"] :cm/tag "mentat"]
 ]');
 
 -- Verify all tags exist
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?tag :where [?e :cm/name "article"] [?e :cm/tag ?tag] :order (asc ?tag)]',
   '{}'::jsonb
 );
@@ -35,12 +35,12 @@ SELECT mentat_query(
 -- Test: set semantics — adding duplicate value is idempotent
 \echo Test: duplicate add is idempotent
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/add [:cm/name "article"] :cm/tag "rust"]
 ]');
 
 -- Count should still be 4, not 5
-SELECT mentat_query(
+SELECT edn_q(
   '[:find (count ?tag) :where [?e :cm/name "article"] [?e :cm/tag ?tag]]',
   '{}'::jsonb
 );
@@ -48,12 +48,12 @@ SELECT mentat_query(
 -- Test: retract one value leaves others intact
 \echo Test: retract one value preserves others
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   [:db/retract [:cm/name "article"] :cm/tag "mentat"]
 ]');
 
 -- Should now have 3 tags
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?tag :where [?e :cm/name "article"] [?e :cm/tag ?tag] :order (asc ?tag)]',
   '{}'::jsonb
 );
@@ -61,12 +61,12 @@ SELECT mentat_query(
 -- Test: multiple entities can have the same cardinality/many values
 \echo Test: same values on different entities
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:cm/name "article2" :cm/tag "rust"}
 ]');
 
 -- Both entities should appear when querying for tag "rust"
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :where [?e :cm/name ?name] [?e :cm/tag "rust"] :order (asc ?name)]',
   '{}'::jsonb
 );

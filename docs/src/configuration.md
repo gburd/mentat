@@ -18,7 +18,7 @@ SELECT pg_reload_conf();
 -- Per-query (via SET LOCAL in a transaction block)
 BEGIN;
 SET LOCAL mentat.enable_optimizer_hints = true;
-SELECT mentat_query('...', '{}');
+SELECT edn_q('...', '{}');
 COMMIT;
 ```
 

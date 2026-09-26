@@ -4,7 +4,7 @@
 -- Prerequisite: schema and data from previous tests
 
 -- Test: relation binding with multiple rows
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name :in [[?age ?name_prefix]] :where [?e :person/age ?age] [?e :person/name ?name]]',
   '{"inputs": [[[25, "Alice"], [30, "Bob"]]]}'
 );

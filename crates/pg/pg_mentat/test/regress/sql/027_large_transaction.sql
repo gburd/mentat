@@ -4,7 +4,7 @@
 -- Setup schema
 \echo Setup: schema for large transaction
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:db/ident :bulk/id
    :db/valueType :db.type/long
    :db/cardinality :db.cardinality/one
@@ -20,7 +20,7 @@ SELECT mentat_transact('[
 -- Test: transact 100 entities in a single batch
 \echo Test: transact 100 entities in one batch
 
-SELECT mentat_transact('[
+SELECT edn_t('[
   {:bulk/id 1 :bulk/name "entity-001" :bulk/score 10}
   {:bulk/id 2 :bulk/name "entity-002" :bulk/score 20}
   {:bulk/id 3 :bulk/name "entity-003" :bulk/score 30}
@@ -126,7 +126,7 @@ SELECT mentat_transact('[
 -- Verify all 100 entities were stored
 \echo Verify: count all bulk entities
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find (count ?e) :where [?e :bulk/id _]]',
   '{}'::jsonb
 );
@@ -134,17 +134,17 @@ SELECT mentat_query(
 -- Verify data integrity: spot-check specific entities
 \echo Verify: spot-check entity values
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?score :where [?e :bulk/id 1] [?e :bulk/name ?name] [?e :bulk/score ?score]]',
   '{}'::jsonb
 );
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?score :where [?e :bulk/id 50] [?e :bulk/name ?name] [?e :bulk/score ?score]]',
   '{}'::jsonb
 );
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find ?name ?score :where [?e :bulk/id 100] [?e :bulk/name ?name] [?e :bulk/score ?score]]',
   '{}'::jsonb
 );
@@ -152,7 +152,7 @@ SELECT mentat_query(
 -- Verify aggregate: sum of all scores
 \echo Verify: aggregate sum of scores
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find (sum ?score) :where [?e :bulk/score ?score] [?e :bulk/id _]]',
   '{}'::jsonb
 );
@@ -160,7 +160,7 @@ SELECT mentat_query(
 -- Verify predicate query over large dataset
 \echo Verify: predicate filter on large dataset
 
-SELECT mentat_query(
+SELECT edn_q(
   '[:find (count ?e) :where [?e :bulk/score ?s] [(>= ?s 900)]]',
   '{}'::jsonb
 );
