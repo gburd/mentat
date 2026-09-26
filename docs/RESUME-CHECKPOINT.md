@@ -138,7 +138,17 @@ Written 2026-09-25 at ~91% context. Read this + the plan
      * Task 7 (extract crates/script mentat-script shared layer): pure refactor of two WORKING
        script layers; large-refactor-before-release risk. Both layers pass their tests. Defer.
        When done: can drop the inst/uuid workaround (mino now round-trips them for real).
-   - TODO NOW: Task 13 (README + docs), Task 14 (benchmark + prod-readiness gate + release
+   - **Task 13 DONE** (41cd7b99): one README (embedded + extension recipes, mino scripting,
+     mentat_eval security section matching §1.1), docs/src/architecture.md + scripting.md,
+     SUMMARY.md; mdBook builds clean; all APIs verified against source.
+   - **QUALIFICATION IN PROGRESS**: clippy --workspace --exclude pg_mentat -D warnings CLEAN
+     (commit 5c2a79f7 - clippy --fix idioms + fixed edn/mino/ffi/cli deprecations, vendored gc
+     allow, e91d204e/463baefc). fmt --all clean. Full workspace test 78 binaries green.
+     pg14 alone with 'script' = 1884 pass 1 ignored. Full PG13-18 matrix RUNNING serially on
+     EC2 (~/pg_matrix.log). GOTCHA: do NOT run the pgrx matrix concurrently with other cargo
+     work on EC2 - shared cluster/shm collides -> mass false failures (1768 failed pg13 was
+     contamination, not real; pg14 'can't find mino_rs' was the matrix loop env, real run green).
+   - TODO NOW: finish PG matrix qualification, cargo deny, a benchmark, then Task 14 (release
      1.7.0: merge merge/pg-mentat->master --no-ff, tag v1.7.0, push Codeberg, retire pg_mentat).
    - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
