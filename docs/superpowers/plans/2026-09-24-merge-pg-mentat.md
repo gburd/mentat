@@ -1245,15 +1245,18 @@ Mark as YAGNI in the plan tracker until then.
 `crates/sqlite/db-traits/errors.rs` (new `CasMismatch { e, a, expected, actual }`),
 tests `crates/sqlite/mentat/tests/tx_fns.rs`.
 
-- [ ] **Step 1: tests**, modeled on pg_mentat's `cas_tests.rs` and
+- [x] **Step 1: tests**, modeled on pg_mentat's `cas_tests.rs` and
   `comprehensive_retract_tests.rs` (port the assertions, not the SPI plumbing):
   cas succeeds on match; cas fails with `CasMismatch` and commits nothing;
   cas with `nil` old value asserts only if absent; retractEntity removes every
   datom with that `e`, removes datoms where it's the `v` of a ref, and recurses
   into `:db/isComponent` refs; both spellings (`:db.fn/*` and `:db/*`) work.
-- [ ] **Step 2:** implement in the transactor's entity-expansion pass using
+  (Done, minus ref-*value* retraction: pg does NOT retract datoms where `e` is
+  a ref value, so we match pg and leave incoming refs intact — see the
+  `test_retract_entity_leaves_incoming_refs` test.)
+- [x] **Step 2:** implement in the transactor's entity-expansion pass using
   `BuiltinTxFn` from `edn`; `cas` reads inside the IMMEDIATE transaction.
-- [ ] **Step 3:** green; commit.
+- [x] **Step 3:** green; commit. (feat 4bf01aca, test 2cb415e5.)
 
 ### Task 12: History patterns, historical `q`, and `:in` collection bindings on SQLite
 
