@@ -10,6 +10,7 @@
 #   test-pg      matrix pg13..pg18, cargo pgrx test
 #   test-mino    cargo test -p mino-rs
 #   test-ffi     build + test crates/sqlite/ffi
+#   test-sqlite-ext  build the SQLite loadable extension + sqlite3 smoke test
 #   test-duckdb  build the DuckDB extension + load/query smoke test
 #   nix-build    flake builds the SQLite CLI + one extension
 #
@@ -76,7 +77,7 @@ jobs:
       # Lint the SQLite side + shared front-end + mino (default members). The
       # pgrx crate's clippy runs in test-pg where pg_config/pgrx are set up.
       - name: cargo clippy
-        run: cargo clippy --workspace --exclude pg_mentat -- -D warnings
+        run: cargo clippy --workspace --exclude pg_mentat --exclude mentat_duckdb --exclude mentat_sqlite_ext -- -D warnings
 
   deny:
     name: cargo deny
@@ -178,6 +179,47 @@ jobs:
         run: |
           cargo build -p mentat_ffi
           cargo test -p mentat_ffi
+
+  test-sqlite-ext:
+    name: test-sqlite-ext (loadable extension)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps + sqlite3 CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential pkg-config libsqlite3-dev libssl-dev sqlite3
+          sqlite3 --version
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }} --component clippy
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-sqlite-ext-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ci-sqlite-ext-${{ runner.os }}-
+      - name: clippy + unit tests
+        run: |
+          cargo clippy -p mentat_sqlite_ext -- -D warnings
+          cargo test -p mentat_sqlite_ext
+      - name: Build the loadable extension
+        run: cargo build -p mentat_sqlite_ext
+      - name: Only the init symbol is exported (no leaked sqlite3_* API)
+        run: |
+          nm -D --defined-only target/debug/libmentat_sqlite.so | awk '{print $3}' \
+            | grep -E '^sqlite3_' | tee /tmp/syms
+          test "$(cat /tmp/syms)" = "sqlite3_mentatsqlite_init"
+      - name: Load + query smoke test (edn_t/edn_q/edn_pull/edn_eval + json_each JOIN)
+        working-directory: crates/sqlite/ext
+        run: bash test/smoke.sh
 
   # --- PostgreSQL extension: needs pgrx + a per-major PostgreSQL ---------
   test-pg:

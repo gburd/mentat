@@ -4,7 +4,8 @@
 # canonical gate; this mirrors it (Codeberg push-mirrors to GitHub, so both run
 # on every push) and adds the DuckDB backend. It exercises all THREE ways to
 # deploy mentat:
-#   a) SQLite   — test-sqlite, test-mino, test-ffi (the embedded library + CLI)
+#   a) SQLite   — test-sqlite, test-mino, test-ffi, test-sqlite-ext
+#                 (the embedded library + CLI + C ABI + the loadable extension)
 #   b) Postgres — test-pg (the pg_mentat pgrx extension, pg13..pg18)
 #   c) DuckDB   — test-duckdb (the mentat_duckdb loadable extension)
 # plus fmt / clippy / cargo-deny / nix-build.
@@ -74,7 +75,7 @@ jobs:
       # test-pg (needs pg_config); mentat_duckdb's in test-duckdb (needs the
       # DuckDB extension cfg).
       - name: cargo clippy
-        run: cargo clippy --workspace --exclude pg_mentat --exclude mentat_duckdb -- -D warnings
+        run: cargo clippy --workspace --exclude pg_mentat --exclude mentat_duckdb --exclude mentat_sqlite_ext -- -D warnings
 
   deny:
     name: cargo deny
@@ -177,6 +178,47 @@ jobs:
         run: |
           cargo build -p mentat_ffi
           cargo test -p mentat_ffi
+
+  test-sqlite-ext:
+    name: test-sqlite-ext (loadable extension)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps + sqlite3 CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential pkg-config libsqlite3-dev libssl-dev sqlite3
+          sqlite3 --version
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain ${{ env.RUST_TOOLCHAIN }} --component clippy
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-sqlite-ext-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ci-sqlite-ext-${{ runner.os }}-
+      - name: clippy + unit tests
+        run: |
+          cargo clippy -p mentat_sqlite_ext -- -D warnings
+          cargo test -p mentat_sqlite_ext
+      - name: Build the loadable extension
+        run: cargo build -p mentat_sqlite_ext
+      - name: Only the init symbol is exported (no leaked sqlite3_* API)
+        run: |
+          nm -D --defined-only target/debug/libmentat_sqlite.so | awk '{print $3}' \
+            | grep -E '^sqlite3_' | tee /tmp/syms
+          test "$(cat /tmp/syms)" = "sqlite3_mentatsqlite_init"
+      - name: Load + query smoke test (edn_t/edn_q/edn_pull/edn_eval + json_each JOIN)
+        working-directory: crates/sqlite/ext
+        run: bash test/smoke.sh
 
   # --- b) Postgres: the pg_mentat pgrx extension, pg13..pg18 ------------
   test-pg:

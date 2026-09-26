@@ -191,9 +191,81 @@ jobs:
           path: mentat-cli-linux-x86_64.tar.gz
           retention-days: 5
 
+  # SQLite loadable extension (crates/sqlite/ext) -> libmentat_sqlite.so.
+  build-sqlite-ext:
+    name: Build SQLite extension (Linux x86_64)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev sqlite3
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Build + smoke test
+        run: |
+          cargo build --release --locked -p mentat_sqlite_ext
+          (cd crates/sqlite/ext && EXT="$GITHUB_WORKSPACE/target/release/libmentat_sqlite" bash test/smoke.sh)
+      - name: Package
+        run: |
+          STAGING="mentat-sqlite-ext-linux-x86_64"
+          mkdir -p "${STAGING}"
+          cp target/release/libmentat_sqlite.so crates/sqlite/ext/README.md "${STAGING}/"
+          tar czf "${STAGING}.tar.gz" "${STAGING}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mentat-sqlite-ext-linux-x86_64
+          path: mentat-sqlite-ext-linux-x86_64.tar.gz
+          retention-days: 5
+
+  # DuckDB loadable extension (crates/duckdb) -> mentat.duckdb_extension
+  # (unsigned; the signed build comes from the DuckDB Community Extensions
+  # registry once the descriptor PR is merged).
+  build-duckdb-ext:
+    name: Build DuckDB extension (Linux x86_64, DuckDB v1.5.5)
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev unzip python3 python3-venv
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Build (release) + smoke test
+        working-directory: crates/duckdb
+        run: |
+          make configure
+          make release
+          curl -sSL https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip
+          unzip -o /tmp/duckdb.zip -d /tmp/duckdb-cli
+          EXT="$PWD/build/release/mentat.duckdb_extension" DUCKDB=/tmp/duckdb-cli/duckdb bash test/smoke.sh
+      - name: Package
+        run: |
+          STAGING="mentat-duckdb-v1.5.5-linux_amd64"
+          mkdir -p "${STAGING}"
+          cp crates/duckdb/build/release/mentat.duckdb_extension crates/duckdb/README.md "${STAGING}/"
+          tar czf "${STAGING}.tar.gz" "${STAGING}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mentat-duckdb-v1.5.5-linux_amd64
+          path: mentat-duckdb-v1.5.5-linux_amd64.tar.gz
+          retention-days: 5
+
   release:
     name: Create GitHub Release
-    needs: [build, build-cli]
+    needs: [build, build-cli, build-sqlite-ext, build-duckdb-ext]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

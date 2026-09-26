@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXT="$HERE/build/debug/mentat.duckdb_extension"
+EXT="${EXT:-$HERE/build/debug/mentat.duckdb_extension}"
 DUCKDB="${DUCKDB:-duckdb}"
 DB="$(mktemp -u /tmp/mentat_smoke.XXXXXX.sqlite)"
 trap 'rm -f "$DB"' EXIT
