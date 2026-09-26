@@ -12,9 +12,10 @@ description = "Datomic-compatible Datalog engine exposed as a DuckDB extension"
 crate-type = ["cdylib"]
 
 [features]
-default = []
-# Optional mino scripting surface (mentat_eval), mirroring pg_mentat's `script`.
-# Off by default; not wired in M1.
+# `script` is ON by default: mino is pure Rust (no extra toolchain), and every
+# script runs sandboxed (no host filesystem) with step/heap/depth limits.
+default = ["script"]
+# The mino scripting surface: `edn_eval(db_path, script)`.
 script = ["mentat/mino"]
 
 [dependencies]

@@ -87,30 +87,105 @@ extension — hence the standalone v1.5.5 CLI for load/smoke tests. On Python
 -- duckdb -unsigned
 LOAD './build/debug/mentat.duckdb_extension';
 
-SELECT * FROM mentat_hello();   -- M0 smoke: one constant row
+SELECT edn_t('/tmp/demo.mentat',
+  '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+SELECT edn_t('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
+SELECT * FROM edn_q('/tmp/demo.mentat', '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
 ```
 
 ## Function surface
 
 | DuckDB call | Kind | Returns | mentat call |
 |---|---|---|---|
-| `mentat_hello()` | table fn | one constant VARCHAR row | (M0 smoke test) |
-| `mentat_transact(db_path, edn)` | scalar | VARCHAR (JSON tx-report) | `Store::transact` |
-| `mentat_query(db_path, query, inputs)` | table fn | rows, all VARCHAR columns | `Store::q_once` |
+| `edn_t(db_path VARCHAR, edn VARCHAR)` | scalar, volatile | VARCHAR (JSON tx-report) | `Store::transact` |
+| `edn_q(db_path VARCHAR, query VARCHAR, options VARCHAR)` | table fn | rows, all VARCHAR columns | `Store::q_once` / `q_once_as_of` / `q_once_since` |
+| `edn_pull(db_path VARCHAR, pattern VARCHAR, entity BIGINT)` | scalar, volatile | VARCHAR (JSON map) | `(pull ?e pattern)` via `Store::q_once` |
+| `edn_eval(db_path VARCHAR, script VARCHAR)` | scalar, volatile | VARCHAR (EDN) | `mentat::script::Interpreter` (feature `script`) |
 
-- `db_path` is an explicit first parameter (plan §6 option 1): stateless,
-  per-call `Store::open` (plan §3.1). `""` opens an in-memory store (not useful
-  across calls). Pass a filesystem path to persist.
-- `inputs` is a JSON string; `{}` / `null` / `""` = no inputs (M1 only supports
-  no-input queries; `:in` binding is a follow-up).
-- Query result columns are all `VARCHAR`, values stringified exactly like the
-  SQLite CLI (plan §2.4 v1). Typed columns are M2.
+Any NULL argument to a scalar yields NULL. `db_path` is an explicit first
+parameter (plan §6 option 1): stateless, per-call `Store::open` (plan §3.1).
+`""` opens an in-memory store (not useful across calls); pass a path to persist.
+
+### `edn_q` options (JSON, same shape pg_mentat accepts)
+
+`''`, `NULL`, `{}` or JSON `null` = no options. Otherwise a JSON object with:
+
+| Key | Meaning |
+|---|---|
+| `"inputs": [v1, v2, ...]` | Positional, one element per `:in` binding form (`$` source vars are not counted). The count must match. |
+| `"asOf": T` | Query the database as of tx `T` (inclusive). |
+| `"since": T` | Only datoms transacted after tx `T` (pair with a history pattern `[?e ?a ?v ?tx ?added]`). |
+
+`asOf` and `since` are mutually exclusive; either may be combined with
+`inputs`. Unknown keys and malformed JSON are errors.
+
+Binding forms: scalar `?x` -> a JSON value; collection `[?x ...]` -> a JSON
+array; tuple `[?a ?b]` -> a JSON array (one row); relation `[[?a ?b]]` -> an
+array of arrays. `_` placeholders in a tuple/relation consume a value that is
+discarded. A query may bind **either** any number of scalars **or** exactly one
+collection/tuple/relation (mentat's `QueryInputs` has no public way to combine
+them yet).
+
+JSON -> value (mirrors pg_mentat's `bind_input_value`):
+
+| JSON | mentat value |
+|---|---|
+| integer | `Long`, or `Ref` if the variable is used as an entity/tx, or as the value of a `:db.type/ref` attribute, in the `:where` patterns (incl. `or`/`not`) |
+| float | `Double` |
+| `true` / `false` | `Boolean` |
+| string starting with `:` | `Keyword` (`":person/name"`) |
+| any other string | `String` |
+
+### Output rendering (`edn_q`)
+
+All columns are VARCHAR (typed columns are a follow-up). A string value is
+returned **raw** (`Alice`, not `"Alice"`), so it joins against native DuckDB
+VARCHAR columns. Keywords keep their colon (`:person/name`); refs and longs are
+decimal; instants RFC 3339; uuids hyphenated; booleans `true`/`false`. Nested
+values (pull maps, tuples) render as EDN, where strings are quoted.
+
+### `edn_pull`
+
+`pattern` is a Datomic pull pattern (EDN vector): `[*]`,
+`[:person/name :person/age]`, `[:person/_friend]`, `[:db/id :person/name]`. It
+runs mentat's own pull (`(pull ?e pattern)`). The JSON matches pg_mentat's
+`mentat_pull`: keys are attribute idents with the colon (`":person/name"`),
+`":db/id"` is always the entity id, cardinality-many values are arrays, refs are
+`{":db/id": n}`, keywords `":ns/name"`, instants epoch microseconds, bytes hex.
+Nested map specs (`{:person/friend [:person/name]}`) are not supported by
+mentat's pull grammar yet.
+
+### `edn_eval` (feature `script`, default ON)
+
+Runs a mino script with the `mentat.store/*` prims and returns the last value
+as EDN text. A no-arg `(mentat.store/open)` opens `db_path` (via
+`mentat::script::Interpreter::with_default_path`); `(mentat.store/open "other")`
+still opens an explicit path. The interpreter is `sandboxed()` (no `slurp`,
+`spit`, or other host filesystem prims) and bounded per call to 10M eval steps,
+64 MiB heap, and depth 1000. Each call gets a fresh interpreter (no state
+carries between calls). mino is pure Rust, so the feature adds no toolchain;
+build with `--no-default-features` to leave `edn_eval` out.
+
+```sql
+SELECT edn_eval('/tmp/demo.mentat', '
+  (def c (mentat.store/open))
+  (mentat.store/transact c [{:person/name "Carol"}])
+  (mentat.store/q (mentat.store/db c) (quote [:find ?n :where [_ :person/name ?n]]))');
+```
+
+## Tests
+
+- `test/smoke.sh` — standalone DuckDB v1.5.5 CLI; asserts on every output line
+  and on the error paths. `DUCKDB=/path/to/duckdb bash test/smoke.sh`.
+- `test/sql/mentat.test` — SQLLogicTest, same coverage. Needs a Python 3.10+
+  venv with `duckdb==1.5.5` and `duckdb-sqllogictest-python`, e.g.
+  `python -m duckdb_sqllogictest --test-dir test/sql --external-extension build/debug/mentat.duckdb_extension`.
 
 ## Milestones
 
-- **M0** — scaffold + loadable extension + `mentat_hello`. **Done.**
-- **M1** — `mentat_transact` + `mentat_query` over the embedded store, all
-  VARCHAR. **Done.**
-- **M2** — `mentat_pull`, typed columns, List/Struct. Follow-up.
-- **M3** — session default DB path, `mentat_eval` (`script` feature),
-  thread-local store cache. Follow-up.
+- **M0** — scaffold + loadable extension. **Done.**
+- **M1** — transact + query over the embedded store, all VARCHAR. **Done.**
+- **M2 (partial)** — `edn_pull`, `edn_q` inputs/asOf/since, raw string cells.
+  **Done.** Typed columns, List/Struct: follow-up.
+- **M3 (partial)** — `edn_eval` (`script` feature). **Done.** Session default DB
+  path, thread-local store cache: follow-up.

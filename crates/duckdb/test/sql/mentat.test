@@ -1,5 +1,5 @@
 # name: test/sql/mentat.test
-# description: mentat DuckDB extension smoke test (M0 + M1)
+# description: mentat DuckDB extension: edn_t / edn_q / edn_pull / edn_eval
 # group: [mentat]
 #
 # Run with the SQLLogicTest harness (`make test_debug`) ONLY when the venv/host
@@ -9,38 +9,131 @@
 
 require mentat
 
-# M0: hello table function returns one constant row.
-query I
+# Old names are gone (no compatibility shim).
+statement error
 SELECT * FROM mentat_hello();
 ----
-mentat duckdb extension loaded
+mentat_hello
 
-# M1: transact a schema, then two entities, into a temp store.
-statement ok
-SELECT mentat_transact('__TEST_DIR__/mentat.sqlite', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
-
-statement ok
-SELECT mentat_transact('__TEST_DIR__/mentat.sqlite', '[{:person/name "Alice"} {:person/name "Bob"}]');
-
-# M1: query them back; all-VARCHAR columns named by the FindSpec.
-query I
-SELECT name FROM mentat_query('__TEST_DIR__/mentat.sqlite', '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name) ORDER BY name;
+statement error
+SELECT mentat_transact('__TEST_DIR__/mentat.sqlite', '[]');
 ----
-"Alice"
-"Bob"
+mentat_transact
 
-# M1: JOIN Datalog output against a native DuckDB table.
+statement error
+SELECT * FROM mentat_query('__TEST_DIR__/mentat.sqlite', '[:find ?e :where [?e _ _]]', '{}');
+----
+mentat_query
+
+# edn_t: schema, then two entities.
+query I
+SELECT edn_t('__TEST_DIR__/mentat.sqlite', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one} {:db/ident :person/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%';
+----
+true
+
+query I
+SELECT edn_t('__TEST_DIR__/mentat.sqlite', '[{:person/name "Alice"} {:person/name "Bob"}]') LIKE '%tx_id%';
+----
+true
+
+# edn_q: all-VARCHAR columns; strings come back RAW (no EDN quotes).
+query I
+SELECT name FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name) ORDER BY name;
+----
+Alice
+Bob
+
+# JOIN Datalog output against a native table holding PLAIN strings.
 statement ok
 CREATE TABLE ages(name VARCHAR, age INT);
 
 statement ok
-INSERT INTO ages VALUES ('"Alice"', 30), ('"Bob"', 25);
+INSERT INTO ages VALUES ('Alice', 30), ('Bob', 25);
 
 query II
 SELECT m.name, a.age
-FROM mentat_query('__TEST_DIR__/mentat.sqlite', '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name)
+FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name)
 JOIN ages a ON a.name = m.name
 ORDER BY a.age;
 ----
-"Bob"	25
-"Alice"	30
+Bob	25
+Alice	30
+
+# :in scalar input.
+query I
+SELECT count(*) FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?e . :in ?name :where [?e :person/name ?name]]', '{"inputs":["Alice"]}');
+----
+1
+
+# :in collection input [?name ...].
+query I
+SELECT n FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?n :in [?name ...] :where [?e :person/name ?name] [?e :person/name ?n]]', '{"inputs":[["Alice","Zed"]]}') AS t(n);
+----
+Alice
+
+# asOf / since: tx1 sets Alice's age to 30; a later tx changes it to 31.
+statement ok
+SET VARIABLE alice = (SELECT e FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?e . :where [?e :person/name "Alice"]]', NULL) AS t(e));
+
+statement ok
+SET VARIABLE tx1 = (SELECT edn_t('__TEST_DIR__/mentat.sqlite', '[[:db/add ' || getvariable('alice') || ' :person/age 30]]')->>'tx_id');
+
+statement ok
+SELECT edn_t('__TEST_DIR__/mentat.sqlite', '[[:db/add ' || getvariable('alice') || ' :person/age 31]]');
+
+query I
+SELECT a FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?a . :in ?e :where [?e :person/age ?a]]', '{"inputs":[' || getvariable('alice') || ']}') AS t(a);
+----
+31
+
+query I
+SELECT a FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?a . :in ?e :where [?e :person/age ?a]]', '{"inputs":[' || getvariable('alice') || '], "asOf": ' || getvariable('tx1') || '}') AS t(a);
+----
+30
+
+query I
+SELECT a FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?a ?added :where [?e :person/age ?a ?tx ?added]]', '{"since": ' || getvariable('tx1') || '}') AS t(a, added) WHERE added = 'true';
+----
+31
+
+# Bad options are errors, not silently ignored.
+statement error
+SELECT * FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?n :where [_ :person/name ?n]]', '{"bogus":1}');
+----
+unknown option "bogus"
+
+statement error
+SELECT * FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?n :where [_ :person/name ?n]]', '{nope');
+----
+not valid JSON
+
+# edn_pull: pg_mentat's JSON shape (":ns/attr" keys + ":db/id").
+query I
+SELECT edn_pull('__TEST_DIR__/mentat.sqlite', '[*]', getvariable('alice')::BIGINT) LIKE '%":person/name":"Alice"%';
+----
+true
+
+query I
+SELECT (edn_pull('__TEST_DIR__/mentat.sqlite', '[:person/age]', getvariable('alice')::BIGINT)::JSON->>':person/age');
+----
+31
+
+# edn_eval: a no-arg (mentat.store/open) opens db_path; the write is visible
+# to a subsequent edn_q.
+query I
+SELECT edn_eval('__TEST_DIR__/mentat.sqlite', '(def c (mentat.store/open)) (mentat.store/transact c [{:person/name "Carol"}]) (count (mentat.store/q (mentat.store/db c) (quote [:find ?n :where [_ :person/name ?n]])))');
+----
+3
+
+query I
+SELECT n FROM edn_q('__TEST_DIR__/mentat.sqlite', '[:find ?n :where [_ :person/name ?n]]', '') AS t(n) ORDER BY n;
+----
+Alice
+Bob
+Carol
+
+# edn_eval is sandboxed: no host filesystem prims.
+statement error
+SELECT edn_eval('__TEST_DIR__/mentat.sqlite', '(slurp "/etc/passwd")');
+----
+unbound symbol: slurp
