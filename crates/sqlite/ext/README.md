@@ -3,7 +3,7 @@
 This crate exposes the embedded mentat Datalog engine as SQL functions in any
 SQLite host (the `sqlite3` CLI, Python's `sqlite3`, an app linking libsqlite3).
 The function names match the DuckDB extension (`edn_t`, `edn_q`, `edn_pull`,
-`edn_eval`). The JSON shapes follow pg_mentat's `mentat_query` and `mentat_pull`.
+`edn_eval`). The JSON shapes follow pg_mentat's `edn_q` and `edn_pull`.
 
 ```sql
 .load ./target/release/libmentat_sqlite     -- or: SELECT load_extension('…/libmentat_sqlite');
@@ -65,7 +65,7 @@ The shapes of `edn_q` results follow pg_mentat's `format_find_response`:
 | tuple `[:find [?a ?b] …]` | `{"result":[a,b]}` or `{"result":null}` |
 | scalar `[:find ?a . …]` | `{"result":v}` or `{"result":null}` |
 
-The values in `edn_q` results use pg_mentat's `mentat_query` encoding:
+The values in `edn_q` results use pg_mentat's `edn_q` encoding:
 
 - A ref is a plain integer.
 - A keyword is a string such as `":ns/name"`.
@@ -74,7 +74,7 @@ The values in `edn_q` results use pg_mentat's `mentat_query` encoding:
 - Bytes are a hex string.
 - A `(pull ?e …)` column nests as a JSON object.
 
-`edn_pull` values follow pg_mentat's `mentat_pull`:
+`edn_pull` values follow pg_mentat's `edn_pull`:
 
 - A ref is `{":db/id":N}`.
 - An instant is epoch microseconds.

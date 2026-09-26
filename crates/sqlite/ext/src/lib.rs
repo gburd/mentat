@@ -3,8 +3,8 @@
 //! ```sql
 //! .load ./libmentat_sqlite            -- entrypoint sqlite3_mentatsqlite_init
 //! SELECT edn_t(db_path, edn);           -- JSON tx-report
-//! SELECT edn_q(db_path, query, opts);   -- JSON result (pg_mentat's mentat_query shape)
-//! SELECT edn_pull(db_path, pattern, e); -- JSON map (pg_mentat's mentat_pull shape)
+//! SELECT edn_q(db_path, query, opts);   -- JSON result (pg_mentat's edn_q shape)
+//! SELECT edn_pull(db_path, pattern, e); -- JSON map (pg_mentat's edn_pull shape)
 //! SELECT edn_eval(db_path, script);     -- EDN text (sandboxed mino)
 //! ```
 //!

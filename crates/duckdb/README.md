@@ -149,7 +149,7 @@ values (pull maps, tuples) render as EDN, where strings are quoted.
 `pattern` is a Datomic pull pattern (EDN vector): `[*]`,
 `[:person/name :person/age]`, `[:person/_friend]`, `[:db/id :person/name]`. It
 runs mentat's own pull (`(pull ?e pattern)`). The JSON matches pg_mentat's
-`mentat_pull`: keys are attribute idents with the colon (`":person/name"`),
+`edn_pull`: keys are attribute idents with the colon (`":person/name"`),
 `":db/id"` is always the entity id, cardinality-many values are arrays, refs are
 `{":db/id": n}`, keywords `":ns/name"`, instants epoch microseconds, bytes hex.
 Nested map specs (`{:person/friend [:person/name]}`) are not supported by
