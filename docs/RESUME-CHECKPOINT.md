@@ -148,7 +148,21 @@ Written 2026-09-25 at ~91% context. Read this + the plan
      EC2 (~/pg_matrix.log). GOTCHA: do NOT run the pgrx matrix concurrently with other cargo
      work on EC2 - shared cluster/shm collides -> mass false failures (1768 failed pg13 was
      contamination, not real; pg14 'can't find mino_rs' was the matrix loop env, real run green).
-   - TODO NOW: finish PG matrix qualification, cargo deny, a benchmark, then Task 14 (release
+   - **QUALIFICATION DONE**: PG 13-18 pgrx (with script feature) ALL 1884 pass 0 fail 1 ignored;
+     clippy --workspace --exclude pg_mentat -D warnings CLEAN (fixed idioms/deprecations, vendored
+     gc allow, licensed every workspace crate Apache-2.0, deny.toml allows MPL/CC0/WTFPL + ignores
+     smallstr); cargo deny check advisories/bans/licenses/sources ALL ok; fmt clean; workspace 78 green.
+   - **1.7.0 PREPARED** (commit ceb5dac9): workspace/pg_mentat/mentatd/control all 1.7.0, upgrade SQL
+     pg_mentat--1.6.2--1.7.0.sql, META.json+Trunk.toml point at codeberg mentat, CHANGELOG 1.7.0
+     dated 2026-09-26 with Added/Fixed/Security. NOTE: Cargo.lock still shows 1.6.2/1.6.1 - MUST
+     regenerate on EC2 (cargo generate-lockfile or cargo update) and commit before release.
+   - IN FLIGHT: benchmark agent (534ca972) running phase2 on EC2.
+   - TASK 14 REMAINING (do NOT do until benchmark done + Cargo.lock regenerated + user confirms the
+     irreversible steps): merge merge/pg-mentat->master --no-ff, annotated tag v1.7.0, push master+tag
+     to CODEBERG ONLY (mirror carries to GitHub), verify mirror, delete stale branches pg/improv-base/
+     mino-scripting, write pg_mentat pointer README. Deferred to 1.7.1: Tasks 7 (mentat-script crate),
+     12 (SQLite history/asof q + coll bindings).
+   - (old) TODO NOW: finish PG matrix qualification, cargo deny, a benchmark, then Task 14 (release
      1.7.0: merge merge/pg-mentat->master --no-ff, tag v1.7.0, push Codeberg, retire pg_mentat).
    - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
