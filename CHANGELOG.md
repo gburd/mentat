@@ -6,7 +6,9 @@ PostgreSQL extension, which share one front-end) are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] / [1.7.0] — merged repository
+## [Unreleased]
+
+## [1.7.0] — 2026-09-26 — merged repository
 
 ### Changed
 
@@ -23,6 +25,45 @@ publishes). `pg_mentat`'s full git history is preserved under `crates/pg/`.
 
 Entries below this line and dated on/before 2026-09-24 are the `pg_mentat`
 history; the condensed embedded-`mentat` (0.x) history follows at the end.
+
+### Added
+
+- **Embedded (SQLite) transaction functions `:db.fn/cas` and
+  `:db/retractEntity`** (both `:db.fn/*` and `:db/*` spellings). `cas` reads the
+  current value inside the write transaction and aborts the whole transaction
+  with a typed `CasMismatch` error on mismatch; `retractEntity` retracts every
+  datom with the entity as subject and recurses through `:db/isComponent`
+  children. The PostgreSQL backend already had these.
+- **Reconciled front-end grammar** shared by both backends: 5-place history
+  patterns `[?e ?a ?v ?tx ?added]`, source variables in `:in` (`:in $ …`),
+  plain (non-namespaced) keywords as pattern values (`[?e :status :done]`), and
+  `:rules`/`:with [[…]]` rule definitions. The embedded algebrizer accepts the
+  new shapes it can serve and returns a clear, typed error for the ones still
+  PostgreSQL-only (history/as-of `q`, non-scalar `:in` bindings — planned for
+  the embedded side in a later release).
+- **mino refreshed to upstream's final release (`9c65bb50`)**, now maintained in
+  this repository: `#uuid` reads to a real UUID value and round-trips, `#inst`
+  prints as a reader literal, `read-string`, classed/keyword `catch`, regex
+  lookahead, a distinct `delay` type, a pluggable store backend seam, and new
+  `core.clj` helpers. BigDecimal literals remain deferred.
+
+### Fixed
+
+- **Deeply nested EDN no longer crashes the server.** The shared parser rejects
+  input nested deeper than 256 levels before recursing, so a hostile or
+  accidental deep value can no longer overflow the backend's stack (it returns a
+  parse error). This shipped for the extension in 1.6.2 and is now in the merged
+  front-end.
+- **mino is stack-safe on adversarial data**: the reader, printer, structural
+  equality, hashing, and comparison are bounded (depth caps, an iterative
+  equality worklist, printer cycle detection) and the garbage collector marks
+  iteratively, so deeply nested or self-referential values error cleanly instead
+  of aborting the process. Interpreter recursion is trampolined (constant stack
+  for `loop`/`recur` and mutual recursion).
+- **Reachable `unimplemented!()` panics in the embedded query engine** (query
+  algebrizer, projector, and the destination cache) are now typed errors or
+  documented-unreachable arms, so an unsupported query shape returns an error
+  rather than panicking.
 
 ### Security
 

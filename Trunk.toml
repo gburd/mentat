@@ -1,11 +1,11 @@
 [extension]
 name = "pg_mentat"
-version = "1.5.0"
-repository = "https://github.com/gburd/pg_mentat"
+version = "1.7.0"
+repository = "https://codeberg.org/gregburd/mentat"
 license = "Apache-2.0"
 description = "Datomic-compatible Datalog query engine for PostgreSQL"
-homepage = "https://github.com/gburd/pg_mentat"
-documentation = "https://github.com/gburd/pg_mentat/tree/main/docs"
+homepage = "https://codeberg.org/gregburd/mentat"
+documentation = "https://codeberg.org/gregburd/mentat/src/branch/master/docs"
 categories = ["data-transforms", "search"]
 
 [build]
