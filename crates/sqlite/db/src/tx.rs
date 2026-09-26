@@ -51,6 +51,7 @@ use std::iter::once;
 
 use crate::db;
 use crate::db::MentatStoring;
+use crate::db::TypedSQLValue;
 use crate::entids;
 use crate::internal_types::{
     replace_lookup_ref, AEVTrie, KnownEntidOr, LookupRef, LookupRefOrTempId, TempIdHandle,
@@ -74,7 +75,7 @@ use crate::types::{AVMap, AVPair, PartitionMap, TransactableValue};
 use crate::upsert_resolution::{FinalPopulations, Generation};
 use crate::watcher::TransactWatcher;
 use edn::entities as entmod;
-use edn::entities::{AttributePlace, Entity, OpType, TempId};
+use edn::entities::{AttributePlace, BuiltinTxFn, Entity, OpType, TempId, ValuePlace};
 
 /// Defines transactor's high level behaviour.
 pub(crate) enum TransactorAction {
@@ -227,6 +228,125 @@ where
         }
 
         Ok(tempids)
+    }
+
+    /// Resolve a transaction-function argument in the entity position to a
+    /// concrete, already-allocated entid. Accepts a plain integer entid or a
+    /// namespaced `:db/ident` keyword; tempids and lookup-refs are rejected
+    /// (matching pg_mentat, which only supports concrete entids here).
+    fn resolve_tx_fn_entid<V: TransactableValue>(&self, v: ValuePlace<V>) -> Result<Entid> {
+        let e = match v {
+            ValuePlace::Entid(entmod::EntidOrIdent::Entid(x)) => x,
+            ValuePlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
+                self.schema.require_entid(k)?.into()
+            }
+            ValuePlace::Atom(atom) => match atom.into_entity_place()? {
+                entmod::EntityPlace::Entid(entmod::EntidOrIdent::Entid(x)) => x,
+                entmod::EntityPlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
+                    self.schema.require_entid(k)?.into()
+                }
+                _ => bail!(DbErrorKind::NotYetImplemented(
+                    "transaction function entity must be a concrete entid or ident".to_string()
+                )),
+            },
+            _ => bail!(DbErrorKind::NotYetImplemented(
+                "transaction function entity must be a concrete entid or ident".to_string()
+            )),
+        };
+        if !self.partition_map.contains_entid(e) {
+            bail!(DbErrorKind::UnallocatedEntid(e));
+        }
+        Ok(e)
+    }
+
+    /// Resolve a transaction-function argument in the attribute position to an
+    /// attribute entid. Accepts a plain integer entid or a `:db/ident` keyword.
+    fn resolve_tx_fn_attr<V: TransactableValue>(&self, v: ValuePlace<V>) -> Result<Entid> {
+        let a = match v {
+            ValuePlace::Entid(entmod::EntidOrIdent::Entid(x)) => x,
+            ValuePlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
+                self.schema.require_entid(k)?.into()
+            }
+            ValuePlace::Atom(atom) => match atom.into_entity_place()? {
+                entmod::EntityPlace::Entid(entmod::EntidOrIdent::Entid(x)) => x,
+                entmod::EntityPlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
+                    self.schema.require_entid(k)?.into()
+                }
+                _ => bail!(DbErrorKind::NotYetImplemented(
+                    "transaction function attribute must be an entid or ident".to_string()
+                )),
+            },
+            _ => bail!(DbErrorKind::NotYetImplemented(
+                "transaction function attribute must be an entid or ident".to_string()
+            )),
+        };
+        // Ensure it's actually a known attribute.
+        self.schema.require_attribute_for_entid(a)?;
+        Ok(a)
+    }
+
+    /// Read the current live value(s) of `[e a]` from the store, inside this
+    /// write transaction. The `datoms` view holds only asserted (live) datoms.
+    fn read_current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>> {
+        let mut stmt = self
+            .store
+            .prepare("SELECT v, value_type_tag FROM datoms WHERE e = ? AND a = ?")?;
+        let rows: Result<Vec<TypedValue>> = stmt
+            .query_and_then(rusqlite::params![e, a], |row| {
+                TypedValue::from_sql_value_pair(row.get(0)?, row.get(1)?)
+            })?
+            .collect();
+        rows
+    }
+
+    /// Expand `:db/retractEntity e` into retractions of every live datom with
+    /// `e` in the entity (subject) position, recursing into `:db/isComponent`
+    /// ref children. Matches pg_mentat: as-subject datoms plus component
+    /// recursion; datoms where `e` is a ref *value* are NOT retracted.
+    fn expand_retract_entity(
+        &self,
+        e: Entid,
+        visited: &mut BTreeSet<Entid>,
+        terms: &mut Vec<TermWithTempIdsAndLookupRefs>,
+    ) -> Result<()> {
+        if !visited.insert(e) {
+            return Ok(());
+        }
+        let datoms: Vec<(Entid, TypedValue)> = {
+            let mut stmt = self
+                .store
+                .prepare("SELECT a, v, value_type_tag FROM datoms WHERE e = ?")?;
+            let rows: Result<Vec<(Entid, TypedValue)>> = stmt
+                .query_and_then(rusqlite::params![e], |row| {
+                    let a: Entid = row.get(0)?;
+                    let v = TypedValue::from_sql_value_pair(row.get(1)?, row.get(2)?)?;
+                    Ok((a, v))
+                })?
+                .collect();
+            rows?
+        };
+
+        let mut component_targets: Vec<Entid> = Vec::new();
+        for (a, v) in datoms {
+            if let TypedValue::Ref(target) = v {
+                if let Ok(attribute) = self.schema.require_attribute_for_entid(a) {
+                    if attribute.component {
+                        component_targets.push(target);
+                    }
+                }
+            }
+            terms.push(Term::AddOrRetract(
+                OpType::Retract,
+                Either::Left(KnownEntid(e)),
+                a,
+                Either::Left(v),
+            ));
+        }
+
+        for target in component_targets {
+            self.expand_retract_entity(target, visited, terms)?;
+        }
+        Ok(())
     }
 
     /// Pipeline stage 1: convert `Entity` instances into `Term` instances, ready for term
@@ -457,6 +577,100 @@ where
                             a: AttributePlace::Entid(a),
                             v,
                         });
+                    }
+                }
+
+                Entity::TxFunction { fun, args } => {
+                    // Built-in transaction functions expand to plain add/retract
+                    // Terms *before* upsert resolution and cardinality checks, so we
+                    // push directly into `terms`. We only support concrete entids /
+                    // idents in the entity and attribute positions (matching
+                    // pg_mentat); tempids and lookup-refs are rejected.
+                    match fun {
+                        BuiltinTxFn::Cas => {
+                            if args.len() != 4 {
+                                bail!(DbErrorKind::NotYetImplemented(format!(
+                                    ":db.fn/cas expects [e a old new], got {} args",
+                                    args.len()
+                                )));
+                            }
+                            let mut it = args.into_iter();
+                            let e = self.resolve_tx_fn_entid(it.next().unwrap())?;
+                            let a = self.resolve_tx_fn_attr(it.next().unwrap())?;
+                            let old = it.next().unwrap();
+                            let new = it.next().unwrap();
+                            let attribute = self.schema.require_attribute_for_entid(a)?;
+                            let value_type = attribute.value_type;
+
+                            let old_val: Option<TypedValue> = match old {
+                                ValuePlace::Atom(ref v) if v.is_nil() => None,
+                                ValuePlace::Atom(v) => {
+                                    Some(v.into_typed_value(self.schema, value_type)?)
+                                }
+                                ValuePlace::Entid(entmod::EntidOrIdent::Entid(x)) => {
+                                    Some(TypedValue::Ref(x))
+                                }
+                                _ => bail!(DbErrorKind::NotYetImplemented(
+                                    ":db.fn/cas old value must be a plain value or nil".to_string()
+                                )),
+                            };
+                            let new_val: TypedValue = match new {
+                                ValuePlace::Atom(v) => v.into_typed_value(self.schema, value_type)?,
+                                ValuePlace::Entid(entmod::EntidOrIdent::Entid(x)) => {
+                                    TypedValue::Ref(x)
+                                }
+                                _ => bail!(DbErrorKind::NotYetImplemented(
+                                    ":db.fn/cas new value must be a plain value".to_string()
+                                )),
+                            };
+
+                            // Read the current committed value(s) inside this write
+                            // transaction. Matching pg_mentat, we read live state and do
+                            // not fold in earlier same-tx assertions.
+                            let current = self.read_current_values(e, a)?;
+                            let matches = match old_val {
+                                None => current.is_empty(),
+                                Some(ref ov) => current.len() == 1 && &current[0] == ov,
+                            };
+                            if !matches {
+                                let actual = current.first().map(|v| format!("{:?}", v));
+                                let expected = old_val.as_ref().map(|v| format!("{:?}", v));
+                                bail!(DbErrorKind::CasMismatch {
+                                    e,
+                                    a,
+                                    expected,
+                                    actual,
+                                });
+                            }
+
+                            if let Some(ov) = old_val {
+                                terms.push(Term::AddOrRetract(
+                                    OpType::Retract,
+                                    Either::Left(KnownEntid(e)),
+                                    a,
+                                    Either::Left(ov),
+                                ));
+                            }
+                            terms.push(Term::AddOrRetract(
+                                OpType::Add,
+                                Either::Left(KnownEntid(e)),
+                                a,
+                                Either::Left(new_val),
+                            ));
+                        }
+
+                        BuiltinTxFn::RetractEntity => {
+                            if args.len() != 1 {
+                                bail!(DbErrorKind::NotYetImplemented(format!(
+                                    ":db/retractEntity expects [e], got {} args",
+                                    args.len()
+                                )));
+                            }
+                            let e = self
+                                .resolve_tx_fn_entid(args.into_iter().next().unwrap())?;
+                            let mut visited = BTreeSet::new();
+                            self.expand_retract_entity(e, &mut visited, &mut terms)?;
+                        }
                     }
                 }
 

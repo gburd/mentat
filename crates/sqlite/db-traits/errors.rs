@@ -289,6 +289,18 @@ pub enum DbErrorKind {
     #[error("Supplied an invalid transaction range")]
     TimelinesInvalidRange,
 
+    /// A `:db.fn/cas` (compare-and-swap) found the current value of `[e a]`
+    /// did not match the expected `old` value, so the swap was rejected and the
+    /// whole transaction aborts. `expected`/`actual` are `None` when the value
+    /// is nil/absent.
+    #[error("compare-and-swap failed for [{e} {a}]: expected {}, got {}", .expected.as_deref().unwrap_or("nil"), .actual.as_deref().unwrap_or("nil"))]
+    CasMismatch {
+        e: i64,
+        a: i64,
+        expected: Option<String>,
+        actual: Option<String>,
+    },
+
     // It would be better to capture the underlying `rusqlite::Error`, but that type doesn't
     // implement many useful traits, including `Clone`, `Eq`, and `PartialEq`.
     #[error("SQL error: {0}")]

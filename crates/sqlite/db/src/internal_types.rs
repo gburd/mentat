@@ -84,6 +84,10 @@ impl TransactableValue for ValueAndSpan {
     fn as_tempid(&self) -> Option<TempId> {
         self.inner.as_text().cloned().map(TempId::External)
     }
+
+    fn is_nil(&self) -> bool {
+        matches!(self.inner, SpannedValue::Nil)
+    }
 }
 
 impl TransactableValue for TypedValue {
@@ -117,6 +121,11 @@ impl TransactableValue for TypedValue {
             TypedValue::String(ref s) => Some(TempId::External((**s).clone())),
             _ => None,
         }
+    }
+
+    fn is_nil(&self) -> bool {
+        // `TypedValue` has no nil representation.
+        false
     }
 }
 

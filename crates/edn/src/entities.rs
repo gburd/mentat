@@ -257,4 +257,11 @@ pub enum Entity<V> {
     },
     // Like {:db/id "tempid" a1 v1 a2 v2}.
     MapNotation(MapNotation<V>),
+    // A built-in transaction function invocation, with its argument places kept
+    // in source order. `[:db.fn/cas e a old new]` -> `Cas` with 4 args;
+    // `[:db/retractEntity e]` -> `RetractEntity` with 1 arg.
+    TxFunction {
+        fun: BuiltinTxFn,
+        args: Vec<ValuePlace<V>>,
+    },
 }

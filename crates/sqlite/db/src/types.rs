@@ -162,6 +162,10 @@ pub trait TransactableValue: Clone {
     fn into_entity_place(self) -> errors::Result<EntityPlace<Self>>;
 
     fn as_tempid(&self) -> Option<TempId>;
+
+    /// Whether this value place is the EDN `nil` value. Used by `:db.fn/cas`
+    /// to recognize "expect no current value".
+    fn is_nil(&self) -> bool;
 }
 
 #[cfg(test)]

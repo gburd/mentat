@@ -273,6 +273,14 @@ peg::parser!(grammar grammar() for str {
         = ":db/add"     { OpType::Add }
         / ":db/retract" { OpType::Retract }
 
+    // Recognize a built-in transaction-function keyword. Both the Datomic
+    // `:db.fn/*` spelling and the shorthand `:db/*` spelling are accepted.
+    rule builtin_tx_fn() -> BuiltinTxFn
+        = ":db.fn/cas"          { BuiltinTxFn::Cas }
+        / ":db/cas"             { BuiltinTxFn::Cas }
+        / ":db.fn/retractEntity" { BuiltinTxFn::RetractEntity }
+        / ":db/retractEntity"    { BuiltinTxFn::RetractEntity }
+
     rule raw_keyword() -> Keyword =
         keyword_prefix()
         ns:( sns:$(symbol_namespace()) namespace_separator() { sns })?
@@ -341,7 +349,8 @@ peg::parser!(grammar grammar() for str {
         / __ v:atom() __ { ValuePlace::Atom(v) }
 
     pub rule entity() -> Entity<ValueAndSpan>
-        = __ "[" __ op:(op()) __ e:(entity_place()) __ a:(forward_entid())  __ v:(value_place()) __  "]" __ { Entity::AddOrRetract { op, e, a: AttributePlace::Entid(a), v } }
+        = __ "[" __ fun:(builtin_tx_fn()) __ args:(value_place()*) __ "]" __ { Entity::TxFunction { fun, args } }
+        / __ "[" __ op:(op()) __ e:(entity_place()) __ a:(forward_entid())  __ v:(value_place()) __  "]" __ { Entity::AddOrRetract { op, e, a: AttributePlace::Entid(a), v } }
         / __ "[" __ op:(op()) __ e:(value_place())  __ a:(backward_entid()) __ v:(entity_place()) __ "]" __ { Entity::AddOrRetract { op, e: v, a: AttributePlace::Entid(a), v: e } }
         / __ map:map_notation() __ { Entity::MapNotation(map) }
         / expected!("entity")
