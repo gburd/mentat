@@ -4,6 +4,11 @@
 //! It is marked as non-sendable because the garbage collection only occurs
 //! thread-locally.
 
+// Vendored rust-gc 0.5.1 (MPL-2.0); kept close to upstream. Its own clippy
+// warnings (complex types, missing `# Safety` docs) are upstream's, not ours,
+// so we don't gate the workspace lint on them.
+#![allow(clippy::all, clippy::pedantic, clippy::missing_safety_doc, clippy::type_complexity)]
+
 #![cfg_attr(
     feature = "nightly",
     feature(coerce_unsized, dispatch_from_dyn, unsize)
