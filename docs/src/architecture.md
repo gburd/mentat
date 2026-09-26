@@ -1,6 +1,93 @@
 # Architecture
 
-pg_mentat implements the Datomic data model within PostgreSQL using pgrx (Rust PostgreSQL extension framework). This chapter describes the storage layout, query compilation pipeline, transaction processing, and pull architecture.
+Mentat is one repository that builds two storage backends behind a single
+Datalog/EDN front-end. This chapter covers the front-end/backend split, the
+crate map, and which features live on which backend, then the internals of the
+PostgreSQL backend (storage layout, query compilation, transactions, pull).
+
+## Front-end / backend split
+
+A query, transaction, or schema definition is EDN text. Both backends parse it
+with the same three shared crates:
+
+- **`edn`** — the EDN reader and the Datalog grammar. It produces a `ParsedQuery`
+  (find spec, where clauses, `:in` bindings, `:with`, rules) and parsed
+  transaction entities, independent of any backend. It caps nesting depth before
+  parsing so deeply nested input is rejected with an error rather than
+  overflowing the stack.
+- **`core-traits`** — the fundamental value model: `ValueType`, `TypedValue`,
+  `ValueTypeSet`, and the type/value mappings.
+- **`core`** (`mentat_core`) — conversions between EDN and the value model,
+  reusable keyword constants, schema traits, and shared utilities.
+
+Because a query is parsed by one grammar, it means the same thing on either
+backend. The backends diverge only below the parsed representation, where each
+turns it into storage-specific operations:
+
+- The **embedded** backend algebrizes the parsed query into SQL over SQLite's
+  `datoms` table (`query-algebrizer` → `query-projector` → `query-sql`) and
+  transacts through its own SQLite transactor (`db`, `transaction`).
+- The **PostgreSQL** backend compiles the same parsed query into SQL over its
+  narrow per-type tables and executes it through PostgreSQL's SPI
+  (`crates/pg/pg_mentat`).
+
+## Crate map
+
+```
+crates/
+├── edn/                 shared: EDN reader + Datalog grammar
+├── core-traits/         shared: ValueType, TypedValue, ValueTypeSet
+├── core/                shared (mentat_core): EDN↔value conversions, schema traits
+├── mino/                the mino-rs interpreter (mentat.store/* prims) + tests/corpus/
+├── sqlite/              the embedded backend
+│   ├── mentat/          the `mentat` crate: Store, Conn, InProgress, scripting glue
+│   ├── db/ db-traits/   SQLite storage: bootstrap, transactor, attribute cache
+│   ├── transaction/     in-progress transaction wrappers
+│   ├── sql/ sql-traits/  SQL text generation for SQLite
+│   ├── query-algebrizer{,-traits}/   parsed query → algebraic query
+│   ├── query-projector{,-traits}/    algebraic query → output shaping
+│   ├── query-pull{,-traits}/         pull execution
+│   ├── query-sql/       algebraic query → SQL
+│   ├── ffi/             C ABI over the embedded store (mentat_ffi)
+│   └── cli/             embedded CLI (mentat_cli)
+└── pg/
+    ├── pg_mentat/       the pgrx extension (SQL functions, narrow tables, SPI)
+    └── mentatd/         HTTP/WebSocket server over tokio-postgres
+```
+
+A plain `cargo build` at the repo root builds only the SQLite side and the
+shared front-end — no `pg_config`, libclang, or PostgreSQL required. The
+extension builds with `cargo pgrx` from `crates/pg/pg_mentat`; `mentatd` builds
+with `cargo build -p mentatd`.
+
+## Features by backend
+
+| Feature | Embedded (`mentat`) | PostgreSQL (`pg_mentat`) |
+|---|---|---|
+| Embedded EAV store, Datalog `q`, pull, schema | yes | yes |
+| `:db.fn/cas`, `:db/retractEntity` | yes | yes |
+| C ABI (`ffi`) | yes | — |
+| `?added` / history patterns in `:where` | via `(tx-data …)` only; planned | yes |
+| Historical `q` (as-of / since) | planned (1.7.1) | yes |
+| `:in` collection / tuple / relation bindings | planned (1.7.1) | yes |
+| Reactive subscriptions (LISTEN/NOTIFY) | — | yes |
+| BM25 full-text, pgvector, pg_trgm, PostGIS, rum | — | yes |
+| Materialized / virtual views, multi-store, excision | — | yes |
+| `mentatd` HTTP/WebSocket server | — | yes |
+
+`:db.fn/cas` and `:db/retractEntity` are now on both backends. On the embedded
+side, historical (`as-of`/`since`) Datalog `q` and non-scalar `:in` bindings are
+**planned for 1.7.1**: the embedded algebrizer has no as-of query rewriting yet,
+and `:in` bindings other than scalar are not yet consumed. The embedded
+scripting layer still supports `as-of`/`since` for the `datoms`/`entity`/`read`
+paths by replaying the transaction log; only arbitrary Datalog `q` against a
+historical basis is the gap.
+
+---
+
+# PostgreSQL backend internals
+
+pg_mentat implements the Datomic data model within PostgreSQL using pgrx (Rust PostgreSQL extension framework). The rest of this chapter describes its storage layout, query compilation pipeline, transaction processing, and pull architecture.
 
 ## Storage Model
 

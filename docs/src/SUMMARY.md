@@ -8,6 +8,7 @@
 
 - [Getting Started](./getting-started.md)
 - [Architecture](./architecture.md)
+- [Scripting (mino)](./scripting.md)
 - [Datalog Query Language](./datalog.md)
 - [Pull API](./pull-api.md)
 - [Time Travel](./time-travel.md)
