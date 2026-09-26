@@ -294,14 +294,16 @@ jobs:
           make debug
       - name: Fetch a matching DuckDB CLI
         run: |
-          curl -sSL \
+          set -euxo pipefail
+          curl -fsSL \
             "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
             -o /tmp/duckdb.zip
-          unzip -o /tmp/duckdb.zip -d "$HOME/.local/bin"
-          "$HOME/.local/bin/duckdb" --version
-      - name: Load + query smoke test (all three functions + a native JOIN)
+          mkdir -p /tmp/duckdb-cli
+          unzip -o /tmp/duckdb.zip -d /tmp/duckdb-cli
+          /tmp/duckdb-cli/duckdb --version
+      - name: Load + query smoke test (edn_t/edn_q/edn_pull/edn_eval + a native JOIN)
         working-directory: crates/duckdb
-        run: DUCKDB="$HOME/.local/bin/duckdb" bash test/smoke.sh
+        run: DUCKDB=/tmp/duckdb-cli/duckdb bash test/smoke.sh
 
   # --- Nix flake: builds the SQLite CLI + one extension major -----------
   nix-build:
