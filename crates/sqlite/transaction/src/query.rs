@@ -19,7 +19,8 @@ use core_traits::{Binding, Entid, KnownEntid, TypedValue};
 use mentat_core::{HasSchema, Schema};
 
 use mentat_query_algebrizer::{
-    algebrize_with_inputs, parse_find_string, AlgebraicQuery, EmptyBecause, FindQuery,
+    algebrize_with_inputs, algebrize_with_inputs_and_temporal, parse_find_string, AlgebraicQuery,
+    EmptyBecause, FindQuery, TemporalBound,
 };
 
 pub use mentat_query_algebrizer::QueryInputs;
@@ -146,8 +147,7 @@ fn algebrize_query<T>(known: Known, query: FindQuery, inputs: T) -> Result<Algeb
 where
     T: Into<Option<QueryInputs>>,
 {
-    let algebrized = algebrize_with_inputs(known, query, 0, inputs.into().unwrap_or_default())?;
-    let unbound = algebrized.unbound_variables();
+    let algebrized = algebrize_with_inputs(known, query, 0, inputs.into().unwrap_or_default())?;    let unbound = algebrized.unbound_variables();
     // Because we are running once, we can check that all of our `:in` variables are bound at this point.
     // If they aren't, the user has made an error -- perhaps writing the wrong variable in `:in`, or
     // not binding in the `QueryInput`.
@@ -374,6 +374,36 @@ where
     T: Into<Option<QueryInputs>>,
 {
     let algebrized = algebrize_query_str(known, query, inputs)?;
+    run_algebrized_query(known, sqlite, algebrized)
+}
+
+/// Like `q_once`, but runs the query against a historical basis: `as-of T`
+/// reconstructs the state at transaction `T`, `since T` sees only datoms
+/// transacted after `T`. This is the SQLite engine's historical-`q` entry point.
+pub fn q_once_temporal<T>(
+    sqlite: &rusqlite::Connection,
+    known: Known,
+    query: &str,
+    inputs: T,
+    temporal: TemporalBound,
+) -> QueryExecutionResult
+where
+    T: Into<Option<QueryInputs>>,
+{
+    let parsed = parse_find_string(query)?;
+    let algebrized = algebrize_with_inputs_and_temporal(
+        known,
+        parsed,
+        0,
+        inputs.into().unwrap_or_default(),
+        Some(temporal),
+    )?;
+    let unbound = algebrized.unbound_variables();
+    if !unbound.is_empty() {
+        bail!(MentatError::UnboundVariables(
+            unbound.into_iter().map(|v| v.to_string()).collect()
+        ));
+    }
     run_algebrized_query(known, sqlite, algebrized)
 }
 

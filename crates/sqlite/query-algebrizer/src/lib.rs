@@ -314,9 +314,33 @@ pub fn algebrize_with_inputs(
     counter: usize,
     inputs: QueryInputs,
 ) -> Result<AlgebraicQuery> {
+    algebrize_with_inputs_and_temporal(known, parsed, counter, inputs, None)
+}
+
+/// Like `algebrize_with_inputs`, but applies a whole-query temporal bound
+/// (`as-of T` / `since T`) so `q` can run against a historical basis.
+pub fn algebrize_with_inputs_and_temporal(
+    known: Known,
+    parsed: FindQuery,
+    counter: usize,
+    mut inputs: QueryInputs,
+    temporal: Option<TemporalBound>,
+) -> Result<AlgebraicQuery> {
+    // Non-scalar `:in` bindings (collection/tuple/relation) come in as VALUES
+    // tables; pull them out before `inputs` is moved into the CC (which only
+    // consumes scalar `values`).
+    let collections = std::mem::take(&mut inputs.collections);
     let alias_counter = RcCounter::with_initial(counter);
     let mut cc =
         ConjoiningClauses::with_inputs_and_alias_counter(parsed.in_vars, inputs, alias_counter);
+    cc.temporal = temporal;
+
+    // Materialize non-scalar `:in` inputs as VALUES joins *before* applying the
+    // where-clauses, so pattern variables that reference them are already bound
+    // and typed.
+    if !collections.is_empty() {
+        cc.apply_input_bindings(known.schema, collections)?;
+    }
 
     // This is so the rest of the query knows that `?x` is a ref if `(pull ?x …)` appears in `:find`.
     cc.derive_types_from_find_spec(&parsed.find_spec);
@@ -359,6 +383,7 @@ pub fn algebrize_with_inputs(
 }
 
 pub use crate::clauses::ConjoiningClauses;
+pub use crate::clauses::TemporalBound;
 
 pub use crate::types::{
     Column, ColumnAlternation, ColumnConstraint, ColumnConstraintOrAlternation, ColumnIntersection,
@@ -373,6 +398,7 @@ impl FindQuery {
             default_source: SrcVar::DefaultSrc,
             with: BTreeSet::default(),
             in_vars: BTreeSet::default(),
+            in_bindings: Vec::default(),
             in_sources: BTreeSet::default(),
             limit: Limit::Unlimited,
             offset: Offset::Unlimited,
@@ -420,6 +446,7 @@ impl FindQuery {
             default_source: parsed.default_source,
             with,
             in_vars,
+            in_bindings: parsed.in_bindings,
             in_sources: parsed.in_sources,
             limit: parsed.limit,
             offset: parsed.offset,

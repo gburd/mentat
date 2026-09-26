@@ -327,6 +327,54 @@ impl ConjoiningClauses {
             (_, _) => bail!(AlgebrizerError::InvalidGroundConstant),
         }
     }
+
+    /// Apply the non-scalar `:in` input bindings (collection `[?x ...]`, tuple
+    /// `[?a ?b]`, relation `[[?a ?b]]`) supplied as `(vars, rows)` value tables.
+    /// Each becomes a VALUES join (`ComputedTable::NamedValues`), exactly like a
+    /// `(ground ...)` collection/relation. Homogeneous column types are required,
+    /// matching the ground restriction.
+    pub(crate) fn apply_input_bindings(
+        &mut self,
+        schema: &Schema,
+        collections: Vec<(Vec<Variable>, Vec<Vec<TypedValue>>)>,
+    ) -> Result<()> {
+        for (names, rows) in collections {
+            if names.is_empty() {
+                bail!(AlgebrizerError::InvalidGroundConstant);
+            }
+            let width = names.len();
+
+            if rows.is_empty() {
+                // No values -> the query cannot produce results.
+                self.mark_known_empty(EmptyBecause::AttributeLookupFailed);
+                return Ok(());
+            }
+
+            // Flatten row-major, checking each row's width and that every column
+            // is of a single type.
+            let mut matrix = Vec::with_capacity(width * rows.len());
+            let mut column_types = vec![ValueTypeSet::none(); width];
+            for row in rows {
+                if row.len() != width {
+                    bail!(AlgebrizerError::InvalidGroundConstant);
+                }
+                for (val, acc) in row.into_iter().zip(column_types.iter_mut()) {
+                    let inserted = acc.insert(val.value_type());
+                    if inserted && !acc.is_unit() {
+                        bail!(AlgebrizerError::InvalidGroundConstant);
+                    }
+                    matrix.push(val);
+                }
+            }
+
+            let types = column_types
+                .into_iter()
+                .map(|x| x.exemplar().expect("non-empty collection has a column type"))
+                .collect();
+            self.collect_named_bindings(schema, names, types, matrix);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

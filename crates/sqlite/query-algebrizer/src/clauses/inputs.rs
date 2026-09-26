@@ -26,6 +26,14 @@ use query_algebrizer_traits::errors::{AlgebrizerError, Result};
 pub struct QueryInputs {
     pub(crate) types: BTreeMap<Variable, ValueType>,
     pub(crate) values: BTreeMap<Variable, TypedValue>,
+    /// Non-scalar `:in` inputs, keyed by the binding variable(s):
+    ///   * a collection `[?x ...]` -> one entry, `[[?x], [[v0], [v1], ...]]`;
+    ///   * a tuple `[?a ?b]`      -> one row of values across the vars;
+    ///   * a relation `[[?a ?b]]` -> many rows.
+    ///
+    /// Each entry is `(vars, rows)` where every row has `vars.len()` values. The
+    /// algebrizer turns these into VALUES joins for the matching binding form.
+    pub(crate) collections: Vec<(Vec<Variable>, Vec<Vec<TypedValue>>)>,
 }
 
 impl QueryInputs {
@@ -38,6 +46,7 @@ impl QueryInputs {
         QueryInputs {
             types: types.into_iter().collect(),
             values: BTreeMap::default(),
+            collections: Vec::default(),
         }
     }
 
@@ -48,6 +57,35 @@ impl QueryInputs {
                 .map(|(var, val)| (var.clone(), val.value_type()))
                 .collect(),
             values,
+            collections: Vec::default(),
+        }
+    }
+
+    /// Bind a single variable to a collection of values (`:in $ [?x ...]`).
+    pub fn with_collection(var: Variable, values: Vec<TypedValue>) -> QueryInputs {
+        let rows = values.into_iter().map(|v| vec![v]).collect();
+        QueryInputs {
+            types: BTreeMap::default(),
+            values: BTreeMap::default(),
+            collections: vec![(vec![var], rows)],
+        }
+    }
+
+    /// Bind several variables to one row of values (`:in $ [?a ?b]`).
+    pub fn with_tuple(vars: Vec<Variable>, values: Vec<TypedValue>) -> QueryInputs {
+        QueryInputs {
+            types: BTreeMap::default(),
+            values: BTreeMap::default(),
+            collections: vec![(vars, vec![values])],
+        }
+    }
+
+    /// Bind several variables to a table of rows (`:in $ [[?a ?b]]`).
+    pub fn with_relation(vars: Vec<Variable>, rows: Vec<Vec<TypedValue>>) -> QueryInputs {
+        QueryInputs {
+            types: BTreeMap::default(),
+            values: BTreeMap::default(),
+            collections: vec![(vars, rows)],
         }
     }
 
@@ -65,6 +103,10 @@ impl QueryInputs {
                 }
             }
         }
-        Ok(QueryInputs { types, values })
+        Ok(QueryInputs {
+            types,
+            values,
+            collections: Vec::default(),
+        })
     }
 }

@@ -23,8 +23,8 @@ use crate::clauses::ConjoiningClauses;
 use query_algebrizer_traits::errors::{AlgebrizerError, Result};
 
 use crate::types::{
-    ColumnConstraint, DatomsColumn, EmptyBecause, EvolvedNonValuePlace, EvolvedPattern,
-    EvolvedValuePlace, PlaceOrEmpty, SourceAlias,
+    ColumnConstraint, DatomsColumn, DatomsTable, EmptyBecause, EvolvedNonValuePlace,
+    EvolvedPattern, EvolvedValuePlace, PlaceOrEmpty, SourceAlias,
 };
 
 use crate::Known;
@@ -490,6 +490,17 @@ impl ConjoiningClauses {
         self.make_evolved_non_value(known, DatomsColumn::Tx, tx)
     }
 
+    /// Evolve the 5th (`added`) place. It is only meaningful as a variable (or a
+    /// placeholder); a history pattern binds it to the boolean `added` column of
+    /// the `transactions` source.
+    fn make_evolved_added(
+        &self,
+        known: &Known,
+        added: PatternNonValuePlace,
+    ) -> PlaceOrEmpty<EvolvedNonValuePlace> {
+        self.make_evolved_non_value(known, DatomsColumn::Value, added)
+    }
+
     pub(crate) fn make_evolved_attribute(
         &self,
         known: &Known,
@@ -576,11 +587,12 @@ impl ConjoiningClauses {
         known: Known,
         pattern: Pattern,
     ) -> PlaceOrEmpty<EvolvedPattern> {
-        let (e, a, v, tx, source) = (
+        let (e, a, v, tx, added, source) = (
             pattern.entity,
             pattern.attribute,
             pattern.value,
             pattern.tx,
+            pattern.added,
             pattern.source,
         );
         use self::PlaceOrEmpty::*;
@@ -592,13 +604,17 @@ impl ConjoiningClauses {
                     Empty(because) => Empty(because),
                     Place(v) => match self.make_evolved_tx(&known, tx) {
                         Empty(because) => Empty(because),
-                        Place(tx) => PlaceOrEmpty::Place(EvolvedPattern {
-                            source: source.unwrap_or(SrcVar::DefaultSrc),
-                            entity: e,
-                            attribute: a,
-                            value: v,
-                            tx,
-                        }),
+                        Place(tx) => match self.make_evolved_added(&known, added) {
+                            Empty(because) => Empty(because),
+                            Place(added) => PlaceOrEmpty::Place(EvolvedPattern {
+                                source: source.unwrap_or(SrcVar::DefaultSrc),
+                                entity: e,
+                                attribute: a,
+                                value: v,
+                                tx,
+                                added,
+                            }),
+                        },
                     },
                 },
             },
@@ -679,6 +695,19 @@ impl ConjoiningClauses {
             bail!(AlgebrizerError::UnsupportedSource(name));
         }
 
+        // A history pattern (`[?e ?a ?v ?tx ?added]`, i.e. a non-placeholder 5th
+        // place) has no home in the current-state `datoms` table -- it needs
+        // retractions and the `added` flag -- so route it to the `transactions`
+        // source instead. The current-state `datoms` pattern path (cache
+        // lookups, `all_datoms`, fulltext) does not apply here.
+        //
+        // A temporal bound (as-of/since) also forces the transactions source: a
+        // plain current-state pattern under `as-of T` reconstructs the state at
+        // T, and under `since T` sees only later datoms.
+        if pattern.added != EvolvedNonValuePlace::Placeholder || self.temporal.is_some() {
+            return self.apply_history_pattern(known, pattern);
+        }
+
         if self.attempt_cache_lookup(known, &pattern) {
             return Ok(());
         }
@@ -693,6 +722,263 @@ impl ConjoiningClauses {
             self.mark_known_empty(EmptyBecause::AttributeLookupFailed);
         }
         Ok(())
+    }
+
+    /// Apply a history pattern (`[?e ?a ?v ?tx ?added]`) by joining against the
+    /// `transactions` source, which carries retractions and the `added` flag.
+    /// Unlike the current-state `datoms` path, every place binds directly to a
+    /// `TransactionsColumn`; there is no attribute-directed table selection
+    /// (fulltext/all_datoms) and no cache lookup.
+    fn apply_history_pattern(&mut self, known: Known, pattern: EvolvedPattern) -> Result<()> {
+        use crate::types::TransactionsColumn;
+
+        let schema = known.schema;
+        let col = self.next_alias_for_table(DatomsTable::Transactions);
+
+        self.constrain_to_ref(&pattern.entity);
+        self.constrain_to_ref(&pattern.attribute);
+        self.constrain_to_tx(&pattern.tx);
+
+        // e, a, tx are refs; added is boolean; v takes whatever the attribute
+        // (if known) says, extracting a type tag otherwise.
+        match pattern.entity {
+            EvolvedNonValuePlace::Placeholder => {}
+            EvolvedNonValuePlace::Variable(ref v) => self.bind_column_to_var(
+                schema,
+                col.clone(),
+                TransactionsColumn::Entity,
+                v.clone(),
+            ),
+            EvolvedNonValuePlace::Entid(entid) => self.constrain_column_to_entity(
+                col.clone(),
+                TransactionsColumn::Entity,
+                entid,
+            ),
+        }
+
+        match pattern.attribute {
+            EvolvedNonValuePlace::Placeholder => {}
+            EvolvedNonValuePlace::Variable(ref v) => self.bind_column_to_var(
+                schema,
+                col.clone(),
+                TransactionsColumn::Attribute,
+                v.clone(),
+            ),
+            EvolvedNonValuePlace::Entid(entid) => self.constrain_column_to_entity(
+                col.clone(),
+                TransactionsColumn::Attribute,
+                entid,
+            ),
+        }
+
+        // The value type may be constrained by a known attribute.
+        let value_type = self.get_value_type(schema, &pattern);
+        match pattern.value {
+            EvolvedValuePlace::Placeholder => {}
+            EvolvedValuePlace::Variable(ref v) => {
+                if let Some(this_type) = value_type {
+                    self.constrain_var_to_type(v.clone(), this_type);
+                    if self.is_known_empty() {
+                        return Ok(());
+                    }
+                }
+                self.bind_column_to_var(schema, col.clone(), TransactionsColumn::Value, v.clone());
+            }
+            EvolvedValuePlace::Entid(i) => {
+                self.constrain_column_to_entity(col.clone(), TransactionsColumn::Value, i);
+            }
+            EvolvedValuePlace::EntidOrInteger(i) => {
+                // On the history source we don't attribute-direct the value type,
+                // so treat a bare integer as a numeric value (matching a ref or
+                // long). This mirrors the current-state fallback.
+                self.constrain_value_to_numeric(col.clone(), i);
+            }
+            EvolvedValuePlace::IdentOrKeyword(ref kw) => {
+                if let Some(ValueType::Ref) = value_type {
+                    if let Some(entid) = self.entid_for_ident(schema, kw) {
+                        self.constrain_column_to_entity(
+                            col.clone(),
+                            TransactionsColumn::Value,
+                            entid.into(),
+                        );
+                    } else {
+                        self.mark_known_empty(EmptyBecause::UnresolvedIdent(kw.cloned()));
+                        return Ok(());
+                    }
+                } else {
+                    self.constrain_column_to_constant(
+                        col.clone(),
+                        TransactionsColumn::Value,
+                        TypedValue::Keyword(kw.clone()),
+                    );
+                }
+            }
+            EvolvedValuePlace::Value(ref c) => {
+                let typed_value = c.clone();
+                self.constrain_column_to_constant(
+                    col.clone(),
+                    TransactionsColumn::Value,
+                    typed_value,
+                );
+            }
+        }
+
+        match pattern.tx {
+            EvolvedNonValuePlace::Placeholder => {}
+            EvolvedNonValuePlace::Variable(ref v) => {
+                self.bind_column_to_var(schema, col.clone(), TransactionsColumn::Tx, v.clone());
+            }
+            EvolvedNonValuePlace::Entid(entid) => {
+                self.constrain_column_to_entity(col.clone(), TransactionsColumn::Tx, entid);
+            }
+        }
+
+        match pattern.added {
+            EvolvedNonValuePlace::Placeholder => {}
+            EvolvedNonValuePlace::Variable(ref v) => {
+                self.constrain_var_to_type(v.clone(), ValueType::Boolean);
+                if self.is_known_empty() {
+                    return Ok(());
+                }
+                self.bind_column_to_var(schema, col.clone(), TransactionsColumn::Added, v.clone());
+            }
+            EvolvedNonValuePlace::Entid(_) => {
+                // `added` is a boolean flag, never an entid; a resolved-entity
+                // 5th place means the query cannot match.
+                self.mark_known_empty(EmptyBecause::AttributeLookupFailed);
+                return Ok(());
+            }
+        }
+
+        // Apply any whole-query temporal bound to this transactions alias.
+        if let Some(temporal) = self.temporal {
+            self.apply_temporal_bound(temporal, &col, &pattern);
+            if self.is_known_empty() {
+                return Ok(());
+            }
+        }
+
+        self.from
+            .push(SourceAlias(DatomsTable::Transactions, col));
+        Ok(())
+    }
+
+    /// Constrain a `transactions` alias according to a whole-query temporal bound.
+    ///
+    ///   * `Since(t)`: keep only datoms transacted after `t` (`tx > t`).
+    ///   * `AsOf(t)`: reconstruct the state at `t`. For a *current-state* pattern
+    ///     (`added` is a placeholder) that means: the assertion (`added = 1`) at
+    ///     or before `t` (`tx <= t`) with no later retraction at or before `t`
+    ///     (a correlated `NOT EXISTS` on `transactions`). For a *history* pattern
+    ///     (an explicit `added`) it means simply `tx <= t`, so all of history up
+    ///     to `t` is visible.
+    fn apply_temporal_bound(
+        &mut self,
+        temporal: crate::clauses::TemporalBound,
+        col: &crate::types::TableAlias,
+        pattern: &EvolvedPattern,
+    ) {
+        use crate::clauses::TemporalBound;
+        use crate::types::{
+            Column, ComputedTable, Inequality, QualifiedAlias, QueryValue, TransactionsColumn,
+        };
+        use core_traits::TypedValue;
+
+        let tx_col = |alias: &crate::types::TableAlias| {
+            QueryValue::Column(QualifiedAlias(
+                alias.clone(),
+                Column::Transactions(TransactionsColumn::Tx),
+            ))
+        };
+
+        match temporal {
+            TemporalBound::Since(t) => {
+                // tx > t
+                self.wheres.add_intersection(ColumnConstraint::Inequality {
+                    operator: Inequality::LessThan,
+                    left: QueryValue::TypedValue(TypedValue::Ref(t)),
+                    right: tx_col(col),
+                });
+            }
+            TemporalBound::AsOf(t) => {
+                // tx <= t
+                self.wheres.add_intersection(ColumnConstraint::Inequality {
+                    operator: Inequality::LessThanOrEquals,
+                    left: tx_col(col),
+                    right: QueryValue::TypedValue(TypedValue::Ref(t)),
+                });
+
+                if pattern.added == EvolvedNonValuePlace::Placeholder {
+                    // Current-state reconstruction: this row must be an assertion
+                    // (added = 1)...
+                    self.wheres.add_intersection(ColumnConstraint::Equals(
+                        QualifiedAlias(
+                            col.clone(),
+                            Column::Transactions(TransactionsColumn::Added),
+                        ),
+                        QueryValue::TypedValue(TypedValue::Boolean(true)),
+                    ));
+
+                    // ...with no later retraction (added = 0) of the same (e, a, v)
+                    // at a tx after this one and still at or before t.
+                    let inner_alias = self.next_alias_for_table(DatomsTable::Transactions);
+                    let mut sub = ConjoiningClauses::default();
+                    sub.from.push(SourceAlias(
+                        DatomsTable::Transactions,
+                        inner_alias.clone(),
+                    ));
+
+                    let inner = |c: TransactionsColumn| {
+                        QualifiedAlias(inner_alias.clone(), Column::Transactions(c))
+                    };
+                    let outer = |c: TransactionsColumn| {
+                        QueryValue::Column(QualifiedAlias(
+                            col.clone(),
+                            Column::Transactions(c),
+                        ))
+                    };
+
+                    // Correlate e, a, v with the outer row.
+                    sub.wheres.add_intersection(ColumnConstraint::Equals(
+                        inner(TransactionsColumn::Entity),
+                        outer(TransactionsColumn::Entity),
+                    ));
+                    sub.wheres.add_intersection(ColumnConstraint::Equals(
+                        inner(TransactionsColumn::Attribute),
+                        outer(TransactionsColumn::Attribute),
+                    ));
+                    sub.wheres.add_intersection(ColumnConstraint::Equals(
+                        inner(TransactionsColumn::Value),
+                        outer(TransactionsColumn::Value),
+                    ));
+                    sub.wheres.add_intersection(ColumnConstraint::Equals(
+                        inner(TransactionsColumn::ValueTypeTag),
+                        outer(TransactionsColumn::ValueTypeTag),
+                    ));
+                    // The later row is a retraction (added = 0).
+                    sub.wheres.add_intersection(ColumnConstraint::Equals(
+                        inner(TransactionsColumn::Added),
+                        QueryValue::TypedValue(TypedValue::Boolean(false)),
+                    ));
+                    // ...transacted after this row's tx.
+                    sub.wheres.add_intersection(ColumnConstraint::Inequality {
+                        operator: Inequality::LessThan,
+                        left: outer(TransactionsColumn::Tx),
+                        right: tx_col(&inner_alias),
+                    });
+                    // ...and still at or before t.
+                    sub.wheres.add_intersection(ColumnConstraint::Inequality {
+                        operator: Inequality::LessThanOrEquals,
+                        left: tx_col(&inner_alias),
+                        right: QueryValue::TypedValue(TypedValue::Ref(t)),
+                    });
+
+                    self.wheres.add_intersection(ColumnConstraint::NotExists(
+                        ComputedTable::Subquery(Box::new(sub)),
+                    ));
+                }
+            }
+        }
     }
 }
 

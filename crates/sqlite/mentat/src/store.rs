@@ -150,6 +150,24 @@ impl Store {
     pub fn last_tx_id(&self) -> Entid {
         self.conn.last_tx_id()
     }
+
+    /// Run a Datalog query against a historical basis reconstructed as of
+    /// transaction `tx` (inclusive) -- the state that was current at `tx`.
+    pub fn q_once_as_of<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        self.conn.q_once_as_of(&self.sqlite, query, inputs, tx)
+    }
+
+    /// Run a Datalog query seeing only datoms transacted after transaction `tx`
+    /// (`since`). Typically used with a history pattern `[?e ?a ?v ?tx ?added]`.
+    pub fn q_once_since<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        self.conn.q_once_since(&self.sqlite, query, inputs, tx)
+    }
 }
 
 impl Queryable for Store {

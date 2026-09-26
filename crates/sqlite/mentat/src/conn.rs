@@ -129,6 +129,52 @@ impl Conn {
         q_once(sqlite, known, query, inputs)
     }
 
+    /// Query the store against a historical basis reconstructed as of transaction
+    /// `tx` (inclusive): the value that was current at `tx`.
+    pub fn q_once_as_of<T>(
+        &self,
+        sqlite: &rusqlite::Connection,
+        query: &str,
+        inputs: T,
+        tx: Entid,
+    ) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        let metadata = self.metadata.lock().unwrap();
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        mentat_transaction::query::q_once_temporal(
+            sqlite,
+            known,
+            query,
+            inputs,
+            mentat_query_algebrizer::TemporalBound::AsOf(tx),
+        )
+    }
+
+    /// Query the store seeing only datoms transacted after transaction `tx`
+    /// (`since`).
+    pub fn q_once_since<T>(
+        &self,
+        sqlite: &rusqlite::Connection,
+        query: &str,
+        inputs: T,
+        tx: Entid,
+    ) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        let metadata = self.metadata.lock().unwrap();
+        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        mentat_transaction::query::q_once_temporal(
+            sqlite,
+            known,
+            query,
+            inputs,
+            mentat_query_algebrizer::TemporalBound::Since(tx),
+        )
+    }
+
     /// Query the Mentat store, using the given connection and the current metadata,
     /// but without using the cache.
     pub fn q_uncached<T>(

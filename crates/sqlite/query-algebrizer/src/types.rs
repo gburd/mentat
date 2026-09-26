@@ -683,6 +683,10 @@ pub struct FindQuery {
     pub default_source: SrcVar,
     pub with: BTreeSet<Variable>,
     pub in_vars: BTreeSet<Variable>,
+    /// The full `:in` binding forms, in order. Scalar bindings are also reflected
+    /// in `in_vars`; collection/tuple/relation bindings are consumed from here
+    /// (given matching input values) as VALUES joins.
+    pub in_bindings: Vec<edn::query::Binding>,
     pub in_sources: BTreeSet<SrcVar>,
     pub limit: Limit,
     pub offset: Offset,
@@ -732,4 +736,9 @@ pub struct EvolvedPattern {
     pub attribute: EvolvedNonValuePlace,
     pub value: EvolvedValuePlace,
     pub tx: EvolvedNonValuePlace,
+    /// The 5th (`added`) place. When this is not `Placeholder` the pattern is a
+    /// history pattern (`[?e ?a ?v ?tx ?added]`) and is routed to the
+    /// `transactions` source, which -- unlike current-state `datoms` -- exposes
+    /// retractions and the `added` flag.
+    pub added: EvolvedNonValuePlace,
 }

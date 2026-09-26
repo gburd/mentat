@@ -179,6 +179,21 @@ pub struct ConjoiningClauses {
 
     /// Map of variables to the set of type requirements we have for them.
     required_types: BTreeMap<Variable, ValueTypeSet>,
+
+    /// An optional temporal bound applied to *every* pattern in this CC (and its
+    /// sub-CCs): `as-of T` reconstructs current state at tx T; `since T` keeps
+    /// only datoms transacted after T. `None` means "current basis", the default.
+    pub temporal: Option<TemporalBound>,
+}
+
+/// A whole-query temporal bound (`as-of` / `since`). See `ConjoiningClauses::temporal`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemporalBound {
+    /// Reconstruct current state as of transaction `T`: for each pattern, the
+    /// latest assertion at or before `T` with no later retraction at or before `T`.
+    AsOf(i64),
+    /// Only datoms transacted strictly after `T` (`tx > T`).
+    Since(i64),
 }
 
 impl PartialEq for ConjoiningClauses {
@@ -230,6 +245,7 @@ impl Default for ConjoiningClauses {
             value_bindings: BTreeMap::new(),
             known_types: BTreeMap::new(),
             extracted_types: BTreeMap::new(),
+            temporal: None,
         }
     }
 }
@@ -276,6 +292,9 @@ impl ConjoiningClauses {
             Some(QueryInputs {
                 mut types,
                 mut values,
+                // Non-scalar collections are applied separately, after the CC is
+                // built, by `apply_input_bindings` (they need a VALUES join).
+                collections: _,
             }) => {
                 // Discard any bindings not mentioned in our :in clause.
                 types.keep_intersected_keys(&in_variables);
@@ -322,6 +341,7 @@ impl ConjoiningClauses {
             known_types: self.known_types.clone(),
             extracted_types: self.extracted_types.clone(),
             required_types: self.required_types.clone(),
+            temporal: self.temporal,
             ..Default::default()
         }
     }
@@ -337,6 +357,7 @@ impl ConjoiningClauses {
             known_types: self.known_types.with_intersected_keys(vars),
             extracted_types: self.extracted_types.with_intersected_keys(vars),
             required_types: self.required_types.with_intersected_keys(vars),
+            temporal: self.temporal,
             ..Default::default()
         }
     }
@@ -1185,12 +1206,6 @@ impl ConjoiningClauses {
     pub(crate) fn apply_clause(&mut self, known: Known, where_clause: WhereClause) -> Result<()> {
         match where_clause {
             WhereClause::Pattern(p) => {
-                // The 5th `added` place (history queries) has no home in the
-                // current-state `datoms` table; reject it rather than silently
-                // dropping it (Task 12 routes such patterns to `transactions`).
-                if p.added != PatternNonValuePlace::Placeholder {
-                    bail!(AlgebrizerError::UnsupportedHistoryPattern);
-                }
                 reject_unsupported_pattern(&p)?;
                 match self.make_evolved_pattern(known, p) {
                     PlaceOrEmpty::Place(evolved) => self.apply_pattern(known, evolved)?,
