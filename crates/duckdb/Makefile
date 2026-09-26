@@ -13,9 +13,11 @@ USE_UNSTABLE_C_API=1
 # (= DuckDB v1.5.5) and the venv/PyPI `duckdb` used to test/load.
 TARGET_DUCKDB_VERSION=v1.5.5
 
-# EC2's ~/mentat is not a git checkout (rsync excludes .git), so the auto
-# git-describe version detection fails. Pin it explicitly.
-EXTENSION_VERSION=v1.7.0
+# The version stamped into the extension footer: the workspace version from the
+# root Cargo.toml, so it can't drift from the release (this also works in copies
+# without .git, where the ci-tools git-describe detection fails). The registry
+# CI overrides it with its own EXTENSION_VERSION when it builds.
+EXTENSION_VERSION ?= v$(shell sed -n 's/^version = "\(.*\)"/\1/p' $(PROJ_DIR)../../Cargo.toml | head -1)
 
 # This crate is a workspace member, so `cargo build` writes to the WORKSPACE
 # target dir (../../target), not ./target. Force a crate-local target dir so the
