@@ -89,6 +89,41 @@ impl QueryInputs {
         }
     }
 
+    /// Combine two sets of inputs, e.g. scalars from `with_value_sequence` plus a
+    /// collection from `with_collection`, for `:in ?name [?x ...]`. Fails if a
+    /// variable is bound by both, or bound twice with different types.
+    pub fn merge(mut self, other: QueryInputs) -> Result<QueryInputs> {
+        let mut bound: std::collections::BTreeSet<Variable> = self
+            .values
+            .keys()
+            .chain(self.collections.iter().flat_map(|(vs, _)| vs.iter()))
+            .cloned()
+            .collect();
+        for var in other
+            .values
+            .keys()
+            .chain(other.collections.iter().flat_map(|(vs, _)| vs.iter()))
+        {
+            if !bound.insert(var.clone()) {
+                bail!(AlgebrizerError::InvalidArgument(
+                    var.name(),
+                    "bound by more than one :in input",
+                    0
+                ));
+            }
+        }
+        for (var, t) in other.types {
+            if let Some(old) = self.types.insert(var.clone(), t) {
+                if old != t {
+                    bail!(AlgebrizerError::InputTypeDisagreement(var.name(), old, t));
+                }
+            }
+        }
+        self.values.extend(other.values);
+        self.collections.extend(other.collections);
+        Ok(self)
+    }
+
     pub fn new(
         mut types: BTreeMap<Variable, ValueType>,
         values: BTreeMap<Variable, TypedValue>,

@@ -367,3 +367,43 @@ fn test_in_relation_binding() {
         "only the (name, dept) pairs that actually hold match"
     );
 }
+
+/// `:in $ ?dept [?name ...]` mixes a scalar and a collection: `QueryInputs::merge`
+/// combines them. Only Eng people named in the list match.
+#[test]
+fn test_in_scalar_plus_collection_merge() {
+    let mut store = setup();
+    setup_people(&mut store);
+
+    let inputs =
+        QueryInputs::with_value_sequence(vec![(var("?dept"), TypedValue::typed_string("Eng"))])
+            .merge(QueryInputs::with_collection(
+                var("?name"),
+                vec![
+                    TypedValue::typed_string("Alice"),
+                    TypedValue::typed_string("Carol"),
+                ],
+            ))
+            .expect("merge");
+    let names = store
+        .q_once(
+            "[:find [?n ...] :in $ ?dept [?name ...] :where [?e :hi/name ?name] [?e :hi/dept ?dept] [?e :hi/name ?n]]",
+            inputs,
+        )
+        .into_coll_result()
+        .expect("q")
+        .into_iter()
+        .filter_map(|b| b.into_string().map(|s| (*s).clone()))
+        .collect::<Vec<_>>();
+    // Carol is Design, so only Alice survives the scalar ?dept filter.
+    assert_eq!(names, vec!["Alice".to_string()]);
+}
+
+/// Binding the same variable from two inputs is an error, not a silent override.
+#[test]
+fn test_merge_rejects_double_binding() {
+    let a =
+        QueryInputs::with_value_sequence(vec![(var("?name"), TypedValue::typed_string("Alice"))]);
+    let b = QueryInputs::with_collection(var("?name"), vec![TypedValue::typed_string("Bob")]);
+    assert!(a.merge(b).is_err());
+}
