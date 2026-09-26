@@ -31,6 +31,7 @@ allow = [
     "MPL-2.0",   # vendored gc/gc_derive (file-level copyleft) + option-ext; compatible in an Apache-2.0 repo
     "CC0-1.0",   # constant_time_eq (public-domain-equivalent)
     "WTFPL",     # terminfo, via the CLI's terminal handling (permissive)
+    "CDLA-Permissive-2.0",  # webpki-roots CA data (permissive), via the DuckDB extension deps
 ]
 # Crates whose only license alternatives are copyleft are accepted via the
 # permissive arm of their OR expression; cargo-deny picks the allowed one.
