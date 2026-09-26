@@ -19,7 +19,25 @@ default-members = [
   "crates/core",
   "crates/mino",
   "crates/script",
-  "crates/sqlite/*",
+  # Explicit, not `crates/sqlite/*`: that glob would pull in crates/sqlite/ext
+  # (the SQLite loadable extension), whose `mentat/mino` feature would then be
+  # unified into every plain root build/test. Build it with `-p mentat_sqlite_ext`.
+  "crates/sqlite/cli",
+  "crates/sqlite/db",
+  "crates/sqlite/db-traits",
+  "crates/sqlite/ffi",
+  "crates/sqlite/mentat",
+  "crates/sqlite/public-traits",
+  "crates/sqlite/query-algebrizer",
+  "crates/sqlite/query-algebrizer-traits",
+  "crates/sqlite/query-projector",
+  "crates/sqlite/query-projector-traits",
+  "crates/sqlite/query-pull",
+  "crates/sqlite/query-pull-traits",
+  "crates/sqlite/query-sql",
+  "crates/sqlite/sql",
+  "crates/sqlite/sql-traits",
+  "crates/sqlite/transaction",
   "crates/pg/mentatd",
 ]
 # crates/sqlite/* is a glob; fixtures/ is shared test data, not a crate.

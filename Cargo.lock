@@ -2587,6 +2587,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mentat_sqlite_ext"
+version = "1.8.0"
+dependencies = [
+ "mentat",
+ "serde_json",
+]
+
+[[package]]
 name = "mentat_transaction"
 version = "0.0.2"
 dependencies = [

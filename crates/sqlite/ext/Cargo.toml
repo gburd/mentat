@@ -1,0 +1,26 @@
+[package]
+name = "mentat_sqlite_ext"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Datomic-compatible Datalog engine exposed as a SQLite loadable extension"
+
+[lib]
+# `libmentat_sqlite.so` -> SQLite derives the entrypoint `sqlite3_mentatsqlite_init`,
+# so `.load ./libmentat_sqlite` works with no explicit entrypoint argument.
+name = "mentat_sqlite"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The embedded engine keeps its OWN statically bundled SQLite (rusqlite `bundled`)
+# for the store file. The host SQLite is reached only through the raw
+# `sqlite3_api_routines` pointer in src/lib.rs -- deliberately NOT via rusqlite's
+# `loadable_extension` feature (see README "Two SQLites").
+mentat = { path = "../mentat", features = ["mino"] }
+serde_json = "1"
+
+[lints]
+workspace = true
