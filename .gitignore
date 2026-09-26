@@ -99,3 +99,4 @@ docs/.jekyll-metadata
 
 # DuckDB registry build output (root Makefile forwards to crates/duckdb)
 /build/
+/pg_mentat-*.zip
