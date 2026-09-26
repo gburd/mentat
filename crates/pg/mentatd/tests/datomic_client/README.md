@@ -199,5 +199,5 @@ lein deps
 Verify the PostgreSQL connection and that pg_mentat is installed:
 
 ```bash
-psql "$DATABASE_URL" -c "SELECT mentat.edn_q('[:find ?e :where [?e :db/ident :db/ident]]', '{}'::jsonb);"
+psql "$DATABASE_URL" -c "SELECT public.edn_q('[:find ?e :where [?e :db/ident :db/ident]]', '{}'::jsonb);"
 ```

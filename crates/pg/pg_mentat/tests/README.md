@@ -76,7 +76,7 @@ fn test_simple_query() {
     bootstrap_schema().expect("Bootstrap failed");
 
     let result = Spi::get_one::<String>(
-        "SELECT mentat.edn_q('[:find ?x :where [?x :db/ident ?i]]', '{}'::jsonb)"
+        "SELECT public.edn_q('[:find ?x :where [?x :db/ident ?i]]', '{}'::jsonb)"
     ).expect("Query failed");
 
     let json: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -93,7 +93,7 @@ fn test_transaction() {
     setup_test_db().expect("Setup failed");
     bootstrap_schema().expect("Bootstrap failed");
 
-    Spi::run("SELECT mentat.edn_t('[[:db/add \"e\" :person/name \"Alice\"]]')")
+    Spi::run("SELECT public.edn_t('[[:db/add \"e\" :person/name \"Alice\"]]')")
         .expect("Transaction failed");
 
     // Verify transaction
@@ -118,7 +118,7 @@ fn test_as_of() {
 
     // Query as-of tx1
     let result = Spi::get_one::<String>(&format!(
-        "SELECT mentat.edn_q('[:find ?v :where [?e :attr ?v]]', '{{\"asOf\": {}}}'::jsonb)",
+        "SELECT public.edn_q('[:find ?v :where [?e :attr ?v]]', '{{\"asOf\": {}}}'::jsonb)",
         tx1
     )).expect("Query failed");
 

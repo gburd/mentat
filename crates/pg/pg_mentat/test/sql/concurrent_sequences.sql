@@ -89,7 +89,7 @@ END $$;
 \echo '=== Test 4: Rapid transactions produce unique entity IDs ==='
 
 -- Create test attribute
-SELECT mentat.edn_t('[
+SELECT public.edn_t('[
     {:db/id "attr"
      :db/ident :test/concurrent
      :db/valueType :db.type/string
@@ -102,7 +102,7 @@ DECLARE
     i INTEGER;
 BEGIN
     FOR i IN 1..50 LOOP
-        PERFORM mentat.edn_t(
+        PERFORM public.edn_t(
             format('[[:db/add "e%s" :test/concurrent "person-%s"]]', i, i)
         );
     END LOOP;

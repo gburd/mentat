@@ -14,7 +14,7 @@ SELECT jsonb_typeof(mentat.mentat_schema());
 
 -- Test 2: mentat_entity() - Fetch entity data
 -- First, create a test entity via transaction
-SELECT mentat.edn_t('
+SELECT public.edn_t('
 [[:db/add "person1" :person/name "Alice"]
  [:db/add "person1" :person/age 30]]
 ');
@@ -42,14 +42,14 @@ SELECT mentat.mentat_entity(100) ? ':db/id';
 
 -- Test 3: edn_q() - Execute datalog queries
 -- Simple query to find all person names
-SELECT mentat.edn_q('
+SELECT public.edn_q('
 [:find ?name
  :where
  [?e :person/name ?name]]
 ', '{}'::jsonb);
 
 -- Query with multiple variables
-SELECT mentat.edn_q('
+SELECT public.edn_q('
 [:find ?name ?age
  :where
  [?e :person/name ?name]
@@ -61,7 +61,7 @@ SELECT
     result->>'columns' as columns,
     jsonb_array_length(result->'results') as result_count
 FROM (
-    SELECT mentat.edn_q('
+    SELECT public.edn_q('
         [:find ?name
          :where
          [?e :person/name ?name]]
@@ -70,7 +70,7 @@ FROM (
 
 -- Test 4: Empty result cases
 -- Query for non-existent attribute
-SELECT mentat.edn_q('
+SELECT public.edn_q('
 [:find ?x
  :where
  [?e :nonexistent/attr ?x]]

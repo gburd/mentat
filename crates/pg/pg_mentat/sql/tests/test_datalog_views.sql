@@ -15,7 +15,7 @@ BEGIN;
 -- Setup: Create schema and sample data
 -- =========================================================================
 
-SELECT mentat.edn_t('[
+SELECT public.edn_t('[
   {:db/ident       :person/name
    :db/valueType   :db.type/string
    :db/cardinality :db.cardinality/one
@@ -30,7 +30,7 @@ SELECT mentat.edn_t('[
    :db/cardinality :db.cardinality/one}
 ]');
 
-SELECT mentat.edn_t('[
+SELECT public.edn_t('[
   {:db/id "alice" :person/name "Alice" :person/age 30 :person/email "alice@example.com"}
   {:db/id "bob"   :person/name "Bob"   :person/age 25 :person/email "bob@example.com"}
   {:db/id "carol" :person/name "Carol" :person/age 35}
@@ -322,7 +322,7 @@ DECLARE
 BEGIN
     SELECT count(*) INTO cnt_before FROM test_people_mat;
 
-    PERFORM mentat.edn_t('[
+    PERFORM public.edn_t('[
       {:db/id "newperson" :person/name "NewPerson"}
     ]');
 
