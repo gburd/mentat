@@ -73,7 +73,7 @@ echo ""
 
 # ---- install + enable pg_stat_statements --------------------------------
 echo "phase2: (re)installing pg_mentat extension"
-(cd "${REPO_ROOT}/pg_mentat" && CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo_pg_mentat}" \
+(cd "${REPO_ROOT}/crates/pg/pg_mentat" && CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo_pg_mentat}" \
     cargo pgrx install --no-default-features --features pg16 --pg-config "${PG_CONFIG}" \
     2>&1 | tail -2)
 
