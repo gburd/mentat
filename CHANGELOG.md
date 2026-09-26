@@ -8,6 +8,53 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.0] — one SQL surface (`edn_*`) on SQLite, PostgreSQL and DuckDB
+
+### Changed — renamed functions
+
+- The core SQL functions are now `edn_t` (transact), `edn_q` (query), `edn_pull`
+  and `edn_eval` (mino scripting) on every backend.
+- **PostgreSQL:** `mentat_transact`, `mentat_query`, `mentat_pull` and
+  `mentat_eval` still work as deprecated SQL wrappers around the new names and
+  will be removed in a future major release. `ALTER EXTENSION pg_mentat UPDATE TO
+  '1.9.0'` adds the new names to a 1.8.0 install (tested both with and without
+  the `script` feature). The `mentat.q` / `mentat.t` / `mentat.pull` aliases now
+  call the new names, and `mentat_query`'s `inputs` argument now defaults to
+  `'{}'`.
+- **DuckDB (breaking):** `mentat_transact` and `mentat_query` are gone, replaced
+  by `edn_t` and `edn_q` with no aliases (the extension hadn't been published yet).
+  The placeholder `mentat_hello()` is removed.
+- **DuckDB (breaking):** `edn_q` now returns strings as plain text (`Alice`).
+  Before, it returned them with the quotes included (`"Alice"`), so joins against
+  native `VARCHAR` columns found no matches. Keywords keep their leading colon.
+
+### Added
+
+- **SQLite loadable extension** (`crates/sqlite/ext`, `libmentat_sqlite.so`): the
+  same four functions for any SQLite host (`.load` in the `sqlite3` CLI,
+  `load_extension` in Python, and so on). `edn_q` returns pg_mentat's JSON shape,
+  so `json_each(edn_q(...))` joins against native tables. The functions are
+  `SQLITE_DIRECTONLY`, and host SQLite 3.30 or newer is required. The extension
+  embeds its own copy of the engine and SQLite and exports only its init symbol.
+- **DuckDB:** `edn_pull` (JSON in pg_mentat's shape) and `edn_eval` (sandboxed
+  mino, on by default) are new. `edn_q`'s options argument now works; before, it
+  was read and ignored.
+- **Options JSON on every backend:** `{"inputs": [...]}` binds `:in` forms by
+  position, `{"asOf": tx}` and `{"since": tx}` query the database as of or since a
+  transaction. Inputs can mix scalars with collection, tuple and relation
+  bindings (`:in ?age [?name ...]`) through the new `QueryInputs::merge`.
+- `mentat::script::Interpreter::with_default_path(path)`: a sandboxed interpreter
+  where `(mentat.store/open)` with no argument opens `path`.
+
+### Fixed
+
+- **PostgreSQL:** reactive subscription triggers called `mentat_query` with one
+  argument, which no function accepted, so every subscription failed when its
+  trigger fired. They now call `edn_q(query, '{}')`.
+- **PostgreSQL:** `mentat_query_stats` and `mentat_slow_queries` now count calls
+  to the new `edn_*` names.
+- **mentatd** sends the new function names.
+
 ## [1.8.0] — 2026-09-26 — DuckDB backend + embedded feature parity
 
 ### Added
