@@ -4,3 +4,5 @@
 duckdb_unittest_tempdir
 *.duckdb
 *.duckdb.wal
+# mentat stores created by test/sql/mentat.test (__TEST_DIR__ may be test/sql)
+*.sqlite
