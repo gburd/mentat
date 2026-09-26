@@ -195,7 +195,10 @@ mod tests {
     fn db_value_round_trips_through_destructure() {
         let v = db_value(1, 42, Some(7), None);
         let d = destructure_db("t", Some(&v)).unwrap();
-        assert_eq!((d.conn, d.basis_tx, d.as_of, d.since), (1, 42, Some(7), None));
+        assert_eq!(
+            (d.conn, d.basis_tx, d.as_of, d.since),
+            (1, 42, Some(7), None)
+        );
         // A bare conn int is the current db.
         let d2 = destructure_db("t", Some(&Value::Int(3))).unwrap();
         assert_eq!((d2.conn, d2.as_of, d2.since), (3, None, None));

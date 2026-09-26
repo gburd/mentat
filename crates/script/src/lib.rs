@@ -24,7 +24,9 @@ pub mod prims;
 pub mod values;
 
 pub use prims::install;
-pub use values::{db_value, destructure_db, inst_value, kw_ns, str_val, tx_report_value, DbRef, TxReport};
+pub use values::{
+    db_value, destructure_db, inst_value, kw_ns, str_val, tx_report_value, DbRef, TxReport,
+};
 
 use mino_rs::Value;
 

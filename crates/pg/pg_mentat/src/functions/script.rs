@@ -229,15 +229,12 @@ impl ScriptBackend for PgBackend {
                 );
                 let out = super::query::mentat_query(&query, pgrx::JsonB(temporal_inputs(db)))
                     .map_err(|e| e.to_string())?;
-                out.0
-                    .get("result")
-                    .and_then(J::as_i64)
-                    .ok_or_else(|| {
-                        format!(
-                            "lookup-ref {} resolved to no entity",
-                            mino_rs::printer::print_str(arg)
-                        )
-                    })
+                out.0.get("result").and_then(J::as_i64).ok_or_else(|| {
+                    format!(
+                        "lookup-ref {} resolved to no entity",
+                        mino_rs::printer::print_str(arg)
+                    )
+                })
             }
             _ => Err(format!(
                 "eid must be an integer, ident keyword, or [:attr val] lookup-ref, got {}",
@@ -402,7 +399,10 @@ mod value_tests {
         let s = edn(&json_to_mino(&j));
         assert!(s.contains(":person/name \"Alice\""), "{s}");
         assert!(s.contains(":person/friend {"), "nested map preserved: {s}");
-        assert!(s.contains(":person/name \"Bob\""), "nested value preserved: {s}");
+        assert!(
+            s.contains(":person/name \"Bob\""),
+            "nested value preserved: {s}"
+        );
     }
 
     #[test]

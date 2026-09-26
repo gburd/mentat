@@ -114,7 +114,10 @@ pub fn datoms_returns_tuples(it: &mut Interpreter) {
     // attribute place is a keyword on SQLite and an entid on pg — a real
     // backend difference — so assert only the portable facts.)
     assert!(ds.starts_with('['), "datoms: {ds}");
-    assert!(ds.contains("\"Alice\""), "datoms should include Alice: {ds}");
+    assert!(
+        ds.contains("\"Alice\""),
+        "datoms should include Alice: {ds}"
+    );
 }
 
 pub fn with_is_speculative_and_does_not_commit(it: &mut Interpreter) {

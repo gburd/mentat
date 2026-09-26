@@ -460,11 +460,7 @@ fn pull_attr_entids(schema: &mentat_core::Schema, pattern_edn: &str) -> Result<V
         mino_rs::reader::read_one(pattern_edn).map_err(|e| format!("bad pull pattern: {e}"))?;
     let items = match &pattern {
         Value::Vector(v) => v.iter().cloned().collect::<Vec<_>>(),
-        _ => {
-            return Err(
-                "pattern must be a vector of attribute keywords (or [*])".into(),
-            )
-        }
+        _ => return Err("pattern must be a vector of attribute keywords (or [*])".into()),
     };
     let mut out = Vec::new();
     for item in items {
@@ -500,7 +496,11 @@ fn pull_attr_entids(schema: &mentat_core::Schema, pattern_edn: &str) -> Result<V
 fn to_tx_report(report: &crate::TxReport) -> TxReport {
     TxReport {
         tx_id: report.tx_id,
-        tempids: report.tempids.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        tempids: report
+            .tempids
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect(),
     }
 }
 
