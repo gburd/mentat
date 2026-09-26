@@ -1,3 +1,16 @@
+# ============================================================================
+# 1.7.0 RELEASED 2026-09-26. master @ 59234892 + tag v1.7.0 pushed to Codeberg.
+# Branches pg/improv-base/mino-scripting deleted. Remaining for the USER (account
+# actions): (1) enable Codeberg->GitHub push mirror for `mentat` (Settings ->
+# Repository -> Mirror; GitHub master still e55376e9, stale) so the tag triggers
+# release.yml; (2) rename ~/ws/pg_mentat/README.pointer.md -> README.md, commit,
+# push to pg_mentat, then mark both pg_mentat repos read-only; (3) TERMINATE EC2
+# i-0ef5dddfe262f499e + delete SG sg-0fb5d9c96b7fcfe8f + key pair when fully done.
+# Deferred to 1.7.1: Task 7 (mentat-script crate), Task 12 (SQLite history/asof q
+# + coll bindings). Follow-up: mentat_explain was fixed; benchmark results under
+# benchmarks/results/. mino BigDec deferred (ponytail note in reader.rs).
+# ============================================================================
+
 # Resume checkpoint — mentat/pg_mentat merge + mino hardening
 
 Written 2026-09-25 at ~91% context. Read this + the plan
