@@ -1,0 +1,21 @@
+[package]
+name = "mentat_script"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Backend-independent mino mentat.store/* scripting glue for Mentat"
+
+[lib]
+name = "mentat_script"
+
+[dependencies]
+mino-rs = { path = "../mino" }
+edn = { path = "../edn" }
+core_traits = { path = "../core-traits" }
+serde_json = "1.0"
+
+[lints]
+workspace = true

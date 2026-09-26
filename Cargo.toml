@@ -7,6 +7,7 @@ members = [
   "crates/mino",
   "crates/mino/vendor/gc",
   "crates/mino/vendor/gc_derive",
+  "crates/script",
   "crates/sqlite/*",
   "crates/pg/pg_mentat",
   "crates/pg/mentatd",
@@ -17,6 +18,7 @@ default-members = [
   "crates/core-traits",
   "crates/core",
   "crates/mino",
+  "crates/script",
   "crates/sqlite/*",
   "crates/pg/mentatd",
 ]
