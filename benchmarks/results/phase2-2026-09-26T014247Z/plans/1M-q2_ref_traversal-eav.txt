@@ -1,0 +1,46 @@
+                                                                    QUERY PLAN                                                                     
+---------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=52.12..2128.08 rows=1 width=46) (actual time=0.261..1.981 rows=80 loops=1)
+   Output: i.e, t.v, s.v
+   Inner Unique: true
+   Buffers: shared hit=533 read=161
+   ->  Nested Loop  (cost=51.70..2127.58 rows=1 width=31) (actual time=0.221..1.223 rows=80 loops=1)
+         Output: i.e, s.v, s.e
+         Inner Unique: true
+         Buffers: shared hit=291 read=83
+         ->  Nested Loop  (cost=51.28..2127.12 rows=1 width=8) (actual time=0.141..0.663 rows=80 loops=1)
+               Output: i.e
+               Buffers: shared hit=133
+               ->  Bitmap Heap Scan on eav.text email  (cost=46.09..1854.19 rows=1 width=8) (actual time=0.114..0.348 rows=1 loops=1)
+                     Output: email.e, email.a, email.v
+                     Recheck Cond: (email.a = 1000)
+                     Filter: (email.v = 'user100000@example.com'::text)
+                     Rows Removed by Filter: 1999
+                     Heap Blocks: exact=37
+                     Buffers: shared hit=50
+                     ->  Bitmap Index Scan on eav_text_aevt  (cost=0.00..46.09 rows=1823 width=0) (actual time=0.104..0.104 rows=2000 loops=1)
+                           Index Cond: (email.a = 1000)
+                           Buffers: shared hit=13
+               ->  Bitmap Heap Scan on eav.ref i  (cost=5.18..272.18 rows=74 width=16) (actual time=0.025..0.304 rows=80 loops=1)
+                     Output: i.e, i.a, i.v
+                     Recheck Cond: ((email.e = i.v) AND (i.a = 1005))
+                     Heap Blocks: exact=80
+                     Buffers: shared hit=83
+                     ->  Bitmap Index Scan on eav_ref_vaet  (cost=0.00..5.17 rows=74 width=0) (actual time=0.016..0.016 rows=80 loops=1)
+                           Index Cond: ((i.v = email.e) AND (i.a = 1005))
+                           Buffers: shared hit=3
+         ->  Index Only Scan using eav_keyword_aevt on eav.keyword s  (cost=0.42..0.47 rows=1 width=23) (actual time=0.007..0.007 rows=1 loops=80)
+               Output: s.a, s.e, s.v
+               Index Cond: ((s.a = 1003) AND (s.e = i.e))
+               Heap Fetches: 0
+               Buffers: shared hit=158 read=83
+   ->  Index Scan using text_pkey on eav.text t  (cost=0.42..0.50 rows=1 width=31) (actual time=0.009..0.009 rows=1 loops=80)
+         Output: t.e, t.a, t.v
+         Index Cond: ((t.e = i.e) AND (t.a = 1002))
+         Buffers: shared hit=242 read=78
+ Planning:
+   Buffers: shared hit=380
+ Planning Time: 4.497 ms
+ Execution Time: 2.134 ms
+(42 rows)
+

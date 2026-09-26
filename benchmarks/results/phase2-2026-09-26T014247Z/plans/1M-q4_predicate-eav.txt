@@ -1,0 +1,83 @@
+                                                                                       QUERY PLAN                                                                                        
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=3018.20..7342.81 rows=2686 width=39) (actual time=8.007..43.065 rows=13080 loops=1)
+   Output: s_1.e, t.v, p.v
+   Workers Planned: 2
+   Workers Launched: 2
+   Buffers: shared hit=149174 read=1669 written=229
+   ->  Nested Loop  (cost=2018.20..6074.21 rows=1119 width=39) (actual time=4.088..36.829 rows=4360 loops=3)
+         Output: s_1.e, t.v, p.v
+         Inner Unique: true
+         Buffers: shared hit=149174 read=1669 written=229
+         Worker 0:  actual time=1.976..34.967 rows=4319 loops=1
+           Buffers: shared hit=49509 read=549 written=74
+         Worker 1:  actual time=2.736..35.365 rows=4360 loops=1
+           Buffers: shared hit=49674 read=559 written=75
+         ->  Nested Loop  (cost=2017.78..5415.18 rows=1127 width=32) (actual time=4.026..25.743 rows=4360 loops=3)
+               Output: s.e, p.v, p.e, s_1.e
+               Inner Unique: true
+               Buffers: shared hit=98521
+               Worker 0:  actual time=1.909..23.893 rows=4319 loops=1
+                 Buffers: shared hit=32781
+               Worker 1:  actual time=2.678..24.310 rows=4360 loops=1
+                 Buffers: shared hit=32792
+               ->  Parallel Hash Join  (cost=2017.36..3897.86 rows=2811 width=16) (actual time=3.933..7.723 rows=10855 loops=3)
+                     Output: s.e, s_1.e
+                     Inner Unique: true
+                     Hash Cond: (s.e = s_1.e)
+                     Buffers: shared hit=821
+                     Worker 0:  actual time=1.826..5.673 rows=10856 loops=1
+                       Buffers: shared hit=211
+                     Worker 1:  actual time=2.548..6.346 rows=10856 loops=1
+                       Buffers: shared hit=219
+                     ->  Parallel Index Only Scan using eav_keyword_vaet on eav.keyword s  (cost=0.42..1844.76 rows=13775 width=8) (actual time=0.281..1.727 rows=10855 loops=3)
+                           Output: s.v, s.a, s.e
+                           Index Cond: ((s.v = ':state/open'::text) AND (s.a = 1003))
+                           Heap Fetches: 0
+                           Buffers: shared hit=363
+                           Worker 0:  actual time=0.067..1.574 rows=10856 loops=1
+                             Buffers: shared hit=126
+                           Worker 1:  actual time=0.393..1.855 rows=10856 loops=1
+                             Buffers: shared hit=119
+                     ->  Parallel Hash  (cost=1844.76..1844.76 rows=13775 width=8) (actual time=3.137..3.137 rows=10855 loops=3)
+                           Output: s_1.e
+                           Buckets: 65536  Batches: 1  Memory Usage: 1824kB
+                           Buffers: shared hit=362
+                           Worker 0:  actual time=1.117..1.118 rows=3400 loops=1
+                             Buffers: shared hit=37
+                           Worker 1:  actual time=1.685..1.686 rows=4692 loops=1
+                             Buffers: shared hit=52
+                           ->  Parallel Index Only Scan using eav_keyword_vaet on eav.keyword s_1  (cost=0.42..1844.76 rows=13775 width=8) (actual time=0.035..1.532 rows=10855 loops=3)
+                                 Output: s_1.e
+                                 Index Cond: ((s_1.v = ':state/open'::text) AND (s_1.a = 1003))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=362
+                                 Worker 0:  actual time=0.018..0.559 rows=3400 loops=1
+                                   Buffers: shared hit=37
+                                 Worker 1:  actual time=0.023..0.724 rows=4692 loops=1
+                                   Buffers: shared hit=52
+               ->  Index Only Scan using eav_long_aevt on eav.long p  (cost=0.42..0.54 rows=1 width=16) (actual time=0.001..0.001 rows=0 loops=32564)
+                     Output: p.a, p.e, p.v
+                     Index Cond: ((p.a = 1004) AND (p.e = s.e))
+                     Filter: (p.v >= 4)
+                     Rows Removed by Filter: 1
+                     Heap Fetches: 0
+                     Buffers: shared hit=97700
+                     Worker 0:  actual time=0.001..0.001 rows=0 loops=10856
+                       Buffers: shared hit=32570
+                     Worker 1:  actual time=0.001..0.001 rows=0 loops=10856
+                       Buffers: shared hit=32573
+         ->  Index Scan using text_pkey on eav.text t  (cost=0.42..0.58 rows=1 width=31) (actual time=0.002..0.002 rows=1 loops=13080)
+               Output: t.e, t.a, t.v
+               Index Cond: ((t.e = p.e) AND (t.a = 1002))
+               Buffers: shared hit=50653 read=1669 written=229
+               Worker 0:  actual time=0.002..0.002 rows=1 loops=4319
+                 Buffers: shared hit=16728 read=549 written=74
+               Worker 1:  actual time=0.002..0.002 rows=1 loops=4360
+                 Buffers: shared hit=16882 read=559 written=75
+ Planning:
+   Buffers: shared hit=394
+ Planning Time: 4.846 ms
+ Execution Time: 43.681 ms
+(79 rows)
+

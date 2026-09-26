@@ -1,0 +1,26 @@
+                                                           QUERY PLAN                                                            
+---------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=6.08..194.79 rows=1 width=30) (actual time=0.096..0.114 rows=1 loops=1)
+   Output: e.e, n.v
+   Inner Unique: true
+   Buffers: shared hit=12
+   ->  Bitmap Heap Scan on eav.text e  (cost=5.79..186.40 rows=1 width=8) (actual time=0.062..0.079 rows=1 loops=1)
+         Output: e.e, e.a, e.v
+         Recheck Cond: (e.a = 1000)
+         Filter: (e.v = 'user100000@example.com'::text)
+         Rows Removed by Filter: 199
+         Heap Blocks: exact=4
+         Buffers: shared hit=9
+         ->  Bitmap Index Scan on eav_text_aevt  (cost=0.00..5.79 rows=200 width=0) (actual time=0.056..0.056 rows=200 loops=1)
+               Index Cond: (e.a = 1000)
+               Buffers: shared hit=5
+   ->  Index Scan using eav_text_aevt on eav.text n  (cost=0.29..8.31 rows=1 width=30) (actual time=0.033..0.033 rows=1 loops=1)
+         Output: n.e, n.a, n.v
+         Index Cond: ((n.a = 1001) AND (n.e = e.e))
+         Buffers: shared hit=3
+ Planning:
+   Buffers: shared hit=200
+ Planning Time: 2.106 ms
+ Execution Time: 0.185 ms
+(22 rows)
+
