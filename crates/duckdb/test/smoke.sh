@@ -24,7 +24,7 @@ out="$("$DUCKDB" -unsigned -noheader -list <<SQL
 LOAD '$EXT';
 SELECT 'schema=' || (edn_t('$DB', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                                    {:db/ident :person/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
-SELECT 'data=' || (edn_t('$DB', '[{:person/name "Alice"} {:person/name "Bob"}]') LIKE '%tx_id%');
+SELECT 'data=' || (edn_t('$DB', '[{:person/name "Alice"} {:person/name "Bob" :person/age 25}]') LIKE '%tx_id%');
 
 -- edn_q basic; strings come back RAW (no EDN quotes).
 SELECT 'q=' || string_agg(name, ',' ORDER BY name)
@@ -43,6 +43,10 @@ SELECT 'in_scalar=' || (e::BIGINT > 0)
 SELECT 'in_coll=' || string_agg(n, ',' ORDER BY n)
   FROM edn_q('$DB', '[:find ?n :in [?name ...] :where [?e :person/name ?name] [?e :person/name ?n]]',
              '{"inputs":[["Alice","Zed"]]}') AS t(n);
+-- mixed scalar + collection inputs (QueryInputs::merge): Bob is 25, Alice isn't.
+SELECT 'in_mixed=' || string_agg(n, ',' ORDER BY n)
+  FROM edn_q('$DB', '[:find ?n :in ?age [?name ...] :where [?e :person/name ?name] [?e :person/age ?age] [?e :person/name ?n]]',
+             '{"inputs":[25, ["Alice","Bob"]]}') AS t(n);
 
 -- asOf / since: tx1 sets Alice's age to 30, a later tx changes it to 31.
 SET VARIABLE alice = (SELECT e FROM edn_q('$DB', '[:find ?e . :where [?e :person/name "Alice"]]', NULL) AS t(e));
@@ -80,6 +84,7 @@ expect "q=Alice,Bob"
 expect "join=Bob=25,Alice=30"
 expect "in_scalar=true"
 expect "in_coll=Alice"
+expect "in_mixed=Bob"
 expect "tx2=true"
 expect "now=31"
 expect "asof=30"

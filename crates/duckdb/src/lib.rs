@@ -505,16 +505,12 @@ fn build_inputs(store: &Store, query: &str, vals: Vec<Json>) -> Result<QueryInpu
             }
         }
     }
-    // ponytail: QueryInputs' fields are crate-private and it has no merge, so a
-    // query takes either scalars or ONE collection/tuple/relation binding.
-    // Lift when mentat grows a QueryInputs combinator.
-    match (scalars.is_empty(), non_scalar.len()) {
-        (_, 0) => Ok(QueryInputs::with_value_sequence(scalars)),
-        (true, 1) => Ok(non_scalar.pop().unwrap()),
-        _ => Err("edn_q: a query may bind either scalar inputs or a single \
-                  collection/tuple/relation input, not a mix"
-            .into()),
+    // Scalars plus any number of collection/tuple/relation bindings, merged.
+    let mut out = QueryInputs::with_value_sequence(scalars);
+    for ns in non_scalar {
+        out = out.merge(ns).map_err(|e| format!("edn_q: inputs: {e}"))?;
     }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
