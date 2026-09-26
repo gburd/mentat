@@ -19,6 +19,7 @@
 //! against a fake in-memory backend here, and against both real backends in
 //! their own crates — one suite, proven three ways.
 
+pub mod model_tests;
 pub mod prims;
 pub mod values;
 

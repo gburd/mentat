@@ -14,7 +14,7 @@ bundled_sqlite3 = ["rusqlite/bundled"]
 sqlcipher = ["rusqlite/sqlcipher", "mentat_db/sqlcipher"]
 # Optional pure-Rust mino scripting layer (exposes the `mentat.store` language).
 # OFF by default: pure-Rust Mentat users pay nothing.
-mino = ["dep:mino-rs"]
+mino = ["dep:mino-rs", "dep:mentat_script"]
 
 [build-dependencies]
 rustc_version = "~0.4"
@@ -85,4 +85,9 @@ path = "../transaction"
 # Maintained in this repo (crates/mino/); upstream mino is archived.
 [dependencies.mino-rs]
 path = "../../mino"
+optional = true
+
+# Optional: the backend-independent mentat.store/* scripting glue (§ 1.19).
+[dependencies.mentat_script]
+path = "../../script"
 optional = true

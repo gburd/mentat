@@ -292,245 +292,56 @@ fn kw_value(text: &str) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// Harness: build an interpreter over the fake, seeded with Alice.
+// Run the shared Datomic-model suite against the fake backend.
 // ---------------------------------------------------------------------------
 
-fn seeded() -> mino_rs::Interpreter {
+/// A store-installed interpreter over a fresh fake backend.
+fn faked() -> mino_rs::Interpreter {
     let backend: Rc<RefCell<dyn ScriptBackend>> = Rc::new(RefCell::new(Fake::new()));
     let mut it = mino_rs::Interpreter::sandboxed();
     install(&mut it, backend);
-    it.eval("(def c (mentat.store/open))").unwrap();
-    it.eval_to_string(
-        "(mentat.store/transact c \
-           [{:db/ident :person/name :db/valueType :db.type/string \
-             :db/cardinality :db.cardinality/one}])",
-    )
-    .expect("schema transact");
-    it.eval_to_string("(mentat.store/transact c [{:person/name \"Alice\"}])")
-        .expect("data transact");
     it
 }
 
-fn eid_of(it: &mut mino_rs::Interpreter, name: &str) -> String {
-    it.eval_to_string(&format!(
-        "(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :person/name \"{name}\"]])"
-    ))
-    .expect("eid query")
-}
-
-// ---------------------------------------------------------------------------
-// The model tests (parameterized by the fake backend).
-// ---------------------------------------------------------------------------
+use mentat_script::model_tests as m;
 
 #[test]
 fn db_is_an_immutable_value_not_the_conn() {
-    let mut it = seeded();
-    assert_eq!(it.eval_to_string("c").unwrap(), "1");
-    let db = it.eval_to_string("(mentat.store/db c)").unwrap();
-    assert!(db.contains(":mentat.store/db true"), "{db}");
-    assert!(db.contains(":mentat.store/basis-tx"), "{db}");
-    assert!(db.contains(":mentat.store/conn 1"), "{db}");
-    assert_ne!(db, "1");
-    let basis = it
-        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
-        .unwrap();
-    assert!(basis.parse::<i64>().unwrap() > TX0, "basis {basis}");
+    m::db_is_an_immutable_value_not_the_conn(&mut faked());
 }
-
 #[test]
 fn q_takes_a_db_value() {
-    let mut it = seeded();
-    assert_eq!(
-        it.eval_to_string(
-            "(mentat.store/q (mentat.store/db c) '[:find ?n :where [?e :person/name ?n]])"
-        )
-        .unwrap(),
-        "#{[\"Alice\"]}"
-    );
-    // A bare conn is accepted.
-    assert_eq!(
-        it.eval_to_string("(mentat.store/q c '[:find ?n :where [?e :person/name ?n]])")
-            .unwrap(),
-        "#{[\"Alice\"]}"
-    );
+    m::q_takes_a_db_value(&mut faked());
 }
-
 #[test]
 fn pull_returns_a_map() {
-    let mut it = seeded();
-    let eid = eid_of(&mut it, "Alice");
-    assert_eq!(
-        it.eval_to_string(&format!(
-            "(mentat.store/pull (mentat.store/db c) {eid} [:person/name])"
-        ))
-        .unwrap(),
-        "{:person/name \"Alice\"}"
-    );
+    m::pull_returns_a_map(&mut faked());
 }
-
 #[test]
 fn entity_returns_an_entity_map() {
-    let mut it = seeded();
-    let eid = eid_of(&mut it, "Alice");
-    let ent = it
-        .eval_to_string(&format!("(mentat.store/entity (mentat.store/db c) {eid})"))
-        .unwrap();
-    assert!(ent.contains(&format!(":db/id {eid}")), "{ent}");
-    assert!(ent.contains(":person/name \"Alice\""), "{ent}");
+    m::entity_returns_an_entity_map(&mut faked());
 }
-
 #[test]
 fn read_returns_the_scalar() {
-    let mut it = seeded();
-    let eid = eid_of(&mut it, "Alice");
-    assert_eq!(
-        it.eval_to_string(&format!(
-            "(mentat.store/read (mentat.store/db c) {eid} :person/name)"
-        ))
-        .unwrap(),
-        "\"Alice\""
-    );
+    m::read_returns_the_scalar(&mut faked());
 }
-
 #[test]
 fn datoms_returns_tuples() {
-    let mut it = seeded();
-    let ds = it
-        .eval_to_string("(mentat.store/datoms (mentat.store/db c))")
-        .unwrap();
-    assert!(ds.starts_with('['), "{ds}");
-    assert!(ds.contains(":person/name \"Alice\""), "{ds}");
+    m::datoms_returns_tuples(&mut faked());
 }
-
 #[test]
 fn with_is_speculative_and_does_not_commit() {
-    let mut it = seeded();
-    let before = it
-        .eval_to_string("(mentat.store/q c '[:find ?n :where [?e :person/name ?n]])")
-        .unwrap();
-    assert_eq!(before, "#{[\"Alice\"]}");
-    let with_result = it
-        .eval_to_string("(mentat.store/with (mentat.store/db c) [{:person/name \"Bob\"}])")
-        .unwrap();
-    assert!(with_result.contains(":mentat.store/db-after"), "{with_result}");
-    assert!(
-        with_result.contains(":mentat.store/tx-report"),
-        "{with_result}"
-    );
-    let basis_now: i64 = it
-        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
-        .unwrap()
-        .parse()
-        .unwrap();
-    let db_after_basis: i64 = it
-        .eval_to_string(
-            "(:mentat.store/basis-tx (:mentat.store/db-after \
-               (mentat.store/with (mentat.store/db c) [{:person/name \"Bob\"}])))",
-        )
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(db_after_basis > basis_now, "{db_after_basis} > {basis_now}");
-    // The store is UNCHANGED: still only Alice.
-    let after = it
-        .eval_to_string(
-            "(mentat.store/q (mentat.store/db c) '[:find ?n :where [?e :person/name ?n]])",
-        )
-        .unwrap();
-    assert_eq!(after, "#{[\"Alice\"]}", "with must not commit");
+    m::with_is_speculative_and_does_not_commit(&mut faked());
 }
-
 #[test]
 fn as_of_and_since_reflect_the_basis() {
-    let mut it = seeded();
-    let basis_alice: i64 = it
-        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
-        .unwrap()
-        .parse()
-        .unwrap();
-    it.eval_to_string("(mentat.store/transact c [{:person/name \"Bob\"}])")
-        .unwrap();
-    let basis_bob: i64 = it
-        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(basis_bob > basis_alice);
-
-    let as_of_alice = it
-        .eval_to_string(&format!(
-            "(mentat.store/datoms (mentat.store/as-of (mentat.store/db c) {basis_alice}))"
-        ))
-        .unwrap();
-    assert!(as_of_alice.contains("Alice"), "{as_of_alice}");
-    assert!(!as_of_alice.contains("Bob"), "{as_of_alice}");
-
-    let as_of_bob = it
-        .eval_to_string(&format!(
-            "(mentat.store/datoms (mentat.store/as-of (mentat.store/db c) {basis_bob}))"
-        ))
-        .unwrap();
-    assert!(
-        as_of_bob.contains("Alice") && as_of_bob.contains("Bob"),
-        "{as_of_bob}"
-    );
-
-    let since_alice = it
-        .eval_to_string(&format!(
-            "(mentat.store/datoms (mentat.store/since (mentat.store/db c) {basis_alice}))"
-        ))
-        .unwrap();
-    assert!(since_alice.contains("Bob"), "{since_alice}");
-    assert!(!since_alice.contains("Alice"), "{since_alice}");
-
-    let as_of_db = it
-        .eval_to_string(&format!(
-            "(mentat.store/as-of (mentat.store/db c) {basis_alice})"
-        ))
-        .unwrap();
-    assert!(
-        as_of_db.contains(&format!(":mentat.store/as-of {basis_alice}")),
-        "{as_of_db}"
-    );
-    let since_db = it
-        .eval_to_string(&format!(
-            "(mentat.store/since (mentat.store/db c) {basis_alice})"
-        ))
-        .unwrap();
-    assert!(
-        since_db.contains(&format!(":mentat.store/since {basis_alice}")),
-        "{since_db}"
-    );
+    m::as_of_and_since_reflect_the_basis(&mut faked());
 }
-
 #[test]
 fn tx_report_has_the_datomic_shape() {
-    let mut it = seeded();
-    let report = it
-        .eval_to_string("(mentat.store/transact c [{:person/name \"Carol\"}])")
-        .unwrap();
-    assert!(report.contains(":mentat.store/tx-id"), "{report}");
-    assert!(report.contains(":mentat.store/tempids"), "{report}");
+    m::tx_report_has_the_datomic_shape(&mut faked());
 }
-
-/// The inst/uuid VALUE BUILDERS emit values that round-trip through the mino
-/// reader: `read_one(pr-str v) == v`. #uuid is a real `Value::Uuid`; #inst is
-/// the `clojure.instant/read-instant-date` constructor form.
 #[test]
 fn inst_and_uuid_builders_round_trip_through_the_reader() {
-    use mino_rs::printer::print_str;
-    let uuid = mentat_script::values::uuid_value("12345678-1234-5678-1234-567812345678");
-    assert_eq!(
-        print_str(&uuid),
-        "#uuid \"12345678-1234-5678-1234-567812345678\""
-    );
-    let inst = mentat_script::values::inst_value("2017-01-01T00:00:00Z");
-    assert_eq!(
-        print_str(&inst),
-        "(clojure.instant/read-instant-date \"2017-01-01T00:00:00Z\")"
-    );
-    for v in [uuid, inst] {
-        let (v2, _) = read_one(&print_str(&v)).unwrap();
-        assert_eq!(print_str(&v), print_str(&v2));
-    }
+    m::inst_and_uuid_builders_round_trip_through_the_reader();
 }
