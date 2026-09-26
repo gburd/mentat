@@ -119,13 +119,7 @@ lazy_static! {
                 false,
             ),
             (ns_keyword!("db.part", "user"), USER0, TX0 - 1, USER0, true),
-            (
-                ns_keyword!("db.part", "tx"),
-                TX0,
-                i64::MAX,
-                TX0,
-                false,
-            ),
+            (ns_keyword!("db.part", "tx"), TX0, i64::MAX, TX0, false),
         ]
     };
     static ref V1_CORE_SCHEMA: [symbols::Keyword; 16] = {

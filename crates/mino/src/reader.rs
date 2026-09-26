@@ -494,8 +494,7 @@ impl<'a> Reader<'a> {
                         Value::Str(s) => match uuid::Uuid::parse_str(s) {
                             Ok(u)
                                 if s.len() == 36
-                                    && s.as_bytes().iter().filter(|&&b| b == b'-').count()
-                                        == 4 =>
+                                    && s.as_bytes().iter().filter(|&&b| b == b'-').count() == 4 =>
                             {
                                 Value::Uuid(Gc::new(crate::value::UuidVal(*u.as_bytes())))
                             }

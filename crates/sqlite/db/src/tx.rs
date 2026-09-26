@@ -615,7 +615,9 @@ where
                                 )),
                             };
                             let new_val: TypedValue = match new {
-                                ValuePlace::Atom(v) => v.into_typed_value(self.schema, value_type)?,
+                                ValuePlace::Atom(v) => {
+                                    v.into_typed_value(self.schema, value_type)?
+                                }
                                 ValuePlace::Entid(entmod::EntidOrIdent::Entid(x)) => {
                                     TypedValue::Ref(x)
                                 }
@@ -666,8 +668,7 @@ where
                                     args.len()
                                 )));
                             }
-                            let e = self
-                                .resolve_tx_fn_entid(args.into_iter().next().unwrap())?;
+                            let e = self.resolve_tx_fn_entid(args.into_iter().next().unwrap())?;
                             let mut visited = BTreeSet::new();
                             self.expand_retract_entity(e, &mut visited, &mut terms)?;
                         }

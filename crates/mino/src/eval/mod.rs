@@ -861,8 +861,8 @@ impl Interp {
                     self.register_require_aliases(rest);
                     Ok(Value::Nil)
                 }
-                "in-ns" | "ns" | "use" | "refer" | "refer-clojure" | "load"
-                | "load-file" | "import" => Ok(Value::Nil),
+                "in-ns" | "ns" | "use" | "refer" | "refer-clojure" | "load" | "load-file"
+                | "import" => Ok(Value::Nil),
                 _ => {
                     special = false;
                     Ok(Value::Nil)

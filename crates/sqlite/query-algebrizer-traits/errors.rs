@@ -111,7 +111,9 @@ pub enum AlgebrizerError {
     #[error("bigint constants are not yet supported in this position (#280)")]
     UnsupportedBigInteger,
 
-    #[error("queries against a non-default source (`{0}`) are not yet supported by the SQLite engine")]
+    #[error(
+        "queries against a non-default source (`{0}`) are not yet supported by the SQLite engine"
+    )]
     UnsupportedSource(String),
 
     #[error("{0}")]

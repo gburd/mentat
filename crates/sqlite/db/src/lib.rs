@@ -29,7 +29,6 @@ extern crate db_traits;
 extern crate core_traits;
 extern crate mentat_sql;
 
-
 use itertools::Itertools;
 
 use db_traits::errors::{DbErrorKind, Result};
@@ -108,7 +107,10 @@ pub fn repeat_values(values_per_tuple: usize, tuples: usize) -> String {
     assert!(values_per_tuple >= 1);
     assert!(tuples >= 1);
     // Like "(?, ?, ?)".
-    let inner = format!("({})", std::iter::repeat_n("?", values_per_tuple).join(", "));
+    let inner = format!(
+        "({})",
+        std::iter::repeat_n("?", values_per_tuple).join(", ")
+    );
     // Like "(?, ?, ?), (?, ?, ?)".
     let values: String = std::iter::repeat_n(inner, tuples).join(", ");
     values

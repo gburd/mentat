@@ -233,7 +233,11 @@ pub fn eval_try(it: &mut Interp, args: &[Value], env: &Env) -> Result<Value, Thr
     // 2. Catch: run the FIRST matching handler if the body threw.
     if let Err(Throw(raw)) = &result {
         let ex = normalize_exception(raw);
-        if let Some(cat) = clauses.catches.iter().find(|c| clause_matches(&c.class, &ex)) {
+        if let Some(cat) = clauses
+            .catches
+            .iter()
+            .find(|c| clause_matches(&c.class, &ex))
+        {
             let local = env.child();
             local.set(cat.var.clone(), ex);
             // A re-throw here propagates (after finally, below).
@@ -441,9 +445,7 @@ mod tests {
         );
         // A non-matching keyword catch declines; the throw propagates.
         assert!(it
-            .eval_str(
-                "(try (throw {:mino/kind :store/backend}) (catch :store/schema e :caught))"
-            )
+            .eval_str("(try (throw {:mino/kind :store/backend}) (catch :store/schema e :caught))")
             .is_err());
         // First-match-wins across clauses; a later bare clause is the fallback.
         assert_eq!(

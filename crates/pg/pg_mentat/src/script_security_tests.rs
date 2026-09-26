@@ -154,9 +154,7 @@ mod tests {
         // Today (without the depth limit) this SIGABRTs the whole backend and
         // crashes the server into recovery. It must return an error instead,
         // and the connection must still be usable afterward.
-        let msg = eval_error(
-            "(defn f [n] (if (zero? n) 0 (inc (f (dec n))))) (f 1000000)",
-        );
+        let msg = eval_error("(defn f [n] (if (zero? n) 0 (inc (f (dec n))))) (f 1000000)");
         assert!(
             msg.contains(":eval/limit"),
             "deep recursion should hit the depth limit, got: {msg}"

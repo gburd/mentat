@@ -294,7 +294,10 @@ impl RemoveFromCache for SingleValAttributeCache {
                     r => {
                         log::warn!(
                             "Cache inconsistency: should be ({}, {:?}), was ({}, {:?}).",
-                            e, v, e, r
+                            e,
+                            v,
+                            e,
+                            r
                         );
                     }
                 }
@@ -362,13 +365,15 @@ impl RemoveFromCache for MultiValAttributeCache {
             if removed == 0 {
                 log::warn!(
                     "Cache inconsistency: tried to remove ({}, {:?}), was not present.",
-                    e, v
+                    e,
+                    v
                 );
             }
         } else {
             log::warn!(
                 "Cache inconsistency: tried to remove ({}, {:?}), was empty.",
-                e, v
+                e,
+                v
             );
         }
     }
@@ -419,7 +424,10 @@ impl RemoveFromCache for UniqueReverseAttributeCache {
                     r => {
                         log::warn!(
                             "Cache inconsistency: should be ({}, {:?}), was ({}, {:?}).",
-                            e, v, e, r
+                            e,
+                            v,
+                            e,
+                            r
                         );
                     }
                 }
@@ -479,13 +487,15 @@ impl RemoveFromCache for NonUniqueReverseAttributeCache {
             if !removed {
                 log::warn!(
                     "Cache inconsistency: tried to remove ({}, {:?}), was not present.",
-                    e, v
+                    e,
+                    v
                 );
             }
         } else {
             log::warn!(
                 "Cache inconsistency: tried to remove ({}, {:?}), was empty.",
-                e, v
+                e,
+                v
             );
         }
     }

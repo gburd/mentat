@@ -412,8 +412,7 @@ pub fn read_string(it: &mut Interp, args: &[Value]) -> Result<Value, Throw> {
 fn is_inst_reader_call(v: &Value) -> bool {
     if let Value::Cons(cell) = v {
         if let Value::Sym(s) = &cell.0 {
-            return s.ns.as_deref() == Some("clojure.instant")
-                && &*s.name == "read-instant-date";
+            return s.ns.as_deref() == Some("clojure.instant") && &*s.name == "read-instant-date";
         }
     }
     false

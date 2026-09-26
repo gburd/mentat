@@ -254,7 +254,9 @@ impl<T> From<Vec<T>> for ConsumableVec<T> {
 
 impl<T> ConsumableVec<T> {
     fn take_dangerously(&mut self, i: usize) -> T {
-        self.inner[i].take().expect("each value to only be fetched once")
+        self.inner[i]
+            .take()
+            .expect("each value to only be fetched once")
     }
 }
 
