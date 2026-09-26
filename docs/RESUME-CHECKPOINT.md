@@ -13,16 +13,22 @@ User is handling: GitHub mirror enable + pg_mentat archive/pointer.
 - **TERMINATE when done**: AWS_PROFILE=hotdog aws ec2 terminate-instances --region us-east-2 --instance-ids i-0370864337eef216f ; then delete SG + key pair.
 - deps installed: gcc/clang15/cmake/openssl/sqlite/python3. Workspace builds green.
 
-## IN FLIGHT (branch master, floki commits, not pushed)
-- **DuckDB extension** (agent 28939d29): crates/duckdb per docs/duckdb-extension-plan.md.
-  M0 scaffold (loadable .duckdb_extension via extension-ci-tools footer) + M1
-  (mentat_transact scalar + mentat_query table fn over embedded mentat::Store,
-  all-VARCHAR). duckdb-rs ~1.10505.0 = DuckDB v1.5.5, USE_UNSTABLE_C_API=1 (version-lock).
-  crate mentat_duckdb, cdylib, workspace member NOT default-member (like pg_mentat).
-- **T12** (agent 35015d64): SQLite algebrizer history [?e ?a ?v ?tx ?added] via
-  DatomsTable::Transactions, as-of/since q, non-scalar :in coll/tuple/rel bindings.
-  Removes UnsupportedHistoryPattern/UnsupportedInputBinding/UnsupportedSource gates.
-  Oracle: pg_mentat src/{history,temporal,input_parameter,no_history}_tests.rs.
+## DONE (branch master, floki commits, not pushed)
+- **DuckDB extension DONE** (90b082c2 M0, 4fa10af5 M1): crates/duckdb, crate mentat_duckdb,
+  cdylib, loadable .duckdb_extension (DuckDB v1.5.5, USE_UNSTABLE_C_API version-lock, footer
+  via extension-ci-tools submodule). mentat_transact scalar + mentat_query table fn over
+  embedded mentat::Store (per-call open), all-VARCHAR cols; JOIN against native DuckDB proven.
+  extension-ci-tools is a git submodule. Test: crates/duckdb/test/smoke.sh (needs DuckDB v1.5.5
+  CLI - EC2 python3.9 wheel is 1.4.5, too old; used standalone CLI). M2 (pull+typed cols) /
+  M3 (session db-path, mentat_eval, store cache) + :in bindings for mentat_query = follow-ups.
+  Found+fixed 2 bugs (scalar double-eval -> volatile()=true; workspace-member build).
+- **T12 DONE** (8a0d1758): all 3 sub-features on SQLite. History [?e ?a ?v ?tx ?added] via
+  DatomsTable::Transactions + EvolvedPattern.added. As-of/since q: NEW API Store::q_once_as_of/
+  q_once_since + Conn variants + TemporalBound::{AsOf,Since} (mentat takes plain tx arg, not
+  JSON). Non-scalar :in: QueryInputs::with_collection/tuple/relation, VALUES join via ground
+  machinery (were silently dropped before). Removed UnsupportedHistoryPattern; kept
+  UnsupportedSource. 9 tests in crates/sqlite/mentat/tests/history_and_inputs.rs. UnsupportedInputBinding
+  never existed (plan premise wrong). Combined green: 79 test binaries.
 
 ## TODO NEXT (after T12 lands, to avoid crates/sqlite/mentat overlap)
 - **T7** (mentat-script shared crate): extract crates/script with ScriptBackend
