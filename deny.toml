@@ -13,6 +13,7 @@ version = 2
 ignore = [
     "RUSTSEC-2024-0436",  # paste unmaintained (informational); proc-macro via pgrx-tests 0.17
     "RUSTSEC-2021-0127",  # serde_cbor unmaintained (informational); via pgrx 0.17
+    "RUSTSEC-2026-0215",  # smallstr unmaintained (informational); CLI-only, via linefeed 0.6 -> mortal 0.2 REPL line editor
 ]
 
 [licenses]
@@ -27,6 +28,9 @@ allow = [
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
+    "MPL-2.0",   # vendored gc/gc_derive (file-level copyleft) + option-ext; compatible in an Apache-2.0 repo
+    "CC0-1.0",   # constant_time_eq (public-domain-equivalent)
+    "WTFPL",     # terminfo, via the CLI's terminal handling (permissive)
 ]
 # Crates whose only license alternatives are copyleft are accepted via the
 # permissive arm of their OR expression; cargo-deny picks the allowed one.
