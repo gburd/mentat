@@ -121,10 +121,25 @@ Written 2026-09-25 at ~91% context. Read this + the plan
      (-traits), db(-traits), query-pull(-traits). edn test files clippy-clean.
    - **Combined green** (a543c311): workspace 77 binaries, mino 116+14+7+11+9, pgrx pg16 1846.
      Fixed 1 stale mentat test (inst/uuid round-trip now real values).
-   - TODO: Task 7 (mentat-script crate - can now drop inst/uuid workaround),
-     11 (SQLite cas/retractEntity), 12 (SQLite history/asof q + coll bindings -> removes
-     UnsupportedHistoryPattern/UnsupportedInputBinding gates), 13 (README/docs),
-     14 (release 1.7.0 + retire pg_mentat). Then benchmark + prod-readiness.
+   - **Task 11 DONE** (4bf01aca feat, 2cb415e5 test): :db.fn/cas + :db/retractEntity in
+     SQLite transactor. New Entity::TxFunction variant + edn grammar rule (4 spellings
+     :db.fn/cas :db/cas :db.fn/retractEntity :db/retractEntity); DbErrorKind::CasMismatch
+     {e,a,expected,actual}. retractEntity = as-subject + :db/isComponent recursion (cycle-
+     guarded), NOT ref-value (matches pg oracle, deliberate deviation from plan). CAS reads
+     live committed state (matches pg). 9 tests in crates/sqlite/mentat/tests/tx_fns.rs. Green.
+   - **DECISION 2026-09-25 (ponytail): DEFER Tasks 7 and 12 to 1.7.1.**
+     * Task 12 (SQLite history/asof-q + coll/tuple/rel :in bindings): the plan's OWN self-review
+       says cut if short. It's EMBEDDED-side parity; the EXTENSION (pg_mentat) already has full
+       history/as-of/coll-bindings and is what supersedes the archived repo. The gaps are
+       honestly gated (AlgebrizerError::UnsupportedHistoryPattern at query-algebrizer clauses/mod.rs
+       :1192; non-scalar in_binding rejected) with clear errors, documented + test-gated. Not a
+       release blocker. Oracle tests to port later: crates/pg/pg_mentat/src/{history,temporal,
+       input_parameter}_tests.rs.
+     * Task 7 (extract crates/script mentat-script shared layer): pure refactor of two WORKING
+       script layers; large-refactor-before-release risk. Both layers pass their tests. Defer.
+       When done: can drop the inst/uuid workaround (mino now round-trips them for real).
+   - TODO NOW: Task 13 (README + docs), Task 14 (benchmark + prod-readiness gate + release
+     1.7.0: merge merge/pg-mentat->master --no-ff, tag v1.7.0, push Codeberg, retire pg_mentat).
    - Remaining old note (superseded): workspace lints/profile/toolchain; import
    pg_mentat history into mentat under crates/pg/ (git filter-repo, plan Task 4);
    restructure into crates/ (Task 5); one flake + CI + delete dead weight (Task 6).
