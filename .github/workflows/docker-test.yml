@@ -1,0 +1,66 @@
+# Docker/Podman-based CI workflow for pg_mentat
+#
+# Alternative to the Nix workflow for environments that already have a
+# container runtime but cannot install Nix.  Builds the Dockerfile
+# and runs tests inside the resulting image.
+#
+# See CI_CD_GUIDE.md for documentation.
+
+name: Test pg_mentat (Container)
+
+on:
+  push:
+    branches: [main, claude, develop]
+  pull_request:
+    branches: [main, claude]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and Test (Container)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build container image
+        run: docker build -t pg_mentat_ci -f Dockerfile .
+
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          # The runtime image is a lean postgres:16 + the installed extension
+          # (no Rust toolchain). Verify the extension actually loads and works
+          # by starting the container and querying it; demo.sql runs on first
+          # start via /docker-entrypoint-initdb.d.
+          docker run -d --name pg_mentat_ci_run -e POSTGRES_PASSWORD=postgres \
+            pg_mentat_ci
+          echo "=== waiting for postgres ==="
+          for i in $(seq 1 30); do
+            if docker exec pg_mentat_ci_run pg_isready -U postgres >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          # demo.sql runs asynchronously on first init; give it a moment.
+          sleep 5
+          echo "=== extension present + query works ==="
+          docker exec pg_mentat_ci_run psql -U postgres -v ON_ERROR_STOP=1 -c \
+            "SELECT extversion FROM pg_extension WHERE extname='pg_mentat';"
+          docker exec pg_mentat_ci_run psql -U postgres -v ON_ERROR_STOP=1 -c \
+            "SELECT mentat.q('[:find ?n ?age :where [?e :person/name ?n][?e :person/age ?age] :order (asc ?n)]');"
+          docker rm -f pg_mentat_ci_run
+        env:
+          RUST_BACKTRACE: "1"
+
+      - name: Generate test report
+        if: always()
+        run: |
+          echo "## Test Results (Container)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Date**: $(date -u)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit**: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch**: ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Runner**: Dockerfile (postgres:16-bookworm)" >> "$GITHUB_STEP_SUMMARY"

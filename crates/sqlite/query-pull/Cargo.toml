@@ -1,0 +1,35 @@
+[package]
+name = "mentat_query_pull"
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+sqlcipher = ["rusqlite/sqlcipher"]
+
+[dependencies]
+
+[dependencies.query_pull_traits]
+path = "../query-pull-traits"
+
+[dependencies.rusqlite]
+version = "~0.40"
+features = ["limits", "bundled"]
+
+[dependencies.edn]
+path = "../../edn"
+
+[dependencies.mentat_core]
+path = "../../core"
+
+[dependencies.core_traits]
+path = "../../core-traits"
+
+[dependencies.mentat_db]
+path = "../db"
+
+[dependencies.db_traits]
+path = "../db-traits"
+
+[lints]
+workspace = true

@@ -1,0 +1,114 @@
+[package]
+name = "mentatd"
+version = "1.7.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Gregory Burd <greg@burd.me>"]
+license = "Apache-2.0"
+repository = "https://github.com/gburd/pg_mentat"
+description = "Datomic-compatible HTTP server for pg_mentat"
+
+[lib]
+name = "mentatd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mentatd"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server + WebSocket
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1.45.0", features = ["full"] }
+tokio-stream = "0.1"
+tower = "0.5.3"
+tower-http = { version = "0.6.2", features = ["trace", "timeout", "cors"] }
+
+# PostgreSQL
+tokio-postgres = { version = "0.7.12", features = ["with-serde_json-1"] }
+deadpool-postgres = "0.14.0"
+
+# Serialization
+serde = { version = "1.0.221", features = ["derive"] }
+serde_json = "1.0.144"
+toml = "0.8.20"
+
+# EDN parsing (from workspace)
+edn = { path = "../../edn" }
+
+# Caching
+lru = "0.18"
+
+# Metrics
+prometheus = "0.14"
+lazy_static = "1.5"
+
+# Streaming
+async-stream = "0.3"
+
+# Utilities
+thiserror = "2.0.18"
+anyhow = "1.0.95"
+uuid = { version = "1.21.0", features = ["v4", "serde"] }
+tracing = "0.1.42"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
+chrono = "0.4.39"
+hex = "0.4.3"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+futures-util = "0.3"
+hyper = "1.6.0"
+reqwest = { version = "0.12.14", features = ["json"] }
+tokio-test = "0.4.4"
+tokio-tungstenite = "0.29"
+uuid = { version = "1.21.0", features = ["v4"] }
+
+[[bench]]
+name = "serialization"
+harness = false
+
+[[bench]]
+name = "cache"
+harness = false
+
+[lints.clippy]
+# Panic prevention (to be promoted to deny as code is cleaned up)
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
+panic_in_result_fn = "allow"
+unimplemented = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Temporarily allowed (pre-existing, non-safety, to be fixed incrementally)
+type_complexity = "allow"
+needless_borrow = "allow"
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow"
+unnecessary_wraps = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+get_first = "allow"
+collapsible_match = "allow"
+collapsible_else_if = "allow"
+single_match = "allow"
+cloned_ref_to_slice_refs = "allow"
+unnecessary_cast = "allow"
+collapsible_str_replace = "allow"
+needless_range_loop = "allow"
+manual_strip = "allow"
+unnecessary_map_or = "allow"
+useless_format = "allow"
+len_without_is_empty = "allow"
+redundant_closure = "allow"

@@ -1,0 +1,12 @@
+[package]
+name = "sql_traits"
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "sql_traits"
+path = "lib.rs"
+
+[dependencies]
+thiserror = "~2.0"

@@ -1,0 +1,42 @@
+                                                                           QUERY PLAN                                                                            
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=1.41..2459.29 rows=781 width=39) (actual time=0.254..22.387 rows=4041 loops=1)
+   Output: s_1.e, t.v, p.v
+   Inner Unique: true
+   Buffers: shared hit=32065
+   ->  Nested Loop  (cost=1.12..2099.94 rows=789 width=32) (actual time=0.218..16.090 rows=4041 loops=1)
+         Output: s.e, p.v, p.e, s_1.e
+         Inner Unique: true
+         Buffers: shared hit=19942
+         ->  Merge Join  (cost=0.83..1287.19 rows=1974 width=16) (actual time=0.159..4.518 rows=9859 loops=1)
+               Output: s.e, s_1.e
+               Inner Unique: true
+               Merge Cond: (s.e = s_1.e)
+               Buffers: shared hit=223
+               ->  Index Only Scan using eav_keyword_vaet on eav.keyword s  (cost=0.41..609.13 rows=9836 width=8) (actual time=0.109..1.471 rows=9859 loops=1)
+                     Output: s.v, s.a, s.e
+                     Index Cond: ((s.v = ':state/open'::text) AND (s.a = 1003))
+                     Heap Fetches: 0
+                     Buffers: shared hit=113
+               ->  Index Only Scan using eav_keyword_vaet on eav.keyword s_1  (cost=0.41..609.13 rows=9836 width=8) (actual time=0.048..1.129 rows=9859 loops=1)
+                     Output: s_1.v, s_1.a, s_1.e
+                     Index Cond: ((s_1.v = ':state/open'::text) AND (s_1.a = 1003))
+                     Heap Fetches: 0
+                     Buffers: shared hit=110
+         ->  Index Only Scan using eav_long_aevt on eav.long p  (cost=0.29..0.41 rows=1 width=16) (actual time=0.001..0.001 rows=0 loops=9859)
+               Output: p.a, p.e, p.v
+               Index Cond: ((p.a = 1004) AND (p.e = s.e))
+               Filter: (p.v >= 4)
+               Rows Removed by Filter: 1
+               Heap Fetches: 0
+               Buffers: shared hit=19719
+   ->  Index Scan using text_pkey on eav.text t  (cost=0.29..0.46 rows=1 width=31) (actual time=0.001..0.001 rows=1 loops=4041)
+         Output: t.e, t.a, t.v
+         Index Cond: ((t.e = p.e) AND (t.a = 1002))
+         Buffers: shared hit=12123
+ Planning:
+   Buffers: shared hit=373
+ Planning Time: 4.710 ms
+ Execution Time: 22.643 ms
+(38 rows)
+

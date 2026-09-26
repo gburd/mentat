@@ -1,0 +1,21 @@
+[package]
+name = "query_pull_traits"
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "query_pull_traits"
+path = "lib.rs"
+
+[dependencies]
+thiserror = "~2.0"
+
+[dependencies.core_traits]
+path = "../../core-traits"
+
+[dependencies.db_traits]
+path = "../db-traits"
+
+[lints]
+workspace = true

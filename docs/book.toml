@@ -1,0 +1,21 @@
+[book]
+title = "mentat"
+description = "Datomic-like Datalog store: embedded on SQLite, and as a PostgreSQL extension"
+authors = ["Gregory Burd"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://codeberg.org/gregburd/mentat"
+git-repository-icon = "fa-github"
+site-url = "/mentat/"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1

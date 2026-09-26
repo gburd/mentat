@@ -1,0 +1,24 @@
+[package]
+name = "mentat_sql"
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+
+[features]
+sqlcipher = ["rusqlite/sqlcipher"]
+
+[dependencies]
+ordered-float = "5.3"
+
+[dependencies.rusqlite]
+version = "~0.40"
+features = ["limits", "bundled"]
+
+[dependencies.core_traits]
+path = "../../core-traits"
+
+[dependencies.mentat_core]
+path = "../../core"
+
+[dependencies.sql_traits]
+path = "../sql-traits"

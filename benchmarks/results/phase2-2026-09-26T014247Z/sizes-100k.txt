@@ -1,0 +1,35 @@
+      relname       | total_size | heap_size  | idx_size 
+--------------------+------------+------------+----------
+ datoms_ref_new     | 23 MB      | 4208 kB    | 19 MB
+ current_ref        | 16 MB      | 5000 kB    | 11 MB
+ ref                | 12 MB      | 3192 kB    | 8640 kB
+ datoms_text_new    | 11 MB      | 1544 kB    | 9768 kB
+ datoms_keyword_new | 7632 kB    | 1352 kB    | 6240 kB
+ datoms_instant_new | 6560 kB    | 1200 kB    | 5328 kB
+ datoms_long_new    | 6528 kB    | 1200 kB    | 5296 kB
+ current_text       | 5088 kB    | 1880 kB    | 3168 kB
+ current_keyword    | 4408 kB    | 1640 kB    | 2728 kB
+ current_instant    | 3776 kB    | 1432 kB    | 2312 kB
+ keyword            | 3768 kB    | 1080 kB    | 2648 kB
+ current_long       | 3664 kB    | 1424 kB    | 2208 kB
+ text               | 2456 kB    | 1352 kB    | 1064 kB
+ instant            | 2104 kB    | 912 kB     | 1160 kB
+ long               | 2104 kB    | 912 kB     | 1160 kB
+ stores             | 64 kB      | 8192 bytes | 48 kB
+ schema             | 48 kB      | 8192 bytes | 32 kB
+ idents             | 48 kB      | 8192 bytes | 32 kB
+ attrs              | 48 kB      | 8192 bytes | 32 kB
+ datoms_bytes_new   | 48 kB      | 0 bytes    | 40 kB
+ datoms_double_new  | 40 kB      | 0 bytes    | 40 kB
+ current_boolean    | 40 kB      | 8192 bytes | 32 kB
+ datoms_boolean_new | 40 kB      | 0 bytes    | 40 kB
+ datoms_uuid_new    | 40 kB      | 0 bytes    | 40 kB
+ partitions         | 32 kB      | 8192 bytes | 16 kB
+ cache_generation   | 32 kB      | 8192 bytes | 16 kB
+ fulltext           | 24 kB      | 0 bytes    | 16 kB
+ current_bytes      | 24 kB      | 0 bytes    | 16 kB
+ subscriptions      | 24 kB      | 0 bytes    | 16 kB
+ materialized_views | 24 kB      | 0 bytes    | 16 kB
+ transactions       | 24 kB      | 8192 bytes | 16 kB
+(31 rows)
+

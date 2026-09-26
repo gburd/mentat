@@ -1,0 +1,17 @@
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
+ HashAggregate  (cost=1270.50..1270.55 rows=5 width=23) (actual time=9.652..9.654 rows=5 loops=1)
+   Output: v, count(*)
+   Group Key: keyword.v
+   Batches: 1  Memory Usage: 24kB
+   Buffers: shared hit=413
+   ->  Seq Scan on eav.keyword  (cost=0.00..1025.50 rows=49000 width=15) (actual time=0.004..3.792 rows=49000 loops=1)
+         Output: e, a, v
+         Filter: (keyword.a = 1003)
+         Buffers: shared hit=413
+ Planning:
+   Buffers: shared hit=138
+ Planning Time: 1.319 ms
+ Execution Time: 9.746 ms
+(13 rows)
+

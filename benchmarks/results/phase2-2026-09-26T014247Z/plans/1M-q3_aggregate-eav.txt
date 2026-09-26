@@ -1,0 +1,39 @@
+                                                                    QUERY PLAN                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------
+ Finalize GroupAggregate  (cost=4031.76..4032.41 rows=5 width=23) (actual time=18.957..19.960 rows=5 loops=1)
+   Output: v, count(*)
+   Group Key: keyword.v
+   Buffers: shared hit=1372
+   ->  Gather Merge  (cost=4031.76..4032.34 rows=5 width=23) (actual time=18.951..19.953 rows=10 loops=1)
+         Output: v, (PARTIAL count(*))
+         Workers Planned: 1
+         Workers Launched: 1
+         Buffers: shared hit=1372
+         ->  Sort  (cost=3031.75..3031.77 rows=5 width=23) (actual time=16.383..16.384 rows=5 loops=2)
+               Output: v, (PARTIAL count(*))
+               Sort Key: keyword.v
+               Sort Method: quicksort  Memory: 25kB
+               Buffers: shared hit=1372
+               Worker 0:  actual time=14.117..14.118 rows=5 loops=1
+                 Sort Method: quicksort  Memory: 25kB
+                 Buffers: shared hit=592
+               ->  Partial HashAggregate  (cost=3031.65..3031.70 rows=5 width=23) (actual time=16.295..16.296 rows=5 loops=2)
+                     Output: v, PARTIAL count(*)
+                     Group Key: keyword.v
+                     Batches: 1  Memory Usage: 24kB
+                     Buffers: shared hit=1364
+                     Worker 0:  actual time=14.018..14.019 rows=5 loops=1
+                       Batches: 1  Memory Usage: 24kB
+                       Buffers: shared hit=584
+                     ->  Parallel Seq Scan on eav.keyword  (cost=0.00..2555.18 rows=95294 width=15) (actual time=0.007..6.445 rows=81000 loops=2)
+                           Output: e, a, v
+                           Filter: (keyword.a = 1003)
+                           Buffers: shared hit=1364
+                           Worker 0:  actual time=0.007..5.632 rows=69390 loops=1
+                             Buffers: shared hit=584
+ Planning:
+   Buffers: shared hit=138
+ Planning Time: 1.342 ms
+ Execution Time: 20.122 ms
+(35 rows)
+

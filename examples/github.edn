@@ -1,0 +1,86 @@
+;; https://www.youtube.com/watch?v=dQWcD2_FzAU
+
+;; schema
+[{:db/ident :user/name
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an identifier for a user"}
+ {:db/ident :user/email
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an email address"}
+ {:db/ident :org/name
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an identifier for an organization"}
+ {:db/ident :repo/slug
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an owner/repository"}
+ {:db/ident :repo/owner
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an owning entity for an repository"}
+ {:db/ident :repo/fork
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an fork of a repository"}
+ {:db/ident :repo/lang
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/many
+     :db/doc "a programming language used in the given repository"}
+ {:db/ident :org/name
+     :db/valueType :db.type/string
+     :db/cardinality :db.cardinality/one
+     :db/doc "an identifier for an organization"}
+]
+
+;; data
+[
+ {:user/name "richhickey"
+  :user/email "rich@e.com"}
+ {:user/name "tonsky"
+  :user/email "nikita@e.com"}
+ {:user/name "pithyless"
+  :user/email "norbert@e.com"}
+ {:org/name "clojure"}
+ {:repo/slug "clojure/clojure"
+  :repo/owner [:org/name "clojure"]
+  :repo/lang ["clojure", "java"]}
+ {:repo/slug "tonsky/datascript"
+  :repo/owner [:user/name "tonsky"]
+  :repo/lang ["clojure", "javascript"]}
+ {:repo/slug "pithyless/datascript"
+  :repo/owner [:user/name "pithyless"]
+  :repo/fork [:repo/slug "tonsky/datascript"]
+  :repo/lang ["clojure", "javascript"]}
+]
+
+;; queries
+[:find ?e :where [?e _ _]]
+[:find ?a :where [_ ?a _]]
+[:find ?v :where [_ _ ?v]]
+[:find ?e ?a :where [?e ?a _]]
+[:find ?e ?v :where [?e _ ?v]]
+[:find ?a ?v :where [_ ?a ?v]]
+[:find ?e ?a ?v :where [?e ?a ?v]]
+
+[:find ?e :where [?e _ "richhickey"]]
+[:find ?e ?v :where [?e :user/name ?v]]
+[:find ?name :where [65537 :user/name ?name]]
+[:find ?id :where [?id :user/name "tonsky"]]
+[:find ?name :where [_ :user/name ?name]]
+[:find [?name ...] :where [_ :user/name ?name]]
+[:find ?name . :where [_ :user/name ?name]]
+[:find ?id ?name :where [?id :user/name ?name]]
+[:find ?email :where [?id :user/name "richhickey"] [?id :user/email ?email]]
+[:find ?name :where [?id :user/name ?name] [?id :user/email "rich@e.com"]]
+[:find ?name ?email :where [?id :user/name ?name] [?id :user/email ?email]]
+[:find ?repo :where [?p :user/name "tonsky"] [?r :repo/owner ?p] [?r :repo/slug ?repo]]
+[:find ?name :where [?p :user/name ?name] [?r :repo/owner ?p] [?r :repo/slug "tonsky/datascript"]]
+[:find ?name ?repo :where [?p :user/name ?name] [?r :repo/owner ?p] [?r :repo/slug ?repo]]
+[:find ?name ?repo :where [?p :org/name ?name] [?r :repo/owner ?p] [?r :repo/slug ?repo]]
+[:find ?name ?repo :where (or [?p :user/name ?name] [?p :org/name ?name]) [?r :repo/owner ?p] [?r :repo/slug ?repo]]
+[:find ?repo :where [?r :repo/slug ?repo] [?r :repo/fork _]]
+[:find ?repo :where [?r :repo/slug ?repo] [(missing ?r :repo/fork)]]
+[:find ?orig ?fork :where [?orig-id :repo/slug ?orig] [?fork-id :repo/slug ?fork] [?fork-id :repo/fork ?orig-id]]

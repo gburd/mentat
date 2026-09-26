@@ -1,0 +1,21 @@
+[package]
+name = "query_algebrizer_traits"
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "query_algebrizer_traits"
+path = "lib.rs"
+
+[dependencies]
+thiserror = "~2.0"
+
+[dependencies.edn]
+path = "../../edn"
+
+[dependencies.core_traits]
+path = "../../core-traits"
+
+[lints]
+workspace = true

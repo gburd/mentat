@@ -1,5 +1,35 @@
-[package]
-edition = "2018"
+[workspace]
+resolver = "2"
+members = [
+  "crates/edn",
+  "crates/core-traits",
+  "crates/core",
+  "crates/mino",
+  "crates/mino/vendor/gc",
+  "crates/mino/vendor/gc_derive",
+  "crates/sqlite/*",
+  "crates/pg/pg_mentat",
+  "crates/pg/mentatd",
+]
+default-members = [
+  "crates/edn",
+  "crates/core-traits",
+  "crates/core",
+  "crates/mino",
+  "crates/sqlite/*",
+  "crates/pg/mentatd",
+]
+# crates/sqlite/* is a glob; fixtures/ is shared test data, not a crate.
+exclude = ["crates/sqlite/fixtures"]
+
+[workspace.package]
+version = "1.7.0"
+edition = "2021"
+# ponytail: plan §1.14 intends pinned 1.98; MSRV floor stays 1.88 (plan). The
+# CI host (EC2) runs 1.90 via rustup, so rust-toolchain.toml pins 1.90.
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 authors = [
   "Richard Newman <rnewman@twinql.com>",
   "Nicholas Alexander <nalexander@mozilla.com>",
@@ -13,106 +43,67 @@ authors = [
   "Thom Chiovoloni <tchiovoloni@mozilla.com>",
   "Gregory Burd <greg@burd.me>",
 ]
-name = "mentat"
-version = "0.13.0"
-build = "build/version.rs"
 
-[features]
-default = ["bundled_sqlite3", "syncable"]
-bundled_sqlite3 = ["rusqlite/bundled"]
-sqlcipher = ["rusqlite/sqlcipher", "mentat_db/sqlcipher"]
-syncable = ["mentat_tolstoy", "tolstoy_traits", "mentat_db/syncable"]
+[workspace.dependencies]
+# § 1.13 — one version per shared third-party dep (higher of each pair).
+itertools = "0.15"
+ordered-float = "5.3"
+uuid = "1.25"
+chrono = "0.4.45"
+peg = "0.8.6"
+pretty = "0.12.5"
+indexmap = "2.14"
+bytes = "1.12"
+serde = "1.0.229"
+thiserror = "2.0"
+rusqlite = "0.40"
+mino-rs = { path = "crates/mino" }
 
-[workspace]
-members = [
-  "tools/cli",
-  "ffi", "core", "core-traits","db", "db-traits", "edn", "public-traits", "query-algebrizer",
-  "query-algebrizer-traits", "query-projector", "query-projector-traits","query-pull",
-  "query-sql", "sql", "sql-traits", "tolstoy-traits", "tolstoy", "transaction"
-  ]
-
-[build-dependencies]
-rustc_version = "~0.4"
-
-[dev-dependencies]
-assert_approx_eq = "~1.1"
-
-#[dev-dependencies.cargo-husky]
-#version = "1"
-#default-features = false # Disable features which are enabled by default
-#features = ["run-for-all", "precommit-hook", "run-cargo-fmt", "run-cargo-test", "run-cargo-check", "run-cargo-clippy"]
-#cargo audit
-#cargo outdated
-
-[dependencies]
-chrono = "~0.4"
-failure = "~0.1"
-lazy_static = "~1.4"
-time = "0.3.1"
-log = "~0.4"
-uuid = { version = "~1.0", features = ["v4", "serde"] }
-
-[dependencies.rusqlite]
-version = "~0.29"
-features = ["limits", "bundled"]
-
-[dependencies.edn]
-path = "edn"
-
-[dependencies.core_traits]
-path = "core-traits"
-
-[dependencies.mentat_core]
-path = "core"
-
-[dependencies.mentat_sql]
-path = "sql"
-
-[dependencies.mentat_db]
-path = "db"
-
-[dependencies.db_traits]
-path = "db-traits"
-
-[dependencies.mentat_query_algebrizer]
-path = "query-algebrizer"
-
-[dependencies.query_algebrizer_traits]
-path = "query-algebrizer-traits"
-
-[dependencies.mentat_query_projector]
-path = "query-projector"
-
-[dependencies.query_projector_traits]
-path = "query-projector-traits"
-
-[dependencies.mentat_query_pull]
-path = "query-pull"
-
-[dependencies.query_pull_traits]
-path = "query-pull-traits"
-
-[dependencies.mentat_query_sql]
-path = "query-sql"
-
-[dependencies.sql_traits]
-path = "sql-traits"
-
-[dependencies.public_traits]
-path = "public-traits"
-
-[dependencies.mentat_transaction]
-path = "transaction"
-
-[dependencies.mentat_tolstoy]
-path = "tolstoy"
-optional = true
-
-[dependencies.tolstoy_traits]
-path = "tolstoy-traits"
-optional = true
+[workspace.lints.clippy]
+# Panic prevention (to be promoted to deny as code is cleaned up)
+unwrap_used = "allow"
+expect_used = "allow"
+panic = "allow"
+panic_in_result_fn = "allow"
+unimplemented = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Temporarily allowed (pre-existing, non-safety, to be fixed incrementally)
+type_complexity = "allow"
+needless_borrow = "allow"
+needless_pass_by_value = "allow"
+redundant_closure_for_method_calls = "allow"
+unnecessary_wraps = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+get_first = "allow"
+collapsible_match = "allow"
+collapsible_else_if = "allow"
+single_match = "allow"
+cloned_ref_to_slice_refs = "allow"
+unnecessary_cast = "allow"
+collapsible_str_replace = "allow"
+needless_range_loop = "allow"
+manual_strip = "allow"
+unnecessary_map_or = "allow"
+useless_format = "allow"
 
 [profile.release]
 opt-level = 3
-debug = false
-lto = true
+lto = "fat"
+codegen-units = 1
+
+[profile.release-dev]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

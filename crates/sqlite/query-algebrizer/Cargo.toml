@@ -1,0 +1,25 @@
+[package]
+name = "mentat_query_algebrizer"
+version = "0.0.2"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+
+[dependencies.edn]
+path = "../../edn"
+
+[dependencies.mentat_core]
+path = "../../core"
+
+[dependencies.core_traits]
+path = "../../core-traits"
+
+[dependencies.query_algebrizer_traits]
+path = "../query-algebrizer-traits"
+
+[dev-dependencies]
+itertools = "~0.15"
+
+[lints]
+workspace = true
