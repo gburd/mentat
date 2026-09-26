@@ -3,7 +3,7 @@
 Mentat is a Datomic-like database: an entity-attribute-value store with an
 immutable transaction log, a Datalog query language, and a declarative pull
 API, all expressed in [EDN](https://github.com/edn-format/edn). One repository
-builds two backends that share the same Datalog/EDN front-end:
+builds three backends that share the same Datalog/EDN front-end:
 
 - **Embedded (`mentat`)** — a Rust library store on SQLite. `cargo build`,
   no external services. Drop it into an application the way you would SQLite.
@@ -11,10 +11,13 @@ builds two backends that share the same Datalog/EDN front-end:
   inside PostgreSQL via [pgrx](https://github.com/pgcentralfoundation/pgrx),
   reached through SQL functions. Plus **`mentatd`**, an HTTP/WebSocket server
   that fronts a `pg_mentat` database.
+- **DuckDB extension (`mentat_duckdb`)** — loads into DuckDB (`LOAD mentat;`)
+  and exposes the embedded store as SQL functions, so Datalog results join
+  against native DuckDB tables.
 
 Both backends parse queries, transactions, and schema with one copy of the
 `edn`, `core-traits`, and `core` crates, so a query means the same thing on
-either side. They descend from Mozilla's
+every backend. They descend from Mozilla's
 [Project Mentat](https://github.com/mozilla/mentat); the PostgreSQL backend was
 formerly the separate `pg_mentat` project, now merged here.
 
@@ -150,11 +153,11 @@ SELECT mentat_pull('[*]', 10001);
 ```
 
 `mentat.q`, `mentat.t`, and `mentat.pull` are shorter aliases for
-`mentat_query`, `mentat_transact`, and `mentat_pull`. The PostgreSQL backend
-also has features the embedded side does not: historical (`as-of`/`since`)
-Datalog queries, `?added` history patterns, collection/tuple/relation `:in`
-bindings, LISTEN/NOTIFY reactive subscriptions, and integrations with
-`pgvector`, `pg_trgm`, PostGIS, `rum`, and more. See
+`mentat_query`, `mentat_transact`, and `mentat_pull`. As of 1.8.0 the embedded
+SQLite backend also does historical (`as-of`/`since`) Datalog queries, `?added`
+history patterns, and collection/tuple/relation `:in` bindings. The PostgreSQL
+backend adds features unique to it: LISTEN/NOTIFY reactive subscriptions and
+integrations with `pgvector`, `pg_trgm`, PostGIS, `rum`, and more. See
 [Architecture](docs/src/architecture.md) for the full feature-by-backend table.
 
 ### mentatd
@@ -162,6 +165,68 @@ bindings, LISTEN/NOTIFY reactive subscriptions, and integrations with
 `crates/pg/mentatd` is an HTTP/WebSocket server that talks to a `pg_mentat`
 database over `tokio-postgres` (`cargo build -p mentatd`; no PostgreSQL headers
 needed). See [the mentatd chapter](docs/src/mentatd.md).
+
+---
+
+## DuckDB extension (`mentat_duckdb`)
+
+`mentat_duckdb` (`crates/duckdb`) is a loadable DuckDB extension that embeds the
+mentat SQLite store and exposes it to DuckDB as SQL functions, so Datalog
+results can be joined against native DuckDB tables. It is built with
+[duckdb-rs](https://github.com/duckdb/duckdb-rs) and pinned to **DuckDB v1.5.5**
+(via the DuckDB unstable C API); the extension loads only into that DuckDB
+version, and bumping DuckDB means bumping the pin and rebuilding.
+
+### Build
+
+The extension is a `cdylib` that needs a metadata footer, so it is built with
+the DuckDB [`extension-ci-tools`](https://github.com/duckdb/extension-ci-tools)
+Makefiles (a git submodule under `crates/duckdb/`):
+
+```bash
+git submodule update --init crates/duckdb/extension-ci-tools
+cd crates/duckdb
+make configure          # one-time: sets up the build platform + test venv
+make debug              # -> build/debug/mentat.duckdb_extension
+# make release for an optimized build
+```
+
+(`mentat_duckdb` is a workspace member but not a default member, so a plain
+`cargo build` never pulls the DuckDB toolchain.)
+
+### Use it
+
+DuckDB refuses unsigned extensions unless started with `-unsigned`
+(or opened with `allow_unsigned_extensions=true`). With a DuckDB v1.5.5 CLI:
+
+```sql
+-- duckdb -unsigned
+LOAD './build/debug/mentat.duckdb_extension';
+
+-- Define a schema attribute and assert facts into an embedded mentat store.
+-- Every function takes the store's file path as its first argument.
+SELECT mentat_transact('/tmp/demo.mentat', '[
+  {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+]');
+SELECT mentat_transact('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
+
+-- mentat_query is a table function: run Datalog and get rows back.
+SELECT * FROM mentat_query('/tmp/demo.mentat',
+  '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
+
+-- ...so it joins against native DuckDB tables.
+SELECT m.name, a.age
+FROM mentat_query('/tmp/demo.mentat',
+       '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name)
+JOIN ages a ON a.name = m.name;
+```
+
+`mentat_transact` returns a JSON tx-report; `mentat_query` returns rows with all
+columns as `VARCHAR` in this first release. A DuckDB-native storage backend,
+typed result columns, `mentat_pull`, and `mentat_eval` are planned; see
+[`docs/duckdb-extension-plan.md`](docs/duckdb-extension-plan.md). Publishing to
+the DuckDB Community Extensions registry is documented in
+[`docs/registry-publishing.md`](docs/registry-publishing.md).
 
 ---
 

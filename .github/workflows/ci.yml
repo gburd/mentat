@@ -1,19 +1,16 @@
-# Forgejo/Codeberg CI — THE GATE (plan §1.17).
+# .github/workflows/ci.yml
 #
-# Codeberg is the only place anyone pushes; it push-mirrors to GitHub. This
-# Forgejo workflow is the correctness gate; GitHub Actions on the mirror only
-# publishes (.github/workflows/). Jobs:
-#   fmt          cargo fmt --check
-#   clippy       -D warnings on the linted crates
-#   deny         cargo deny check
-#   test-sqlite  cargo test (default members) + cargo test -p mentat --features mino
-#   test-pg      matrix pg13..pg18, cargo pgrx test
-#   test-mino    cargo test -p mino-rs
-#   test-ffi     build + test crates/sqlite/ffi
-#   test-duckdb  build the DuckDB extension + load/query smoke test
-#   nix-build    flake builds the SQLite CLI + one extension
+# GitHub CI for the mentat mirror. Codeberg's .forgejo/workflows/ci.yml is the
+# canonical gate; this mirrors it (Codeberg push-mirrors to GitHub, so both run
+# on every push) and adds the DuckDB backend. It exercises all THREE ways to
+# deploy mentat:
+#   a) SQLite   — test-sqlite, test-mino, test-ffi (the embedded library + CLI)
+#   b) Postgres — test-pg (the pg_mentat pgrx extension, pg13..pg18)
+#   c) DuckDB   — test-duckdb (the mentat_duckdb loadable extension)
+# plus fmt / clippy / cargo-deny / nix-build.
 #
-# Forgejo Actions syntax is nearly identical to GitHub Actions.
+# The other .github workflows only publish (release.yml, docs.yml, …); this one
+# is the test matrix.
 
 name: ci
 
@@ -33,7 +30,7 @@ env:
   DUCKDB_VERSION: "v1.5.5"
 
 jobs:
-  # --- SQLite / shared front-end: no postgres, no clang required ---------
+  # --- lint / hygiene ----------------------------------------------------
   fmt:
     name: fmt
     runs-on: ubuntu-latest
@@ -73,10 +70,11 @@ jobs:
             target
           key: ci-clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ci-clippy-${{ runner.os }}-
-      # Lint the SQLite side + shared front-end + mino (default members). The
-      # pgrx crate's clippy runs in test-pg where pg_config/pgrx are set up.
+      # SQLite side + shared front-end + mino. pg_mentat's clippy runs in
+      # test-pg (needs pg_config); mentat_duckdb's in test-duckdb (needs the
+      # DuckDB extension cfg).
       - name: cargo clippy
-        run: cargo clippy --workspace --exclude pg_mentat -- -D warnings
+        run: cargo clippy --workspace --exclude pg_mentat --exclude mentat_duckdb -- -D warnings
 
   deny:
     name: cargo deny
@@ -94,6 +92,7 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
+  # --- a) SQLite: the embedded library + CLI + C ABI + scripting --------
   test-sqlite:
     name: test-sqlite (+ mino feature)
     runs-on: ubuntu-latest
@@ -119,8 +118,6 @@ jobs:
             target
           key: ci-sqlite-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ci-sqlite-${{ runner.os }}-
-      # Default members = the SQLite side + shared front-end + mino + mentatd;
-      # never touches pg_config/libclang.
       - name: cargo test (default members)
         run: cargo test
       - name: cargo test -p mentat --features mino
@@ -148,6 +145,8 @@ jobs:
           restore-keys: ci-mino-${{ runner.os }}-
       - name: cargo test -p mino-rs
         run: cargo test -p mino-rs
+      - name: cargo test -p mentat_script
+        run: cargo test -p mentat_script
 
   test-ffi:
     name: test-ffi (C ABI)
@@ -179,11 +178,11 @@ jobs:
           cargo build -p mentat_ffi
           cargo test -p mentat_ffi
 
-  # --- PostgreSQL extension: needs pgrx + a per-major PostgreSQL ---------
+  # --- b) Postgres: the pg_mentat pgrx extension, pg13..pg18 ------------
   test-pg:
     name: test-pg (pg${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -195,7 +194,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
               build-essential pkg-config libpq-dev libclang-dev clang \
-              libreadline-dev zlib1g-dev flex bison
+              libreadline-dev zlib1g-dev flex bison libicu-dev
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -213,14 +212,12 @@ jobs:
       - name: Install cargo-pgrx
         run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
       - name: pgrx init (download PG${{ matrix.pg }})
-        # A pgrx-managed PG (user-owned ~/.pgrx) so `cargo pgrx test` can copy
-        # the .so into its lib dir without root.
         run: cargo pgrx init --pg${{ matrix.pg }} download
-      - name: cargo pgrx test
+      - name: cargo pgrx test (+ script feature)
         working-directory: crates/pg/pg_mentat
-        run: cargo pgrx test --no-default-features --features pg${{ matrix.pg }} pg${{ matrix.pg }}
+        run: cargo pgrx test --no-default-features --features "pg${{ matrix.pg }} script" pg${{ matrix.pg }}
 
-  # --- DuckDB extension: build + load/query smoke test ------------------
+  # --- c) DuckDB: the mentat_duckdb loadable extension ------------------
   test-duckdb:
     name: test-duckdb
     runs-on: ubuntu-latest
@@ -228,7 +225,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: recursive        # extension-ci-tools (the DuckDB build harness)
       - name: Install build deps
         run: |
           sudo apt-get update
@@ -259,7 +256,8 @@ jobs:
             "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
             -o /tmp/duckdb.zip
           unzip -o /tmp/duckdb.zip -d "$HOME/.local/bin"
-      - name: Load + query smoke test
+          "$HOME/.local/bin/duckdb" --version
+      - name: Load + query smoke test (all three functions + a native JOIN)
         working-directory: crates/duckdb
         run: DUCKDB="$HOME/.local/bin/duckdb" bash test/smoke.sh
 
@@ -274,7 +272,6 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      - name: Build mentat-cli + one extension
-        # __noChroot derivations fetch crates from the network; relaxed sandbox.
+      - name: Build mentat-cli + mentatd + one extension
         run: |
           nix build --option sandbox relaxed .#mentat-cli .#mentatd .#pg_mentat-pg16

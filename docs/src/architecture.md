@@ -62,26 +62,33 @@ with `cargo build -p mentatd`.
 
 ## Features by backend
 
-| Feature | Embedded (`mentat`) | PostgreSQL (`pg_mentat`) |
-|---|---|---|
-| Embedded EAV store, Datalog `q`, pull, schema | yes | yes |
-| `:db.fn/cas`, `:db/retractEntity` | yes | yes |
-| C ABI (`ffi`) | yes | — |
-| `?added` / history patterns in `:where` | via `(tx-data …)` only; planned | yes |
-| Historical `q` (as-of / since) | planned (1.7.1) | yes |
-| `:in` collection / tuple / relation bindings | planned (1.7.1) | yes |
-| Reactive subscriptions (LISTEN/NOTIFY) | — | yes |
-| BM25 full-text, pgvector, pg_trgm, PostGIS, rum | — | yes |
-| Materialized / virtual views, multi-store, excision | — | yes |
-| `mentatd` HTTP/WebSocket server | — | yes |
+| Feature | Embedded (`mentat`) | PostgreSQL (`pg_mentat`) | DuckDB (`mentat_duckdb`) |
+|---|---|---|---|
+| Embedded EAV store, Datalog `q`, pull, schema | yes | yes | `q` + `transact` (embeds the SQLite store) |
+| `:db.fn/cas`, `:db/retractEntity` | yes | yes | via the embedded store |
+| C ABI (`ffi`) | yes | — | — |
+| `?added` / history patterns in `:where` | yes | yes | via the embedded store |
+| Historical `q` (as-of / since) | yes | yes | via the embedded store |
+| `:in` collection / tuple / relation bindings | yes | yes | scalar `:in` only (planned) |
+| Join Datalog results against native SQL tables | — | — | yes |
+| Reactive subscriptions (LISTEN/NOTIFY) | — | yes | — |
+| BM25 full-text, pgvector, pg_trgm, PostGIS, rum | — | yes | — |
+| Materialized / virtual views, multi-store, excision | — | yes | — |
+| `mentatd` HTTP/WebSocket server | — | yes | — |
 
-`:db.fn/cas` and `:db/retractEntity` are now on both backends. On the embedded
-side, historical (`as-of`/`since`) Datalog `q` and non-scalar `:in` bindings are
-**planned for 1.7.1**: the embedded algebrizer has no as-of query rewriting yet,
-and `:in` bindings other than scalar are not yet consumed. The embedded
-scripting layer still supports `as-of`/`since` for the `datoms`/`entity`/`read`
-paths by replaying the transaction log; only arbitrary Datalog `q` against a
-historical basis is the gap.
+`:db.fn/cas`, `:db/retractEntity`, `?added` history patterns, historical
+(`as-of`/`since`) Datalog `q`, and non-scalar `:in` bindings are on **both** the
+embedded and PostgreSQL backends as of 1.8.0. Historical `q` on the embedded
+side is `Store::q_once_as_of(tx, …)` / `q_once_since(tx, …)` (and the `Conn`
+equivalents), which evaluate a query against the transaction log at, or since, a
+transaction.
+
+The **DuckDB** backend (`mentat_duckdb`, added 1.8.0) is a loadable DuckDB
+extension that embeds the SQLite store and exposes it through `mentat_transact`
+(scalar) and `mentat_query` (table function), so Datalog results join against
+native DuckDB tables. It inherits whatever the embedded store supports; a
+DuckDB-native storage backend, typed result columns, `mentat_pull`, and
+`mentat_eval` are planned. See `duckdb-extension-plan.md`.
 
 ---
 
