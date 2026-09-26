@@ -1,0 +1,46 @@
+# name: test/sql/mentat.test
+# description: mentat DuckDB extension smoke test (M0 + M1)
+# group: [mentat]
+#
+# Run with the SQLLogicTest harness (`make test_debug`) ONLY when the venv/host
+# duckdb matches the extension target (v1.5.5, i.e. Python 3.10+). On Python 3.9
+# the venv caps at duckdb 1.4.5 and cannot load a v1.5.5 extension; use
+# test/smoke.sh with the standalone v1.5.5 CLI instead.
+
+require mentat
+
+# M0: hello table function returns one constant row.
+query I
+SELECT * FROM mentat_hello();
+----
+mentat duckdb extension loaded
+
+# M1: transact a schema, then two entities, into a temp store.
+statement ok
+SELECT mentat_transact('__TEST_DIR__/mentat.sqlite', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+
+statement ok
+SELECT mentat_transact('__TEST_DIR__/mentat.sqlite', '[{:person/name "Alice"} {:person/name "Bob"}]');
+
+# M1: query them back; all-VARCHAR columns named by the FindSpec.
+query I
+SELECT name FROM mentat_query('__TEST_DIR__/mentat.sqlite', '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name) ORDER BY name;
+----
+"Alice"
+"Bob"
+
+# M1: JOIN Datalog output against a native DuckDB table.
+statement ok
+CREATE TABLE ages(name VARCHAR, age INT);
+
+statement ok
+INSERT INTO ages VALUES ('"Alice"', 30), ('"Bob"', 25);
+
+query II
+SELECT m.name, a.age
+FROM mentat_query('__TEST_DIR__/mentat.sqlite', '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name)
+JOIN ages a ON a.name = m.name
+ORDER BY a.age;
+----
+"Bob"	25
+"Alice"	30

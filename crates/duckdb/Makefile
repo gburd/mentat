@@ -36,6 +36,12 @@ include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
 EXTENSION_LIB_FILENAME=libmentat_duckdb.so
 RUST_LIBNAME=libmentat_duckdb.so
 
+# A bare `cargo build` inside a workspace member dir does NOT reliably build
+# THIS package (it builds the default-member set, which excludes mentat_duckdb).
+# Force the package explicitly. TARGET_INFO is appended to the cargo invocation
+# by rust.Makefile (empty on native linux), so this is the override hook.
+TARGET_INFO=-p mentat_duckdb
+
 configure: venv platform extension_version
 
 debug: build_extension_library_debug build_extension_with_metadata_debug
