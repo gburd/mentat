@@ -1,0 +1,3 @@
+backend,scale,n_datoms,load_s,datoms_per_s,analyze_s,vacuum_s,store_bytes,ceiling,note
+sqlite-ext,s,984803,67.6,14566,,,202559488,0,
+duckdb,s,984803,67.9,14513,,,202559488,0,

@@ -1,0 +1,4 @@
+m: 9850258 datoms (16000 users, 1300000 issues, 64986 history updates)
+s: 984803 datoms (1600 users, 130000 issues, 6492 history updates)
+sqlite-ext m: reads measured on a copy of the embedded-built store (ext bulk load capped at 600s)
+duckdb m: reads measured on a copy of the embedded-built store (ext bulk load capped at 600s)

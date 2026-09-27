@@ -1,0 +1,6 @@
+backend,scale,n_datoms,load_s,datoms_per_s,analyze_s,vacuum_s,store_bytes,ceiling,note
+embedded,m,9850258,1479.4,6658,,,1687879680,0,
+sqlite-ext,s,984803,92.2,10683,,,166051840,0,
+duckdb,s,984803,89.8,10962,,,166051840,0,
+sqlite-ext,m,9850258,,,,,,1,load crashed (see logs)
+duckdb,m,9850258,,,,,,1,load crashed (see logs)

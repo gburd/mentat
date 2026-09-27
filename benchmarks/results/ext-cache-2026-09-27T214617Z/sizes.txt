@@ -1,0 +1,2 @@
+s: 984803 datoms (1600 users, 130000 issues, 6492 history updates)
+m: sqlite-ext/duckdb read the embedded-built store (loaded at 1.9.0, upgraded to v2 on first open: 16 s once)

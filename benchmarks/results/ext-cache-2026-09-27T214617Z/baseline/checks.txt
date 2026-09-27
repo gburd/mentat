@@ -1,0 +1,130 @@
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+probe sqlite-ext point_lookup: 547 ms
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check sqlite-ext: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check sqlite-ext: OK
+probe duckdb point_lookup: 583 ms
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check duckdb: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check duckdb: OK
+multiprocessing.pool.RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/usr/lib64/python3.11/multiprocessing/pool.py", line 125, in worker
+    result = (True, func(*args, **kwds))
+                    ^^^^^^^^^^^^^^^^^^^
+  File "/home/ec2-user/mentat/benchmarks/scale/bench.py", line 175, in _one_fresh
+    return one(mk(backend, data, target, meta), scen, arg)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ec2-user/mentat/benchmarks/scale/bench.py", line 156, in one
+    return b.q(Q[SCEN_Q[scen]], {"inputs": [email(arg)]})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ec2-user/mentat/benchmarks/scale/bench.py", line 99, in q
+    r = json.loads(self.db.execute("SELECT edn_q(?, ?, ?)", [self.store, query, o]).fetchone()[0])
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: edn_q: opening store "/home/ec2-user/data/work/sqlite-ext-m.db": SQL error: database disk image is malformed
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/ec2-user/mentat/benchmarks/scale/bench.py", line 568, in <module>
+    main()
+  File "/home/ec2-user/mentat/benchmarks/scale/bench.py", line 546, in main
+    r, ms = timed_one(a[1], a[2], a[3], "point_lookup", 0, float(a[4]))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ec2-user/mentat/benchmarks/scale/bench.py", line 193, in timed_one
+    r = pool.apply_async(_one_fresh, [(backend, data, target, scen, arg)]).get(timeout)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.11/multiprocessing/pool.py", line 774, in get
+    raise self._value
+sqlite3.OperationalError: edn_q: opening store "/home/ec2-user/data/work/sqlite-ext-m.db": SQL error: database disk image is malformed
+check sqlite-ext (m): SKIP (per-call cost above PROBE_S=20s)
+probe duckdb point_lookup: 16455 ms
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check duckdb: OK
