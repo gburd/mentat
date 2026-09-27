@@ -307,6 +307,22 @@ default member. See [`crates/sqlite/ext/README.md`](crates/sqlite/ext/README.md)
 
 ---
 
+## Benchmarks
+
+`benchmarks/scale/` is a repeatable scale and load suite that runs the same
+scenarios against all four deployments: the embedded library, the SQLite
+extension, pg_mentat and the DuckDB extension. The scenarios are bulk load,
+point lookup, ref traversal, aggregate, predicate scan, pull, as-of/since,
+`:in` bindings, mixed read/write, a 1-128 client concurrency sweep, sustained
+load, and cold vs warm. Every scenario checks its answer as well as its timing.
+`benchmarks/scale/compare.py OLD NEW` flags regressions between two runs. The
+latest full run (r6id.metal, 1 TiB RAM, shared_buffers at 85% of RAM, up to 303M
+datoms) is in
+[`benchmarks/results/scale-2026-09-27T010840Z/`](benchmarks/results/scale-2026-09-27T010840Z/findings.md).
+See [`benchmarks/scale/README.md`](benchmarks/scale/README.md) to run it.
+
+---
+
 ## Scripting: mino
 
 Every backend embeds [mino](docs/src/scripting.md), a Clojure-dialect
