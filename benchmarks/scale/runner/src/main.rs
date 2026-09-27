@@ -199,7 +199,13 @@ fn b_json(b: &Binding) -> Json {
 }
 
 /// Run one scenario query with an explicit argument; rows as JSON.
-fn query_rows(s: &Store, ctx: &Ctx, qs: &Queries, scen: &str, arg: Option<&str>) -> mentat::Result<Json> {
+fn query_rows(
+    s: &Store,
+    ctx: &Ctx,
+    qs: &Queries,
+    scen: &str,
+    arg: Option<&str>,
+) -> mentat::Result<Json> {
     let emailv = |a: Option<&str>| {
         QueryInputs::with_value_sequence(vec![(var("?email"), email(a.unwrap().parse().unwrap()))])
     };
@@ -210,27 +216,42 @@ fn query_rows(s: &Store, ctx: &Ctx, qs: &Queries, scen: &str, arg: Option<&str>)
         "aggregate" => s.q_once(&qs.q3, None),
         "predicate_scan" => s.q_once(
             &qs.q4,
-            QueryInputs::with_value_sequence(vec![(var("?min"), TypedValue::Long(arg.unwrap().parse().unwrap()))]),
+            QueryInputs::with_value_sequence(vec![(
+                var("?min"),
+                TypedValue::Long(arg.unwrap().parse().unwrap()),
+            )]),
         ),
         "since" => s.q_once_since(&qs.since, None, ctx.t("t_since")),
         "input_bindings" => s.q_once(
             &qs.inputs,
             QueryInputs::with_collection(
                 var("?email"),
-                arg.unwrap().split(',').map(|u| email(u.parse().unwrap())).collect(),
+                arg.unwrap()
+                    .split(',')
+                    .map(|u| email(u.parse().unwrap()))
+                    .collect(),
             ),
         ),
         "pull" => {
             let e = ctx.entids[arg.unwrap().parse::<usize>().unwrap()];
-            s.q_once(&qs.pull, QueryInputs::with_value_sequence(vec![(var("?e"), TypedValue::Ref(e))]))
+            s.q_once(
+                &qs.pull,
+                QueryInputs::with_value_sequence(vec![(var("?e"), TypedValue::Ref(e))]),
+            )
         }
         other => panic!("unknown scenario {other}"),
     }?;
     let rows: Vec<Json> = match out.results {
-        QueryResults::Rel(r) => r.rows().map(|row| Json::Array(row.iter().map(b_json).collect())).collect(),
+        QueryResults::Rel(r) => r
+            .rows()
+            .map(|row| Json::Array(row.iter().map(b_json).collect()))
+            .collect(),
         QueryResults::Coll(c) => c.iter().map(|b| json!([b_json(b)])).collect(),
         QueryResults::Scalar(s) => s.iter().map(|b| json!([b_json(b)])).collect(),
-        QueryResults::Tuple(t) => t.iter().map(|r| Json::Array(r.iter().map(b_json).collect())).collect(),
+        QueryResults::Tuple(t) => t
+            .iter()
+            .map(|r| Json::Array(r.iter().map(b_json).collect()))
+            .collect(),
     };
     Ok(Json::Array(rows))
 }
@@ -239,7 +260,10 @@ fn query_rows(s: &Store, ctx: &Ctx, qs: &Queries, scen: &str, arg: Option<&str>)
 fn cmd_query(store: &str, data: &str, scen: &str, arg: Option<&str>) {
     let ctx = Ctx::new(store, data);
     let s = Store::open(store).unwrap();
-    println!("{}", query_rows(&s, &ctx, &Queries::load(), scen, arg).unwrap());
+    println!(
+        "{}",
+        query_rows(&s, &ctx, &Queries::load(), scen, arg).unwrap()
+    );
 }
 
 /// `serve`: open the store once; answer "SCEN [ARG]" lines from stdin with one
@@ -297,7 +321,11 @@ impl Ids {
         while k < b.len() {
             if b[k] == b'@' && b.get(k + 1) == Some(&b'@') {
                 // A bare `@@<n>` (datasets from before the u/l/i tags) is an issue.
-                let (kind, mut j) = if b[k + 2].is_ascii_digit() { (b'i', k + 2) } else { (b[k + 2], k + 3) };
+                let (kind, mut j) = if b[k + 2].is_ascii_digit() {
+                    (b'i', k + 2)
+                } else {
+                    (b[k + 2], k + 3)
+                };
                 let mut n = 0usize;
                 while j < b.len() && b[j].is_ascii_digit() {
                     n = n * 10 + (b[j] - b'0') as usize;
@@ -522,16 +550,47 @@ fn client(
     (lat, errors, t0.elapsed().as_secs_f64(), first)
 }
 
+/// Open `n` stores, OPEN_PAR at a time (default 8). Every Store::open scans
+/// the whole `parts` view into an in-memory temp B-tree (temp_store=2). On
+/// r6id.metal at 10M datoms, 128 concurrent opens grew the process to 80 GB
+/// RSS; they were contending on SQLite's global malloc mutex until the OOM
+/// killer ended the process. Batched opens keep peak memory bounded; the
+/// stores stay open afterwards.
 fn open_stores(store: &str, n: usize) -> Vec<Store> {
     let t = Instant::now();
-    let v: Vec<Store> = std::thread::scope(|sc| {
-        let hs: Vec<_> = (0..n)
-            .map(|_| sc.spawn(|| Store::open(store).unwrap()))
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    eprintln!("opened {n} stores in {:.1}s", t.elapsed().as_secs_f64());
+    let par: usize = std::env::var("OPEN_PAR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+    let mut v: Vec<Store> = Vec::with_capacity(n);
+    while v.len() < n {
+        let k = par.min(n - v.len());
+        let batch: Vec<Store> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..k)
+                .map(|_| sc.spawn(|| Store::open(store).unwrap()))
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        v.extend(batch);
+        eprintln!(
+            "opened {}/{n} stores in {:.1}s (RSS {} MiB)",
+            v.len(),
+            t.elapsed().as_secs_f64(),
+            rss_mib()
+        );
+    }
     v
+}
+
+fn rss_mib() -> u64 {
+    fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| {
+            s.split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<u64>().ok())
+        })
+        .map_or(0, |pages| pages * 4096 / (1 << 20))
 }
 
 #[allow(clippy::too_many_arguments)]
