@@ -30,7 +30,7 @@ def main():
     out = sys.argv[1]
     t = rd(f"{out}/timings.csv")
     loads = rd(f"{out}/loads.csv")
-    print(f"# mentat scale benchmark: {os.path.basename(out.rstrip('/'))}\n")
+    print(f"# mentat scale benchmark: {os.path.basename(os.path.abspath(out))}\n")
     if os.path.exists(f"{out}/findings.md"):
         print(open(f"{out}/findings.md").read().rstrip() + "\n")
     env = open(f"{out}/env.txt").read().splitlines() if os.path.exists(f"{out}/env.txt") else []
@@ -69,10 +69,12 @@ def main():
         print()
     if os.path.exists(f"{out}/checks.txt"):
         c = open(f"{out}/checks.txt").read()
-        print(f"## Correctness checks\n\n{c.count(': PASS')} PASS, {c.count(': FAIL')} FAIL (details in checks.txt)\n")
+        print(f"## Correctness checks\n\n{c.count(': PASS')} PASS, {c.count(': FAIL')} FAIL, "
+              f"{c.count(': SKIP')} SKIP; {c.count(' OK')} backend check runs OK, "
+              f"{c.count(': FAILED')} FAILED (all FAIL/FAILED lines, with annotations, in checks.txt)\n")
         for line in c.splitlines():
-            if line.startswith("check ") and ": OK" in line or "FAILED" in line:
-                print(f"- `{line}`")
+            if line.startswith("== ") or ": FAIL" in line or "HARNESS" in line or ": SKIP (backend" in line:
+                print(f"- `{line[:220]}`")
         print()
 
 
