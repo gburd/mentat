@@ -43,3 +43,22 @@ benchmark; fix all 5 benchmark issues; auto index create/drop; optimize count.
 - Agents: PG 7e8d9f6a (auto-index, count, edn_q_rows, limits; version->1.10.0)
           EMBEDDED 9e024292 (5 engine bugs, auto-index, count, CLI, model tests, shared inputs helper)
           EXT ecb272fa (per-path Store cache in both exts, DuckDB Quack server + benchmark)
+
+## TODO — review sparsemap v5.7.0 and incorporate as needed (added 2026-09-27)
+sparsemap = the maintainer's compressed bitmap library in C (sm.c/sm.h, MIT;
+~/ws/sparsemap, codeberg.org/gregburd/sparsemap). Other projects vendor sm.c/sm.h
+via contrib/*_sync.sh (e.g. pg_tre). ~/ws/sparsemap/rust/ has only packaged
+crates up to 5.5.1 in target/ — no current Rust crate source, so using it from Rust
+means either publishing a 5.7.0 crate or vendoring sm.c behind a -sys binding.
+mentat does NOT use it yet. 5.7.0: small-set mode (<1024 bits stored as a bare uint64 array,
+PostgreSQL Bitmapset layout, RLE-aware promote/demote), fixes to sm_equals/sm_hash/
+sm_compare on differently-built equal maps, sm_split invalid output, sm_offset
+overflow; zero-warning strict-flag build; wire format v2 unchanged.
+Evaluate where it would help mentat, e.g.:
+- entity-id sets in the query engine (VALUES joins for coll :in inputs, NOT EXISTS
+  / as-of retraction sets, `pull` visited sets);
+- the auto-index work (per-attribute usage tracking) and partition/tx high-water maps;
+- pg_mentat: tx/entity bitmaps for history/as-of scans (it's PG-Bitmapset-compatible
+  in small-set mode).
+Deliverable: a short evaluation note (docs/) + a benchmark on a real hot path before
+adding any dependency (pin by crates.io version or git tag, never a local path).
