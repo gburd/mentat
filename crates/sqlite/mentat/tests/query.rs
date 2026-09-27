@@ -799,7 +799,7 @@ fn test_aggregates_type_handling() {
         .unwrap();
 
     // Yes, the current version is in the store as a Long!
-    let total = 30i64 + 20i64 + 10i64 + ::mentat_db::db::CURRENT_VERSION as i64;
+    let total = 30i64 + 20i64 + 10i64 + ::mentat_db::CORE_SCHEMA_VERSION as i64;
     assert_eq!(Binding::Scalar(TypedValue::Long(total)), r);
 
     let r = store

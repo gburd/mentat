@@ -1139,6 +1139,7 @@ where
                 TransactorAction::MaterializeAndCommit => {
                     self.store.materialize_mentat_transaction(self.tx_id)?;
                     self.store.commit_mentat_transaction(self.tx_id)?;
+                    db::write_partition_map(self.store, &self.partition_map)?;
                 }
             }
         }

@@ -92,6 +92,8 @@ pub use sql_traits::errors::SQLError;
 
 pub use mentat_transaction::Metadata;
 
+pub use mentat_query_algebrizer::TemporalBound;
+
 pub use mentat_transaction::entity_builder;
 pub use mentat_transaction::query;
 

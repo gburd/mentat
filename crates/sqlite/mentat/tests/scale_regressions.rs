@@ -13,7 +13,10 @@
 
 use std::time::Duration;
 
-use mentat::{IntoResult, Queryable, Store};
+use mentat::{
+    IntoResult, QueryExplanation, QueryInputs, Queryable, Store, TemporalBound, TypedValue,
+    Variable,
+};
 
 fn schema(store: &mut Store) {
     store
@@ -141,4 +144,162 @@ fn test_interrupted_query_leaves_store_usable() {
         count(&store, "[:find (count ?e) . :where [?e :s/n _]]"),
         2_001
     );
+}
+
+fn plan(store: &Store, q: &str, inputs: Option<QueryInputs>, t: Option<TemporalBound>) -> String {
+    match store.q_explain_temporal(q, inputs, t).expect("explain") {
+        QueryExplanation::ExecutionPlan { steps, .. } => steps
+            .iter()
+            .map(|s| s.detail.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => panic!("expected a plan"),
+    }
+}
+
+/// Bug 3: as-of's correlated NOT EXISTS (and since's `tx > T`) had only a
+/// `(timeline)` index on timelined_transactions, so every as-of was a scan of
+/// all history per outer row. Both must use the covering history index.
+#[test]
+fn test_as_of_and_since_use_history_index() {
+    let mut store = Store::open("").expect("open");
+    schema(&mut store);
+    let e = *store
+        .transact(r#"[{:db/id "e" :s/name "a" :s/n 1}]"#)
+        .expect("tx")
+        .tempids
+        .get("e")
+        .unwrap();
+    let t = store.last_tx_id();
+    store
+        .transact(&format!(r#"[[:db/add {e} :s/name "b"]]"#))
+        .expect("update");
+
+    let q = "[:find ?v :in ?e :where [?e :s/name ?v]]";
+    let inputs = || {
+        QueryInputs::with_value_sequence(vec![(
+            Variable::from_valid_name("?e"),
+            TypedValue::Ref(e),
+        )])
+    };
+    for (q, i) in [
+        (q, Some(inputs())),
+        ("[:find ?e ?v :where [?e :s/name ?v]]", None),
+    ] {
+        let as_of = plan(&store, q, i, Some(TemporalBound::AsOf(t)));
+        // The outer pattern and the NOT EXISTS probe both search the index.
+        assert_eq!(
+            as_of
+                .matches("USING COVERING INDEX idx_transactions_aevt")
+                .count(),
+            2,
+            "as_of plan should use the history index twice:\n{as_of}"
+        );
+        assert!(
+            !as_of.contains("SCAN "),
+            "as_of must not scan history:\n{as_of}"
+        );
+        assert!(
+            !as_of.contains("timeline=?"),
+            "as_of must not use the timeline index:\n{as_of}"
+        );
+    }
+    let since = plan(
+        &store,
+        "[:find ?e :where [?e :s/name _]]",
+        None,
+        Some(TemporalBound::Since(t)),
+    );
+    assert!(
+        since.contains("USING COVERING INDEX idx_transactions_aevt (a=?"),
+        "since plan should use the history index:\n{since}"
+    );
+    // Results stay right.
+    let v = store
+        .q_once_as_of(q, inputs(), t)
+        .into_rel_result()
+        .expect("as_of");
+    assert_eq!(v.row_count(), 1);
+    assert_eq!(
+        v.rows().next().unwrap()[0]
+            .clone()
+            .into_string()
+            .unwrap()
+            .as_str(),
+        "a"
+    );
+}
+
+fn temp_store(name: &str) -> String {
+    let p = std::env::temp_dir().join(format!("mentat-{name}-{}.db", std::process::id()));
+    for ext in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", p.display()));
+    }
+    p.to_str().unwrap().to_string()
+}
+
+fn raw(path: &str, sql: &str) {
+    rusqlite::Connection::open(path)
+        .expect("raw open")
+        .execute_batch(sql)
+        .expect(sql);
+}
+
+/// Bug 5: `Store::open` derived the partition map by GROUP BY over the whole
+/// log (the `parts` view), O(history). The marks now live in `known_parts`.
+#[test]
+fn test_open_does_not_scan_log() {
+    let path = temp_store("open");
+    let (next_e, last_tx) = {
+        let mut store = Store::open(&path).expect("create");
+        schema(&mut store);
+        store.transact(r#"[{:s/n 1} {:s/n 2}]"#).expect("tx");
+        let e = store.transact(r#"[{:db/id "x" :s/n 3}]"#).expect("tx");
+        (*e.tempids.get("x").unwrap() + 1, store.last_tx_id())
+    };
+    // If open touched the log-derived view, it would now fail.
+    raw(&path, "DROP VIEW parts");
+    let mut store = Store::open(&path).expect("open without the parts view");
+    assert_eq!(store.last_tx_id(), last_tx);
+    let r = store
+        .transact(r#"[{:db/id "y" :s/n 4}]"#)
+        .expect("tx after reopen");
+    assert_eq!(*r.tempids.get("y").unwrap(), next_e, "no entid reuse");
+    assert_eq!(r.tx_id, last_tx + 1);
+}
+
+/// A version-1 store (no history index, no persisted marks) is upgraded on
+/// open, with the marks derived once from its log.
+#[test]
+fn test_v1_store_is_upgraded_on_open() {
+    let path = temp_store("v1");
+    let (next_e, last_tx) = {
+        let mut store = Store::open(&path).expect("create");
+        schema(&mut store);
+        let e = store.transact(r#"[{:db/id "x" :s/n 3}]"#).expect("tx");
+        (*e.tempids.get("x").unwrap() + 1, store.last_tx_id())
+    };
+    raw(
+        &path,
+        "DROP INDEX idx_transactions_aevt; ALTER TABLE known_parts DROP COLUMN idx; PRAGMA user_version = 1;",
+    );
+    let mut store = Store::open(&path).expect("upgrade");
+    let c = store.sqlite_ref();
+    let v: i64 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, mentat_db::db::CURRENT_VERSION as i64);
+    let n: i64 = c
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'idx_transactions_aevt'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(store.last_tx_id(), last_tx);
+    let r = store
+        .transact(r#"[{:db/id "y" :s/n 4}]"#)
+        .expect("tx after upgrade");
+    assert_eq!(*r.tempids.get("y").unwrap(), next_e);
 }

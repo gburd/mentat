@@ -185,7 +185,9 @@ pub fn move_from_main_timeline(
     // Move transactions over to the target timeline.
     move_transactions_to(conn, &txs_to_move, new_timeline)?;
 
-    Ok((last_schema, db::read_partition_map(conn)?))
+    let partition_map = db::read_partition_map_from_log(conn)?;
+    db::write_partition_map(conn, &partition_map)?;
+    Ok((last_schema, partition_map))
 }
 
 #[cfg(test)]

@@ -237,6 +237,22 @@ impl Conn {
         q_explain(sqlite, known, query, inputs)
     }
 
+    /// `q_explain` against a historical basis (`None` = current).
+    pub fn q_explain_temporal<T>(
+        &self,
+        sqlite: &rusqlite::Connection,
+        query: &str,
+        inputs: T,
+        temporal: Option<mentat_query_algebrizer::TemporalBound>,
+    ) -> Result<QueryExplanation>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
+        mentat_transaction::query::q_explain_temporal(sqlite, known, query, inputs, temporal)
+    }
+
     pub fn pull_attributes_for_entities<E, A>(
         &self,
         sqlite: &rusqlite::Connection,

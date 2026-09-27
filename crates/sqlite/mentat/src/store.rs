@@ -160,6 +160,20 @@ impl Store {
         self.conn.q_once_as_of(&self.sqlite, query, inputs, tx)
     }
 
+    /// `EXPLAIN QUERY PLAN` for a query, optionally against a historical basis.
+    pub fn q_explain_temporal<T>(
+        &self,
+        query: &str,
+        inputs: T,
+        temporal: Option<crate::TemporalBound>,
+    ) -> Result<QueryExplanation>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        self.conn
+            .q_explain_temporal(&self.sqlite, query, inputs, temporal)
+    }
+
     /// Run a Datalog query seeing only datoms transacted after transaction `tx`
     /// (`since`). Typically used with a history pattern `[?e ?a ?v ?tx ?added]`.
     pub fn q_once_since<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>

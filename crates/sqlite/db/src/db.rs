@@ -143,7 +143,10 @@ where
 /// Version history:
 ///
 /// 1: initial Rust Mentat schema.
-pub const CURRENT_VERSION: i32 = 1;
+/// 2: `idx_transactions_aevt`, a covering history index for as-of/since, and
+///    persisted partition high-water marks (`known_parts.idx`), so opening a
+///    store no longer scans the whole log. Version-1 stores are upgraded on open.
+pub const CURRENT_VERSION: i32 = 2;
 
 /// MIN_SQLITE_VERSION should be changed when there's a new minimum version of sqlite required
 /// for the project to work.
@@ -250,6 +253,20 @@ lazy_static! {
         r#"CREATE TABLE known_parts (part TEXT NOT NULL PRIMARY KEY, start INTEGER NOT NULL, end INTEGER NOT NULL, allow_excision SMALLINT NOT NULL)"#,
         ]
     };
+
+    /// Version 1 -> 2. Also run, after `V1_STATEMENTS`, to create a new store.
+    #[cfg_attr(rustfmt, rustfmt_skip)]
+    static ref V2_STATEMENTS: Vec<&'static str> = { vec![
+        // History lookups: as-of's per-row "no later retraction" NOT EXISTS
+        // probes (a, e, tag, v, added, tx); since's `a = ? AND tx > ?` range.
+        // Covering (incl. timeline), and partial like the `transactions` view,
+        // so the plan is stable without ANALYZE.
+        r#"CREATE INDEX idx_transactions_aevt ON timelined_transactions (a, e, value_type_tag, v, added, tx, timeline) WHERE timeline IS 0"#,
+        // The next entid to allocate per partition, maintained by every
+        // committed transaction (see `write_partition_map`).
+        r#"ALTER TABLE known_parts ADD COLUMN idx INTEGER"#,
+        ]
+    };
 }
 
 /// Set the SQLite user version.
@@ -282,7 +299,7 @@ pub fn create_empty_current_version(
 ) -> Result<(rusqlite::Transaction<'_>, DB)> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
 
-    for statement in V1_STATEMENTS.iter() {
+    for statement in V1_STATEMENTS.iter().chain(V2_STATEMENTS.iter()) {
         tx.execute(statement, rusqlite::params![])?;
     }
 
@@ -333,12 +350,13 @@ pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     for (part, partition) in db.partition_map.iter() {
         // TODO: Convert "keyword" part to SQL using Value conversion.
         tx.execute(
-            "INSERT INTO known_parts (part, start, end, allow_excision) VALUES (?, ?, ?, ?)",
-            [
+            "INSERT INTO known_parts (part, start, end, allow_excision, idx) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![
                 part,
-                &partition.start.to_string(),
-                &partition.end.to_string(),
-                &(partition.allow_excision as i8).to_string(),
+                partition.start,
+                partition.end,
+                partition.allow_excision as i8,
+                partition.next_entid(),
             ],
         )?;
     }
@@ -382,6 +400,10 @@ pub fn ensure_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     let user_version = get_user_version(conn)?;
     match user_version {
         0 => create_current_version(conn),
+        1 => {
+            upgrade_from_v1(conn)?;
+            read_db(conn)
+        }
         CURRENT_VERSION => read_db(conn),
 
         // TODO: support updating an existing store.
@@ -390,6 +412,29 @@ pub fn ensure_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
             v
         ))),
     }
+}
+
+/// Upgrade a version-1 store to version 2 (see `CURRENT_VERSION`). One-time
+/// cost: builds the history index and derives the partition marks from the log.
+fn upgrade_from_v1(conn: &mut rusqlite::Connection) -> Result<()> {
+    // Concurrent openers of the same v1 file queue behind the one upgrading.
+    let busy: i64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0))?;
+    conn.busy_timeout(std::time::Duration::from_secs(600))?;
+    let r = (|| -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+        if get_user_version(&tx)? == 1 {
+            for statement in V2_STATEMENTS.iter() {
+                tx.execute(statement, rusqlite::params![])?;
+            }
+            let partition_map = read_partition_map_from_log(&tx)?;
+            write_partition_map(&tx, &partition_map)?;
+            set_user_version(&tx, CURRENT_VERSION)?;
+        }
+        tx.commit()?;
+        Ok(())
+    })();
+    conn.busy_timeout(std::time::Duration::from_millis(busy as u64))?;
+    r
 }
 
 pub trait TypedSQLValue {
@@ -506,12 +551,36 @@ pub(crate) fn read_materialized_view(
     m
 }
 
-/// Read the partition map materialized view from the given SQL store.
+/// Read the partition map, O(partitions): the high-water marks are kept in
+/// `known_parts.idx` by every committed transaction.
 pub fn read_partition_map(conn: &rusqlite::Connection) -> Result<PartitionMap> {
-    // An obviously expensive query, but we use it infrequently:
-    // - on first start,
-    // - while moving timelines,
-    // - during sync.
+    conn.prepare("SELECT part, start, end, idx, allow_excision FROM known_parts")?
+        .query_and_then(rusqlite::params![], |row| -> Result<(String, Partition)> {
+            Ok((
+                row.get(0)?,
+                Partition::new(row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+            ))
+        })?
+        .collect()
+}
+
+/// Persist the partitions' high-water marks. Must run in the same SQLite
+/// transaction as the writes that allocated them.
+pub fn write_partition_map(
+    conn: &rusqlite::Connection,
+    partition_map: &PartitionMap,
+) -> Result<()> {
+    let mut stmt = conn.prepare_cached("UPDATE known_parts SET idx = ? WHERE part = ?")?;
+    for (part, partition) in partition_map.iter() {
+        stmt.execute(rusqlite::params![partition.next_entid(), part])?;
+    }
+    Ok(())
+}
+
+/// Derive the partition map from the main timeline's log (the `parts` view).
+pub fn read_partition_map_from_log(conn: &rusqlite::Connection) -> Result<PartitionMap> {
+    // An obviously expensive query, O(history); used only when upgrading a
+    // version-1 store and while moving timelines.
     // First part of the union sprinkles 'allow_excision' into the 'parts' view.
     // Second part of the union takes care of partitions which are known
     // but don't have any transactions.
@@ -772,7 +841,10 @@ impl MentatStoring for rusqlite::Connection {
         let max_vars = self
             .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
             .expect("SQLITE_LIMIT_VARIABLE_NUMBER") as usize;
-        let chunks: itertools::IntoChunks<_> = avs.iter().enumerate().chunks(max_vars / bindings_per_statement);
+        let chunks: itertools::IntoChunks<_> = avs
+            .iter()
+            .enumerate()
+            .chunks(max_vars / bindings_per_statement);
 
         // We'd like to `flat_map` here, but it's not obvious how to `flat_map` across `Result`.
         // Alternatively, this is a `fold`, and it might be wise to express it as such.

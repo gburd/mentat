@@ -478,7 +478,28 @@ pub fn q_explain<T>(
 where
     T: Into<Option<QueryInputs>>,
 {
-    let algebrized = algebrize_query_str(known, query, inputs)?;
+    q_explain_temporal(sqlite, known, query, inputs, None)
+}
+
+/// `q_explain` for a query run against a historical basis (`as-of`/`since`).
+pub fn q_explain_temporal<T>(
+    sqlite: &rusqlite::Connection,
+    known: Known,
+    query: &str,
+    inputs: T,
+    temporal: Option<TemporalBound>,
+) -> Result<QueryExplanation>
+where
+    T: Into<Option<QueryInputs>>,
+{
+    let parsed = parse_find_string(query)?;
+    let algebrized = algebrize_with_inputs_and_temporal(
+        known,
+        parsed,
+        0,
+        inputs.into().unwrap_or_default(),
+        temporal,
+    )?;
     if algebrized.is_known_empty() {
         return Ok(QueryExplanation::KnownEmpty(
             algebrized.cc.empty_because.unwrap(),
