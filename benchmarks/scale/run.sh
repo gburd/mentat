@@ -2,6 +2,7 @@
 # benchmarks/scale/run.sh: multi-backend scale/load benchmark driver.
 #
 #   SCALES="s m" BACKENDS="embedded sqlite-ext pg duckdb" benchmarks/scale/run.sh
+#   (+ duckdb-quack: the duckdb backend over a Quack server, started per scale)
 #
 # For each scale: generate the dataset (cached under $DATA_ROOT), then for each
 # backend bulk-load it from empty, run the correctness checks (the run fails on
@@ -46,6 +47,10 @@ RUNNER="${RUNNER:-$REPO/target/release/mentat-scale}"
 SQLITE_EXT="${SQLITE_EXT:-$REPO/target/release/libmentat_sqlite}"
 DUCKDB_EXT="${DUCKDB_EXT:-$REPO/crates/duckdb/build/release/mentat.duckdb_extension}"
 export RUNNER SQLITE_EXT DUCKDB_EXT
+DUCKDB_CLI="${DUCKDB_CLI:-duckdb}"   # DuckDB v1.5.5 CLI: runs the duckdb-quack server
+QUACK_PORT="${QUACK_PORT:-9494}"
+export QUACK_URI="quack:127.0.0.1:$QUACK_PORT"
+export MENTAT_QUACK_TOKEN="${MENTAT_QUACK_TOKEN:-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')}"
 
 mkdir -p "$OUT/logs" "$OUT/plans" "$DATA_ROOT" "$WORK"
 RAW="$OUT/raw.csv"
@@ -426,6 +431,13 @@ run_ext() {  # BACKEND DATA SCALE
   fi
 }
 
+# duckdb-quack: a Quack server with the mentat extension loaded (one per scale).
+quack_up() {  # SCALE
+  MENTAT_QUACK_PORT=$QUACK_PORT MENTAT_EXT=$DUCKDB_EXT DUCKDB=$DUCKDB_CLI \
+    MENTAT_QUACK_LOG="$OUT/logs/quack-server-$1.log" "$REPO/crates/duckdb/server/serve.sh" >&2
+}
+quack_down() { MENTAT_QUACK_PORT=$QUACK_PORT "$REPO/crates/duckdb/server/stop.sh" >&2 || true; }
+
 # ---------------------------------------------------------------- main
 export HERE
 env_txt
@@ -442,6 +454,7 @@ for sc in $SCALES; do
       pg) run_pg "$d" "$sc" ;;
       embedded) run_embedded "$d" "$sc" ;;
       sqlite-ext|duckdb) run_ext "$be" "$d" "$sc" ;;
+      duckdb-quack) quack_up "$sc"; run_ext "$be" "$d" "$sc"; quack_down ;;
       *) log "unknown backend $be" ;;
     esac
   done
@@ -459,6 +472,15 @@ if [ "$SUSTAINED_S" -gt 0 ] && [ -n "$LAST" ] && [ "$PHASE" != load ]; then
        "$OUT/logs/embedded-sustained-windows-$LAST.csv" >> "$RAW" 2>> "$OUT/logs/embedded-$LAST.log"
     kill $sp 2>/dev/null || true
   fi
+  for be in sqlite-ext duckdb duckdb-quack; do
+    if ! has "$BACKENDS" "$be" || [ ! -f "$WORK/$be-$LAST.db" ]; then continue; fi
+    log "$be $LAST sustained ${SUSTAINED_S}s c=$SUSTAINED_CLIENTS"
+    mutated "$be-$LAST"
+    if [ "$be" = duckdb-quack ]; then quack_up "$LAST-sustained"; fi
+    $PY "$HERE/bench.py" mixed "$be" "$d" "$WORK/$be-$LAST.db" "$LAST" 1 "$SUSTAINED_CLIENTS" "$SUSTAINED_S" sustained \
+      >> "$RAW" 2>> "$OUT/logs/$be-$LAST.log"
+    if [ "$be" = duckdb-quack ]; then quack_down; fi
+  done
 fi
 
 $PY "$HERE/bench.py" medians "$RAW" "$OUT/timings.csv"

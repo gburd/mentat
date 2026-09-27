@@ -10,6 +10,7 @@ future releases.
 | `sqlite-ext` | `crates/sqlite/ext`, `libmentat_sqlite.so` in a host SQLite | `bench.py`: Python `sqlite3` + `load_extension`, one process per client |
 | `pg` | `crates/pg/pg_mentat` in PostgreSQL 16 | `pgbench -f pgbench/*.sql` (`\set` random params), `psql` for load |
 | `duckdb` | `crates/duckdb`, `mentat.duckdb_extension` in DuckDB v1.5.5 | `bench.py`: Python `duckdb==1.5.5` (needs Python >= 3.10), one process per client |
+| `duckdb-quack` | the same extension, loaded in ONE long-lived DuckDB Quack server (`crates/duckdb/server/serve.sh`, started and stopped by `run.sh` per scale) | `bench.py`: client processes send the duckdb backend's SQL through `quack_query` (Python `duckdb` + `LOAD quack`, no mentat in the client) |
 
 The workload is phase2's issue tracker, the same `schema.edn`, SEED and value
 distributions as `../phase2/gen_dataset.py`. `gen.py` imports phase2's
@@ -71,10 +72,13 @@ Concurrency model:
 - **embedded**: threads, one `Store` per thread on the same file (`Store` is
   `!Sync`). Exactly one writer, because each `Store` keeps its own partition
   map and two writers would allocate the same tx id.
-- **sqlite-ext/duckdb**: processes, each with its own host connection. The
-  extensions open the mentat store *on every call* (`Store::open`), and that
-  cost is part of what they measure. DuckDB is in-process with a single writer,
-  so the sweep runs parallel reader processes.
+- **sqlite-ext/duckdb**: processes, each with its own host connection. Since
+  the store cache (1.10.0) each process reuses its open mentat store across
+  calls; before it, every call was a `Store::open`. DuckDB is in-process with a
+  single writer, so the sweep runs parallel reader processes.
+- **duckdb-quack**: client processes, each with its own Quack client
+  connection, all executing inside one server process (its worker threads,
+  each with its own cached store).
 - **pg**: `pgbench -c N -j min(N, nproc) -M simple`. Prepared/extended mode would rewrite the `:keywords` inside the Datalog literals into `$N` parameters.
 
 ## Output
@@ -158,6 +162,11 @@ records the ratio at each scale. On r6id.metal, s_b is about 870 GiB.
 - `PG_MAX_RESULT_ROWS`, `PG_TEMP_FILE_LIMIT`, `PG_SLOW_QUERY_MS`: pg_mentat
   GUCs set per bench DB.
 - `DATA_ROOT`, `WORK`, `OUT`, `PY`, `RUNNER`, `SQLITE_EXT`, `DUCKDB_EXT`, `PGBIN`, `PGDATA`, `MENTAT_GIT`.
+- `DUCKDB_CLI` (DuckDB v1.5.5 CLI that runs the duckdb-quack server),
+  `QUACK_PORT` (default 9494), `MENTAT_QUACK_TOKEN` (default: random per run).
+- `SUSTAINED_S` > 0 also runs `sustained` for sqlite-ext, duckdb and
+  duckdb-quack when they are in BACKENDS (`bench.py mixed … sustained`: 1
+  writer + SUSTAINED_CLIENTS reader processes).
 
 The first full run is `benchmarks/results/scale-2026-09-27T010840Z/`, on
 r6id.metal at s/m/l/xl. Read its `summary.md` (findings plus tables) before
@@ -182,11 +191,12 @@ instance type only.
   `crates/sqlite/db/src/db.rs` `insert_non_fts_searches` asserts
   `6 * n < 32766`, and 5461 datoms trip it. `gen.py` batches 500 issues
   (about 3.8K datoms) per tx.
-- **Every sqlite-ext and duckdb call is a full `Store::open`.** That call reads
-  the partition map through the `parts` view, which is a GROUP BY over all of
-  `timelined_transactions`. The per-call cost therefore grows with history
-  (about 60 ms at 0.1M datoms). The ext backends measure this deployment as it
-  ships.
+- **Before 1.10.0 every sqlite-ext and duckdb call was a full `Store::open`**,
+  which read the partition map through the `parts` view (a GROUP BY over all
+  of `timelined_transactions`), so the per-call cost grew with history (about
+  480 ms at 1M datoms). 1.10.0 persists the partition marks (O(1) open) and
+  caches the open store per path; runs before and after are not comparable
+  for the ext backends.
 - **Embedded as_of is slow.** It uses a correlated `NOT EXISTS` over
   `timelined_transactions`, which has no (e, a, v) index. It usually shows up
   as a `ceiling`.

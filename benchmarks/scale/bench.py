@@ -5,14 +5,16 @@ pgbench log parsing, rep medians.
   bench.py check    BACKEND DATA TARGET [--post-write]   exit 1 on any wrong answer
   bench.py load     BACKEND DATA STORE                   bulk load through the extension
   bench.py run      BACKEND DATA STORE SCALE REPS CLIENTS,.. SCEN,.. MIN_S MAX_S MIN_N PROBE_S
-  bench.py mixed    BACKEND DATA STORE SCALE REPS READERS SECS
+  bench.py mixed    BACKEND DATA STORE SCALE REPS READERS SECS [SCENARIO=write_mixed]
   bench.py pglog    SCEN SCALE N_DATOMS CLIENTS OP REP WALL_S LOGPREFIX...
   bench.py pgwindows OUT_CSV READ_LOGPREFIX WRITE_LOGPREFIX
   bench.py medians  RAW_CSV OUT_CSV
 
-BACKEND is embedded | sqlite-ext | duckdb | pg. TARGET is the store file for
-the first three and ignored for pg (psql uses PG* env). EXT is the extension
-path ($SQLITE_EXT / $DUCKDB_EXT). The embedded backend shells out to
+BACKEND is embedded | sqlite-ext | duckdb | duckdb-quack | pg. TARGET is the
+store file for all but pg (psql uses PG* env). EXT is the extension path
+($SQLITE_EXT / $DUCKDB_EXT). duckdb-quack sends the duckdb backend's SQL to a
+long-lived Quack server ($QUACK_URI, token $MENTAT_QUACK_TOKEN) that has the
+mentat extension loaded; the store path is opened by the server. The embedded backend shells out to
 $RUNNER (the mentat-scale binary) for checks.
 """
 import glob
@@ -63,7 +65,7 @@ def email(u):
 # for every backend: users/issues are the generator's 0-based indexes.
 # --------------------------------------------------------------------------
 class Ext:
-    """sqlite-ext / duckdb: both take the store path first."""
+    """sqlite-ext / duckdb / duckdb-quack: all take the store path first."""
 
     def __init__(self, backend, store, meta):
         self.backend, self.store, self.meta = backend, store, meta
@@ -74,10 +76,25 @@ class Ext:
             self.db = sqlite3.connect(":memory:", isolation_level=None)
             self.db.enable_load_extension(True)
             self.db.load_extension(os.environ["SQLITE_EXT"])
+        elif backend == "duckdb-quack":
+            import duckdb
+            self.db = duckdb.connect()
+            self.db.execute("LOAD quack")
+            self.uri, self.token = os.environ["QUACK_URI"], os.environ["MENTAT_QUACK_TOKEN"]
         else:
             import duckdb
             self.db = duckdb.connect(config={"allow_unsigned_extensions": "true"})
             self.db.load_extension(os.environ["DUCKDB_EXT"])
+
+    def sql(self, sql, args):
+        """Run `sql` (? placeholders) here, or on the Quack server with the
+        arguments inlined as literals (quack_query takes SQL text)."""
+        if self.backend != "duckdb-quack":
+            return self.db.execute(sql, args)
+        lit = lambda v: str(v) if isinstance(v, int) else "'" + str(v).replace("'", "''") + "'"  # noqa: E731
+        inner = sql.replace("?", "{}").format(*map(lit, args))
+        return self.db.execute("SELECT * FROM quack_query(?, ?, token => ?, disable_ssl => true)",
+                               [self.uri, inner, self.token])
 
     def entid(self, idx):
         if self.entids is None:
@@ -89,18 +106,18 @@ class Ext:
         return self.entids[idx]
 
     def t(self, edn):
-        return self.db.execute("SELECT edn_t(?, ?)", [self.store, edn]).fetchone()[0]
+        return self.sql("SELECT edn_t(?, ?)", [self.store, edn]).fetchone()[0]
 
     def q(self, query, opts):
         o = json.dumps(opts)
-        if self.backend == "duckdb":
-            return [list(r) for r in self.db.execute(
+        if self.backend in ("duckdb", "duckdb-quack"):
+            return [list(r) for r in self.sql(
                 "SELECT * FROM edn_q(?, ?, ?)", [self.store, query, o]).fetchall()]
-        r = json.loads(self.db.execute("SELECT edn_q(?, ?, ?)", [self.store, query, o]).fetchone()[0])
+        r = json.loads(self.sql("SELECT edn_q(?, ?, ?)", [self.store, query, o]).fetchone()[0])
         return r.get("results", r.get("result"))
 
     def pull(self, idx):
-        s = self.db.execute("SELECT edn_pull(?, '[*]', ?)", [self.store, self.entid(idx)]).fetchone()[0]
+        s = self.sql("SELECT edn_pull(?, '[*]', ?)", [self.store, self.entid(idx)]).fetchone()[0]
         return json.loads(s)
 
 
@@ -447,12 +464,12 @@ def _writer(a):
     return lat, err, time.time() - t0
 
 
-def ext_mixed(backend, data, store, scale, reps, readers, secs):
+def ext_mixed(backend, data, store, scale, reps, readers, secs, scen="write_mixed"):
     for rep in range(1, reps + 1):
-        ext_mixed_once(backend, data, store, scale, rep, readers, secs)
+        ext_mixed_once(backend, data, store, scale, rep, readers, secs, scen)
 
 
-def ext_mixed_once(backend, data, store, scale, rep, readers, secs):
+def ext_mixed_once(backend, data, store, scale, rep, readers, secs, scen="write_mixed"):
     meta = jload(f"{data}/meta.json")
     ctx = mp.get_context("fork")
     with ctx.Pool(readers + 1) as pool:
@@ -462,9 +479,9 @@ def ext_mixed_once(backend, data, store, scale, rep, readers, secs):
         wl, we, ww = w.get()
         res = rs.get()
     lat = [x for r in res for x in r[0]]
-    print(row("write_mixed", backend, scale, meta["n_datoms"], readers, "read", lat,
+    print(row(scen, backend, scale, meta["n_datoms"], readers, "read", lat,
               max(r[2] for r in res), sum(r[1] for r in res), rep))
-    print(row("write_mixed", backend, scale, meta["n_datoms"], 1, "write", wl, ww, we, rep), flush=True)
+    print(row(scen, backend, scale, meta["n_datoms"], 1, "write", wl, ww, we, rep), flush=True)
 
 
 
@@ -552,7 +569,7 @@ def main():
         ext_run(a[1], a[2], a[3], a[4], int(a[5]), [int(x) for x in a[6].split(",")], a[7].split(","),
                 float(a[8]), float(a[9]), int(a[10]), float(a[11]))
     elif cmd == "mixed":
-        ext_mixed(a[1], a[2], a[3], a[4], int(a[5]), int(a[6]), float(a[7]))
+        ext_mixed(a[1], a[2], a[3], a[4], int(a[5]), int(a[6]), float(a[7]), *a[8:9])
     elif cmd == "pglog":
         pglog(a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8:])
     elif cmd == "pgwindows":
