@@ -8,6 +8,30 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.9.1] — pg_dump now includes mentat's data
+
+### Fixed
+
+- **PostgreSQL: a `pg_dump` of a database using pg_mentat restored every store
+  EMPTY.** All mentat tables are extension members, and `pg_dump` dumps the data
+  of an extension member only when the table is registered with
+  `pg_extension_config_dump()`. None were, so a logical backup carried the schema
+  and none of the datoms, transactions, attributes or idents. Found on a
+  production database whose nightly `pg_dump` held data for 0 of 28 mentat
+  tables. 1.9.1 registers every member table and sequence (install:
+  `sql/27_dump_config.sql`; upgrade: `pg_mentat--1.9.0--1.9.1.sql`). The six
+  tables `CREATE EXTENSION` seeds are registered with a filter that excludes the
+  seed rows, so `pg_restore` into a fresh database does not collide with them.
+  Tested: a store created on 1.9.0, upgraded in place to 1.9.1, dumped and
+  restored into a new database answers the same queries and accepts new writes.
+  Physical backups (`pg_basebackup`, WAL archiving) were never affected.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.9.1';` — no schema or data change. Take
+a fresh `pg_dump` afterwards; dumps made before the upgrade do not contain the
+mentat data.
+
 ## [1.9.0] — one SQL surface (`edn_*`) on SQLite, PostgreSQL and DuckDB
 
 ### Changed — renamed functions
