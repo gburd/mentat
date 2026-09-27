@@ -195,30 +195,36 @@ impl AevFactory {
         }
     }
 
-    fn row_to_aev(&mut self, row: &rusqlite::Row) -> Aev {
-        let a: Entid = row.get_unwrap(0);
-        let e: Entid = row.get_unwrap(1);
-        let value_type_tag: i32 = row.get_unwrap(3);
-        let v = TypedValue::from_sql_value_pair(row.get_unwrap(2), value_type_tag).unwrap();
-        (a, e, self.intern(v))
+    fn row_to_aev(&mut self, row: &rusqlite::Row) -> rusqlite::Result<Aev> {
+        let a: Entid = row.get(0)?;
+        let e: Entid = row.get(1)?;
+        let value_type_tag: i32 = row.get(3)?;
+        let v = TypedValue::from_sql_value_pair(row.get(2)?, value_type_tag)
+            .expect("All database contents should be representable");
+        Ok((a, e, self.intern(v)))
     }
 }
 
-pub struct AevRows<'conn, F> {
+/// Yields rows until the first SQL error (e.g. an interrupt), which it parks in
+/// `err` for the caller to return, instead of panicking mid-iteration.
+pub struct AevRows<'conn, 'e, F> {
     rows: rusqlite::MappedRows<'conn, F>,
+    err: &'e mut Option<rusqlite::Error>,
 }
 
-/// Unwrap the Result from MappedRows. We could also use this opportunity to map_err it, but
-/// for now it's convenient to avoid error handling.
-impl<F> Iterator for AevRows<'_, F>
+impl<F> Iterator for AevRows<'_, '_, F>
 where
     F: FnMut(&rusqlite::Row) -> rusqlite::Result<Aev>,
 {
     type Item = Aev;
     fn next(&mut self) -> Option<Aev> {
-        self.rows
-            .next()
-            .map(|row_result| row_result.expect("All database contents should be representable"))
+        match self.rows.next()? {
+            Ok(aev) => Some(aev),
+            Err(e) => {
+                *self.err = Some(e);
+                None
+            }
+        }
     }
 }
 
@@ -1084,17 +1090,23 @@ impl AttributeCaches {
         replacing: bool,
     ) -> Result<()> {
         let mut aev_factory = AevFactory::new();
-        let rows = statement.query_map(params_from_iter(&args), |row| {
-            Ok(aev_factory.row_to_aev(row))
-        })?;
-        let aevs = AevRows { rows };
+        let rows =
+            statement.query_map(params_from_iter(&args), |row| aev_factory.row_to_aev(row))?;
+        let mut err = None;
+        let aevs = AevRows {
+            rows,
+            err: &mut err,
+        };
         self.accumulate_into_cache(
             None,
             schema,
             aevs.peekable(),
             AccumulationBehavior::Add { replacing },
         )?;
-        Ok(())
+        match err {
+            Some(e) => Err(e.into()),
+            None => Ok(()),
+        }
     }
 }
 

@@ -69,9 +69,9 @@ impl Projector for ScalarTwoStagePullProjector {
         mut rows: Rows<'stmt>,
     ) -> Result<QueryOutput> {
         // Scalar is pretty straightforward -- zero or one entity, do the pull directly.
-        let results = if let Some(r) = rows.next().unwrap() {
+        let results = if let Some(r) = rows.next()? {
             let row = r;
-            let entity: Entid = row.get(0).unwrap(); // This will always be 0 and a ref.
+            let entity: Entid = row.get(0)?; // This will always be 0 and a ref.
             let bindings = self.puller.pull(schema, sqlite, once(entity))?;
             let m = Binding::Map(
                 bindings
@@ -153,7 +153,7 @@ impl Projector for TupleTwoStagePullProjector {
         sqlite: &'s rusqlite::Connection,
         mut rows: Rows<'stmt>,
     ) -> Result<QueryOutput> {
-        let results = if let Some(r) = rows.next().unwrap() {
+        let results = if let Some(r) = rows.next()? {
             let row = r;
 
             // Keeping the compiler happy.
@@ -166,7 +166,7 @@ impl Projector for TupleTwoStagePullProjector {
 
             // Collect the usual bindings and accumulate entity IDs for pull.
             for p in pull_consumers.iter_mut() {
-                p.collect_entity(&row);
+                p.collect_entity(&row)?;
             }
 
             let mut bindings = self.collect_bindings(row)?;
@@ -280,10 +280,10 @@ impl Projector for RelTwoStagePullProjector {
         let mut pull_consumers = pull_consumers?;
 
         // Collect the usual bindings and accumulate entity IDs for pull.
-        while let Some(r) = rows.next().unwrap() {
+        while let Some(r) = rows.next()? {
             let row = r;
             for p in pull_consumers.iter_mut() {
-                p.collect_entity(&row);
+                p.collect_entity(&row)?;
             }
             self.collect_bindings_into(row, &mut values)?;
         }
@@ -347,9 +347,9 @@ impl Projector for CollTwoStagePullProjector {
     ) -> Result<QueryOutput> {
         let mut pull_consumer = PullConsumer::for_operation(schema, &self.pull)?;
 
-        while let Some(r) = rows.next().unwrap() {
+        while let Some(r) = rows.next()? {
             let row = r;
-            pull_consumer.collect_entity(&row);
+            pull_consumer.collect_entity(&row)?;
         }
 
         // Run the pull expressions for the collected IDs.

@@ -293,7 +293,10 @@ impl<'a, 'c> InProgress<'a, 'c> {
 
     pub fn commit(self) -> Result<()> {
         // The mutex is taken during this entire method.
-        let mut metadata = self.mutex.lock().unwrap();
+        let mut metadata = self
+            .mutex
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if self.generation != metadata.generation {
             // Somebody else wrote!

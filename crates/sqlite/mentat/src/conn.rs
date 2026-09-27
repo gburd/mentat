@@ -80,6 +80,25 @@ impl Conn {
         }
     }
 
+    /// Take the metadata lock, recovering it if an earlier panic poisoned it.
+    ///
+    /// Nothing that can fail (SQL, projection) runs while the lock is held: readers
+    /// take a [`Conn::snapshot`] and release it, and `InProgress::commit` only swaps
+    /// in already-computed values. So a poisoned lock still guards consistent data.
+    fn lock_metadata(&self) -> std::sync::MutexGuard<'_, Metadata> {
+        self.metadata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The current schema and attribute cache, both cheap `Arc` clones, taken
+    /// under the lock and released before any query runs. An interrupted or
+    /// failing query therefore never holds (or poisons) the metadata lock.
+    fn snapshot(&self) -> (Arc<Schema>, SQLiteAttributeCache) {
+        let m = self.lock_metadata();
+        (m.schema.clone(), m.attribute_cache.clone())
+    }
+
     pub fn connect(sqlite: &mut rusqlite::Connection) -> Result<Conn> {
         let db = db::ensure_current_version(sqlite)?;
         Ok(Conn::new(db.partition_map, db.schema))
@@ -99,16 +118,16 @@ impl Conn {
         // will definitely need to change if we support interrupting transactor threads.
         //
         // Improving this is tracked by https://github.com/mozilla/mentat/issues/356.
-        self.metadata.lock().unwrap().schema.clone()
+        self.lock_metadata().schema.clone()
     }
 
     pub fn current_cache(&self) -> SQLiteAttributeCache {
-        self.metadata.lock().unwrap().attribute_cache.clone()
+        self.lock_metadata().attribute_cache.clone()
     }
 
     pub fn last_tx_id(&self) -> Entid {
         // The mutex is taken during this entire method.
-        let metadata = self.metadata.lock().unwrap();
+        let metadata = self.lock_metadata();
 
         metadata.partition_map[":db.part/tx"].next_entid() - 1
     }
@@ -124,8 +143,8 @@ impl Conn {
         T: Into<Option<QueryInputs>>,
     {
         // Doesn't clone, unlike `current_schema`.
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         q_once(sqlite, known, query, inputs)
     }
 
@@ -141,8 +160,8 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         mentat_transaction::query::q_once_temporal(
             sqlite,
             known,
@@ -164,8 +183,8 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         mentat_transaction::query::q_once_temporal(
             sqlite,
             known,
@@ -186,13 +205,8 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        q_uncached(
-            sqlite,
-            &metadata.schema, // Doesn't clone, unlike `current_schema`.
-            query,
-            inputs,
-        )
+        let (schema, _) = self.snapshot();
+        q_uncached(sqlite, &schema, query, inputs)
     }
 
     pub fn q_prepare<'sqlite, T>(
@@ -204,8 +218,8 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         q_prepare(sqlite, known, query, inputs)
     }
 
@@ -218,8 +232,8 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         q_explain(sqlite, known, query, inputs)
     }
 
@@ -233,9 +247,8 @@ impl Conn {
         E: IntoIterator<Item = Entid>,
         A: IntoIterator<Item = Entid>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        let schema = &*metadata.schema;
-        pull_attributes_for_entities(schema, sqlite, entities, attributes).map_err(|e| e.into())
+        let (schema, _) = self.snapshot();
+        pull_attributes_for_entities(&schema, sqlite, entities, attributes).map_err(|e| e.into())
     }
 
     pub fn pull_attributes_for_entity<A>(
@@ -247,9 +260,8 @@ impl Conn {
     where
         A: IntoIterator<Item = Entid>,
     {
-        let metadata = self.metadata.lock().unwrap();
-        let schema = &*metadata.schema;
-        pull_attributes_for_entity(schema, sqlite, entity, attributes).map_err(|e| e.into())
+        let (schema, _) = self.snapshot();
+        pull_attributes_for_entity(&schema, sqlite, entity, attributes).map_err(|e| e.into())
     }
 
     pub fn lookup_values_for_attribute(
@@ -258,8 +270,8 @@ impl Conn {
         entity: Entid,
         attribute: &edn::Keyword,
     ) -> Result<Vec<TypedValue>> {
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         lookup_values_for_attribute(sqlite, known, entity, attribute)
     }
 
@@ -269,8 +281,8 @@ impl Conn {
         entity: Entid,
         attribute: &edn::Keyword,
     ) -> Result<Option<TypedValue>> {
-        let metadata = self.metadata.lock().unwrap();
-        let known = Known::new(&metadata.schema, Some(&metadata.attribute_cache));
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
         lookup_value_for_attribute(sqlite, known, entity, attribute)
     }
 
@@ -283,7 +295,7 @@ impl Conn {
         let tx = sqlite.transaction_with_behavior(behavior)?;
         let (current_generation, current_partition_map, current_schema, cache_cow) = {
             // The mutex is taken during this block.
-            let current: &Metadata = &self.metadata.lock().unwrap();
+            let current: &Metadata = &self.lock_metadata();
             (
                 current.generation,
                 // Expensive, but the partition map is updated after every committed transaction.
@@ -397,7 +409,7 @@ impl Conn {
         cache_direction: CacheDirection,
         cache_action: CacheAction,
     ) -> Result<()> {
-        let mut metadata = self.metadata.lock().unwrap();
+        let mut metadata = self.lock_metadata();
         let attribute_entid: Entid;
 
         // Immutable borrow of metadata.

@@ -207,7 +207,7 @@ impl Projector for RelProjector {
         let width = self.len;
         let mut values: Vec<_> = Vec::with_capacity(5 * width);
 
-        while let Some(r) = rows.next().unwrap() {
+        while let Some(r) = rows.next()? {
             let row = r;
             self.collect_bindings_into(row, &mut values)?;
         }
@@ -263,7 +263,7 @@ impl Projector for CollProjector {
         mut rows: Rows<'stmt>,
     ) -> Result<QueryOutput> {
         let mut out: Vec<_> = vec![];
-        while let Some(r) = rows.next().unwrap() {
+        while let Some(r) = rows.next()? {
             let row = r;
             let binding = self.template.lookup(&row)?;
             out.push(binding);

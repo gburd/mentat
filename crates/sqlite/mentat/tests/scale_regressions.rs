@@ -11,6 +11,8 @@
 //! Regressions for the engine bugs the scale benchmark found
 //! (benchmarks/results/scale-2026-09-27T010840Z/findings.md).
 
+use std::time::Duration;
+
 use mentat::{IntoResult, Queryable, Store};
 
 fn schema(store: &mut Store) {
@@ -98,4 +100,45 @@ fn test_many_lookup_refs_in_one_tx() {
     tx.push(']');
     store.transact(&tx).expect("9k lookup refs");
     assert_eq!(count(&store, "[:find (count ?e) . :where [?e :u/n _]]"), n);
+}
+
+/// Bug 2: an interrupted query used to panic in the projector
+/// (`rows.next().unwrap()`) and poison the Store's metadata mutex, so every
+/// later call failed. It must return an error and leave the Store usable.
+#[test]
+fn test_interrupted_query_leaves_store_usable() {
+    let mut store = Store::open("").expect("open");
+    schema(&mut store);
+    let mut tx = String::from("[");
+    for i in 0..2_000 {
+        tx.push_str(&format!(r#"{{:s/n {i}}}"#));
+    }
+    tx.push(']');
+    store.transact(&tx).expect("data");
+
+    // A 2000^3 cross join: runs for minutes unless interrupted.
+    let slow = "[:find ?a ?b ?c :where [?a :s/n _] [?b :s/n _] [?c :s/n _]]";
+    let h = store.sqlite_ref().get_interrupt_handle();
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        h.interrupt();
+    });
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.q_once(slow, None)));
+    t.join().unwrap();
+    let r = r.expect("an interrupted query must not panic");
+    let e = r.expect_err("an interrupted query must fail");
+    assert!(e.to_string().contains("interrupt"), "error: {e}");
+
+    // The same Store keeps working: queries, pull and transact.
+    assert_eq!(
+        count(&store, "[:find (count ?e) . :where [?e :s/n _]]"),
+        2_000
+    );
+    store
+        .transact(r#"[{:s/n 5000}]"#)
+        .expect("tx after interrupt");
+    assert_eq!(
+        count(&store, "[:find (count ?e) . :where [?e :s/n _]]"),
+        2_001
+    );
 }
