@@ -178,7 +178,9 @@ instance type only.
 - **pg_mentat errors when a result has more than `mentat.max_result_rows`
   rows** (default 100000). q4 and `since` pass that cap from scale m up, so
   `run.sh` sets `ALTER DATABASE … SET mentat.max_result_rows = 0` (override
-  with `PG_MAX_RESULT_ROWS`).
+  with `PG_MAX_RESULT_ROWS`). The same goes for `mentat.temp_file_limit`
+  (default 1GB, applied with SET LOCAL per query). q3's `COUNT(DISTINCT)` sort
+  goes past it at xl, so run.sh sets it to 100GB (`PG_TEMP_FILE_LIMIT`).
 - **An interrupted embedded query panics.** The PROBE_S watchdog uses
   `sqlite3_interrupt`, and mentat's projector unwraps the row iterator
   (`query-projector/src/projectors/simple.rs`), which poisons the Store's
