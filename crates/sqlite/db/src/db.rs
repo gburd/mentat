@@ -772,7 +772,7 @@ impl MentatStoring for rusqlite::Connection {
         let max_vars = self
             .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
             .expect("SQLITE_LIMIT_VARIABLE_NUMBER") as usize;
-        let chunks: itertools::IntoChunks<_> = avs.iter().enumerate().chunks(max_vars / 4);
+        let chunks: itertools::IntoChunks<_> = avs.iter().enumerate().chunks(max_vars / bindings_per_statement);
 
         // We'd like to `flat_map` here, but it's not obvious how to `flat_map` across `Result`.
         // Alternatively, this is a `fold`, and it might be wise to express it as such.
@@ -802,7 +802,7 @@ impl MentatStoring for rusqlite::Connection {
             // querying against `all_datoms`.  We know all the attributes, and in the common case,
             // where most unique attributes will not be fulltext-indexed, we'll be querying just
             // `datoms`, which will be much faster.ˇ
-            assert!(bindings_per_statement * count < max_vars, "Too many values: {} * {} >= {}", bindings_per_statement, count, max_vars);
+            assert!(bindings_per_statement * count <= max_vars, "Too many values: {} * {} > {}", bindings_per_statement, count, max_vars);
 
             let values: String = repeat_values(bindings_per_statement, count);
             let s: String = format!("WITH t(search_id, a, v, value_type_tag) AS (VALUES {}) SELECT t.search_id, d.e \
@@ -946,7 +946,7 @@ impl MentatStoring for rusqlite::Connection {
             }).collect();
 
             // TODO: cache this for selected values of count.
-            assert!(bindings_per_statement * count < max_vars, "Too many values: {} * {} >= {}", bindings_per_statement, count, max_vars);
+            assert!(bindings_per_statement * count <= max_vars, "Too many values: {} * {} > {}", bindings_per_statement, count, max_vars);
             let values: String = repeat_values(bindings_per_statement, count);
             let s: String = if search_type == SearchType::Exact {
                 format!("INSERT INTO temp.exact_searches (e0, a0, v0, value_type_tag0, added0, flags0) VALUES {}", values)
@@ -1068,7 +1068,7 @@ impl MentatStoring for rusqlite::Connection {
             }).collect();
 
             // TODO: cache this for selected values of count.
-            assert!(bindings_per_statement * datom_count < max_vars, "Too many values: {} * {} >= {}", bindings_per_statement, datom_count, max_vars);
+            assert!(bindings_per_statement * datom_count <= max_vars, "Too many values: {} * {} > {}", bindings_per_statement, datom_count, max_vars);
             let inner = "(?, ?, (SELECT rowid FROM fulltext_values WHERE searchid = ?), ?, ?, ?)".to_string();
             // Like "(?, ?, (SELECT rowid FROM fulltext_values WHERE searchid = ?), ?, ?, ?), (?, ?, (SELECT rowid FROM fulltext_values WHERE searchid = ?), ?, ?, ?)".
             let fts_values: String = std::iter::repeat_n(inner, datom_count).join(", ");
