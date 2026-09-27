@@ -4,7 +4,7 @@
     clippy::too_many_arguments,
     unknown_lints
 )]
-#![allow(clippy::manual_is_multiple_of, clippy::chunks_exact_to_as_chunks)]
+#![allow(clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
 //! `mentat-scale`: the embedded-mentat backend of benchmarks/scale.
 //!
 //!   mentat-scale load  DATA STORE                      bulk load; writes STORE.load.json + STORE.entids
@@ -253,45 +253,60 @@ fn cmd_query(store: &str, data: &str, scen: &str, arg: Option<&str>) {
     println!("{}", Json::Array(rows));
 }
 
-fn transact_file(s: &mut Store, path: &str, entids: &[i64], datoms_tx: &mut u64) -> (usize, i64) {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let mut n = 0;
-    let mut last = 0;
-    for line in text.lines().filter(|l| !l.is_empty()) {
-        let edn = if entids.is_empty() {
-            line.to_string()
-        } else {
-            subst_entids(line, entids)
-        };
-        let r = s.transact(&edn).unwrap_or_else(|e| panic!("{path}: {e}"));
-        last = r.tx_id;
-        n += 1;
-        *datoms_tx += 1;
-    }
-    (n, last)
+/// Tempid -> entid maps the loader fills from tx reports ("u7", "l3", "i42").
+#[derive(Default)]
+struct Ids {
+    u: Vec<i64>,
+    l: Vec<i64>,
+    i: Vec<i64>,
 }
-
-/// Replace every `@@<idx>` with the entid recorded for issue tempid "i<idx>".
-fn subst_entids(line: &str, entids: &[i64]) -> String {
-    let mut out = String::with_capacity(line.len() + 64);
-    let mut it = line.char_indices().peekable();
-    while let Some((_, c)) = it.next() {
-        if c != '@' || it.peek().map(|p| p.1) != Some('@') {
-            out.push(c);
-            continue;
-        }
-        it.next();
-        let mut idx = 0usize;
-        while let Some(&(_, d)) = it.peek() {
-            if !d.is_ascii_digit() {
-                break;
+impl Ids {
+    fn record(&mut self, tempids: &std::collections::BTreeMap<String, i64>) {
+        for (k, &v) in tempids {
+            let (kind, n) = k.split_at(1);
+            let Ok(n) = n.parse::<usize>() else { continue };
+            let vec = match kind {
+                "u" => &mut self.u,
+                "l" => &mut self.l,
+                "i" => &mut self.i,
+                _ => continue,
+            };
+            if vec.len() <= n {
+                vec.resize(n + 1, 0);
             }
-            idx = idx * 10 + (d as usize - '0' as usize);
-            it.next();
+            vec[n] = v;
         }
-        out.push_str(&entids[idx].to_string());
     }
-    out
+    /// Replace every `@@u<n>` / `@@l<n>` / `@@i<n>` with its recorded entid.
+    fn subst(&self, line: &str) -> String {
+        let mut out = String::with_capacity(line.len() + 64);
+        let b = line.as_bytes();
+        let mut k = 0;
+        while k < b.len() {
+            if b[k] == b'@' && b.get(k + 1) == Some(&b'@') {
+                let kind = b[k + 2];
+                let mut j = k + 3;
+                let mut n = 0usize;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    n = n * 10 + (b[j] - b'0') as usize;
+                    j += 1;
+                }
+                let e = match kind {
+                    b'u' => self.u[n],
+                    b'l' => self.l[n],
+                    _ => self.i[n],
+                };
+                assert!(e != 0, "unresolved @@{}{n}", kind as char);
+                out.push_str(&e.to_string());
+                k = j;
+            } else {
+                let c = line[k..].chars().next().unwrap();
+                out.push(c);
+                k += c.len_utf8();
+            }
+        }
+        out
+    }
 }
 
 fn shard_files(data: &str, prefix: &str) -> Vec<String> {
@@ -315,9 +330,8 @@ fn cmd_load(data: &str, store: &str) {
     let mut s = Store::open(store).unwrap();
     let schema = fs::read_to_string(format!("{data}/schema.edn")).unwrap();
     s.transact(&schema).unwrap();
+    let mut ids = Ids::default();
     let mut txs = 0u64;
-    transact_file(&mut s, &format!("{data}/store/base.edn"), &[], &mut txs);
-    let mut entids = vec![0i64; n_issues];
     let mut t_mid = 0;
     // LOAD_MAX_S: give up (exit 3) once the load has run this long, and record
     // how far it got, so a scale that is too big for this backend becomes a
@@ -329,8 +343,10 @@ fn cmd_load(data: &str, store: &str) {
     let per_tx = meta["batch"].as_u64().unwrap_or(500) as f64
         * meta["n_datoms_initial"].as_f64().unwrap()
         / meta["n_issues"].as_f64().unwrap();
-    for f in shard_files(data, "issues-") {
-        let text = fs::read_to_string(&f).unwrap();
+    let mut files = vec![format!("{data}/store/base.edn")];
+    files.extend(shard_files(data, "issues-"));
+    for f in &files {
+        let text = fs::read_to_string(f).unwrap_or_else(|e| panic!("{f}: {e}"));
         for line in text.lines().filter(|l| !l.is_empty()) {
             if t0.elapsed().as_secs_f64() > max_s {
                 let el = t0.elapsed().as_secs_f64();
@@ -342,12 +358,10 @@ fn cmd_load(data: &str, store: &str) {
                 println!("{info}");
                 std::process::exit(3);
             }
-            let r = s.transact(line).unwrap_or_else(|e| panic!("{f}: {e}"));
-            for (k, v) in &r.tempids {
-                if let Some(i) = k.strip_prefix('i') {
-                    entids[i.parse::<usize>().unwrap()] = *v;
-                }
-            }
+            let r = s
+                .transact(&ids.subst(line))
+                .unwrap_or_else(|e| panic!("{f}: {e}"));
+            ids.record(&r.tempids);
             t_mid = r.tx_id;
             txs += 1;
             if txs % 200 == 0 {
@@ -356,21 +370,29 @@ fn cmd_load(data: &str, store: &str) {
         }
     }
     assert!(
-        entids.iter().all(|&e| e != 0),
+        ids.i.len() == n_issues && ids.i.iter().all(|&e| e != 0),
         "an issue tempid was not reported"
     );
     let t_initial = t0.elapsed().as_secs_f64();
     let hist = shard_files(data, "hist-");
     let mut t_since = t_mid;
-    for (i, f) in hist.iter().enumerate() {
-        if i + 1 == hist.len() {
+    for (k, f) in hist.iter().enumerate() {
+        if k + 1 == hist.len() {
             t_since = s.last_tx_id();
         }
-        transact_file(&mut s, f, &entids, &mut txs);
+        for line in fs::read_to_string(f)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+        {
+            s.transact(&ids.subst(line))
+                .unwrap_or_else(|e| panic!("{f}: {e}"));
+            txs += 1;
+        }
     }
     let load_s = t0.elapsed().as_secs_f64();
     drop(s);
-    let bytes: Vec<u8> = entids.iter().flat_map(|e| e.to_le_bytes()).collect();
+    let bytes: Vec<u8> = ids.i.iter().flat_map(|e| e.to_le_bytes()).collect();
     fs::write(format!("{store}.entids"), bytes).unwrap();
     let size = fs::metadata(store).map(|m| m.len()).unwrap_or(0);
     let info = json!({"t_mid": t_mid, "t_since": t_since, "load_s": load_s,
@@ -451,7 +473,9 @@ fn client(
         });
         // An interrupted query panics inside mentat's projector (it unwraps
         // the row iterator), so the probe must also catch unwinds.
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_one(s, ctx, scen, &mut rng, &qs)));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_one(s, ctx, scen, &mut rng, &qs)
+        }));
         if !matches!(r, Ok(Ok(_))) {
             errors += 1;
         }

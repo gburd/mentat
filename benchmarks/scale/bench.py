@@ -268,13 +268,14 @@ def ext_load(backend, data, store, max_s=float("inf")):
     t0 = time.time()
     b.t(open(f"{data}/schema.edn").read())
     txs = 0
-    for line in open(f"{data}/store/base.edn"):
-        b.t(line)
-        txs += 1
     import array
-    entids = array.array("q", [0] * meta["n_issues"])
+    import re
+    ids = {"u": array.array("q", [0] * meta["n_users"]), "l": array.array("q", [0] * meta["n_labels"]),
+           "i": array.array("q", [0] * meta["n_issues"])}
+    sub = re.compile(r"@@([uli])(\d+)")
+    fill = lambda line: sub.sub(lambda m: str(ids[m.group(1)][int(m.group(2))]), line)  # noqa: E731
     t_mid = 0
-    for f in sorted(glob.glob(f"{data}/store/issues-*.edn")):
+    for f in [f"{data}/store/base.edn"] + sorted(glob.glob(f"{data}/store/issues-*.edn")):
         for line in open(f):
             el = time.time() - t0
             if el > max_s:
@@ -283,22 +284,20 @@ def ext_load(backend, data, store, max_s=float("inf")):
                 json.dump(info, open(store + ".load.json", "w"))
                 print(json.dumps(info))
                 sys.exit(3)
-            r = json.loads(b.t(line))
+            r = json.loads(b.t(fill(line)))
             for k, v in r["tempids"].items():
-                if k[0] == "i":
-                    entids[int(k[1:])] = v
+                ids[k[0]][int(k[1:])] = v
             t_mid = r["tx_id"]
             txs += 1
+    entids = ids["i"]
     t_initial = time.time() - t0
     hist = sorted(glob.glob(f"{data}/store/hist-*.edn"))
     t_since = last = t_mid
-    import re
-    sub = re.compile(r"@@(\d+)")
     for n, f in enumerate(hist):
         if n == len(hist) - 1:
             t_since = last
         for line in open(f):
-            last = json.loads(b.t(sub.sub(lambda m: str(entids[int(m.group(1))]), line)))["tx_id"]
+            last = json.loads(b.t(fill(line)))["tx_id"]
             txs += 1
     load_s = time.time() - t0
     with open(store + ".entids", "wb") as f:

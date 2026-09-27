@@ -12,12 +12,13 @@ Same schema (../phase2/schema.edn), same SEED/STATES/PRIORITIES/title words as
       pg/     `SELECT 1 FROM edn_t('…');` lines. Explicit integer entids in
               high bands (U0/L0/I0 below), so shards load in parallel.
       store/  one EDN transaction per line, for the embedded engine (Rust
-              runner, SQLite ext, DuckDB ext). Users/labels/issues use string
-              tempids ("u7", "l3", "i42"), and refs use
-              (lookup-ref :user/email …) / (lookup-ref :label/name …). Embedded
-              mentat only accepts integer entids it allocated itself. History
-              lines reference an issue as @@<idx>; the loader replaces that
-              with the entid it recorded for tempid "i<idx>".
+              runner, SQLite ext, DuckDB ext). Users, labels and issues get
+              string tempids ("u7", "l3", "i42"), because embedded mentat only
+              accepts integer entids that it allocated itself. A later
+              reference is written @@u7 / @@l3 / @@i42, and the loader replaces
+              it with the entid it recorded for that tempid. (A
+              (lookup-ref :user/email …) works too, and measured the same load
+              speed at scale s. The @@ form just skips an AVET probe per ref.)
   * A history phase: about 5% of issues get a later :issue/state update, one
     hist-NNN file per issues shard. The loader records T_MID (the last tx of
     the initial load) and T_SINCE (the last tx before the final hist file),
@@ -116,12 +117,9 @@ def gen_shard(args):
             pg.extend(f"[:db/add {I0 + idx} :issue/label {L0 + lb}]" for lb in labels)
             lab = ""
             if labels:
-                lab = " :issue/label [" + " ".join(
-                    f'(lookup-ref :label/name "label-{lb}")' for lb in labels) + "]"
+                lab = " :issue/label [" + " ".join(f"@@l{lb}" for lb in labels) + "]"
             st.append(f'{{:db/id "i{idx}" :issue/title "{title}" :issue/state {state} '
-                      f':issue/priority {prio} '
-                      f':issue/assignee (lookup-ref :user/email "user{asg}@example.com") '
-                      f':issue/reporter (lookup-ref :user/email "user{rep}@example.com") '
+                      f':issue/priority {prio} :issue/assignee @@u{asg} :issue/reporter @@u{rep} '
                       f':issue/created-at #inst "{created}"{lab}}}')
             if (idx - start + 1) % BATCH == 0 or idx == end - 1:
                 fp.write(pg_line("[" + " ".join(pg) + "]"))
@@ -134,7 +132,7 @@ def gen_shard(args):
             chunk = hist[b:b + BATCH]
             fp.write(pg_line("[" + " ".join(
                 f"[:db/add {I0 + i} :issue/state {s}]" for i, s in chunk) + "]"))
-            fs.write("[" + " ".join(f"[:db/add @@{i} :issue/state {s}]" for i, s in chunk) + "]\n")
+            fs.write("[" + " ".join(f"[:db/add @@i{i} :issue/state {s}]" for i, s in chunk) + "]\n")
     return shard, t
 
 

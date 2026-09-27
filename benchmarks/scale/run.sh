@@ -218,7 +218,7 @@ run_pg() {  # DATA SCALE
   [ "$PHASE" = load ] && return 0
   psql1 -c "SELECT pg_stat_statements_reset()" >/dev/null
   for scen in $SCENARIOS; do log "pg $sc $scen"; pg_bench_scen "$d" "$sc" "$scen"; done
-  pg_explain "$sc"
+  [ -n "$SCENARIOS" ] && pg_explain "$sc"
   local S="$HERE/pgbench"
   if has "$EXTRA" concurrency_sweep; then
     for rep in $(seq 1 "$REPS"); do for c in $CLIENTS; do
@@ -318,7 +318,7 @@ run_embedded() {  # DATA SCALE
   if ! $PY "$HERE/bench.py" check embedded "$d" "$st" >> "$CHECKS" 2>&1; then FAILED=1; log "embedded: CHECK FAILED"; return 0; fi
   [ "$PHASE" = load ] && return 0
   local scens=${SCENARIOS// /,}
-  "$RUNNER" bench "$st" "$d" "$sc" "$REPS" 1 "$scens" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/embedded-$sc.log"
+  [ -n "$scens" ] && "$RUNNER" bench "$st" "$d" "$sc" "$REPS" 1 "$scens" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/embedded-$sc.log"
   if has "$EXTRA" concurrency_sweep; then
     log "embedded $sc concurrency_sweep"
     "$RUNNER" bench "$st" "$d" "$sc" "$REPS" "${CLIENTS// /,}" concurrency_sweep "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/embedded-$sc.log"
@@ -370,7 +370,7 @@ run_ext() {  # BACKEND DATA SCALE
   [ "$PHASE" = load ] && return 0
   local scens="" s
   for s in $SCENARIOS; do has "$EXT_SCENARIO_FILTER" "$s" || scens="$scens,$s"; done
-  $PY "$HERE/bench.py" run "$be" "$d" "$st" "$sc" "$REPS" 1 "${scens#,}" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/$be-$sc.log"
+  [ -n "${scens#,}" ] && $PY "$HERE/bench.py" run "$be" "$d" "$st" "$sc" "$REPS" 1 "${scens#,}" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/$be-$sc.log"
   if has "$EXTRA" concurrency_sweep; then
     log "$be $sc concurrency_sweep"
     $PY "$HERE/bench.py" run "$be" "$d" "$st" "$sc" "$REPS" "${CLIENTS// /,}" concurrency_sweep "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/$be-$sc.log"
