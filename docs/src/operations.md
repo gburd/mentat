@@ -293,18 +293,22 @@ ORDER BY dead_pct DESC;
 ## What is NOT solved by auto-indexing
 
 A common first instinct for "pg_mentat is slow" is *missing indexes*.
-It is worth stating plainly: the narrow datom tables already carry
-EAVT / AEVT / VAET / tx covering indexes plus an FTS GIN index. The
-costs that actually hurt in production are:
+The shipped set is EAVT / AEVT / VAET / tx covering indexes on the
+history tables, AEV + AVET (1.10.0) on the current-state projection, and
+an FTS GIN index -- so equality lookups, ref traversal and current-state
+value ranges are already index probes. The costs that actually hurt in
+production are:
 
-- **per-`t()` transaction overhead** — solved by batching, not indexing;
-- **history-resolution on reads** — solved by `mentat.current()` + a
-  per-attribute partial index, not by adding more general indexes;
-- **dead-tuple bloat** — solved by autovacuum tuning + scheduled
+- **per-`t()` transaction overhead** -- solved by batching, not indexing;
+- **history-resolution on reads** -- solved by the current-state
+  projection (current-time queries read it directly);
+- **dead-tuple bloat** -- solved by autovacuum tuning + scheduled
   vacuum, not by indexing.
 
-Adding indexes beyond the shipped set will not move these numbers and
-will slow `t()` further (every index is maintained on write).
+The one gap the automatic index manager (section 7) fills is value
+ranges on one attribute in *temporal* queries. Beyond that, extra indexes
+will not move these numbers and will slow `t()` further (every index is
+maintained on write).
 
 ## 5. Reading from a hot standby (read replica)
 
@@ -403,3 +407,78 @@ which **aborts** if a sequence has already run past that ceiling
 sequence to `GREATEST(intended_ceiling, current_head)` — never below the
 live head — so an overflowed store keeps working. Do not stop at 1.5.6 on
 a store whose sequences may have overflowed.
+
+## 7. Automatic index management
+
+`mentat_tune_indexes(dry_run BOOLEAN DEFAULT true)` adds indexes where
+query evidence says they help and drops the ones it added once they stop
+being used. It is small on purpose: one kind of index, two rules, one
+registry.
+
+```sql
+SELECT * FROM mentat_tune_indexes();        -- what would change (default: dry run)
+SELECT * FROM mentat_tune_indexes(false);   -- do it
+SELECT * FROM mentat.managed_indexes;       -- what it owns, and why
+```
+
+Each row returned is `(action, index_name, table_name, reason)` with
+`action` one of `create`, `drop`, `forget` (a managed index someone
+dropped by hand), or `skip` (see below). Every create / drop is also
+`LOG`ged with its reason. `dry_run` changes no index and no registry row.
+
+**Evidence.** Every compiled query with a range predicate (`<`, `<=`,
+`>`, `>=`) on the value of a constant-attribute pattern that reads a
+history table (as-of / since / history queries) counts one hit for
+(store, attribute, table). Hits are per backend and flushed to
+`mentat.index_evidence` every `mentat.auto_index_every_n_tx` `edn_t`
+calls and by `mentat_tune_indexes()` itself.
+
+**Create rule.** An attribute with at least `mentat.auto_index_min_queries`
+hits and at least `mentat.auto_index_min_rows` rows in its history table
+gets
+
+```sql
+CREATE INDEX mentat_auto_datoms_<type>_new_a<entid>
+  ON mentat.datoms_<type>_new (store_id, v, e, tx) WHERE a = <entid> AND added;
+```
+
+Why only this: current-time queries read the projection, whose AVET
+index `(store_id, a, v, e)` already turns a range on one attribute into
+an index range scan (measured flat from 1M to 10M datoms). The history
+tables' VAET index leads with `v`, not `a`, so a temporal range query on
+one attribute otherwise scans all of that attribute's values through
+AEVT with a `Filter` (4.9 ms vs 23.6 ms for a 25% range of 200k values).
+The predicate carries only literals (`store_id` is a bound parameter in
+the generated SQL, so it is a key column), and the generated SQL pushes
+the attribute down as a literal `a = <entid>`, so the planner can match
+it. Caveat: `edn_q` caches prepared statements, and after five runs
+PostgreSQL may switch to a generic plan, which assumes `v >= $n` matches
+a third of the rows and can prefer AEVT's `e` order for the as-of
+anti-join. If the index is then never scanned, the vestigial rule
+removes it.
+
+**Vestigial rule.** A managed index whose `idx_scan` has not grown since
+it was last seen in use, for at least `mentat.auto_index_idle_window`
+(default 7 days), while its table took writes, is dropped. Hysteresis:
+nothing is dropped within one window of its creation, and any scan
+restarts the clock. A read-only table never loses its indexes (an idle
+index there costs nothing).
+
+**Only its own.** The drop rule reads only `mentat.managed_indexes`,
+whose `CHECK` pins names to `mentat_auto_*`: primary keys, the shipped
+indexes, M1's AVET indexes and user indexes are never candidates.
+
+**Modes** (`mentat.auto_index`, see [configuration](configuration.md)):
+`schema` (default) collects evidence and acts only when you call
+`mentat_tune_indexes`; `adaptive` also runs it every
+`mentat.auto_index_every_n_tx` transactions of a backend, with
+`mentat.auto_index_lock_timeout` (default 100 ms) on the `CREATE INDEX`
+lock: if it would wait longer the run is skipped and `LOG`ged
+(`mentat auto_index: tuning skipped (55P03 ...)`) and retried at the next tick (the evidence is kept), and
+the triggering `edn_t` succeeds regardless. Note that the adaptive build
+is a plain `CREATE INDEX` inside the caller's transaction: it blocks
+writes to that table for the build (seconds per million rows). On a
+large store, prefer `schema` mode and run `mentat_tune_indexes(false)` in
+a maintenance window, or create the reported index yourself `CONCURRENTLY`
+under the reported name and insert its registry row.
+

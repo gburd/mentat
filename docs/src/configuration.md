@@ -165,6 +165,89 @@ When enabled, logs the generated SQL for every query (not just slow ones). Usefu
 SET mentat.log_all_queries = true;
 ```
 
+## Automatic Index Management
+
+See [Operations: automatic index management](operations.md#7-automatic-index-management)
+for the rules. All of these are `superuser` context (`ALTER SYSTEM` /
+`ALTER DATABASE ... SET` / a superuser's `SET`).
+
+### `mentat.auto_index`
+
+| Property | Value |
+|----------|-------|
+| Type | enum: `off`, `schema`, `adaptive` |
+| Default | `schema` |
+| Context | superuser |
+
+- `schema` -- only the indexes the extension ships (EAVT/AEVT/VAET on the
+  history tables, AEV/AVET on the current-state projection) are created
+  automatically. Evidence is collected; `mentat_tune_indexes()` acts only
+  when you call it. Nothing is ever dropped on its own.
+- `adaptive` -- additionally run `mentat_tune_indexes(false)` every
+  `mentat.auto_index_every_n_tx` `edn_t` calls of a backend.
+- `off` -- collect no evidence; `mentat_tune_indexes()` returns nothing.
+
+### `mentat.auto_index_every_n_tx`
+
+| Property | Value |
+|----------|-------|
+| Type | integer |
+| Default | 1000 |
+| Range | 0 - 2147483647 |
+| Context | superuser |
+
+Every N `edn_t` calls a backend flushes its range-predicate evidence to
+`mentat.index_evidence` and, in `adaptive` mode, tunes. 0 disables the
+amortized runs.
+
+### `mentat.auto_index_lock_timeout`
+
+| Property | Value |
+|----------|-------|
+| Type | integer (ms) |
+| Default | 100ms |
+| Context | superuser |
+
+How long an amortized (`edn_t`-triggered) `CREATE INDEX` may wait for its
+table lock. If it would wait longer the run is skipped (`LOG: mentat
+auto_index: tuning skipped (55P03: ...)`) and retried at the next tick; the
+`edn_t` itself never fails because of it.
+
+### `mentat.auto_index_min_queries`
+
+| Property | Value |
+|----------|-------|
+| Type | integer |
+| Default | 50 |
+| Context | superuser |
+
+Range-predicate queries on one attribute (summed over backends, as
+flushed) before a range index is created for it.
+
+### `mentat.auto_index_min_rows`
+
+| Property | Value |
+|----------|-------|
+| Type | integer |
+| Default | 100000 |
+| Context | superuser |
+
+An attribute with fewer history rows than this gets no index (a scan of it
+is already cheap).
+
+### `mentat.auto_index_idle_window`
+
+| Property | Value |
+|----------|-------|
+| Type | integer (s) |
+| Default | 7d |
+| Context | superuser |
+
+A managed index whose `idx_scan` has not grown for this long while its
+table took writes is dropped. Also the minimum age before any managed
+index can be dropped (hysteresis). `0` makes unused managed indexes
+droppable at the next run.
+
 ## Recommended Production Configuration
 
 ```sql

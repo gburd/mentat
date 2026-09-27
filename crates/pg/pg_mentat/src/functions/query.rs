@@ -5410,6 +5410,8 @@ fn build_extended_pattern_query(
     let mut where_clauses = Vec::new();
     // Mutable copy of extra_var_bindings so get-else can update result expressions
     let mut extra_var_bindings = extra_var_bindings.clone();
+    // alias -> (constant attribute entid, table read), for auto-index evidence.
+    let mut alias_attr: HashMap<String, (i64, &'static str)> = HashMap::new();
 
     // Pre-populate var_to_alias with rule CTE bindings
     if let Some(ref cte_info) = rule_cte_info {
@@ -5692,6 +5694,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
 
         // Use the typed single-table FROM fragment or fall back to UNION ALL
         if let Some(info) = &typed_info {
+            // Only temporal reads are candidates: current-state range scans
+            // are already served by the shipped AVET index.
+            let attr = pushdown
+                .attribute_entid
+                .as_ref()
+                .and_then(|a| a.parse().ok());
+            if let (false, Some(a)) = (use_projection, attr) {
+                alias_attr.insert(alias.clone(), (a, info.table));
+            }
             joins.push(build_typed_datoms_from_fragment_with_pushdown(
                 &alias,
                 store_id_param,
@@ -5940,6 +5951,20 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         let pred_sql =
             build_predicate_clause(pred, &var_to_alias, &var_to_type, input_bindings, builder)?;
         where_clauses.push(pred_sql);
+        // Auto-index evidence: a range predicate on a value of a
+        // constant-attribute pattern read from a history table.
+        if matches!(op, "<" | "<=" | ">" | ">=") && crate::auto_index::collecting() {
+            for arg in &pred.args {
+                if let FnArg::Variable(v) = arg {
+                    if let Some((alias, "v")) = var_to_alias.get(&format!("{}", v)) {
+                        if let Some((attr, table)) = alias_attr.get(alias.as_str()) {
+                            let store_id = resolve_store_id(schema_prefix)?;
+                            crate::auto_index::record_range_use(store_id, *attr, table);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Detect aggregates

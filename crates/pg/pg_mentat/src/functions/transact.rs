@@ -766,6 +766,7 @@ fn execute_transaction_body(
                     crate::cache::invalidate_store_cache(store_name);
                     crate::cache::bump_store_generation(store_name);
                 }
+                crate::auto_index::after_transact();
                 return Ok(result);
             }
             Err(err) => {

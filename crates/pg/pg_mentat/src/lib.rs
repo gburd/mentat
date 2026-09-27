@@ -13,6 +13,9 @@ pub extern "C-unwind" fn _PG_init() {
     // Register monitoring GUC parameters (slow query threshold, logging)
     monitoring::register_monitoring_gucs();
 
+    // Automatic index management GUCs (mentat.auto_index*)
+    auto_index::register_gucs();
+
     // Register edn_eval scripting limit GUCs (steps, heap, depth; PGC_SUSET)
     #[cfg(feature = "script")]
     functions::script_gucs::register_script_gucs();
@@ -694,6 +697,8 @@ extension_sql!(
     requires = ["datom_helpers", mentat_query_sql, mentat_query_view],
 );
 
+pub mod auto_index;
+mod auto_index_tests;
 mod cache;
 pub mod monitoring;
 
@@ -1161,6 +1166,14 @@ extension_sql_file!(
 extension_sql_file!(
     "../sql/25_entid_collision_repair.sql",
     name = "entid_collision_repair",
+    requires = ["narrow_storage", "current_projection"],
+);
+
+// Automatic index management (1.10.0): registry, evidence, and the
+// create / drop rules behind mentat_tune_indexes. See src/auto_index.rs.
+extension_sql_file!(
+    "../sql/27_auto_index.sql",
+    name = "auto_index",
     requires = ["narrow_storage", "current_projection"],
 );
 
