@@ -307,7 +307,10 @@ mod tests {
         Spi::run("ANALYZE mentat.current_long").expect("analyze");
         Spi::run("SET LOCAL enable_seqscan = off").expect("set");
         for (q, idx) in [
-            ("[:find ?e :where [?e :p/email \"u7@x.io\"]]", "idx_current_text_avet"),
+            (
+                "[:find ?e :where [?e :p/email \"u7@x.io\"]]",
+                "idx_current_text_avet",
+            ),
             ("[:find ?e :where [?e :p/age 42]]", "idx_current_long_avet"),
         ] {
             let plan = Spi::get_one::<String>(&format!(
@@ -322,6 +325,11 @@ mod tests {
         )
         .expect("q")
         .expect("NULL");
-        assert_eq!(n.0["results"].as_array().map(|a| a.len()), Some(1), "one match: {:?}", n.0);
+        assert_eq!(
+            n.0["results"].as_array().map(|a| a.len()),
+            Some(1),
+            "one match: {:?}",
+            n.0
+        );
     }
 }

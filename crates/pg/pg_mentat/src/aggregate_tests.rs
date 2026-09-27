@@ -358,4 +358,161 @@ mod tests {
         let a = avg.as_f64().expect("f64");
         assert!((a - 37.3333).abs() < 0.01, "avg was {a}");
     }
+
+    // ========================================================================
+    // Aggregate semantics (1.10.0): an aggregate runs over the SET of
+    // bindings of the :find + :with variables, grouped by the non-aggregate
+    // :find variables -- Datomic's semantics, and the embedded backend's
+    // (crates/sqlite/mentat/tests/query.rs). Without :with, duplicate values
+    // collapse before aggregation; :with keeps one row per :with binding.
+    // ========================================================================
+
+    fn setup_monsters() {
+        Spi::run(
+            "SELECT edn_t('[
+                {:db/ident :monster/heads  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
+                {:db/ident :monster/name   :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                {:db/ident :monster/weapon :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
+                {:db/ident :monster/weight :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+            ]'::TEXT)",
+        )
+        .expect("monster schema");
+        Spi::run(
+            "SELECT edn_t('[
+                {:db/id \"me\" :monster/heads 1 :monster/name \"Medusa\"   :monster/weight 1.5}
+                {:db/id \"cy\" :monster/heads 1 :monster/name \"Cyclops\"  :monster/weight 2.5}
+                {:db/id \"ch\" :monster/heads 1 :monster/name \"Chimera\"  :monster/weight 2.5}
+                {:db/id \"ce\" :monster/heads 3 :monster/name \"Cerberus\" :monster/weight 4.0}
+                [:db/add \"me\" :monster/weapon \"Stony gaze\"]
+                [:db/add \"cy\" :monster/weapon \"Large club\"]
+                [:db/add \"cy\" :monster/weapon \"Mighty arms\"]
+                [:db/add \"cy\" :monster/weapon \"Stompy feet\"]
+                [:db/add \"ch\" :monster/weapon \"Goat-like agility\"]
+                [:db/add \"ce\" :monster/weapon \"Kong\"]
+                [:db/add \"ce\" :monster/weapon \"Deadly drool\"]
+            ]'::TEXT)",
+        )
+        .expect("monster data");
+    }
+
+    fn rows(q: &str) -> Vec<serde_json::Value> {
+        let raw =
+            Spi::get_one::<String>(&format!("SELECT edn_q('{q}'::TEXT, '{{}}'::jsonb)::TEXT"))
+                .expect("query ran")
+                .expect("non-NULL result");
+        let j: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+        let mut r = j["results"].as_array().cloned().expect("results array");
+        r.sort_by_key(|v| v.to_string());
+        r
+    }
+
+    fn sql_of(q: &str) -> String {
+        Spi::get_one::<String>(&format!(
+            "SELECT mentat_query_sql('{q}'::TEXT, '{{}}'::jsonb)->>'sql'"
+        ))
+        .expect("sql")
+        .expect("NULL")
+    }
+
+    #[pg_test]
+    fn test_agg_sum_avg_with_and_without_with() {
+        setup();
+        setup_monsters();
+        // Distinct heads values are {1, 3}.
+        assert_eq!(
+            scalar_result("[:find (sum ?h) . :where [?m :monster/heads ?h]]"),
+            4
+        );
+        assert_eq!(
+            scalar_result("[:find (sum ?h) . :with ?m :where [?m :monster/heads ?h]]"),
+            6
+        );
+        let avg = scalar_result("[:find (avg ?h) . :where [?m :monster/heads ?h]]");
+        assert!((avg.as_f64().expect("f64") - 2.0).abs() < 1e-9, "avg {avg}");
+        let avg = scalar_result("[:find (avg ?h) . :with ?m :where [?m :monster/heads ?h]]");
+        assert!((avg.as_f64().expect("f64") - 1.5).abs() < 1e-9, "avg {avg}");
+        // sum over a double attribute (was: numeric cast error on 'd:<bits>').
+        // Distinct weights {1.5, 2.5, 4.0} = 8.0; with ?m 1.5+2.5+2.5+4.0 = 10.5.
+        let s = scalar_result("[:find (sum ?w) . :where [?m :monster/weight ?w]]");
+        assert!((s.as_f64().expect("f64") - 8.0).abs() < 1e-9, "sum {s}");
+        let s = scalar_result("[:find (sum ?w) . :with ?m :where [?m :monster/weight ?w]]");
+        assert!((s.as_f64().expect("f64") - 10.5).abs() < 1e-9, "sum {s}");
+    }
+
+    #[pg_test]
+    fn test_agg_count_value_var_with_and_without_with() {
+        setup();
+        setup_monsters();
+        assert_eq!(
+            scalar_result("[:find (count ?h) . :where [_ :monster/heads ?h]]"),
+            2
+        );
+        assert_eq!(
+            scalar_result("[:find (count ?h) . :with ?m :where [?m :monster/heads ?h]]"),
+            4
+        );
+        assert_eq!(
+            scalar_result("[:find (count-distinct ?h) . :with ?m :where [?m :monster/heads ?h]]"),
+            2
+        );
+    }
+
+    #[pg_test]
+    fn test_agg_count_grouped_distinct_tuples() {
+        setup();
+        setup_monsters();
+        // The extra cardinality-many join multiplies rows: a naive COUNT(*)
+        // gives heads=1 -> 5 and heads=3 -> 2. The answer is distinct ?m.
+        assert_eq!(
+            rows("[:find ?h (count ?m) :where [?m :monster/heads ?h] [?m :monster/weapon _]]"),
+            vec![serde_json::json!([1, 3]), serde_json::json!([3, 1])]
+        );
+        // Grouped count over a cardinality-many value with :with.
+        assert_eq!(
+            rows(
+                "[:find ?n (count ?w) :with ?m :where [?m :monster/name ?n] [?m :monster/weapon ?w]]"
+            ),
+            vec![
+                serde_json::json!(["Cerberus", 2]),
+                serde_json::json!(["Chimera", 1]),
+                serde_json::json!(["Cyclops", 3]),
+                serde_json::json!(["Medusa", 1]),
+            ]
+        );
+        // Group by a value, count the entity: heads 1 -> 3 monsters, 3 -> 1.
+        assert_eq!(
+            rows("[:find ?h (count ?m) :where [?m :monster/heads ?h]]"),
+            vec![serde_json::json!([1, 3]), serde_json::json!([3, 1])]
+        );
+        // Group by the entity, count its many-valued attribute.
+        assert_eq!(
+            rows("[:find ?m (count ?w) :where [?m :monster/weapon ?w] [?m :monster/name \"Cyclops\"]]")
+                .iter()
+                .map(|r| r[1].clone())
+                .collect::<Vec<_>>(),
+            vec![serde_json::json!(3)]
+        );
+    }
+
+    #[pg_test]
+    fn test_agg_count_plans_without_distinct_when_keyed() {
+        setup();
+        setup_monsters();
+        // (?h, ?m) with ?m the entity of a cardinality-one pattern is a key of
+        // the join: plain COUNT(*), no DISTINCT, no sort.
+        let keyed = sql_of("[:find ?h (count ?m) :where [?m :monster/heads ?h]]");
+        assert!(keyed.contains("COUNT(*)"), "{keyed}");
+        assert!(!keyed.contains("DISTINCT"), "{keyed}");
+        // Chains through cardinality-one refs and :db/unique stay keyed.
+        let keyed =
+            sql_of("[:find ?h (count ?n) :where [?m :monster/name ?n] [?m :monster/heads ?h]]");
+        assert!(!keyed.contains("DISTINCT"), "{keyed}");
+        // A cardinality-many join can repeat (?h, ?m): must de-duplicate.
+        let dup =
+            sql_of("[:find ?h (count ?m) :where [?m :monster/heads ?h] [?m :monster/weapon _]]");
+        assert!(dup.contains("SELECT DISTINCT"), "{dup}");
+        // Without :with, (sum ?h) aggregates distinct values.
+        let dup = sql_of("[:find (sum ?h) . :where [?m :monster/heads ?h]]");
+        assert!(dup.contains("SELECT DISTINCT"), "{dup}");
+    }
 }

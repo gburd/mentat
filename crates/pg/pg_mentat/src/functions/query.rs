@@ -66,7 +66,18 @@ fn execute_cached_query<'a>(
     client: &pgrx::spi::SpiClient<'a>,
     sql: &str,
     params: &[DatumWithOid<'_>],
+    complexity: &QueryComplexity,
 ) -> Result<pgrx::spi::SpiTupleTable<'a>, pgrx::spi::SpiError> {
+    // SPI_prepare'd (cached) plans are made without CURSOR_OPT_PARALLEL_OK,
+    // so they never run in parallel; one-shot SPI_execute_with_args plans
+    // may. Aggregates scan whole attributes, where parallel workers pay off
+    // (q3 at 10M datoms: 214 ms serial vs 65 ms parallel) and a ~0.2 ms
+    // replan does not matter, so they skip the plan cache.
+    // ponytail: aggregates only; big non-aggregate scans stay serial until
+    // pgrx exposes SPI_prepare_cursor (then cache with PARALLEL_OK instead).
+    if complexity.has_aggregates {
+        return client.select(sql, None, params);
+    }
     // Try to execute with a cached statement.
     // The borrow of the RefCell is scoped to the closure and released
     // before the SpiTupleTable is used (it references SPI memory, not the plan).
@@ -1277,7 +1288,7 @@ pub(crate) fn mentat_query_internal(
             usize::MAX
         };
 
-        for row in execute_cached_query(client, &sql_query, &params).map_err(|e| {
+        for row in execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
             Box::new(crate::error::MentatError::InvalidQuery {
                 message: format!("SPI execution error: {}", e),
                 suggestion: None,
@@ -1754,7 +1765,7 @@ fn mentat_query_view_internal(
         let mut result_rows: Vec<QueryViewRow> = Vec::new();
 
         let mut row_num: i64 = 1;
-        for row in execute_cached_query(client, &sql_query, &params).map_err(|e| {
+        for row in execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
             Box::new(MentatError::InvalidQuery {
                 message: format!("SPI execution error: {}", e),
                 suggestion: None,
@@ -2637,6 +2648,8 @@ fn build_sql_from_datalog_enriched(
         }
     }
 
+    let with_vars: Vec<String> = parsed.with.iter().map(|v| format!("{}", v)).collect();
+
     // Build the base query (skip if we only have OR clauses)
     let (base_sql, base_var_to_alias, base_var_to_type) =
         if pattern_clauses.is_empty() && !or_joins.is_empty() {
@@ -2660,6 +2673,7 @@ fn build_sql_from_datalog_enriched(
                 &store_id_param,
                 &get_else_clauses,
                 &missing_clauses,
+                &with_vars,
             )?
         };
 
@@ -2917,6 +2931,7 @@ fn build_sql_from_datalog_enriched(
                 &arm_store_id_param,
                 &get_else_clauses,
                 &missing_clauses,
+                &with_vars,
             )?;
 
             // Remap $N parameter placeholders so they don't collide
@@ -5361,6 +5376,7 @@ fn build_extended_pattern_query(
     store_id_param: &str,
     get_else_clauses: &[GetElseClause],
     missing_clauses: &[MissingClause],
+    with_vars: &[String],
 ) -> Result<
     (
         String,
@@ -5907,6 +5923,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     // Build SELECT clause
     let mut select_exprs = Vec::new();
     let mut group_by_exprs = Vec::new();
+    let mut agg_cols: Vec<(usize, &edn::query::Aggregate)> = Vec::new();
 
     for (col_idx, var_display) in find_vars.iter().enumerate() {
         // Check if this is an aggregate element
@@ -5914,11 +5931,11 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         let is_aggregate = elem.map_or(false, |e| matches!(e, Element::Aggregate(_)));
 
         if is_aggregate {
-            // Build aggregate expression
+            // Filled in after the loop, once we know whether the aggregated
+            // tuple needs de-duplication (see below).
             if let Some(Element::Aggregate(agg)) = elem {
-                let agg_sql =
-                    build_aggregate_select(agg, &var_to_alias, &extra_var_bindings, &var_to_type)?;
-                select_exprs.push(agg_sql);
+                agg_cols.push((select_exprs.len(), agg));
+                select_exprs.push(String::new());
             }
         } else if let Some(Element::Pull(pull)) = elem {
             // (pull ?e [:attr ...]) in :find -- emit a correlated call to the
@@ -5976,7 +5993,19 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 } else {
                     select_exprs.push(format!("{alias}.{col}::TEXT"));
                 }
-                if has_aggregates {
+                if has_aggregates && *col == "v" {
+                    // Group on the raw typed columns, not the decoded TEXT:
+                    // hashing the native value is cheaper and lets the
+                    // planner use the AVET index order (q3 at 10M datoms:
+                    // 54 ms vs 65-73 ms). The planner drops the constant
+                    // NULL columns of a typed fragment.
+                    group_by_exprs.push(format!(
+                        "{alias}.value_type_tag, {alias}.v_ref, {alias}.v_bool, \
+                         {alias}.v_long, {alias}.v_double, {alias}.v_text, \
+                         {alias}.v_keyword, {alias}.v_instant, {alias}.v_uuid, \
+                         {alias}.v_bytes"
+                    ));
+                } else if has_aggregates {
                     group_by_exprs.push(format!("{}", col_idx + 1));
                 }
             } else {
@@ -6023,27 +6052,101 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         ""
     };
 
-    let mut sql = format!(
-        "SELECT {distinct}{select} FROM {from}",
-        select = select_exprs.join(", "),
-        from = joins.join(", "),
-    );
-
+    let mut body = format!(" FROM {}", joins.join(", "));
     // Append LEFT JOINs (from get-else clauses)
     for lj in &left_joins {
-        sql.push(' ');
-        sql.push_str(lj);
+        body.push(' ');
+        body.push_str(lj);
     }
-
     if !where_clauses.is_empty() {
-        sql.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
+        body.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
     }
 
-    // GROUP BY for mixed aggregate + regular queries
-    if has_aggregates && !group_by_exprs.is_empty() {
-        sql.push_str(&format!(" GROUP BY {}", group_by_exprs.join(", ")));
+    if !has_aggregates {
+        let sql = format!("SELECT {distinct}{}{body}", select_exprs.join(", "));
+        return Ok((sql, var_to_alias, var_to_type));
     }
 
+    // Aggregates follow Datalog set semantics: each aggregate runs over the
+    // SET of bindings of the :find + :with variables, grouped by the
+    // non-aggregate :find variables. Without :with, (sum ?heads) over heads
+    // {1 1 1 3} is 4; with :with ?monster it is 6.
+    let mut tuple_vars: HashSet<String> = with_vars.iter().cloned().collect();
+    for elem in find_spec.columns() {
+        if let Some(v) = element_to_var_name(elem) {
+            tuple_vars.insert(v);
+        }
+    }
+    let mut with_exprs = Vec::new();
+    for w in with_vars {
+        match var_value_sql(w, &var_to_alias, &extra_var_bindings, &var_to_type) {
+            Some((e, _)) => with_exprs.push(e),
+            None => {
+                return Err(format!(
+                    ":db.error/unbound-variable :with variable {w} is not bound by any \
+                     :where clause."
+                )
+                .into())
+            }
+        }
+    }
+    let use_projection = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+    let may_multiply = !fts_joins.is_empty()
+        || rule_cte_info.is_some()
+        || !get_else_clauses.is_empty()
+        || enriched_bindings
+            .iter()
+            .any(|b| matches!(b, InputBinding::Relation { .. }));
+    let keyed =
+        use_projection && !may_multiply && tuple_is_row_key(patterns, &tuple_vars, schema_prefix);
+
+    if keyed {
+        // Every join row is a distinct tuple already: aggregate in place;
+        // (count ?x) is COUNT(*) (no DISTINCT, no sort).
+        for (i, agg) in &agg_cols {
+            let (arg, kind) =
+                aggregate_arg_sql(agg, &var_to_alias, &extra_var_bindings, &var_to_type);
+            let count_rows = aggregate_var(agg).map_or(false, |v| var_to_alias.contains_key(&v));
+            select_exprs[*i] = aggregate_call_sql(agg, &arg, kind, count_rows)?;
+        }
+        let mut sql = format!("SELECT {}{body}", select_exprs.join(", "));
+        if !group_by_exprs.is_empty() {
+            sql.push_str(&format!(" GROUP BY {}", group_by_exprs.join(", ")));
+        }
+        return Ok((sql, var_to_alias, var_to_type));
+    }
+
+    // Otherwise de-duplicate the tuple first, then aggregate:
+    //   SELECT _g1, COUNT(_a2) FROM (SELECT DISTINCT <g1>, <a2>, <with..>
+    //     FROM ...) AS _agg GROUP BY _g1
+    // Both levels plan as HashAggregate, which measured cheaper than
+    // COUNT(DISTINCT ..) (a full sort per group) at 10M datoms.
+    let mut inner = Vec::new();
+    let mut outer = Vec::new();
+    let mut groups = Vec::new();
+    for (i, expr) in select_exprs.iter().enumerate() {
+        if let Some((_, agg)) = agg_cols.iter().find(|(j, _)| *j == i) {
+            let (arg, kind) =
+                aggregate_arg_sql(agg, &var_to_alias, &extra_var_bindings, &var_to_type);
+            inner.push(format!("{arg} AS _a{i}"));
+            outer.push(aggregate_call_sql(agg, &format!("_a{i}"), kind, false)?);
+        } else {
+            inner.push(format!("{expr} AS _g{i}"));
+            outer.push(format!("_g{i}"));
+            groups.push(format!("_g{i}"));
+        }
+    }
+    for (j, w) in with_exprs.iter().enumerate() {
+        inner.push(format!("{w} AS _w{j}"));
+    }
+    let mut sql = format!(
+        "SELECT {} FROM (SELECT DISTINCT {}{body}) AS _agg",
+        outer.join(", "),
+        inner.join(", ")
+    );
+    if !groups.is_empty() {
+        sql.push_str(&format!(" GROUP BY {}", groups.join(", ")));
+    }
     Ok((sql, var_to_alias, var_to_type))
 }
 
@@ -6069,17 +6172,92 @@ fn get_find_element(find_spec: &FindSpec, idx: usize) -> Option<&Element> {
     }
 }
 
-/// Build a SQL aggregate expression like COUNT(DISTINCT alias.col)::TEXT.
-fn build_aggregate_select(
+/// How an aggregate argument is represented in SQL: a native integer
+/// column (long/ref/e/a/tx), a native double, or the decoded TEXT form.
+#[derive(Clone, Copy, PartialEq)]
+enum ArgKind {
+    Int,
+    Double,
+    Text,
+}
+
+/// SQL for a variable's value within the join, in its native typed column
+/// when the attribute's type is known (cheaper to de-duplicate and correct
+/// for SUM/AVG over doubles), else the decoded TEXT form.
+fn var_value_sql(
+    var: &str,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    extra_var_bindings: &HashMap<String, String>,
+    var_to_type: &HashMap<String, Option<String>>,
+) -> Option<(String, ArgKind)> {
+    if let Some((alias, col)) = var_to_alias.get(var) {
+        if *col != "v" {
+            // e/a/tx are BIGINT; `added` and rule-CTE columns (col0..,
+            // possibly computed) carry no type guarantee: aggregate as-is.
+            let kind = if matches!(*col, "e" | "a" | "tx") {
+                ArgKind::Int
+            } else {
+                ArgKind::Text
+            };
+            return Some((format!("{alias}.{col}"), kind));
+        }
+        return Some(match var_to_type.get(var).and_then(|t| t.as_deref()) {
+            Some("long") => (format!("{alias}.v_long"), ArgKind::Int),
+            Some("ref") => (format!("{alias}.v_ref"), ArgKind::Int),
+            Some("double") => (format!("{alias}.v_double"), ArgKind::Double),
+            _ => (build_value_decode_expr(alias), ArgKind::Text),
+        });
+    }
+    extra_var_bindings.get(var).map(|e| {
+        (
+            resolve_var_refs(e, var_to_alias, extra_var_bindings),
+            ArgKind::Text,
+        )
+    })
+}
+
+/// The variable an aggregate is applied to, e.g. `?e` in `(count ?e)`.
+fn aggregate_var(agg: &edn::query::Aggregate) -> Option<String> {
+    agg.args.iter().find_map(|arg| match arg {
+        FnArg::Variable(v) => Some(format!("{}", v)),
+        _ => None,
+    })
+}
+
+/// The aggregate's argument expression (NULL when its variable is unbound).
+fn aggregate_arg_sql(
     agg: &edn::query::Aggregate,
     var_to_alias: &HashMap<String, (String, &'static str)>,
     extra_var_bindings: &HashMap<String, String>,
     var_to_type: &HashMap<String, Option<String>>,
+) -> (String, ArgKind) {
+    aggregate_var(agg)
+        .and_then(|v| var_value_sql(&v, var_to_alias, extra_var_bindings, var_to_type))
+        .unwrap_or_else(|| ("NULL".to_string(), ArgKind::Text))
+}
+
+/// Render a double so `decode_text_result` reads it back exactly.
+fn double_text(expr: &str) -> String {
+    format!("'d:' || ('x' || encode(float8send({expr}), 'hex'))::bit(64)::bigint::TEXT")
+}
+
+/// The aggregate call over `arg`, rendered as TEXT. `count_rows`: every row
+/// is a distinct binding with a non-NULL value, so `count` is `COUNT(*)`.
+///
+/// MIN/MAX are defined on any ORDERED type: long/ref/double use the native
+/// column; every other type orders on the decoded text, which
+/// build_value_decode_expr renders so that text order matches value order
+/// (instants fixed-width UTC). SUM/AVG are numeric: the native column where
+/// known, else the decoded text cast to NUMERIC.
+fn aggregate_call_sql(
+    agg: &edn::query::Aggregate,
+    arg: &str,
+    kind: ArgKind,
+    count_rows: bool,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let func_name = agg.func.0 .0.as_str();
-
     let sql_func = match func_name {
-        "count" => "COUNT",
+        "count" | "count-distinct" => "COUNT",
         "sum" => "SUM",
         "avg" => "AVG",
         "min" => "MIN",
@@ -6087,78 +6265,91 @@ fn build_aggregate_select(
         _ => {
             return Err(format!(
                 ":db.error/unsupported-aggregate Unsupported aggregate function '{}'. \
-             Supported aggregates: count, sum, avg, min, max. \
+             Supported aggregates: count, count-distinct, sum, avg, min, max. \
              Example: [:find (count ?e) :where [?e :person/name]]",
                 func_name
             )
             .into())
         }
     };
+    Ok(match (func_name, kind) {
+        ("count", _) if count_rows => "COUNT(*)::TEXT".to_string(),
+        ("count", _) => format!("COUNT({arg})::TEXT"),
+        ("count-distinct", _) => format!("COUNT(DISTINCT {arg})::TEXT"),
+        (_, ArgKind::Double) => double_text(&format!("{sql_func}({arg})")),
+        ("sum" | "avg", ArgKind::Text) => format!("{sql_func}(({arg})::NUMERIC)::TEXT"),
+        _ => format!("{sql_func}({arg})::TEXT"),
+    })
+}
 
-    // Get the variable argument
-    let var_arg = agg.args.iter().find_map(|arg| {
-        if let FnArg::Variable(v) = arg {
-            Some(format!("{}", v))
-        } else {
-            None
-        }
-    });
-
-    let inner_expr = if let Some(ref var_name) = var_arg {
-        if let Some((alias, col)) = var_to_alias.get(var_name.as_str()) {
-            if *col == "v" {
-                build_value_decode_expr(alias)
-            } else {
-                format!("{alias}.{col}")
-            }
-        } else if let Some(expr) = extra_var_bindings.get(var_name.as_str()) {
-            resolve_var_refs(expr, var_to_alias, extra_var_bindings)
-        } else {
-            "NULL".to_string()
-        }
-    } else {
-        "NULL".to_string()
+/// True when the aggregated tuple (the :find + :with variables) is a key of
+/// the current-state join, i.e. every join row is already a distinct tuple,
+/// so the aggregates need no DISTINCT.
+///
+/// Functional-dependency closure over the data patterns, starting from the
+/// tuple variables (constant :in / ground bindings are deliberately not
+/// counted as known: conservative, it can only cost a DISTINCT). A pattern's row is determined -- and all its variables with it -- when
+///   * its entity is known and its attribute is cardinality-one, or
+///   * its value is known and its attribute is :db/unique, or
+///   * its entity, attribute and value are all known (the table's PK).
+/// The tuple is a key iff every pattern's row is determined. The caller
+/// only asks for current-state queries (the projection holds one row per
+/// live (e, a, v)) with no joins that can repeat rows (fulltext / rules /
+/// get-else / relation inputs).
+fn tuple_is_row_key(
+    patterns: &[&edn::query::Pattern],
+    tuple_vars: &HashSet<String>,
+    schema_prefix: &str,
+) -> bool {
+    let cache = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix));
+    let mut known = tuple_vars.clone();
+    let non_value_known = |p: &PatternNonValuePlace, known: &HashSet<String>| match p {
+        PatternNonValuePlace::Variable(v) => known.contains(&format!("{}", v)),
+        PatternNonValuePlace::Placeholder => false,
+        PatternNonValuePlace::Entid(_) | PatternNonValuePlace::Ident(_) => true,
     };
-
-    // COUNT uses DISTINCT to match Datalog set semantics.
-    if func_name == "count" {
-        return Ok(format!("{}(DISTINCT {})::TEXT", sql_func, inner_expr));
+    let mut done = vec![false; patterns.len()];
+    loop {
+        let mut progressed = false;
+        for (i, p) in patterns.iter().enumerate() {
+            if done[i] {
+                continue;
+            }
+            let info = match &p.attribute {
+                PatternNonValuePlace::Ident(kw) => {
+                    cache.get_attribute_by_ident(&keyword_to_ident(kw))
+                }
+                PatternNonValuePlace::Entid(id) => cache.get_attribute(*id),
+                _ => None,
+            };
+            let e = non_value_known(&p.entity, &known);
+            let a = non_value_known(&p.attribute, &known);
+            let v = match &p.value {
+                PatternValuePlace::Variable(x) => known.contains(&format!("{}", x)),
+                PatternValuePlace::Placeholder => false,
+                _ => true,
+            };
+            let card_one = info.as_ref().map_or(false, |i| i.cardinality == "one");
+            let unique = info
+                .as_ref()
+                .map_or(false, |i| i.unique_constraint.is_some());
+            if (e && card_one) || (v && unique) || (e && a && v) {
+                done[i] = true;
+                progressed = true;
+                for place in [&p.entity, &p.attribute, &p.tx] {
+                    if let PatternNonValuePlace::Variable(x) = place {
+                        known.insert(format!("{}", x));
+                    }
+                }
+                if let PatternValuePlace::Variable(x) = &p.value {
+                    known.insert(format!("{}", x));
+                }
+            }
+        }
+        if !progressed {
+            return done.iter().all(|d| *d);
+        }
     }
-
-    // MIN/MAX are defined on any ORDERED type, not just numbers. Casting the
-    // decoded text to ::NUMERIC (correct for SUM/AVG) fails on instants,
-    // strings, keywords, booleans, uuids, bytes, and even doubles (the decode
-    // expr hex-encodes them behind a 'd:' prefix). Order without the numeric
-    // cast instead:
-    //
-    //   * long/ref: text ordering is WRONG ("9" > "61"), so keep the numeric
-    //     comparison to preserve existing correct behaviour.
-    //   * every other type: build_value_decode_expr already renders values so
-    //     that lexicographic TEXT ordering matches value ordering (instants
-    //     fixed-width UTC, doubles hex-encoded for monotonic sort), which is
-    //     the intended semantics, so order on the decoded text directly.
-    //
-    // The declared value type is known at plan time for a var bound to a typed
-    // attribute; use it to pick the arm. When the type is unknown (e.g. the
-    // var is not a plain value binding), fall back to text ordering, which is
-    // correct for all types except long/ref.
-    if func_name == "min" || func_name == "max" {
-        let numeric = var_arg
-            .as_deref()
-            .and_then(|v| var_to_type.get(v))
-            .and_then(|t| t.as_deref())
-            .map(|t| t == "long" || t == "ref")
-            .unwrap_or(false);
-        return if numeric {
-            Ok(format!("{}(({})::NUMERIC)::TEXT", sql_func, inner_expr))
-        } else {
-            Ok(format!("{}({})::TEXT", sql_func, inner_expr))
-        };
-    }
-
-    // SUM/AVG are numeric by definition; the decoded inner expression is text,
-    // so cast to numeric first.
-    Ok(format!("{}(({})::NUMERIC)::TEXT", sql_func, inner_expr))
 }
 
 /// Resolve VAR_REF:?varname placeholders in an expression to actual SQL column references.
