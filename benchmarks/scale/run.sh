@@ -33,7 +33,7 @@ SUSTAINED_S="${SUSTAINED_S:-0}"    # >0: run `sustained` on the largest scale fo
 SUSTAINED_CLIENTS="${SUSTAINED_CLIENTS:-32}"
 LOAD_MAX_S="${LOAD_MAX_S:-5400}"   # per-backend bulk-load cap => ceiling record
 EXT_LOAD_MAX_S="${EXT_LOAD_MAX_S:-$LOAD_MAX_S}"   # same, for sqlite-ext/duckdb (edn_t per tx)
-PHASE="${PHASE:-all}"              # all | load (load+check only) | bench (reuse loaded stores/DBs)
+PHASE="${PHASE:-all}"              # all | load (load+check only) | bench (reuse loaded stores/DBs) | sustained (only)
 PG_LOAD_JOBS="${PG_LOAD_JOBS:-32}"
 EXT_SCENARIO_FILTER="${EXT_SCENARIO_FILTER:-}"   # scenarios to skip on sqlite-ext/duckdb (space list)
 export LOAD_MAX_S
@@ -295,7 +295,7 @@ sampler() {  # BACKEND SCALE: every 10s -> logs/sampler-*.log (RSS, iostat, pg_s
   local be=$1 sc=$2 f="$OUT/logs/sampler-$1-$2.log"
   iostat -x -m 10 > "$OUT/logs/iostat-$be-$sc.log" 2>&1 &
   local ip=$!
-  trap 'kill $ip 2>/dev/null' RETURN
+  trap 'kill $ip 2>/dev/null; exit 0' TERM
   while true; do
     {
       echo "== $(date -u +%FT%TZ)"
@@ -407,6 +407,7 @@ log "results -> $OUT"
 LAST=""
 for sc in $SCALES; do
   d=$(gen "$sc"); LAST=$sc
+  [ "$PHASE" = sustained ] && continue
   export PGDATABASE=mentat_$sc
   grep -q "^$sc: " "$OUT/sizes.txt" 2>/dev/null || echo "$sc: $(mget "$d" n_datoms) datoms ($(mget "$d" n_users) users, $(mget "$d" n_issues) issues, $(mget "$d" n_hist) history updates)" >> "$OUT/sizes.txt"
   for be in $BACKENDS; do
