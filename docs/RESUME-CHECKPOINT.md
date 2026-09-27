@@ -62,3 +62,15 @@ Evaluate where it would help mentat, e.g.:
   in small-set mode).
 Deliverable: a short evaluation note (docs/) + a benchmark on a real hot path before
 adding any dependency (pin by crates.io version or git tag, never a local path).
+
+## Restart 2026-09-27 ~18:00 UTC (third wave; earlier agents timed out/stopped)
+Committed so far: 60c4a966 (>=5461 tx panic), cac32747 (interrupted query), 3a1d1cd8 (pg AVET + 1.10.0 bump).
+Uncommitted on floki: embedded issue-3 WIP (q_explain_temporal, scale_regressions.rs).
+Agents: PG bed19273 (M2 count, M3 auto-index, M4 edn_q_rows, M5 gate)
+        EXT ad3f21cd (E1 cache, E2 measure, E3 Quack packaging, E4 Quack bench, E5 gate)
+        EMBEDDED 4cffaed8 (M3 as_of idx+migration+O(1) open, M4 sqlite flags+mmap, M5 auto-index,
+                           M6 count, M7 shared options helper, M8 CLI, M9 model tests, M10 gate)
+Decided: commit root .cargo/config.toml [env] LIBSQLITE3_FLAGS=-USQLITE_ENABLE_MEMORY_MANAGEMENT
+  -DSQLITE_DEFAULT_MEMSTATUS=0 (8 clients: 20 -> 542 ops/s) + runtime mmap_size.
+DuckDB registry #2812: marked ready for review; fork CI runs "action_required" (needs a
+  DuckDB maintainer to approve; we got 403). Mergers are mostly sebastiaan-dev.
