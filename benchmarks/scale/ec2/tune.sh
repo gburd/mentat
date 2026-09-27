@@ -73,6 +73,6 @@ log_min_duration_statement = -1
 log_checkpoints = on
 EOF
 $PG/pg_ctl -D "$PGDATA" -m fast stop 2>/dev/null || true
-numactl --interleave=all $PG/pg_ctl -D "$PGDATA" -l $NV/pg.log -w -t 900 start
+${PG_NUMACTL:-numactl --interleave=all} $PG/pg_ctl -D "$PGDATA" -l $NV/pg.log -w -t 900 start
 $PG/psql -h /tmp -d postgres -XAtc "SHOW shared_buffers" -c "SHOW huge_pages" -c "SELECT version()"
 grep -E 'HugePages_(Total|Free|Rsvd)' /proc/meminfo

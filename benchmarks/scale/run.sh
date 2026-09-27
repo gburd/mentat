@@ -63,7 +63,7 @@ psql1() { psql -X -qAt -v ON_ERROR_STOP=1 "$@"; }
 knobs_txt() {
   {
     echo
-    echo "invocation $(date -u +%FT%TZ): PHASE=$PHASE SCALES='$SCALES' BACKENDS='$BACKENDS'"
+    echo "invocation $(date -u +%FT%TZ): PHASE=$PHASE SCALES='$SCALES' BACKENDS='$BACKENDS' cpu_affinity=$(taskset -pc $$ | sed 's/.*: //')"
     echo "  SCENARIOS='$SCENARIOS' EXTRA='$EXTRA' CLIENTS='$CLIENTS' REPS=$REPS MIN_S=$MIN_S MIN_N=$MIN_N MAX_S=$MAX_S"
     echo "  PROBE_S=$PROBE_S MIXED_S=$MIXED_S MIXED_READERS=$MIXED_READERS SUSTAINED_S=$SUSTAINED_S SUSTAINED_CLIENTS=$SUSTAINED_CLIENTS"
     echo "  LOAD_MAX_S=$LOAD_MAX_S EXT_LOAD_MAX_S=$EXT_LOAD_MAX_S PG_LOAD_JOBS=$PG_LOAD_JOBS EXT_SCENARIO_FILTER='$EXT_SCENARIO_FILTER'"
@@ -87,6 +87,7 @@ env_txt() {
     echo "governor:        $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo n/a)"
     echo "numa_balancing:  $(cat /proc/sys/kernel/numa_balancing 2>/dev/null)"
     echo "overcommit:      $(cat /proc/sys/vm/overcommit_memory)"
+    echo "pg_numactl:      ${PG_NUMACTL:-numactl --interleave=all} (postmaster)"
     echo "storage:";  lsblk -o NAME,SIZE,TYPE,MODEL,MOUNTPOINT | sed 's/^/  /'
     [ -e /proc/mdstat ] && { echo "mdstat:"; sed 's/^/  /' /proc/mdstat; }
     echo "data_fs:         $(df -hT "$WORK" | tail -1)"
@@ -249,7 +250,9 @@ pg_cold_warm() {  # restart PG, drop the OS page cache, time the first and the n
   local d=$1 sc=$2 n; n=$(mget "$d" n_datoms)
   [ -n "${PGDATA:-}" ] || { log "pg cold_vs_warm: PGDATA unset, skipped"; return; }
   log "pg $sc cold_vs_warm (restart + drop_caches)"
-  pg_ctl -D "$PGDATA" -m fast -w restart -l "$PGDATA/../pg.log" >/dev/null
+  # Restart under the same NUMA policy the postmaster was started with.
+  pg_ctl -D "$PGDATA" -m fast -w stop >/dev/null
+  ${PG_NUMACTL:-numactl --interleave=all} pg_ctl -D "$PGDATA" -w -t 900 start -l "$PGDATA/../pg.log" >/dev/null
   sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null || true
   for scen in point_lookup ref_traversal pull aggregate; do
     local lp="$WORK/pgb-cw-$scen-$sc"; rm -f "$lp".*
