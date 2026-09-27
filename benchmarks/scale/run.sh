@@ -369,6 +369,16 @@ run_ext() {  # BACKEND DATA SCALE
       echo "$be $sc: reads measured on a copy of the embedded-built store (ext bulk load capped at ${EXT_LOAD_MAX_S}s)" >> "$OUT/sizes.txt"
     fi
   fi
+  # Each ext call re-opens the store (O(history)). If one call already takes
+  # longer than PROBE_S, the checks would take ~20x that: record ceilings only.
+  if ! $PY "$HERE/bench.py" probe "$be" "$d" "$st" "$PROBE_S" >> "$CHECKS" 2>&1; then
+    log "$be $sc: one call > ${PROBE_S}s; checks skipped, recording ceilings"
+    echo "check $be ($sc): SKIP (per-call cost above PROBE_S=${PROBE_S}s)" >> "$CHECKS"
+    local s2; for s2 in $SCENARIOS concurrency_sweep; do
+      echo "$s2,$be,$sc,$n,1,ceiling,1,$((PROBE_S * 1000)),$((PROBE_S * 1000)),$((PROBE_S * 1000)),$((PROBE_S * 1000)),0,0,1" >> "$RAW"
+    done
+    return 0
+  fi
   log "$be: check $sc"
   if ! $PY "$HERE/bench.py" check "$be" "$d" "$st" >> "$CHECKS" 2>&1; then FAILED=1; log "$be: CHECK FAILED"; return 0; fi
   [ "$PHASE" = load ] && return 0

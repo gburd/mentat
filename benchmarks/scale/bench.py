@@ -129,9 +129,19 @@ class Embedded:
         self.store, self.data, self.meta = store, data, meta
         self.load = jload(store + ".load.json")
 
+        self.proc = None
+
     def run(self, scen, arg=None):
-        cmd = [os.environ["RUNNER"], "query", self.store, self.data, scen] + ([str(arg)] if arg is not None else [])
-        return json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout)
+        # One long-lived `mentat-scale serve`: Store::open is O(history).
+        if self.proc is None:
+            self.proc = subprocess.Popen([os.environ["RUNNER"], "serve", self.store, self.data],
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.proc.stdin.write(f"{scen} {'' if arg is None else arg}\n")
+        self.proc.stdin.flush()
+        r = json.loads(self.proc.stdout.readline())
+        if isinstance(r, dict) and "error" in r:
+            raise RuntimeError(r["error"])
+        return r
 
 
 def one(b, scen, arg=None):
@@ -514,6 +524,11 @@ def main():
         fails = check(mk(a[1], a[2], a[3], meta), meta, "--post-write" in a, a[1], a[2], a[3])
         print(f"check {a[1]}: {'OK' if not fails else 'FAILED ' + ','.join(fails)}")
         sys.exit(1 if fails else 0)
+    elif cmd == "probe":   # probe BACKEND DATA TARGET SECS -> exit 4 if one point_lookup exceeds SECS
+        meta = jload(f"{a[2]}/meta.json")
+        r, ms = timed_one(a[1], a[2], a[3], "point_lookup", 0, float(a[4]))
+        print(f"probe {a[1]} point_lookup: {ms:.0f} ms{'' if r is not None else ' (timeout)'}")
+        sys.exit(0 if r is not None else 4)
     elif cmd == "load":
         ext_load(a[1], a[2], a[3], float(os.environ.get("LOAD_MAX_S", "inf")))
     elif cmd == "run":

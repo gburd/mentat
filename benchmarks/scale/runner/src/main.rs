@@ -8,7 +8,8 @@
 //! `mentat-scale`: the embedded-mentat backend of benchmarks/scale.
 //!
 //!   mentat-scale load  DATA STORE                      bulk load; writes STORE.load.json + STORE.entids
-//!   mentat-scale query STORE DATA SCENARIO [ARG]       one query, result rows as JSON (for check.py)
+//!   mentat-scale query STORE DATA SCENARIO [ARG]       one query, result rows as JSON
+//!   mentat-scale serve STORE DATA                      same, "SCENARIO [ARG]" per stdin line (bench.py check)
 //!   mentat-scale bench STORE DATA SCALE REPS CLIENTS,.. SCEN,.. MIN_S MAX_S MIN_N PROBE_S
 //!   mentat-scale mixed STORE DATA SCALE REPS READERS SECS [WINDOW_CSV]
 //!   mentat-scale coldwarm STORE DATA SCALE SCEN,..     open + first call + 30 warm calls
@@ -197,11 +198,8 @@ fn b_json(b: &Binding) -> Json {
     }
 }
 
-/// `query`: run one scenario query with an explicit argument, print rows as JSON.
-fn cmd_query(store: &str, data: &str, scen: &str, arg: Option<&str>) {
-    let ctx = Ctx::new(store, data);
-    let qs = Queries::load();
-    let s = Store::open(store).unwrap();
+/// Run one scenario query with an explicit argument; rows as JSON.
+fn query_rows(s: &Store, ctx: &Ctx, qs: &Queries, scen: &str, arg: Option<&str>) -> mentat::Result<Json> {
     let emailv = |a: Option<&str>| {
         QueryInputs::with_value_sequence(vec![(var("?email"), email(a.unwrap().parse().unwrap()))])
     };
@@ -212,45 +210,58 @@ fn cmd_query(store: &str, data: &str, scen: &str, arg: Option<&str>) {
         "aggregate" => s.q_once(&qs.q3, None),
         "predicate_scan" => s.q_once(
             &qs.q4,
-            QueryInputs::with_value_sequence(vec![(
-                var("?min"),
-                TypedValue::Long(arg.unwrap().parse().unwrap()),
-            )]),
+            QueryInputs::with_value_sequence(vec![(var("?min"), TypedValue::Long(arg.unwrap().parse().unwrap()))]),
         ),
         "since" => s.q_once_since(&qs.since, None, ctx.t("t_since")),
         "input_bindings" => s.q_once(
             &qs.inputs,
             QueryInputs::with_collection(
                 var("?email"),
-                arg.unwrap()
-                    .split(',')
-                    .map(|u| email(u.parse().unwrap()))
-                    .collect(),
+                arg.unwrap().split(',').map(|u| email(u.parse().unwrap())).collect(),
             ),
         ),
         "pull" => {
             let e = ctx.entids[arg.unwrap().parse::<usize>().unwrap()];
-            s.q_once(
-                &qs.pull,
-                QueryInputs::with_value_sequence(vec![(var("?e"), TypedValue::Ref(e))]),
-            )
+            s.q_once(&qs.pull, QueryInputs::with_value_sequence(vec![(var("?e"), TypedValue::Ref(e))]))
         }
         other => panic!("unknown scenario {other}"),
-    }
-    .unwrap();
+    }?;
     let rows: Vec<Json> = match out.results {
-        QueryResults::Rel(r) => r
-            .rows()
-            .map(|row| Json::Array(row.iter().map(b_json).collect()))
-            .collect(),
+        QueryResults::Rel(r) => r.rows().map(|row| Json::Array(row.iter().map(b_json).collect())).collect(),
         QueryResults::Coll(c) => c.iter().map(|b| json!([b_json(b)])).collect(),
         QueryResults::Scalar(s) => s.iter().map(|b| json!([b_json(b)])).collect(),
-        QueryResults::Tuple(t) => t
-            .iter()
-            .map(|r| Json::Array(r.iter().map(b_json).collect()))
-            .collect(),
+        QueryResults::Tuple(t) => t.iter().map(|r| Json::Array(r.iter().map(b_json).collect())).collect(),
     };
-    println!("{}", Json::Array(rows));
+    Ok(Json::Array(rows))
+}
+
+/// `query`: one scenario query, rows as JSON.
+fn cmd_query(store: &str, data: &str, scen: &str, arg: Option<&str>) {
+    let ctx = Ctx::new(store, data);
+    let s = Store::open(store).unwrap();
+    println!("{}", query_rows(&s, &ctx, &Queries::load(), scen, arg).unwrap());
+}
+
+/// `serve`: open the store once; answer "SCEN [ARG]" lines from stdin with one
+/// JSON line each (for bench.py's checks: Store::open is O(history)).
+fn cmd_serve(store: &str, data: &str) {
+    use std::io::{BufRead, Write};
+    let ctx = Ctx::new(store, data);
+    let s = Store::open(store).unwrap();
+    let qs = Queries::load();
+    let out = std::io::stdout();
+    for line in std::io::stdin().lock().lines() {
+        let line = line.unwrap();
+        let mut it = line.split_whitespace();
+        let Some(scen) = it.next() else { continue };
+        let r = match query_rows(&s, &ctx, &qs, scen, it.next()) {
+            Ok(j) => j.to_string(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        };
+        let mut o = out.lock();
+        writeln!(o, "{r}").unwrap();
+        o.flush().unwrap();
+    }
 }
 
 /// Tempid -> entid maps the loader fills from tx reports ("u7", "l3", "i42").
@@ -824,6 +835,7 @@ fn main() {
     match a.get(1).copied() {
         Some("load") => cmd_load(a[2], a[3]),
         Some("query") => cmd_query(a[2], a[3], a[4], a.get(5).copied()),
+        Some("serve") => cmd_serve(a[2], a[3]),
         Some("bench") => {
             let clients: Vec<usize> = a[6].split(',').map(|x| x.parse().unwrap()).collect();
             let scens: Vec<&str> = a[7].split(',').collect();
