@@ -414,7 +414,7 @@ for sc in $SCALES; do
       *) log "unknown backend $be" ;;
     esac
   done
-  rm -f "$WORK"/pgb-*
+  rm -f "$WORK"/pgb-*-"$sc"-* "$WORK"/pgb-cw-*-"$sc".*   # this scale only (concurrent invocations)
 done
 
 if [ "$SUSTAINED_S" -gt 0 ] && [ -n "$LAST" ] && [ "$PHASE" != load ]; then

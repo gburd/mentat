@@ -469,6 +469,9 @@ def pglog(scen, scale, n_datoms, clients, op, rep, wall, prefixes):
                         errors += 1
                     else:
                         lat.append(int(p[2]) / 1e3)
+    if not lat and not errors:
+        print(f"pglog: no samples for {scen} {scale} c={clients} rep={rep}; row dropped", file=sys.stderr)
+        return
     print(row(scen, "pg", scale, n_datoms, clients, op, lat, float(wall), errors, rep))
 
 
