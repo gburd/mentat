@@ -100,7 +100,7 @@ env_txt() {
     echo "pg_configure:    $(pg_config --configure 2>/dev/null || echo n/a)"
     if psql1 -d postgres -c 'SELECT 1' >/dev/null 2>&1; then
       echo; echo "postgresql.conf (non-default settings):"
-      psql1 -d postgres -F ' = ' -c "SELECT name, setting || COALESCE(unit,'') FROM pg_settings WHERE source NOT IN ('default','override') ORDER BY 1" | sed 's/^/  /'
+      psql1 -d postgres -F ' = ' -c "SELECT name, current_setting(name) FROM pg_settings WHERE source NOT IN ('default','override') ORDER BY 1" | sed 's/^/  /'
     fi
   } > "$OUT/env.txt"
 }

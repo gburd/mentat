@@ -136,8 +136,12 @@ records the ratio at each scale. On r6id.metal, s_b is about 870 GiB.
 
 ### Knobs (env vars, all recorded in env.txt)
 
+- `PHASE`: `all` (default), `load` (load + check only), `bench` (reuse
+  already-loaded stores/DBs), or `sustained` (only the sustained run). Several
+  invocations can share one `OUT` dir: raw.csv, loads.csv and checks.txt are
+  appended, and env.txt records every invocation's knobs.
 - `SCALES`, `BACKENDS`: select what runs.
-- `SCENARIOS`: the single-client query scenarios.
+- `SCENARIOS`: the single-client query scenarios. `SCENARIOS=` (empty) means none.
 - `EXTRA`: `write_mixed concurrency_sweep cold_vs_warm`.
 - `CLIENTS`, `REPS`, `MIN_S`, `MIN_N`, `MAX_S`: sampling.
 - `PROBE_S`: the per-call ceiling (default 20 s).
@@ -147,7 +151,18 @@ records the ratio at each scale. On r6id.metal, s_b is about 870 GiB.
 - `MIXED_S`, `MIXED_READERS`, `SUSTAINED_S`, `SUSTAINED_CLIENTS`.
 - `EXT_SCENARIO_FILTER`: scenarios to skip on sqlite-ext and duckdb.
 - `PG_LOAD_JOBS`: parallel psql loaders.
+- `OPEN_PAR`: embedded stores opened at once (default 8). 128 concurrent
+  `Store::open` calls OOM-killed the runner at 10M datoms.
+- `CHECK_TIMEOUT_S`: per-call cap for the as_of check (default 120). A
+  timeout is a SKIP.
+- `PG_MAX_RESULT_ROWS`, `PG_TEMP_FILE_LIMIT`, `PG_SLOW_QUERY_MS`: pg_mentat
+  GUCs set per bench DB.
 - `DATA_ROOT`, `WORK`, `OUT`, `PY`, `RUNNER`, `SQLITE_EXT`, `DUCKDB_EXT`, `PGBIN`, `PGDATA`, `MENTAT_GIT`.
+
+The first full run is `benchmarks/results/scale-2026-09-27T010840Z/`, on
+r6id.metal at s/m/l/xl. Read its `summary.md` (findings plus tables) before
+comparing against it. Several of its phases overlapped, and its
+`findings.md` lists them.
 
 ## Compare two runs
 
