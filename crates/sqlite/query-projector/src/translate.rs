@@ -14,24 +14,27 @@ use mentat_core::{SQLTypeAffinity, SQLValueType, SQLValueTypeSet, Schema, ValueT
 
 use mentat_core::util::Either;
 
-use edn::query::Limit;
+use edn::query::{Element, Limit, Variable};
 
 use mentat_query_algebrizer::{
-    AlgebraicQuery, ColumnAlternation, ColumnConstraint, ColumnConstraintOrAlternation,
+    AlgebraicQuery, Column, ColumnAlternation, ColumnConstraint, ColumnConstraintOrAlternation,
     ColumnIntersection, ColumnName, ComputedTable, ConjoiningClauses, DatomsColumn, DatomsTable,
     OrderBy, QualifiedAlias, QueryValue, SourceAlias, TableAlias, VariableColumn,
 };
+
+use mentat_core::HasSchema;
+use query_projector_traits::aggregates::{SimpleAggregation, SimpleAggregationOp};
 
 use crate::{
     projected_column_for_var, query_projection, CombinedProjection, ConstantProjector, Projector,
 };
 
 use mentat_query_sql::{
-    ColumnOrExpression, Constraint, FromClause, GroupBy, Op, ProjectedColumn, Projection,
-    SelectQuery, TableList, TableOrSubquery, Values,
+    ColumnOrExpression, Constraint, Expression, FromClause, GroupBy, Op, ProjectedColumn,
+    Projection, SelectQuery, TableList, TableOrSubquery, Values,
 };
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use super::Result;
 
@@ -403,9 +406,9 @@ pub fn cc_to_exists(cc: ConjoiningClauses) -> SelectQuery {
 /// Take a query and wrap it as a subquery of a new query with the provided projection list.
 /// All limits, ordering, and grouping move to the outer query. The inner query is marked as
 /// distinct.
-fn re_project(mut inner: SelectQuery, projection: Projection) -> SelectQuery {
+fn re_project(mut inner: SelectQuery, projection: Projection, inner_distinct: bool) -> SelectQuery {
     let outer_distinct = inner.distinct;
-    inner.distinct = true;
+    inner.distinct = inner_distinct;
     let group_by = inner.group_by;
     inner.group_by = vec![];
     let order_by = inner.order;
@@ -476,6 +479,127 @@ fn re_project(mut inner: SelectQuery, projection: Projection) -> SelectQuery {
     }
 }
 
+/// The variables an aggregate query's inner (pre-aggregate) query projects.
+fn inner_vars(query: &AlgebraicQuery) -> BTreeSet<Variable> {
+    let mut vars: BTreeSet<Variable> = query
+        .find_spec
+        .columns()
+        .filter_map(|e| match e {
+            Element::Variable(v) | Element::Corresponding(v) => Some(v.clone()),
+            Element::Pull(p) => Some(p.var.clone()),
+            Element::Aggregate(a) => a.to_simple().map(|s| s.var),
+        })
+        .collect();
+    vars.extend(query.with.iter().cloned());
+    vars.extend(query.named_projection.iter().cloned());
+    vars
+}
+
+/// True if no two rows of the query's join can project the same `vars`, so the
+/// inner `SELECT DISTINCT` of an aggregate query is a no-op. Proven only for
+/// joins of plain `datoms` patterns with a constant attribute: a
+/// `:db.cardinality/one` datom is unique on (e, a), a cardinality-many one on
+/// (e, a, v) (the attribute fixes the type tag), so each alias needs e (and v
+/// if many) to be a projected variable or a constant.
+fn projected_vars_are_a_key(
+    schema: &Schema,
+    cc: &ConjoiningClauses,
+    vars: &BTreeSet<Variable>,
+) -> bool {
+    let constant = |alias: &TableAlias, col: DatomsColumn| {
+        cc.wheres.0.iter().find_map(|c| match c {
+            ColumnConstraintOrAlternation::Constraint(ColumnConstraint::Equals(
+                QualifiedAlias(a, Column::Fixed(ref c)),
+                ref v,
+            )) if a == alias && *c == col && !matches!(v, QueryValue::Column(_)) => Some(v),
+            _ => None,
+        })
+    };
+    let determined = |alias: &TableAlias, col: DatomsColumn| {
+        let qa = QualifiedAlias(alias.clone(), Column::Fixed(col.clone()));
+        constant(alias, col).is_some()
+            || vars.iter().any(|v| {
+                cc.column_bindings
+                    .get(v)
+                    .is_some_and(|cols| cols.contains(&qa))
+            })
+    };
+    !cc.from.is_empty()
+        && cc.from.iter().all(|SourceAlias(table, alias)| {
+            let attribute = match (table, constant(alias, DatomsColumn::Attribute)) {
+                (DatomsTable::Datoms, Some(QueryValue::Entid(a))) => schema.attribute_for_entid(*a),
+                _ => None,
+            };
+            attribute.is_some_and(|attr| {
+                determined(alias, DatomsColumn::Entity)
+                    && (!attr.multival || determined(alias, DatomsColumn::Value))
+            })
+        })
+}
+
+/// If the only aggregate is `(count ?x)`, on a column of one type tag, and the
+/// inner query projects nothing but `?x` and the grouping variables (no
+/// `:with`, no extra ordering variables), rewrite it to `count(DISTINCT ?x)`
+/// and return true: the inner DISTINCT is then unnecessary.
+fn count_distinct(
+    query: &AlgebraicQuery,
+    vars: &BTreeSet<Variable>,
+    outer: &mut Projection,
+) -> bool {
+    let mut aggs = query.find_spec.columns().filter_map(|e| match e {
+        Element::Aggregate(a) => Some(a.to_simple()),
+        _ => None,
+    });
+    let x = match (aggs.next(), aggs.next()) {
+        (Some(Some(s)), None) if s.op == SimpleAggregationOp::Count => s.var,
+        _ => return false,
+    };
+    let grouped = query
+        .find_spec
+        .columns()
+        .any(|e| matches!(e, Element::Variable(v) if *v == x));
+    let others: BTreeSet<Variable> = query
+        .find_spec
+        .columns()
+        .filter_map(|e| match e {
+            Element::Variable(v) => Some(v.clone()),
+            _ => None,
+        })
+        .collect();
+    if grouped
+        || !query.cc.known_type_set(&x).has_unique_type_tag()
+        || vars.len() != others.len() + 1
+    {
+        return false;
+    }
+    let name = VariableColumn::Variable(x).column_name();
+    let Projection::Columns(cols) = outer else {
+        return false;
+    };
+    for ProjectedColumn(c, _) in cols.iter_mut() {
+        if let ColumnOrExpression::Expression(e, _) = c {
+            if let Expression::Unary {
+                sql_op: "count",
+                arg,
+            } = e.as_mut()
+            {
+                if matches!(arg, ColumnOrExpression::ExistingColumn(n) if *n == name) {
+                    // Renders `count(DISTINCT(`?x`))`.
+                    *arg = ColumnOrExpression::Expression(
+                        Box::new(Expression::Unary {
+                            sql_op: "DISTINCT",
+                            arg: ColumnOrExpression::ExistingColumn(name),
+                        }),
+                        ValueType::Long,
+                    );
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Consume a provided `AlgebraicQuery` to yield a new
 /// `ProjectedSelect`.
 pub fn query_to_select(schema: &Schema, query: AlgebraicQuery) -> Result<ProjectedSelect> {
@@ -494,6 +618,17 @@ pub fn query_to_select(schema: &Schema, query: AlgebraicQuery) -> Result<Project
                 query: match pre_aggregate_projection {
                     // If we know we need a nested query for aggregation, build that first.
                     Some(pre_aggregate) => {
+                        // Datalog aggregates a *set*, hence the inner DISTINCT. Skip it
+                        // when the projected variables are provably a key of the join
+                        // (e.g. `(count ?i)` grouped by a card-one `?state`). Otherwise
+                        // a lone `(count ?x)` grouped by the other projected variables
+                        // becomes `count(DISTINCT ?x)` over the plain join: the same
+                        // set count, and cheaper in SQLite (one temp b-tree, no
+                        // materialized DISTINCT subquery).
+                        let vars = inner_vars(&query);
+                        let mut sql_projection = sql_projection;
+                        let inner_distinct = !projected_vars_are_a_key(schema, &query.cc, &vars)
+                            && !count_distinct(&query, &vars, &mut sql_projection);
                         let inner = cc_to_select_query(
                             pre_aggregate,
                             query.cc,
@@ -502,7 +637,8 @@ pub fn query_to_select(schema: &Schema, query: AlgebraicQuery) -> Result<Project
                             query.order,
                             query.limit,
                         );
-                        Box::new(re_project(inner, sql_projection)) // outer
+                        Box::new(re_project(inner, sql_projection, inner_distinct))
+                        // outer
                     }
                     None => Box::new(cc_to_select_query(
                         sql_projection,

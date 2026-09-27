@@ -1299,14 +1299,15 @@ fn test_project_aggregates() {
                     [?e :foo/bar ?t]]"#;
     let SQLQuery { sql, args } = translate(&schema, query);
 
-    // No outer DISTINCT: we aggregate or group by every variable.
+    // No outer DISTINCT: we aggregate or group by every variable. No inner one
+    // either: :foo/bar is cardinality-one, so ?e is a key of the rows.
     assert_eq!(
         sql,
         "SELECT * \
          FROM \
          (SELECT `?e` AS `?e`, max(`?t`) AS `(max ?t)` \
          FROM \
-         (SELECT DISTINCT \
+         (SELECT \
          `datoms00`.e AS `?e`, \
          `datoms00`.v AS `?t` \
          FROM `datoms` AS `datoms00` \
@@ -1327,7 +1328,7 @@ fn test_project_aggregates() {
          FROM \
          (SELECT max(`?t`) AS `(max ?t)` \
          FROM \
-         (SELECT DISTINCT \
+         (SELECT \
          `datoms00`.v AS `?t`, \
          `datoms00`.e AS `?e` \
          FROM `datoms` AS `datoms00` \
@@ -1402,7 +1403,7 @@ fn test_project_aggregates() {
         sql,
         "SELECT count(`?t`) AS `(count ?t)` \
          FROM \
-         (SELECT DISTINCT \
+         (SELECT \
          `datoms00`.v AS `?t`, \
          `datoms00`.e AS `?e` \
          FROM `datoms` AS `datoms00` \
@@ -1426,7 +1427,7 @@ fn test_project_the() {
          FROM \
          (SELECT `?e` AS `?e`, max(`?t`) AS `(max ?t)` \
          FROM \
-         (SELECT DISTINCT \
+         (SELECT \
          `datoms00`.e AS `?e`, \
          `datoms00`.v AS `?t` \
          FROM `datoms` AS `datoms00` \

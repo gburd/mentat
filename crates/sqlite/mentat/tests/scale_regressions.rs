@@ -329,3 +329,15 @@ fn test_no_shared_page_cache_contention() {
     let mmap: i64 = c.query_row("PRAGMA mmap_size", [], |r| r.get(0)).unwrap();
     assert_eq!(mmap, 1 << 30);
 }
+
+/// Large sorts (an aggregate's GROUP BY) on in-memory temp storage got slower
+/// each time one connection repeated them; temp b-trees are file-backed now.
+#[test]
+fn test_temp_store_is_file_backed() {
+    let store = Store::open("").expect("open");
+    let t: i64 = store
+        .sqlite_ref()
+        .query_row("PRAGMA temp_store", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(t, 1);
+}

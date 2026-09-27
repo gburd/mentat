@@ -86,12 +86,8 @@ fn make_connection(
         String::new()
     };
 
-    // See https://github.com/mozilla/mentat/issues/505 for details on temp_store
-    // pragma and how it might interact together with consumers such as Firefox.
-    // temp_store=2 is currently present to force SQLite to store temp files in memory.
-    // Some of the platforms we support do not have a tmp partition (e.g. Android)
-    // necessary to store temp files on disk. Ideally, consumers should be able to
-    // override this behaviour (see issue 505).
+    // temp_store: see `temp_store()`, and https://github.com/mozilla/mentat/issues/505
+    // for how it interacts with consumers such as Firefox.
     conn.execute_batch(&format!(
         "
         {}
@@ -99,14 +95,29 @@ fn make_connection(
         PRAGMA wal_autocheckpoint=32;
         PRAGMA journal_size_limit=3145728;
         PRAGMA foreign_keys=ON;
-        PRAGMA temp_store=2;
+        PRAGMA temp_store={};
         PRAGMA mmap_size={};
     ",
         initial_pragmas,
+        temp_store(),
         mmap_size()
     ))?;
 
     Ok(conn)
+}
+
+/// Per-connection `PRAGMA temp_store`: `MENTAT_TEMP_STORE` (0 default, 1
+/// file, 2 memory), else 1. Memory (the old default, for platforms with no
+/// writable temp directory, e.g. Android) makes a large sort get slower each
+/// time one connection repeats it: the scale suite's `(count ?i)` GROUP BY
+/// over 1.3M datoms went 0.6 -> 1.8 s over four runs, vs a flat 0.37 s on
+/// file-backed temp storage, which the OS page cache keeps in RAM anyway.
+fn temp_store() -> u8 {
+    match std::env::var("MENTAT_TEMP_STORE").as_deref().map(str::trim) {
+        Ok("0") => 0,
+        Ok("2") => 2,
+        _ => 1,
+    }
 }
 
 /// Per-connection `PRAGMA mmap_size`: `MENTAT_MMAP_SIZE` bytes (0 turns it
