@@ -121,6 +121,10 @@ pg_load() {  # pg_load DATA SCALE
   local d=$1 sc=$2 n; n=$(mget "$d" n_datoms)
   log "pg: reset + load $sc"
   psql1 -d postgres -c "DROP DATABASE IF EXISTS $PGDATABASE" -c "CREATE DATABASE $PGDATABASE"
+  # pg_mentat caps results at mentat.max_result_rows (default 100000) and
+  # ERRORS past it. q4/since return more rows than that from scale m up, so the
+  # bench lifts the cap (0 = unlimited). Other backends have no cap.
+  psql1 -d postgres -c "ALTER DATABASE $PGDATABASE SET mentat.max_result_rows = ${PG_MAX_RESULT_ROWS:-0}"
   psql1 -c "CREATE EXTENSION pg_mentat" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" \
         -c "CREATE SCHEMA bench" -c "CREATE TABLE bench.kv (key text primary key, value text)"
   local t0 t1 ta tv; t0=$(date +%s.%N)

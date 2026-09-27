@@ -16,9 +16,11 @@ Same schema (../phase2/schema.edn), same SEED/STATES/PRIORITIES/title words as
               string tempids ("u7", "l3", "i42"), because embedded mentat only
               accepts integer entids that it allocated itself. A later
               reference is written @@u7 / @@l3 / @@i42, and the loader replaces
-              it with the entid it recorded for that tempid. (A
-              (lookup-ref :user/email …) works too, and measured the same load
-              speed at scale s. The @@ form just skips an AVET probe per ref.)
+              it with the entid it recorded for that tempid. We tried
+              (lookup-ref :user/email …) first: on r6id.metal it held the
+              embedded load to about 11K datoms/s at 1M datoms, against about
+              55K/s with direct entids at 10M. Embedded lookup-ref resolution
+              (resolve_avs) is the bulk-load bottleneck.)
   * A history phase: about 5% of issues get a later :issue/state update, one
     hist-NNN file per issues shard. The loader records T_MID (the last tx of
     the initial load) and T_SINCE (the last tx before the final hist file),
