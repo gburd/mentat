@@ -186,6 +186,99 @@ SELECT edn_eval('/tmp/demo.mentat', '
   (mentat.store/q (mentat.store/db c) (quote [:find ?n :where [_ :person/name ?n]]))');
 ```
 
+## Running as a server (Quack)
+
+DuckDB v1.5.5 ships the core `quack` extension: a DuckDB process serves SQL
+over HTTP to other DuckDB clients. With mentat loaded in that server, every
+client gets `edn_t`/`edn_q`/`edn_pull`/`edn_eval` without loading (or even
+having) the mentat extension, and all of them share one long-lived process, so
+the store cache (above) stays warm across clients and connections.
+
+### Start and stop
+
+```sh
+export MENTAT_QUACK_TOKEN=$(openssl rand -hex 24)   # clients need this
+DUCKDB=/path/to/duckdb-v1.5.5 crates/duckdb/server/serve.sh
+# mentat quack server: quack:127.0.0.1:9494 pid 4242 log /run/user/1000/mentat-quack-9494.log
+crates/duckdb/server/stop.sh
+```
+
+`serve.sh` binds `127.0.0.1:9494` (`MENTAT_QUACK_HOST`, `MENTAT_QUACK_PORT`),
+writes a pidfile (`MENTAT_QUACK_PIDFILE`), runs the server in its own session
+so it outlives the shell, and keeps the CLI's stdin open (the DuckDB CLI serves
+only while stdin is open). The token reaches the server through `getenv()`, so
+it is not in any process's argv. `MENTAT_QUACK_FOREGROUND=1` runs it in the
+foreground for a supervisor; `server/mentat-quack.service` is an example
+systemd unit. Everything is done by the DuckDB statements the script writes:
+
+```sql
+LOAD quack; LOAD '/path/to/mentat.duckdb_extension';
+SELECT * FROM quack_serve('quack:127.0.0.1:9494',
+  token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
+```
+
+### Connect
+
+`quack_query(uri, sql, token =>, disable_ssl =>)` runs `sql` on the server and
+returns its rows. The client needs only `LOAD quack`, not mentat:
+
+```sql
+LOAD quack;
+SELECT * FROM quack_query('quack:127.0.0.1:9494',
+  $$SELECT edn_t('/srv/people.mentat', '[{:person/name "Alice"}]')$$,
+  token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
+SELECT * FROM quack_query('quack:127.0.0.1:9494',
+  $$SELECT * FROM edn_q('/srv/people.mentat', '[:find ?e ?n :where [?e :person/name ?n]]', '{}')$$,
+  token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
+```
+
+The result is an ordinary table, so it joins against the client's local tables.
+Python works the same way (`duckdb.connect().execute("LOAD quack")`, then the
+same `quack_query`). `ATTACH` also works against a live server and exposes its
+tables (`ATTACH 'quack:127.0.0.1:9494' AS r (TOKEN '…', DISABLE_SSL true);
+SELECT * FROM r.t; CREATE TABLE r.t2 AS …`), but NOT its functions:
+`SELECT * FROM r.edn_q(…)` fails with "Table Function with name edn_q does not
+exist". Call mentat through `quack_query`. A wrong token fails with
+`Invalid Input Error: Authentication failed` (no token: `Could not find a
+Quack authentication token`), for both `quack_query` and `ATTACH`.
+
+### Security
+
+- **The token is the only gate, and it grants everything.** A client with the
+  token runs arbitrary SQL in the server process: any mentat store path, and
+  DuckDB's own file functions (`read_text('/etc/…')`, `COPY … TO`) as the
+  server's OS user. Run the server as a dedicated user confined to the store
+  directory (the systemd unit does). DuckDB's in-process lockdowns do not help
+  here: with `enable_external_access = false`, `lock_configuration = true` or
+  `autoload_known_extensions = false` set, every Quack request fails with
+  HTTP 500 at v1.5.5. The server insists on a token of at least 4 characters;
+  use 32+ random ones.
+- **Bind address.** Quack accepts only localhost unless `allow_other_hostname`
+  is set; `serve.sh` sets it automatically when `MENTAT_QUACK_HOST` is not
+  loopback, and warns.
+- **TLS.** The server speaks plain HTTP (`serve.sh` passes
+  `disable_ssl => true`; v1.5.5 reports an `http://` listen URL either way).
+  Clients use `http://` for `localhost`/`127.0.0.1` and `https://` for any
+  other host unless given `disable_ssl => true` (`disable_ssl => false`
+  forces `https://` even on localhost). So for anything beyond one host,
+  terminate TLS in a reverse proxy in front of the server and connect to the
+  proxy without `disable_ssl`. Plain HTTP across a network sends the token in
+  clear text.
+- **Unsigned extension.** The server starts DuckDB with `-unsigned` because
+  mentat is not a signed community extension yet. That flag lets *the server*
+  load any unsigned extension file, including one a token holder asks it to
+  `LOAD`; treat that as part of "the token grants everything".
+- **Listen backlog** is 5 (`ss -ltn`); bursts of new connections beyond that
+  may be refused and retried by the client.
+
+### Caveats
+
+Quack is pre-2.0 at DuckDB v1.5.5 (`quack` build `c154811`): its wire protocol
+and function signatures may change in any DuckDB release, and the mentat
+extension is version-locked to v1.5.5 anyway (see "Pinned versions"). Server
+and clients must run the same DuckDB version. A server holds its stores open,
+so stop it before moving or deleting store files.
+
 ## Tests
 
 - `test/smoke.sh` — standalone DuckDB v1.5.5 CLI; asserts on every output line

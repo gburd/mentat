@@ -1,0 +1,34 @@
+# Example systemd unit: mentat in a DuckDB Quack server.
+#
+#   useradd --system --home-dir /var/lib/mentat --create-home mentat
+#   install -m 600 -o mentat /dev/null /etc/mentat/quack.env
+#   echo "MENTAT_QUACK_TOKEN=$(openssl rand -hex 24)" > /etc/mentat/quack.env
+#   sudo -u mentat duckdb -c 'INSTALL quack'     # once, into ~mentat/.duckdb
+#   systemctl enable --now mentat-quack
+#
+# Anyone with the token runs arbitrary SQL as this user (reads and writes any
+# file it can reach), so the unit confines it to /var/lib/mentat.
+[Unit]
+Description=mentat (Datalog) in a DuckDB Quack server
+After=network.target
+
+[Service]
+Type=simple
+User=mentat
+Environment=HOME=/var/lib/mentat
+Environment=MENTAT_QUACK_FOREGROUND=1
+Environment=MENTAT_QUACK_PIDFILE=/var/lib/mentat/quack.pid
+Environment=MENTAT_EXT=/opt/mentat/mentat.duckdb_extension
+Environment=DUCKDB=/usr/local/bin/duckdb
+EnvironmentFile=/etc/mentat/quack.env
+ExecStart=/opt/mentat/server/serve.sh
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/mentat
+
+[Install]
+WantedBy=multi-user.target
