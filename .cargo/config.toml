@@ -1,3 +1,13 @@
 [alias]
 cli = ["run", "--release", "-p", "mentat_cli"]
 debugcli = ["run", "-p", "mentat_cli"]
+
+# Bundled SQLite (libsqlite3-sys appends these after its own flags, so -U wins).
+# It compiles -DSQLITE_ENABLE_MEMORY_MANAGEMENT, which forces every connection
+# in the process into ONE page-cache group behind SQLITE_MUTEX_STATIC_LRU:
+# 8 reader threads on a 1M-datom store got 20 ops/s, vs 542 without it.
+# MEMSTATUS=0 drops the global malloc-statistics mutex too.
+# Downstream builds that don't use this file still get per-connection mmap
+# (mentat_db::new_connection), which sidesteps most of the same contention.
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

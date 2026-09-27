@@ -303,3 +303,29 @@ fn test_v1_store_is_upgraded_on_open() {
         .expect("tx after upgrade");
     assert_eq!(*r.tempids.get("y").unwrap(), next_e);
 }
+
+/// Bug 4: concurrent readers collapsed (8 threads on a 1M-datom store: 20
+/// ops/s). The bundled SQLite's SQLITE_ENABLE_MEMORY_MANAGEMENT puts every
+/// connection in one page-cache group behind a global mutex. The workspace
+/// undoes it (.cargo/config.toml LIBSQLITE3_FLAGS), and every connection maps
+/// the file (mmap_size) for builds that don't.
+#[test]
+fn test_no_shared_page_cache_contention() {
+    let path = temp_store("mmap");
+    let store = Store::open(&path).expect("open");
+    let c = store.sqlite_ref();
+    let opts: Vec<String> = c
+        .prepare("PRAGMA compile_options")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        !opts.iter().any(|o| o == "ENABLE_MEMORY_MANAGEMENT"),
+        "bundled SQLite still has ENABLE_MEMORY_MANAGEMENT: {opts:?}"
+    );
+    assert!(opts.iter().any(|o| o == "DEFAULT_MEMSTATUS=0"), "{opts:?}");
+    let mmap: i64 = c.query_row("PRAGMA mmap_size", [], |r| r.get(0)).unwrap();
+    assert_eq!(mmap, 1 << 30);
+}

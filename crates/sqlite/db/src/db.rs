@@ -100,11 +100,28 @@ fn make_connection(
         PRAGMA journal_size_limit=3145728;
         PRAGMA foreign_keys=ON;
         PRAGMA temp_store=2;
+        PRAGMA mmap_size={};
     ",
-        initial_pragmas
+        initial_pragmas,
+        mmap_size()
     ))?;
 
     Ok(conn)
+}
+
+/// Per-connection `PRAGMA mmap_size`: `MENTAT_MMAP_SIZE` bytes (0 turns it
+/// off), else 1 GiB. SQLite maps only the file's current size, growing the map
+/// up to this cap, so small stores pay nothing. Reads through the map skip the
+/// page cache, whose process-wide LRU mutex serialized concurrent readers when
+/// SQLite is built with SQLITE_ENABLE_MEMORY_MANAGEMENT (as the bundled one is
+/// unless LIBSQLITE3_FLAGS undoes it; see .cargo/config.toml). SQLite caps
+/// this at SQLITE_MAX_MMAP_SIZE (0x7fff0000, ~2 GB, by default): past that,
+/// the rest of a larger store is read through the page cache.
+fn mmap_size() -> i64 {
+    std::env::var("MENTAT_MMAP_SIZE")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1 << 30)
 }
 
 pub fn new_connection<T>(uri: T) -> rusqlite::Result<rusqlite::Connection>
