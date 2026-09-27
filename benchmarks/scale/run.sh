@@ -218,11 +218,18 @@ pg_explain() {  # plans of the generated SQL for each query
             ORDER BY total_exec_time DESC LIMIT 25" > "$OUT/logs/pg-stat-statements-$sc.txt" 2>&1 || true
 }
 
+# A store/DB that write_mixed or sustained has written to no longer matches
+# the generator's truth for state-dependent checks: those runs leave a
+# marker, and later checks of that target use --post-write.
+pw() { [ -f "$WORK/mutated-$1" ] && echo --post-write; true; }
+mutated() { touch "$WORK/mutated-$1"; }
+
 run_pg() {  # DATA SCALE
   local d=$1 sc=$2 n; n=$(mget "$d" n_datoms)
-  if [ "$PHASE" != bench ]; then pg_load "$d" "$sc" || return 0; fi
+  if [ "$PHASE" != bench ]; then pg_load "$d" "$sc" && rm -f "$WORK/mutated-pg-$sc" || return 0; fi
   log "pg: check $sc"
-  if ! $PY "$HERE/bench.py" check pg "$d" - >> "$CHECKS" 2>&1; then FAILED=1; log "pg: CHECK FAILED"; return 0; fi
+  # shellcheck disable=SC2046
+  if ! $PY "$HERE/bench.py" check pg "$d" - $(pw "pg-$sc") >> "$CHECKS" 2>&1; then FAILED=1; log "pg: CHECK FAILED"; return 0; fi
   [ "$PHASE" = load ] && return 0
   psql1 -c "SELECT pg_stat_statements_reset()" >/dev/null
   for scen in $SCENARIOS; do log "pg $sc $scen"; pg_bench_scen "$d" "$sc" "$scen"; done
@@ -239,6 +246,7 @@ run_pg() {  # DATA SCALE
     for rep in $(seq 1 "$REPS"); do
       log "pg $sc write_mixed rep=$rep"
       pgbench_point "$d" "$sc" "$rep" wm_read "$MIXED_READERS" "$MIXED_S" -f "$S/point_lookup.sql" -f "$S/ref_traversal.sql" &
+      mutated "pg-$sc"
       pgbench_point "$d" "$sc" "$rep" wm_write 1 "$MIXED_S" -f "$S/write_state.sql"
       wait
       $PY "$HERE/bench.py" pglog write_mixed "$sc" "$n" "$MIXED_READERS" read "$rep" "$MIXED_S" "$WORK/pgb-wm_read-$sc-$MIXED_READERS-$rep" >> "$RAW"
@@ -283,6 +291,7 @@ pg_sustained() {  # DATA SCALE: long mixed run + 10s samplers
   sampler pg "$sc" &
   local sp=$!
   local lp="$WORK/pgb-sus-$sc"; rm -f "$lp".* "$lp"w.*
+  mutated "pg-$sc"
   # shellcheck disable=SC2046
   pgbench -n -M simple -c "$SUSTAINED_CLIENTS" -j "$SUSTAINED_CLIENTS" -T "$SUSTAINED_S" -P 10 $(pg_vars "$d") \
      --log --log-prefix="$lp" -f "$S/point_lookup.sql" -f "$S/ref_traversal.sql" -f "$S/pull.sql" \
@@ -327,9 +336,11 @@ run_embedded() {  # DATA SCALE
     "$RUNNER" load "$d" "$st" > "$OUT/logs/embedded-load-$sc.json" 2> "$OUT/logs/embedded-load-$sc.log" || rc=$?
     ext_load_row embedded "$sc" "$n" "$st" || return 0
     [ $rc -eq 0 ] || return 0
+    rm -f "$WORK/mutated-embedded-$sc"
   fi
   log "embedded: check $sc"
-  if ! $PY "$HERE/bench.py" check embedded "$d" "$st" >> "$CHECKS" 2>&1; then FAILED=1; log "embedded: CHECK FAILED"; return 0; fi
+  # shellcheck disable=SC2046
+  if ! $PY "$HERE/bench.py" check embedded "$d" "$st" $(pw "embedded-$sc") >> "$CHECKS" 2>&1; then FAILED=1; log "embedded: CHECK FAILED"; return 0; fi
   [ "$PHASE" = load ] && return 0
   local scens=${SCENARIOS// /,}
   [ -n "$scens" ] && "$RUNNER" bench "$st" "$d" "$sc" "$REPS" 1 "$scens" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/embedded-$sc.log"
@@ -343,6 +354,7 @@ run_embedded() {  # DATA SCALE
   fi
   if has "$EXTRA" write_mixed; then
     log "embedded $sc write_mixed"
+    mutated "embedded-$sc"
     "$RUNNER" mixed "$st" "$d" "$sc" "$REPS" "$MIXED_READERS" "$MIXED_S" >> "$RAW" 2>> "$OUT/logs/embedded-$sc.log"
     $PY "$HERE/bench.py" check embedded "$d" "$st" --post-write >> "$CHECKS" 2>&1 || { FAILED=1; log "embedded: POST-WRITE CHECK FAILED"; }
   fi
@@ -376,6 +388,7 @@ run_ext() {  # BACKEND DATA SCALE
       [ -f "$e.load.json" ] && ! grep -q '"ceiling"' "$e.load.json" || return 0
       log "$be: load capped; benchmarking reads on a copy of $e"
       cp "$e" "$st"; cp "$e.entids" "$st.entids"; cp "$e.load.json" "$st.load.json"
+      [ -f "$WORK/mutated-embedded-$sc" ] && mutated "$be-$sc"
       echo "$be $sc: reads measured on a copy of the embedded-built store (ext bulk load capped at ${EXT_LOAD_MAX_S}s)" >> "$OUT/sizes.txt"
     fi
   fi
@@ -390,7 +403,8 @@ run_ext() {  # BACKEND DATA SCALE
     return 0
   fi
   log "$be: check $sc"
-  if ! $PY "$HERE/bench.py" check "$be" "$d" "$st" >> "$CHECKS" 2>&1; then FAILED=1; log "$be: CHECK FAILED"; return 0; fi
+  # shellcheck disable=SC2046
+  if ! $PY "$HERE/bench.py" check "$be" "$d" "$st" $(pw "$be-$sc") >> "$CHECKS" 2>&1; then FAILED=1; log "$be: CHECK FAILED"; return 0; fi
   [ "$PHASE" = load ] && return 0
   local scens="" s
   for s in $SCENARIOS; do has "$EXT_SCENARIO_FILTER" "$s" || scens="$scens,$s"; done
@@ -401,6 +415,7 @@ run_ext() {  # BACKEND DATA SCALE
   fi
   if has "$EXTRA" write_mixed; then
     log "$be $sc write_mixed"
+    mutated "$be-$sc"
     $PY "$HERE/bench.py" mixed "$be" "$d" "$st" "$sc" "$REPS" "$MIXED_READERS" "$MIXED_S" >> "$RAW" 2>> "$OUT/logs/$be-$sc.log"
     $PY "$HERE/bench.py" check "$be" "$d" "$st" --post-write >> "$CHECKS" 2>&1 || { FAILED=1; log "$be: POST-WRITE CHECK FAILED"; }
   fi
@@ -433,6 +448,7 @@ if [ "$SUSTAINED_S" -gt 0 ] && [ -n "$LAST" ] && [ "$PHASE" != load ]; then
   if has "$BACKENDS" pg; then pg_sustained "$d" "$LAST"; fi
   if has "$BACKENDS" embedded && [ -f "$WORK/embedded-$LAST.db" ]; then
     log "embedded $LAST sustained ${SUSTAINED_S}s"
+    mutated "embedded-$LAST"
     sampler embedded "$LAST" & sp=$!
     "$RUNNER" mixed "$WORK/embedded-$LAST.db" "$d" "$LAST" 1 "$SUSTAINED_CLIENTS" "$SUSTAINED_S" \
        "$OUT/logs/embedded-sustained-windows-$LAST.csv" >> "$RAW" 2>> "$OUT/logs/embedded-$LAST.log"
