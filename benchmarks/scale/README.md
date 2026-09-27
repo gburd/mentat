@@ -175,6 +175,14 @@ instance type only.
 - **Embedded as_of is slow.** It uses a correlated `NOT EXISTS` over
   `timelined_transactions`, which has no (e, a, v) index. It usually shows up
   as a `ceiling`.
+- **pg_mentat errors when a result has more than `mentat.max_result_rows`
+  rows** (default 100000). q4 and `since` pass that cap from scale m up, so
+  `run.sh` sets `ALTER DATABASE … SET mentat.max_result_rows = 0` (override
+  with `PG_MAX_RESULT_ROWS`).
+- **An interrupted embedded query panics.** The PROBE_S watchdog uses
+  `sqlite3_interrupt`, and mentat's projector unwraps the row iterator
+  (`query-projector/src/projectors/simple.rs`), which poisons the Store's
+  mutex. The runner catches the unwind and reopens its stores.
 - The pg loader uses explicit entids (bands of 1e10), because pg_mentat
   accepts caller-chosen ids. The embedded, sqlite-ext and duckdb loaders use
   tempids and lookup-refs, because embedded mentat only accepts entids it
