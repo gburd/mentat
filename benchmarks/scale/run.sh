@@ -257,15 +257,19 @@ pg_cold_warm() {  # restart PG, drop the OS page cache, time the first and the n
   for scen in point_lookup ref_traversal pull aggregate; do
     local lp="$WORK/pgb-cw-$scen-$sc"; rm -f "$lp".*
     # shellcheck disable=SC2046
-    pgbench -n -c 1 -t 31 $(pg_vars "$d") --log --log-prefix="$lp" -f "$HERE/pgbench/$scen.sql" > /dev/null 2>&1
+    # 1 cold + 30 warm calls, bounded to ~MAX_S of warm time (aggregate at l is ~20 s/call).
+    pgbench -n -c 1 -t 1 $(pg_vars "$d") --log --log-prefix="$lp.c" -f "$HERE/pgbench/$scen.sql" > /dev/null 2>&1
+    local wt=$(( MIN_S * 2 ))
+    pgbench -n -c 1 -T "$wt" $(pg_vars "$d") --log --log-prefix="$lp.w" -f "$HERE/pgbench/$scen.sql" > /dev/null 2>&1
     $PY - "$lp" "$scen" "$sc" "$n" >> "$RAW" <<'EOF'
 import glob, sys
 sys.path.insert(0, __import__("os").environ["HERE"])
 from bench import row
 lp, scen, sc, n = sys.argv[1:]
-lat = [int(l.split()[2]) / 1e3 for f in glob.glob(lp + "*") for l in open(f)]
-print(row("cold_vs_warm", "pg", sc, n, 1, f"cold_{scen}", lat[:1], lat[0] / 1e3, 0, 1))
-print(row("cold_vs_warm", "pg", sc, n, 1, f"warm_{scen}", lat[1:], sum(lat[1:]) / 1e3, 0, 1))
+rd = lambda p: [int(l.split()[2]) / 1e3 for f in glob.glob(p + "*") for l in open(f)][:30]  # noqa: E731
+cold, warm = rd(lp + ".c"), rd(lp + ".w")
+print(row("cold_vs_warm", "pg", sc, n, 1, f"cold_{scen}", cold, cold[0] / 1e3, 0, 1))
+print(row("cold_vs_warm", "pg", sc, n, 1, f"warm_{scen}", warm, sum(warm) / 1e3, 0, 1))
 EOF
   done
 }
