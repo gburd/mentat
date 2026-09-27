@@ -1,0 +1,17 @@
+pgbench (16.15)
+WARNING:  mentat slow query (16343.4ms > 100ms threshold): datalog=[:find ?state (count ?i) :where [?i :issue/state ?state]], sql=SELECT CASE datoms0.value_type_tag WHEN 0 THEN datoms0.v_ref::TEXT WHEN 1 THEN datoms0.v_bool::TEXT WHEN 2 THEN datoms0.v_long::TEXT WHEN 3 THEN 'd:' || ('x' || encode(float8send(datoms0.v_double), 'hex'))::bit(64)::bigint::TEXT WHEN 4 THEN to_char(datoms0.v_instant AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') WHEN 7 THEN datoms0.v_text WHEN 8 THEN ':' || datoms0.v_keyword WHEN 10 THEN datoms0.v_uuid::TEXT WHEN 11 THEN encode(datoms0.v_bytes, 'hex') ELSE NULL::TEXT END, COUNT(DISTINCT da
+WARNING:  mentat slow query (16342.3ms > 100ms threshold): datalog=[:find ?state (count ?i) :where [?i :issue/state ?state]], sql=SELECT CASE datoms0.value_type_tag WHEN 0 THEN datoms0.v_ref::TEXT WHEN 1 THEN datoms0.v_bool::TEXT WHEN 2 THEN datoms0.v_long::TEXT WHEN 3 THEN 'd:' || ('x' || encode(float8send(datoms0.v_double), 'hex'))::bit(64)::bigint::TEXT WHEN 4 THEN to_char(datoms0.v_instant AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') WHEN 7 THEN datoms0.v_text WHEN 8 THEN ':' || datoms0.v_keyword WHEN 10 THEN datoms0.v_uuid::TEXT WHEN 11 THEN encode(datoms0.v_bytes, 'hex') ELSE NULL::TEXT END, COUNT(DISTINCT da
+WARNING:  mentat slow query (16265.8ms > 100ms threshold): datalog=[:find ?state (count ?i) :where [?i :issue/state ?state]], sql=SELECT CASE datoms0.value_type_tag WHEN 0 THEN datoms0.v_ref::TEXT WHEN 1 THEN datoms0.v_bool::TEXT WHEN 2 THEN datoms0.v_long::TEXT WHEN 3 THEN 'd:' || ('x' || encode(float8send(datoms0.v_double), 'hex'))::bit(64)::bigint::TEXT WHEN 4 THEN to_char(datoms0.v_instant AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') WHEN 7 THEN datoms0.v_text WHEN 8 THEN ':' || datoms0.v_keyword WHEN 10 THEN datoms0.v_uuid::TEXT WHEN 11 THEN encode(datoms0.v_bytes, 'hex') ELSE NULL::TEXT END, COUNT(DISTINCT da
+WARNING:  mentat slow query (16492.3ms > 100ms threshold): datalog=[:find ?state (count ?i) :where [?i :issue/state ?state]], sql=SELECT CASE datoms0.value_type_tag WHEN 0 THEN datoms0.v_ref::TEXT WHEN 1 THEN datoms0.v_bool::TEXT WHEN 2 THEN datoms0.v_long::TEXT WHEN 3 THEN 'd:' || ('x' || encode(float8send(datoms0.v_double), 'hex'))::bit(64)::bigint::TEXT WHEN 4 THEN to_char(datoms0.v_instant AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') WHEN 7 THEN datoms0.v_text WHEN 8 THEN ':' || datoms0.v_keyword WHEN 10 THEN datoms0.v_uuid::TEXT WHEN 11 THEN encode(datoms0.v_bytes, 'hex') ELSE NULL::TEXT END, COUNT(DISTINCT da
+transaction type: /nvme/mentat/benchmarks/scale/pgbench/aggregate.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 60 s
+number of transactions actually processed: 4
+number of failed transactions: 0 (0.000%)
+latency average = 16361.423 ms
+initial connection time = 1.194 ms
+tps = 0.061119 (without initial connection time)

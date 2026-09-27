@@ -1,0 +1,4 @@
+mentat_s|{mentat.max_result_rows=0,mentat.temp_file_limit=100GB}
+mentat_m|{mentat.max_result_rows=0,mentat.temp_file_limit=100GB}
+mentat_l|{mentat.max_result_rows=0,mentat.temp_file_limit=100GB}
+mentat_xl|{mentat.max_result_rows=0,mentat.temp_file_limit=100GB}

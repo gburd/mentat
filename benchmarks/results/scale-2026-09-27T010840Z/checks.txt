@@ -1,0 +1,586 @@
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check sqlite-ext: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check pg (m, first run): ERROR mentat.max_result_rows=100000 cap exceeded by predicate_scan; re-checked with the cap lifted, below
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+== pg m re-check (mentat.max_result_rows=0)
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: OK
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check sqlite-ext: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[80000]: PASS
+check point_lookup[159999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: OK
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check duckdb: OK
+
+check embedded: HARNESS ERROR (stale mentat-scale binary on the box lacked the serve command); re-run below
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+
+check embedded: HARNESS ERROR (stale mentat-scale binary on the box lacked the serve command); re-run below
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check duckdb: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check point_lookup[0]: PASS
+check point_lookup[80000]: PASS
+check point_lookup[159999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: OK
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+
+thread 'main' panicked at benchmarks/scale/runner/src/main.rs:262:28:
+called `Result::unwrap()` on an `Err` value: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+probe sqlite-ext point_lookup: 12362 ms
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check point_lookup[0]: PASS
+check point_lookup[80000]: PASS
+check point_lookup[159999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check sqlite-ext: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: SKIP (timeout > 120s)
+check as_of[1]: SKIP (previous as_of timed out)
+check as_of[2]: SKIP (previous as_of timed out)
+check input_bindings: PASS
+check sqlite-ext: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+Traceback (most recent call last):
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 554, in <module>
+    main()
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 527, in main
+    fails = check(mk(a[1], a[2], a[3], meta), meta, "--post-write" in a, a[1], a[2], a[3])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 221, in check
+    r = one(b, "aggregate")
+        ^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 160, in one
+    return b.q(Q["q3"], {})
+           ^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 120, in q
+    r = json.loads(self.sql(s))
+                   ^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 115, in sql
+    return subprocess.run(["psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", s],
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.11/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', 'SELECT edn_q($q$[:find ?state (count ?i) :where [?i :issue/state ?state]]$q$, $j${}$j$::jsonb)::text']' returned non-zero exit status 1.
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+Traceback (most recent call last):
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 554, in <module>
+    main()
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 527, in main
+    fails = check(mk(a[1], a[2], a[3], meta), meta, "--post-write" in a, a[1], a[2], a[3])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 221, in check
+    r = one(b, "aggregate")
+        ^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 160, in one
+    return b.q(Q["q3"], {})
+           ^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 120, in q
+    r = json.loads(self.sql(s))
+                   ^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 115, in sql
+    return subprocess.run(["psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", s],
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.11/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', 'SELECT edn_q($q$[:find ?state (count ?i) :where [?i :issue/state ?state]]$q$, $j${}$j$::jsonb)::text']' returned non-zero exit status 1.
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+== pg xl re-check (mentat.temp_file_limit=100GB; the first two xl checks hit the 1GB default in aggregate)
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+Traceback (most recent call last):
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 554, in <module>
+    main()
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 527, in main
+    fails = check(mk(a[1], a[2], a[3], meta), meta, "--post-write" in a, a[1], a[2], a[3])
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 247, in check
+    r = one(b, "predicate_scan", 4)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 162, in one
+    return b.q(Q["q4"], {"inputs": [arg]})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 120, in q
+    r = json.loads(self.sql(s))
+                   ^^^^^^^^^^^
+  File "/nvme/mentat/benchmarks/scale/bench.py", line 115, in sql
+    return subprocess.run(["psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1", "-c", s],
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.11/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', 'SELECT edn_q($q$[:find ?i ?title ?priority :in $ ?min :where [?i :issue/state :state/open] [?i :issue/priority ?priority] [?i :issue/title ?title] [(>= ?priority ?min)]]$q$, $j${"inputs": [4]}$j$::jsonb)::text']' returned non-zero exit status 1.
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: SKIP (timeout > 120s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+== pg xl re-check #3 (q4 result exceeds PG's 256MB jsonb limit at xl; recorded as SKIP/ceiling)
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: SKIP (backend limit: ERROR:  total size of jsonb object elements exceeds the maximum of 268435455 bytes)
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[80000]: PASS
+check point_lookup[159999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: PASS
+check as_of[0]: SKIP (timeout > 60s)
+check ref_traversal[0]: PASS
+check as_of[1]: SKIP (previous as_of timed out)
+check ref_traversal[1]: PASS
+check as_of[2]: SKIP (previous as_of timed out)
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: PASS
+check since: PASS
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+check as_of[0]: SKIP (timeout > 120s)
+check as_of[1]: SKIP (previous as_of timed out)
+check as_of[2]: SKIP (previous as_of timed out)
+check input_bindings: PASS
+check embedded: OK
+check point_lookup[0]: PASS
+check point_lookup[80000]: PASS
+check point_lookup[159999]: PASS
+check aggregate.sum: PASS
+== NOTE (harness false positive, fixed in aa744ad6): the next two blocks re-checked pg l/xl AFTER write_mixed had mutated them, without --post-write. Only the state-dependent checks (by_state, predicate_scan, since) differ, by exactly the write_mixed updates. All other checks PASS.
+
+check aggregate.by_state: FAIL ({':state/closed': 2600208, ':state/in-progress': 2600236, ':state/open': 2600471, ':state/reopened': 2602203, ':state/resolved': 2596882}, {':state/open': 2600341, ':state/in-progress': 2600160, ':state/closed': 2600213, ':state/resolved': 2596876, ':state/reopened': 2602410})
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: FAIL (1039447, 1039352)
+check since: FAIL (38802, 2497)
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: FAILED aggregate.by_state,predicate_scan,since
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+check aggregate.sum: PASS
+check aggregate.by_state: FAIL ({':state/closed': 8001517, ':state/in-progress': 8004259, ':state/open': 7997805, ':state/reopened': 8000162, ':state/resolved': 7996257}, {':state/open': 7997738, ':state/in-progress': 8004229, ':state/closed': 8001726, ':state/resolved': 7996294, ':state/reopened': 8000013})
+check as_of[0]: PASS
+check ref_traversal[0]: PASS
+check as_of[1]: PASS
+check ref_traversal[1]: PASS
+check as_of[2]: PASS
+check ref_traversal[2]: PASS
+check input_bindings: PASS
+check predicate_scan: SKIP (backend limit: ERROR:  total size of jsonb object elements exceeds the maximum of 268435455 bytes)
+check since: FAIL (38448, 2513)
+check pull[0]: PASS
+check pull[49999]: PASS
+check pull[50000]: PASS
+check pull[99999]: PASS
+check pg: FAILED aggregate.by_state,since
+check point_lookup[0]: PASS
+check point_lookup[800]: PASS
+check point_lookup[1599]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[8000]: PASS
+check point_lookup[15999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[80000]: PASS
+check point_lookup[159999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK
+check point_lookup[0]: PASS
+check point_lookup[250000]: PASS
+check point_lookup[499999]: PASS
+check aggregate.sum: PASS
+check as_of[0]: PASS
+check as_of[1]: PASS
+check as_of[2]: PASS
+check input_bindings: PASS
+check pg: OK

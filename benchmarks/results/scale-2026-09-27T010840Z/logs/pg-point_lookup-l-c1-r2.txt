@@ -1,0 +1,13 @@
+pgbench (16.15)
+transaction type: /nvme/mentat/benchmarks/scale/pgbench/point_lookup.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 10 s
+number of transactions actually processed: 741
+number of failed transactions: 0 (0.000%)
+latency average = 13.500 ms
+initial connection time = 1.314 ms
+tps = 74.075955 (without initial connection time)

@@ -1,0 +1,12 @@
+331.301|10511|3482307|SELECT 1 FROM edn_t('[{:db/id 12007833500 :issue/title "Issue 7833500: perf regression" :issue/state :state/closed :issue/priority 3 :issue/assignee 10000069511
+106.056|571|60558|SELECT edn_q($1, $2)
+0.549|99182|54491|SELECT edn_q($1, jsonb_build_object($2, jsonb_build_array($3 || $4::int || $5)))
+2.111|13854|29249|SELECT edn_q($1, jsonb_build_object($2, $3::bigint))
+1.793|16112|28888|SELECT edn_q($1, jsonb_build_object($2, jsonb_build_array($3 || $4::int || $5), $6, $7::bigint))
+0.659|41709|27469|SELECT edn_pull($1, $2::bigint + $3::bigint)
+1.000|27191|27200|SELECT edn_q($1, jsonb_build_object($2, jsonb_build_array((SELECT jsonb_agg($3 || (($4::int + g * $5) % $6::int) || $7) FROM generate_series($8, $9) g))))
+2.489|4|10|SELECT mentat_explain($1, $2::jsonb)::text
+1.064|1|1|SELECT pg_stat_statements_reset()
+0.610|1|1|select pg_size_pretty(pg_database_size(current_database()))
+0.470|1|0|INSERT INTO bench.kv VALUES ($1, (SELECT max(tx) FROM mentat.transactions))
+0.007|64|0|SELECT value FROM bench.kv WHERE key=$1

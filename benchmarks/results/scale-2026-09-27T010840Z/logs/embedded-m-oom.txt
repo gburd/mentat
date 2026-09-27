@@ -1,0 +1,1 @@
+[14721.724359] Out of memory: Killed process 297741 (mentat-scale) total-vm:84169204kB, anon-rss:79686000kB, file-rss:2168kB, shmem-rss:0kB, UID:1000 pgtables:156896kB oom_score_adj:0

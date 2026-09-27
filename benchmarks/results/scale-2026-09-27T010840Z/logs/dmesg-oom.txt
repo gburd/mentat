@@ -1,0 +1,16 @@
+[14720.777328] python invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0
+[14720.778241]  oom_kill_process+0xfc/0x220
+[14720.821286] [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+[14720.976133] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0-1,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/init.scope,task=systemd,pid=74429,uid=1000
+[14720.977607] Out of memory: Killed process 74429 (systemd) total-vm:22836kB, anon-rss:3072kB, file-rss:10480kB, shmem-rss:0kB, UID:1000 pgtables:88kB oom_score_adj:100
+[14721.248917] python invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0
+[14721.249811]  oom_kill_process+0xfc/0x220
+[14721.291660] [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+[14721.445634] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0-1,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/init.scope,task=(sd-pam),pid=74431,uid=1000
+[14721.447106] Out of memory: Killed process 74431 ((sd-pam)) total-vm:175120kB, anon-rss:7260kB, file-rss:2080kB, shmem-rss:0kB, UID:1000 pgtables:104kB oom_score_adj:100
+[14721.526525] python invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+[14721.527337]  oom_kill_process+0xfc/0x220
+[14721.569636] [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+[14721.722676] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0-1,global_oom,task_memcg=/user.slice/user-1000.slice/session-14.scope,task=mentat-scale,pid=297741,uid=1000
+[14721.724359] Out of memory: Killed process 297741 (mentat-scale) total-vm:84169204kB, anon-rss:79686000kB, file-rss:2168kB, shmem-rss:0kB, UID:1000 pgtables:156896kB oom_score_adj:0
+[14731.223987] oom_reaper: reaped process 297741 (mentat-scale), now anon-rss:0kB, file-rss:2168kB, shmem-rss:0kB

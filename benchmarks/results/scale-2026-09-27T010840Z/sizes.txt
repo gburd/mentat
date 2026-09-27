@@ -1,0 +1,11 @@
+s: 984803 datoms (1600 users, 130000 issues, 6492 history updates)
+m: 9850258 datoms (16000 users, 1300000 issues, 64986 history updates)
+m: 9850258 datoms (16000 users, 1300000 issues, 64986 history updates)
+pg m: pg_database_size=8493931543 (8.0G) shared_buffers=919707058176 (857G) ratio=.009
+l: 98474009 datoms (160000 users, 13000000 issues, 650127 history updates)
+pg s: pg_database_size=840973335 (803M) shared_buffers=919707058176 (857G) ratio=0
+pg l: pg_database_size=85055028247 (80G) shared_buffers=919707058176 (857G) ratio=.092
+sqlite-ext m: reads measured on a copy of the embedded-built store (ext bulk load capped at 900s)
+xl: 303006946 datoms (500000 users, 40000000 issues, 2000847 history updates)
+embedded m concurrency_sweep: first attempt opened 128 Stores concurrently; they serialized on SQLite malloc mutex, grew to 80 GB RSS and were OOM-killed after 25 min (logs/embedded-m-open128-gdb.txt.gz). Rerun with batched opens (OPEN_PAR=8).
+pg xl: pg_database_size=261716278295 (244G) shared_buffers=919707058176 (857G) ratio=.284

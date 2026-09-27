@@ -1,0 +1,10 @@
+datoms_ref_new|2306 MB|1973 MB
+current_ref|1294 MB|899 MB
+datoms_text_new|949 MB|826 MB
+datoms_keyword_new|822 MB|704 MB
+datoms_long_new|696 MB|601 MB
+datoms_instant_new|667 MB|571 MB
+current_text|410 MB|260 MB
+current_keyword|362 MB|225 MB
+current_instant|293 MB|180 MB
+current_long|292 MB|179 MB

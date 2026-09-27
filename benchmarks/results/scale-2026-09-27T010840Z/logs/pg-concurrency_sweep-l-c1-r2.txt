@@ -1,0 +1,31 @@
+pgbench (16.15)
+transaction type: multiple scripts
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 10 s
+number of transactions actually processed: 1040
+number of failed transactions: 0 (0.000%)
+latency average = 9.617 ms
+initial connection time = 1.318 ms
+tps = 103.985879 (without initial connection time)
+SQL script 1: /nvme/mentat/benchmarks/scale/pgbench/point_lookup.sql
+ - weight: 1 (targets 33.3% of total)
+ - 350 transactions (33.7% of total, tps = 34.995248)
+ - number of failed transactions: 0 (0.000%)
+ - latency average = 13.557 ms
+ - latency stddev = 0.216 ms
+SQL script 2: /nvme/mentat/benchmarks/scale/pgbench/ref_traversal.sql
+ - weight: 1 (targets 33.3% of total)
+ - 338 transactions (32.5% of total, tps = 33.795411)
+ - number of failed transactions: 0 (0.000%)
+ - latency average = 14.612 ms
+ - latency stddev = 0.368 ms
+SQL script 3: /nvme/mentat/benchmarks/scale/pgbench/pull.sql
+ - weight: 1 (targets 33.3% of total)
+ - 352 transactions (33.8% of total, tps = 35.195220)
+ - number of failed transactions: 0 (0.000%)
+ - latency average = 0.894 ms
+ - latency stddev = 0.102 ms

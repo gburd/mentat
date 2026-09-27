@@ -1,0 +1,11 @@
+datoms_ref_new|23 GB|19 GB
+current_ref|13 GB|9070 MB
+datoms_text_new|9661 MB|8424 MB
+datoms_keyword_new|8164 MB|6987 MB
+datoms_long_new|6924 MB|5975 MB
+datoms_instant_new|6667 MB|5716 MB
+current_text|4164 MB|2648 MB
+current_keyword|3567 MB|2239 MB
+current_instant|2945 MB|1814 MB
+current_long|2933 MB|1804 MB
+transactions|1952 kB|712 kB

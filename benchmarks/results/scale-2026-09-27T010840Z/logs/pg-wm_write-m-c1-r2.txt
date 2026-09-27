@@ -1,0 +1,13 @@
+pgbench (16.15)
+transaction type: /nvme/mentat/benchmarks/scale/pgbench/write_state.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 60 s
+number of transactions actually processed: 38311
+number of failed transactions: 0 (0.000%)
+latency average = 1.566 ms
+initial connection time = 1.408 ms
+tps = 638.522594 (without initial connection time)
