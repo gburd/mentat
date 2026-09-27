@@ -39,11 +39,13 @@ pub enum InputResult {
     Eof,
 }
 
-/// Reads input from `stdin`
+/// Reads input from `stdin`, a TTY, or (batch mode) any `BufRead`.
 pub struct InputReader {
     buffer: String,
     interface: Option<Interface<DefaultTerminal>>,
     in_process_cmd: Option<Command>,
+    /// Batch input: read from here, with no prompts.
+    source: Option<Box<dyn std::io::BufRead>>,
 }
 
 enum UserAction {
@@ -78,7 +80,18 @@ impl InputReader {
             buffer: String::new(),
             interface,
             in_process_cmd: None,
+            source: None,
         }
+    }
+
+    /// True if an incomplete command is buffered.
+    pub fn has_pending(&self) -> bool {
+        self.in_process_cmd.is_some()
+    }
+
+    /// Read lines from `input` instead of stdin, without prompts.
+    pub fn set_source(&mut self, input: Box<dyn std::io::BufRead>) {
+        self.source = Some(input);
     }
 
     /// Returns whether the `InputReader` is reading from a TTY.
@@ -101,6 +114,11 @@ impl InputReader {
             prompt = prompt,
             reset = color::Fg(color::Reset)
         );
+        let prompt = if self.source.is_some() {
+            String::new()
+        } else {
+            prompt
+        };
         let line = match self.read_line(prompt.as_str()) {
             UserAction::TextInput(s) => s,
             UserAction::Interrupt if self.in_process_cmd.is_some() => {
@@ -134,6 +152,7 @@ impl InputReader {
                 Ok(Command::QueryPrepared(args.clone() + "\n" + &line))
             }
             Some(Command::Query(ref args)) => Ok(Command::Query(args.clone() + "\n" + &line)),
+            Some(Command::Eval(ref args)) => Ok(Command::Eval(args.clone() + "\n" + &line)),
             Some(Command::Transact(ref args)) => Ok(Command::Transact(args.clone() + "\n" + &line)),
             _ => command(&self.buffer),
         };
@@ -145,6 +164,7 @@ impl InputReader {
                     | Command::QueryPrepared(_)
                     | Command::Transact(_)
                     | Command::QueryExplain(_)
+                    | Command::Eval(_)
                         if !cmd.is_complete() =>
                     {
                         // A query or transact is complete if it contains a valid EDN.
@@ -173,6 +193,13 @@ impl InputReader {
     }
 
     fn read_line(&mut self, prompt: &str) -> UserAction {
+        if let Some(src) = self.source.as_mut() {
+            let mut s = String::new();
+            return match src.read_line(&mut s) {
+                Ok(0) | Err(_) => UserAction::Quit,
+                Ok(_) => UserAction::TextInput(s.trim_end_matches(['\n', '\r']).to_string()),
+            };
+        }
         match self.interface {
             Some(ref mut r) => {
                 r.set_prompt(prompt).unwrap();

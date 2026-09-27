@@ -9,6 +9,8 @@ license = "Apache-2.0"
 default = ["bundled_sqlite3"]
 sqlcipher = ["mentat/sqlcipher"]
 bundled_sqlite3 = ["mentat/bundled_sqlite3"]
+# `.eval`: the mino scripting language over the open store.
+mino = ["mentat/mino"]
 
 [lib]
 name = "mentat_cli"
@@ -35,6 +37,7 @@ termion = "~4.0"
 time = "~0.3"
 bytes = { version = "1.8.0", features = ["serde"] }
 hex = "0.4.3"
+serde_json = "1"
 
 [dependencies.rusqlite]
 version = "~0.40"

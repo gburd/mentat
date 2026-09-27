@@ -2449,6 +2449,7 @@ dependencies = [
  "mentat",
  "mentat_db",
  "rusqlite",
+ "serde_json",
  "tabwriter",
  "tempfile",
  "termion",

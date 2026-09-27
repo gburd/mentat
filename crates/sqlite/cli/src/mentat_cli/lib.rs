@@ -40,6 +40,7 @@ extern crate core_traits;
 extern crate edn;
 extern crate mentat;
 extern crate mentat_db;
+extern crate serde_json;
 
 use getopts::Options;
 
@@ -102,6 +103,18 @@ pub fn run() -> i32 {
         "import",
         "Execute an import on startup. Imports are executed before queries.",
         "PATH",
+    );
+    opts.optmulti(
+        "e",
+        "execute",
+        "Run a REPL command (e.g. '.q [:find ...] {\"asOf\": 5}') and exit. Repeatable.",
+        "COMMAND",
+    );
+    opts.optopt(
+        "f",
+        "file",
+        "Run the REPL commands in FILE ('-' = stdin) and exit.",
+        "FILE",
     );
     opts.optflag("v", "version", "Print version and exit");
     opts.optflag(
@@ -169,7 +182,32 @@ pub fn run() -> i32 {
         })
         .collect();
 
-    let mut repl = match repl::Repl::new(!matches.opt_present("no-tty")) {
+    // Batch mode: -e commands, else --file, else a non-TTY stdin. Commands
+    // are REPL lines; the exit status is 1 if any of them failed.
+    let execs = matches.opt_strs("e");
+    let batch: Option<Box<dyn std::io::BufRead>> = if !execs.is_empty() {
+        Some(Box::new(std::io::Cursor::new(
+            execs.join("\n").into_bytes(),
+        )))
+    } else {
+        match matches.opt_str("f").as_deref() {
+            Some("-") => Some(Box::new(std::io::BufReader::new(std::io::stdin()))),
+            Some(path) => match std::fs::File::open(path) {
+                Ok(f) => Some(Box::new(std::io::BufReader::new(f))),
+                Err(e) => {
+                    eprintln!("{}: {}", path, e);
+                    return 1;
+                }
+            },
+            None if !termion::is_tty(&std::io::stdin()) => {
+                Some(Box::new(std::io::BufReader::new(std::io::stdin())))
+            }
+            None => None,
+        }
+    };
+    let is_batch = batch.is_some();
+
+    let mut repl = match repl::Repl::with_reader(!matches.opt_present("no-tty"), batch) {
         Ok(repl) => repl,
         Err(e) => {
             println!("{}", e);
@@ -177,9 +215,13 @@ pub fn run() -> i32 {
         }
     };
 
-    repl.run(Some(cmds));
+    repl.run(Some(cmds), !is_batch);
 
-    0
+    if is_batch && repl.errors > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Returns a version string.
@@ -190,7 +232,13 @@ pub fn version() -> &'static str {
 fn print_usage(arg0: &str, opts: &Options) {
     print!(
         "{}",
-        opts.usage(&format!("Usage: {} [OPTIONS] [FILE]", arg0))
+        opts.usage(&format!(
+            "Usage: {} [OPTIONS]\n\n\
+             With -e, --file, or piped stdin, runs REPL commands non-interactively\n\
+             (no prompts) and exits 1 if any failed. Example:\n  \
+             {} -d my.db -e '.q [:find ?n :in ?e :where [?e :person/name ?n]] {{\"inputs\": [65536]}}'",
+            arg0, arg0
+        ))
     );
 }
 

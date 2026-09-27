@@ -27,17 +27,18 @@ use time::{Duration, Instant};
 use core_traits::StructuredMap;
 
 use mentat::{
-    Binding, CacheDirection, Keyword, QueryExplanation, QueryOutput, QueryResults, Queryable,
-    Store, TxReport, TypedValue,
+    Binding, CacheDirection, Keyword, QueryExplanation, QueryInputs, QueryOutput, QueryResults,
+    Queryable, Store, TemporalBound, TxReport, TypedValue, Variable,
 };
 
 use crate::command_parser::Command;
 
 use crate::command_parser::{
-    COMMAND_CACHE, COMMAND_EXIT_LONG, COMMAND_EXIT_SHORT, COMMAND_HELP, COMMAND_IMPORT_LONG,
-    COMMAND_OPEN, COMMAND_QUERY_EXPLAIN_LONG, COMMAND_QUERY_EXPLAIN_SHORT, COMMAND_QUERY_LONG,
-    COMMAND_QUERY_PREPARED_LONG, COMMAND_QUERY_SHORT, COMMAND_SCHEMA, COMMAND_TIMER_LONG,
-    COMMAND_TRANSACT_LONG, COMMAND_TRANSACT_SHORT,
+    split_query, COMMAND_CACHE, COMMAND_EVAL, COMMAND_EXIT_LONG, COMMAND_EXIT_SHORT, COMMAND_HELP,
+    COMMAND_IMPORT_LONG, COMMAND_OPEN, COMMAND_PULL, COMMAND_QUERY_EXPLAIN_LONG,
+    COMMAND_QUERY_EXPLAIN_SHORT, COMMAND_QUERY_LONG, COMMAND_QUERY_PREPARED_LONG,
+    COMMAND_QUERY_SHORT, COMMAND_SCHEMA, COMMAND_TIMER_LONG, COMMAND_TRANSACT_LONG,
+    COMMAND_TRANSACT_SHORT, COMMAND_TUNE,
 };
 
 // These are still defined when this feature is disabled (so that we can
@@ -67,8 +68,14 @@ lazy_static! {
 
             (COMMAND_IMPORT_LONG, "Transact the contents of a file against the current open database."),
 
-            (COMMAND_QUERY_LONG, "Execute a query against the current open database."),
+            (COMMAND_QUERY_LONG, "Execute a query against the current open database. An optional JSON options object may follow the query, as for SQL edn_q: {\"inputs\": [...], \"asOf\": T, \"since\": T}."),
             (COMMAND_QUERY_SHORT, "Shortcut for `.query`. Execute a query against the current open database."),
+
+            (COMMAND_PULL, "Pull an entity. Usage: `.pull [*] 65536` or `.pull [:person/name] :some/ident`."),
+
+            (COMMAND_EVAL, "Evaluate a mino script against the open database (`(mentat.store/open)` opens it). Needs the `mino` feature."),
+
+            (COMMAND_TUNE, "Index tuning. `.tune` shows what would change, `.tune!` applies it, `.tune off|schema|adaptive` sets the mode."),
 
             (COMMAND_QUERY_PREPARED_LONG, "Prepare a query against the current open database, then run it, timed."),
 
@@ -158,6 +165,16 @@ pub struct Repl {
     path: String,
     store: Store,
     timer_on: bool,
+    /// Commands that failed (batch mode exits non-zero if any did).
+    pub errors: usize,
+}
+
+/// Print an error and count it.
+macro_rules! fail {
+    ($self:ident, $($arg:tt)*) => {{
+        eprintln!($($arg)*);
+        $self.errors += 1;
+    }};
 }
 
 impl Repl {
@@ -171,7 +188,17 @@ impl Repl {
 
     /// Constructs a new `Repl`.
     pub fn new(tty: bool) -> Result<Repl, String> {
-        let interface = if tty {
+        Self::with_reader(tty, None)
+    }
+
+    /// A `Repl` that reads `input` (batch mode: no prompts, no TTY) instead
+    /// of stdin, if given.
+    pub fn with_reader(
+        tty: bool,
+        input: Option<Box<dyn std::io::BufRead>>,
+    ) -> Result<Repl, String> {
+        let batch = input.is_some();
+        let interface = if tty && !batch {
             Some(
                 Interface::new("mentat")
                     .map_err(|_| "failed to create tty interface; try --no-tty")?,
@@ -180,7 +207,10 @@ impl Repl {
             None
         };
 
-        let input_reader = InputReader::new(interface);
+        let mut input_reader = InputReader::new(interface);
+        if let Some(input) = input {
+            input_reader.set_source(input);
+        }
 
         let store = Store::open("").map_err(|e| e.to_string())?;
         Ok(Repl {
@@ -188,14 +218,18 @@ impl Repl {
             path: "".to_string(),
             store,
             timer_on: false,
+            errors: 0,
         })
     }
 
-    /// Runs the REPL interactively.
-    pub fn run(&mut self, startup_commands: Option<Vec<Command>>) {
+    /// Runs the REPL: the startup commands (echoed if `echo`), then input
+    /// until EOF.
+    pub fn run(&mut self, startup_commands: Option<Vec<Command>>, echo: bool) {
         if let Some(cmds) = startup_commands {
             for command in cmds.iter() {
-                println!("{}", command.output());
+                if echo {
+                    println!("{}", command.output());
+                }
                 self.handle_command(command.clone());
             }
         }
@@ -215,9 +249,12 @@ impl Repl {
                     if self.input_reader.is_tty() {
                         println!();
                     }
+                    if self.input_reader.has_pending() {
+                        fail!(self, "Incomplete command at end of input");
+                    }
                     break;
                 }
-                Err(e) => eprintln!("{}", e),
+                Err(e) => fail!(self, "{}", e),
             }
         }
 
@@ -262,9 +299,12 @@ impl Repl {
             Command::Open(db) => {
                 match self.open(db) {
                     Ok(_) => println!("Database {:?} opened", self.db_name()),
-                    Err(e) => eprintln!("{}", e),
+                    Err(e) => fail!(self, "{}", e),
                 };
             }
+            Command::Eval(src) => self.eval(&src),
+            Command::Pull(pattern, entity) => self.pull(&pattern, &entity),
+            Command::Tune(mode, apply) => self.tune(mode, apply),
             Command::OpenEncrypted(db, encryption_key) => {
                 match self.open_with_key(db, &encryption_key) {
                     Ok(_) => println!(
@@ -276,17 +316,13 @@ impl Repl {
                 }
             }
             Command::Query(query) => {
-                self.store
-                    .q_once(query.as_str(), None)
-                    .map_err(|e| e.into())
-                    .and_then(|o| {
-                        end = Some(Instant::now());
-                        self.print_results(o)
-                    })
-                    .map_err(|err| {
-                        eprintln!("{:?}.", err);
-                    })
-                    .ok();
+                let r = self.query(&query).and_then(|o| {
+                    end = Some(Instant::now());
+                    self.print_results(o)
+                });
+                if let Err(err) = r {
+                    fail!(self, "{}.", err);
+                }
             }
             Command::QueryExplain(query) => {
                 self.explain_query(query);
@@ -339,6 +375,80 @@ impl Repl {
         true
     }
 
+    /// `.q QUERY [OPTIONS]`: the options are edn_q's JSON, via the shared
+    /// `mentat::options_from_json`.
+    fn query(&mut self, args: &str) -> Result<QueryOutput, Error> {
+        let (query, opts) = split_query(args).unwrap_or((args, ""));
+        let opts: serde_json::Value = if opts.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_str(opts).map_err(|e| anyhow::anyhow!("options are not JSON: {e}"))?
+        };
+        let schema = self.store.conn().current_schema();
+        let (inputs, temporal) = mentat::options_from_json(&schema, query, &opts)?;
+        Ok(match temporal {
+            Some(TemporalBound::AsOf(t)) => self.store.q_once_as_of(query, inputs, t)?,
+            Some(TemporalBound::Since(t)) => self.store.q_once_since(query, inputs, t)?,
+            None => self.store.q_once(query, inputs)?,
+        })
+    }
+
+    fn pull(&mut self, pattern: &str, entity: &str) {
+        let schema = self.store.conn().current_schema();
+        let eid = match entity.parse::<i64>() {
+            Ok(e) => Some(e),
+            Err(_) => parse_namespaced_keyword(entity)
+                .and_then(|k| mentat::HasSchema::get_entid(&*schema, &k))
+                .map(|e| e.0),
+        };
+        let Some(eid) = eid else {
+            return fail!(self, "Unknown entity {}", entity);
+        };
+        let query = format!("[:find (pull ?e {pattern}) . :in ?e :where [?e _ _]]");
+        let inputs = QueryInputs::with_value_sequence(vec![(
+            Variable::from_valid_name("?e"),
+            TypedValue::Ref(eid),
+        )]);
+        match self.store.q_once(&query, inputs) {
+            Ok(o) => match o.results {
+                QueryResults::Scalar(Some(b)) => println!("{}", self.binding_as_string(&b)),
+                _ => println!("{{}}"),
+            },
+            Err(e) => fail!(self, "{}", e),
+        }
+    }
+
+    #[cfg(feature = "mino")]
+    fn eval(&mut self, src: &str) {
+        // Scripts get their own connection to the open file (an in-memory
+        // store can't be shared, so a script there starts empty).
+        match mentat::script::Interpreter::with_default_path(&self.path).eval_to_string(src) {
+            Ok(s) => println!("{s}"),
+            Err(e) => fail!(self, "{}", e),
+        }
+    }
+
+    #[cfg(not(feature = "mino"))]
+    fn eval(&mut self, _src: &str) {
+        fail!(self, ".eval needs mentat_cli built with the `mino` feature");
+    }
+
+    fn tune(&mut self, mode: Option<mentat::AutoIndex>, apply: bool) {
+        if let Some(m) = mode {
+            self.store.set_auto_index(m);
+            return println!("auto index: {m:?}");
+        }
+        match self.store.tune_indexes(!apply) {
+            Ok(actions) if actions.is_empty() => println!("no index changes"),
+            Ok(actions) => {
+                for a in actions {
+                    println!("{}{a}", if apply { "" } else { "would " });
+                }
+            }
+            Err(e) => fail!(self, "{}", e),
+        }
+    }
+
     fn execute_import<T>(&mut self, path: T)
     where
         T: Into<String>,
@@ -348,7 +458,7 @@ impl Repl {
         let mut content: String = "".to_string();
         match ::std::fs::File::open(path.clone()).and_then(|mut f| f.read_to_string(&mut content)) {
             Ok(_) => self.execute_transact(content),
-            Err(e) => eprintln!("Error reading file {}: {}", path, e),
+            Err(e) => fail!(self, "Error reading file {}: {}", path, e),
         }
     }
 
@@ -536,7 +646,7 @@ impl Repl {
     pub fn execute_transact(&mut self, transaction: String) {
         match self.transact(transaction) {
             Result::Ok(report) => println!("{:?}", report),
-            Result::Err(err) => eprintln!("Error: {:?}.", err),
+            Result::Err(err) => fail!(self, "Error: {}.", err),
         }
     }
 

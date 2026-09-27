@@ -19,17 +19,19 @@ use edn;
 use anyhow::Error;
 
 use combine::error::StringStreamError;
-use mentat::CacheDirection;
+use mentat::{AutoIndex, CacheDirection};
 
 pub static COMMAND_CACHE: &str = "cache";
 pub static COMMAND_CLOSE: &str = "close";
 pub static COMMAND_EXIT_LONG: &str = "exit";
+pub static COMMAND_EVAL: &str = "eval";
 pub static COMMAND_EXIT_SHORT: &str = "e";
 pub static COMMAND_HELP: &str = "help";
 pub static COMMAND_IMPORT_LONG: &str = "import";
 pub static COMMAND_IMPORT_SHORT: &str = "i";
 pub static COMMAND_OPEN: &str = "open";
 pub static COMMAND_OPEN_ENCRYPTED: &str = "open_encrypted";
+pub static COMMAND_PULL: &str = "pull";
 pub static COMMAND_QUERY_LONG: &str = "query";
 pub static COMMAND_QUERY_SHORT: &str = "q";
 pub static COMMAND_QUERY_EXPLAIN_LONG: &str = "explain_query";
@@ -39,22 +41,88 @@ pub static COMMAND_SCHEMA: &str = "schema";
 pub static COMMAND_TIMER_LONG: &str = "timer";
 pub static COMMAND_TRANSACT_LONG: &str = "transact";
 pub static COMMAND_TRANSACT_SHORT: &str = "t";
+pub static COMMAND_TUNE: &str = "tune";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     Cache(String, CacheDirection),
     Close,
+    /// A mino script (needs the `mino` feature).
+    Eval(String),
     Exit,
     Help(Vec<String>),
     Import(String),
     Open(String),
     OpenEncrypted(String, String),
+    /// `(pattern, entity)`.
+    Pull(String, String),
+    /// A query, optionally followed by JSON options (`mentat::options_from_json`).
     Query(String),
     QueryExplain(String),
     QueryPrepared(String),
     Schema,
     Timer(bool),
     Transact(String),
+    /// `.tune MODE` sets the auto-index mode; `.tune` is a dry run, `.tune!` applies.
+    Tune(Option<AutoIndex>, bool),
+}
+
+/// Byte offset just past the first top-level bracketed form of `s`, or `None`
+/// if it isn't closed yet. Skips strings, `\c` characters and `;` comments.
+/// With `whole`, instead: `Some(s.len())` iff every bracket in `s` is closed.
+// ponytail: bracket counting, not a reader; `#"regex"` etc. may confuse it.
+pub fn form_end(s: &str, whole: bool) -> Option<usize> {
+    let (mut depth, mut started) = (0i32, false);
+    let mut it = s.char_indices();
+    while let Some((i, c)) = it.next() {
+        match c {
+            '"' => {
+                let mut closed = false;
+                while let Some((_, c)) = it.next() {
+                    match c {
+                        '\\' => {
+                            it.next();
+                        }
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if !closed {
+                    return None;
+                }
+            }
+            '\\' => {
+                it.next();
+            }
+            ';' => {
+                for (_, c) in it.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '[' | '(' | '{' => {
+                depth += 1;
+                started = true;
+            }
+            ']' | ')' | '}' => {
+                depth -= 1;
+                if depth == 0 && started && !whole {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    (whole && depth <= 0).then_some(s.len())
+}
+
+/// Split a `.q` argument into the query and its (possibly empty) options text.
+pub fn split_query(args: &str) -> Option<(&str, &str)> {
+    form_end(args, false).map(|i| (&args[..i], args[i..].trim()))
 }
 
 impl Command {
@@ -64,11 +132,21 @@ impl Command {
     /// TODO: for query and transact commands, they will be considered complete if a parsable EDN has been entered as an argument
     pub fn is_complete(&self) -> bool {
         match self {
-            &Command::Query(ref args)
-            | &Command::QueryExplain(ref args)
+            Command::Query(args) => match split_query(args) {
+                Some((q, opts)) => {
+                    edn::parse::value(q).is_ok()
+                        && (opts.is_empty()
+                            || serde_json::from_str::<serde_json::Value>(opts).is_ok())
+                }
+                None => false,
+            },
+            &Command::QueryExplain(ref args)
             | &Command::QueryPrepared(ref args)
             | &Command::Transact(ref args) => edn::parse::value(args).is_ok(),
+            Command::Eval(src) => form_end(src, true).is_some(),
             &Command::Cache(_, _)
+            | &Command::Pull(_, _)
+            | &Command::Tune(_, _)
             | &Command::Close
             | &Command::Exit
             | &Command::Help(_)
@@ -85,7 +163,10 @@ impl Command {
             &Command::Import(_)
             | &Command::Query(_)
             | &Command::QueryPrepared(_)
-            | &Command::Transact(_) => true,
+            | &Command::Transact(_)
+            | &Command::Eval(_)
+            | &Command::Pull(_, _)
+            | &Command::Tune(_, _) => true,
 
             &Command::Cache(_, _)
             | &Command::Close
@@ -105,6 +186,15 @@ impl Command {
                 format!(".{} {} {:?}", COMMAND_CACHE, attr, direction)
             }
             Command::Close => format!(".{}", COMMAND_CLOSE),
+            Command::Eval(ref src) => format!(".{} {}", COMMAND_EVAL, src),
+            Command::Pull(ref p, ref e) => format!(".{} {} {}", COMMAND_PULL, p, e),
+            Command::Tune(mode, apply) => format!(
+                ".{}{}{}",
+                COMMAND_TUNE,
+                if *apply { "!" } else { "" },
+                mode.map(|m| format!(" {m:?}").to_lowercase())
+                    .unwrap_or_default()
+            ),
             Command::Exit => format!(".{}", COMMAND_EXIT_LONG),
             Command::Help(ref args) => format!(".{} {:?}", COMMAND_HELP, args),
             Command::Import(ref args) => format!(".{} {}", COMMAND_IMPORT_LONG, args),
@@ -253,6 +343,42 @@ pub fn command(s: &str) -> Result<Command, Error> {
         .with(string("on").map(|_| true).or(string("off").map(|_| false)))
         .map(|args| Ok(Command::Timer(args)));
 
+    let eval_parser = string(COMMAND_EVAL)
+        .with(spaces())
+        .with(many1::<String, _, _>(any()))
+        .map(|src| Ok(Command::Eval(src)));
+
+    let pull_parser = string(COMMAND_PULL)
+        .with(edn_arg_parser())
+        .map(|args: String| match split_query(&args) {
+            Some((pattern, entity))
+                if !entity.is_empty() && !entity.contains(char::is_whitespace) =>
+            {
+                Ok(Command::Pull(pattern.to_string(), entity.to_string()))
+            }
+            _ => bail!(CliError::CommandParse(
+                "Usage: .pull [pattern] entity (an entid or :an/ident)".to_string()
+            )),
+        });
+
+    let tune_mode = || {
+        string("off")
+            .map(|_| AutoIndex::Off)
+            .or(string("schema").map(|_| AutoIndex::Schema))
+            .or(string("adaptive").map(|_| AutoIndex::Adaptive))
+    };
+    let tune_parser = string(COMMAND_TUNE)
+        .with(
+            token('!')
+                .map(|_| Command::Tune(None, true))
+                .or(
+                    attempt(spaces().with(tune_mode()).skip(spaces()).skip(eof()))
+                        .map(|m| Command::Tune(Some(m), false)),
+                )
+                .or(spaces().skip(eof()).map(|_| Command::Tune(None, false))),
+        )
+        .map(Ok);
+
     let transact_parser = attempt(string(COMMAND_TRANSACT_LONG))
         .or(attempt(string(COMMAND_TRANSACT_SHORT)))
         .with(edn_arg_parser())
@@ -262,6 +388,9 @@ pub fn command(s: &str) -> Result<Command, Error> {
         attempt(help_parser),
         attempt(import_parser),
         attempt(timer_parser),
+        attempt(tune_parser),
+        attempt(eval_parser),
+        attempt(pull_parser),
         attempt(cache_parser),
         attempt(open_encrypted_parser),
         attempt(open_parser),
@@ -287,6 +416,54 @@ pub fn command(s: &str) -> Result<Command, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_query_with_options() {
+        let q = r#".q [:find ?e :in ?n :where [?e :p/n ?n]] {"inputs": ["a]"]}"#;
+        let cmd = command(q).unwrap();
+        assert!(cmd.is_complete());
+        let Command::Query(args) = cmd else { panic!() };
+        let (query, opts) = split_query(&args).unwrap();
+        assert_eq!(query, "[:find ?e :in ?n :where [?e :p/n ?n]]");
+        assert_eq!(opts, r#"{"inputs": ["a]"]}"#);
+        // Incomplete: the options object is still open.
+        assert!(!command(r#".q [:find ?e :where [?e _ _]] {"asOf":"#)
+            .unwrap()
+            .is_complete());
+        assert!(!command(".q [:find ?e :where").unwrap().is_complete());
+        // Brackets inside strings and comments don't count.
+        assert_eq!(
+            form_end(
+                r#"["]" ; ]
+ ]"#,
+                false
+            ),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn test_pull_eval_tune_parsers() {
+        assert_eq!(
+            command(".pull [*] 65536").unwrap(),
+            Command::Pull("[*]".into(), "65536".into())
+        );
+        assert_eq!(
+            command(".pull [:a/b {:c/d [*]}] :my/ident").unwrap(),
+            Command::Pull("[:a/b {:c/d [*]}]".into(), ":my/ident".into())
+        );
+        assert!(command(".pull [*]").is_err());
+        let e = command(".eval (+ 1\n 2)").unwrap();
+        assert!(e.is_complete());
+        assert!(!command(".eval (+ 1").unwrap().is_complete());
+        assert_eq!(command(".tune").unwrap(), Command::Tune(None, false));
+        assert_eq!(command(".tune!").unwrap(), Command::Tune(None, true));
+        assert_eq!(
+            command(".tune adaptive").unwrap(),
+            Command::Tune(Some(AutoIndex::Adaptive), false)
+        );
+        assert!(command(".tune bogus").is_err());
+    }
 
     #[test]
     fn test_help_parser_multiple_args() {
