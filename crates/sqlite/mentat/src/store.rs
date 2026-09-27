@@ -34,6 +34,7 @@ use mentat_transaction::query::{PreparedResult, QueryExplanation, QueryInputs, Q
 pub struct Store {
     conn: Conn,
     sqlite: rusqlite::Connection,
+    advisor: std::cell::RefCell<crate::auto_index::Advisor>,
 }
 
 impl Store {
@@ -44,6 +45,7 @@ impl Store {
         Ok(Store {
             conn,
             sqlite: connection,
+            advisor: Default::default(),
         })
     }
 
@@ -77,6 +79,7 @@ impl Store {
         Ok(Store {
             conn,
             sqlite: connection,
+            advisor: Default::default(),
         })
     }
 
@@ -151,6 +154,38 @@ impl Store {
         self.conn.last_tx_id()
     }
 
+    /// How mentat manages secondary indexes for this `Store` (see [`AutoIndex`]).
+    /// The default comes from `MENTAT_AUTO_INDEX` (`off`/`schema`/`adaptive`),
+    /// else `Schema`.
+    ///
+    /// [`AutoIndex`]: crate::AutoIndex
+    pub fn set_auto_index(&mut self, mode: crate::AutoIndex) {
+        self.advisor.get_mut().mode = mode;
+    }
+
+    /// Adaptive thresholds: create an index once an attribute is value-filtered
+    /// by `min_uses` queries within one tuning period; drop a mentat-created
+    /// index unused for a whole period and for at least `idle`.
+    pub fn set_index_tuning(&mut self, min_uses: u32, idle: std::time::Duration) {
+        let a = self.advisor.get_mut();
+        a.min_uses = min_uses.max(1);
+        a.idle = idle;
+    }
+
+    /// Apply (or, with `dry_run`, only report) index changes per the current
+    /// [`AutoIndex`](crate::AutoIndex) mode. Only ever drops indexes mentat
+    /// created (listed in `mentat_managed_indexes`).
+    pub fn tune_indexes(&mut self, dry_run: bool) -> Result<Vec<crate::IndexAction>> {
+        self.tune(dry_run)
+    }
+
+    fn tune(&self, dry_run: bool) -> Result<Vec<crate::IndexAction>> {
+        let schema = self.conn.current_schema();
+        self.advisor
+            .borrow_mut()
+            .tune(&self.sqlite, &schema, dry_run)
+    }
+
     /// Run a Datalog query against a historical basis reconstructed as of
     /// transaction `tx` (inclusive) -- the state that was current at `tx`.
     pub fn q_once_as_of<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>
@@ -189,7 +224,19 @@ impl Queryable for Store {
     where
         T: Into<Option<QueryInputs>>,
     {
-        self.conn.q_once(&self.sqlite, query, inputs)
+        if self.advisor.borrow().mode != crate::AutoIndex::Adaptive {
+            return self.conn.q_once(&self.sqlite, query, inputs);
+        }
+        let (out, attrs) = self
+            .conn
+            .q_once_value_filtered(&self.sqlite, query, inputs)?;
+        if self.advisor.borrow_mut().record(&attrs) {
+            // Best effort: e.g. another connection may hold the write lock.
+            if let Err(e) = self.tune(false) {
+                log::warn!("automatic index tuning failed: {e}");
+            }
+        }
+        Ok(out)
     }
 
     fn q_prepare<T>(&self, query: &str, inputs: T) -> PreparedResult<'_>

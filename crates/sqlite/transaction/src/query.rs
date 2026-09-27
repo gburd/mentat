@@ -378,6 +378,22 @@ where
     run_algebrized_query(known, sqlite, algebrized)
 }
 
+/// `q_once`, also returning the attributes the query filtered by value
+/// (`ConjoiningClauses::value_filtered_attributes`), for index advice.
+pub fn q_once_value_filtered<T>(
+    sqlite: &rusqlite::Connection,
+    known: Known,
+    query: &str,
+    inputs: T,
+) -> Result<(QueryOutput, std::collections::BTreeSet<Entid>)>
+where
+    T: Into<Option<QueryInputs>>,
+{
+    let mut algebrized = algebrize_query_str(known, query, inputs)?;
+    let attrs = std::mem::take(&mut algebrized.cc.value_filtered_attributes);
+    Ok((run_algebrized_query(known, sqlite, algebrized)?, attrs))
+}
+
 /// Like `q_once`, but runs the query against a historical basis: `as-of T`
 /// reconstructs the state at transaction `T`, `since T` sees only datoms
 /// transacted after `T`. This is the SQLite engine's historical-`q` entry point.

@@ -141,6 +141,17 @@ impl ConjoiningClauses {
         // cannot return results, and we short-circuit.
         let value_type = self.get_value_type(schema, pattern);
 
+        if let (DatomsTable::Datoms, EvolvedNonValuePlace::Entid(a)) =
+            (&alias.0, &pattern.attribute)
+        {
+            if !matches!(
+                pattern.value,
+                EvolvedValuePlace::Placeholder | EvolvedValuePlace::Variable(_)
+            ) {
+                self.value_filtered_attributes.insert(*a);
+            }
+        }
+
         match pattern.value {
             EvolvedValuePlace::Placeholder => (),
 

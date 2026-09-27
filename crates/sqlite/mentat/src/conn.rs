@@ -148,6 +148,21 @@ impl Conn {
         q_once(sqlite, known, query, inputs)
     }
 
+    /// `q_once`, plus the attributes it filtered by value (see `auto_index`).
+    pub fn q_once_value_filtered<T>(
+        &self,
+        sqlite: &rusqlite::Connection,
+        query: &str,
+        inputs: T,
+    ) -> Result<(QueryOutput, std::collections::BTreeSet<Entid>)>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        let (schema, cache) = self.snapshot();
+        let known = Known::new(&schema, Some(&cache));
+        mentat_transaction::query::q_once_value_filtered(sqlite, known, query, inputs)
+    }
+
     /// Query the store against a historical basis reconstructed as of transaction
     /// `tx` (inclusive): the value that was current at `tx`.
     pub fn q_once_as_of<T>(

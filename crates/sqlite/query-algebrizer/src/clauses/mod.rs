@@ -184,6 +184,12 @@ pub struct ConjoiningClauses {
     /// sub-CCs): `as-of T` reconstructs current state at tx T; `since T` keeps
     /// only datoms transacted after T. `None` means "current basis", the default.
     pub temporal: Option<TemporalBound>,
+
+    /// Attributes of `datoms` patterns in this CC whose value place is a
+    /// constant or a bound scalar input (`[?e :a "x"]`, `:in ?x`): what an
+    /// (a, v) index would serve. Read by `mentat`'s adaptive index advisor.
+    // ponytail: top-level patterns only; `or`/`not` sub-CCs aren't merged in.
+    pub value_filtered_attributes: BTreeSet<Entid>,
 }
 
 /// A whole-query temporal bound (`as-of` / `since`). See `ConjoiningClauses::temporal`.
@@ -246,6 +252,7 @@ impl Default for ConjoiningClauses {
             known_types: BTreeMap::new(),
             extracted_types: BTreeMap::new(),
             temporal: None,
+            value_filtered_attributes: BTreeSet::new(),
         }
     }
 }
