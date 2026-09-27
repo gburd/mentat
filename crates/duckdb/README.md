@@ -103,8 +103,21 @@ SELECT * FROM edn_q('/tmp/demo.mentat', '[:find ?e ?name :where [?e :person/name
 | `edn_eval(db_path VARCHAR, script VARCHAR)` | scalar, volatile | VARCHAR (EDN) | `mentat::script::Interpreter` (feature `script`) |
 
 Any NULL argument to a scalar yields NULL. `db_path` is an explicit first
-parameter (plan §6 option 1): stateless, per-call `Store::open` (plan §3.1).
-`""` opens an in-memory store (not useful across calls); pass a path to persist.
+parameter (plan §6 option 1). `""` opens an in-memory store (not useful across
+calls); pass a path to persist.
+
+### Store cache
+
+`edn_t`, `edn_q` and `edn_pull` reuse an open store per `db_path` (canonical
+path + inode), one per DuckDB worker thread, instead of opening the store on
+every call. Before each call the cached store compares its last tx with the tx
+high-water mark persisted in the file (one primary-key read); if another
+connection or process has committed since, the store is reopened, so it never
+sees a stale schema or hands out an entid that is already taken. Writes make
+that check inside their `BEGIN IMMEDIATE`. A call that fails drops its store.
+`MENTAT_STORE_CACHE=N` sets the stores kept per thread (default 16, least
+recently used evicted); `0` opens per call. `edn_eval` is not cached. The
+same code (`crates/sqlite/ext/src/store_cache.rs`) backs the SQLite extension.
 
 ### `edn_q` options (JSON, same shape pg_mentat accepts)
 

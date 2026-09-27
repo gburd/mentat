@@ -135,6 +135,20 @@ A query can bind either scalar inputs or one collection/tuple/relation input,
 but not both. `QueryInputs` cannot merge the two kinds yet. The DuckDB
 extension has the same limit.
 
+## Store cache
+
+`edn_t`, `edn_q` and `edn_pull` reuse an open store per `db_path` (canonical
+path + inode), one per host thread, instead of opening the store on every call.
+Before each call the cached store compares its last tx with the tx high-water
+mark persisted in the file (one primary-key read); if another connection or
+process has committed since, the store is reopened, so it never sees a stale
+schema or hands out an entid that is already taken. Writes make that check
+inside their `BEGIN IMMEDIATE`. A call that fails drops its store.
+`MENTAT_STORE_CACHE=N` sets the stores kept per thread (default 16, least
+recently used evicted); `0` opens per call. `edn_eval` is not cached. The
+cache holds file handles open: a store file deleted while cached stays
+allocated on disk until the store is evicted or the host exits.
+
 ## `edn_eval` and the store path
 
 `edn_eval` builds a `mentat::script::Interpreter::with_default_path(db_path)`.

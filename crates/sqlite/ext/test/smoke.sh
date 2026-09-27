@@ -10,12 +10,30 @@ EXT="${EXT:-$ROOT/target/debug/libmentat_sqlite}"
 SQLITE3="${SQLITE3:-sqlite3}"
 DB="$(mktemp -u /tmp/mentat_sqlite_smoke.XXXXXX.db)"
 HOST="$(mktemp -u /tmp/mentat_sqlite_host.XXXXXX.db)"
-trap 'rm -f "$DB" "$DB"-wal "$DB"-shm "$HOST"' EXIT
+OTHER="$(mktemp /tmp/mentat_sqlite_other.XXXXXX)"
+trap 'rm -f "$DB" "$DB"-wal "$DB"-shm "$HOST" "$OTHER" "$OTHER".sql' EXIT
 
 [ -f "$EXT.so" ] || { echo "FAIL: $EXT.so not found (cargo build -p mentat_sqlite_ext)"; exit 1; }
 "$SQLITE3" --version
 
 run() { "$SQLITE3" -bail -noheader -list "$HOST" ".load $EXT" "$1" 2>&1; }
+
+# Store cache: a SECOND process (own connection) adds an attribute and an
+# entity while the session below holds a cached store; `fds` counts the
+# session's open handles on the store file (1 = one reused connection).
+cat > "$OTHER.sql" <<SQL
+.load $EXT
+SELECT 'other=' || (json_extract(edn_t('$DB', '[{:db/ident :person/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'), '\$.tx_id') > 0);
+SELECT 'other_e=' || json_extract(edn_t('$DB', '[{:db/id "o" :person/name "Olga" :person/email "o@x"}]'), '\$.tempids.o');
+SQL
+cat > "$OTHER" <<SH
+#!/bin/sh
+case "\$1" in
+  fds) echo "fds=\$(ls -l /proc/\$PPID/fd | grep -c -- '-> $DB\$')" ;;
+  *) "$SQLITE3" -bail -noheader -list :memory: < "$OTHER.sql" ;;
+esac
+SH
+chmod +x "$OTHER"
 
 out="$("$SQLITE3" -bail -noheader -list "$HOST" <<SQL
 .load $EXT
@@ -72,6 +90,14 @@ SELECT 'eval=' || edn_eval('$DB', '(def c (mentat.store/open))
 SELECT 'after_eval=' || group_concat(value, ',') FROM (SELECT value FROM
   json_each(edn_q('$DB', '[:find [?n ...] :where [_ :person/name ?n]]', ''), '\$.result') ORDER BY value);
 
+-- Store cache: another process commits a new attribute + entity, and this
+-- session (cached, now stale) must see the attribute and allocate a
+-- DIFFERENT entid.
+.system $OTHER
+SELECT 'mine_e=' || json_extract(edn_t('$DB', '[{:db/id "m" :person/name "Mona" :person/email "m@x"}]'), '\$.tempids.m');
+SELECT 'emails=' || group_concat(value, ',') FROM (SELECT value FROM
+  json_each(edn_q('$DB', '[:find [?m ...] :where [_ :person/email ?m]]', ''), '\$.result') ORDER BY value);
+
 -- NULL in -> NULL out.
 SELECT 'null=' || (edn_q(NULL, '[:find ?e :where [?e _ _]]', '{}') IS NULL);
 SQL
@@ -97,6 +123,18 @@ expect "pull_attrs=31"
 expect "eval=3"
 expect "after_eval=Alice,Bob,Carol"
 expect "null=1"
+expect "other=1"
+expect "emails=m@x,o@x"
+oe="$(sed -n 's/^other_e=//p' <<<"$out")"; me="$(sed -n 's/^mine_e=//p' <<<"$out")"
+[ -n "$oe" ] && [ -n "$me" ] && [ "$oe" != "$me" ] || { echo "FAIL: entids other=$oe mine=$me"; exit 1; }
+
+# Store reuse, in a fresh session: after 20 calls the store stays open (one
+# handle on the file; per-call open would leave none).
+reuse="$("$SQLITE3" -bail -noheader -list "$HOST" ".load $EXT" \
+  "SELECT 'many=' || count(edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '')) FROM generate_series(1, 20);" \
+  ".system $OTHER fds" 2>&1)"
+echo "$reuse"
+grep -qxF "many=20" <<<"$reuse" && grep -qxF "fds=1" <<<"$reuse" || { echo "FAIL: store not reused"; exit 1; }
 
 # Error paths: each must fail with a recognisable SQLite error (not a crash).
 expect_err() {

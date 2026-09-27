@@ -7,8 +7,9 @@
 //!   - `edn_pull(db_path, pattern, entity)`   scalar -> VARCHAR (JSON map).
 //!   - `edn_eval(db_path, script)`            scalar -> VARCHAR (EDN), feature `script`.
 //!
-//! Storage is per-call `Store::open` (plan §3.1): open -> use -> drop within one
-//! function invocation. `Store` is `!Sync`; never shared across DuckDB threads.
+//! Stores come from `store_cache` (shared with the SQLite extension): reused
+//! per path and checked for staleness before every call. A `Store` is checked
+//! out by one call at a time, never shared across DuckDB threads.
 //!
 //! This crate is EXTENSION-ONLY. The `loadable-extension` feature replaces the
 //! DuckDB C API functions; opening a normal `Connection` here panics with
@@ -36,6 +37,9 @@ use mentat::{
 };
 
 type BoxErr = Box<dyn Error>;
+
+#[path = "../../sqlite/ext/src/store_cache.rs"]
+mod store_cache;
 
 // ---------------------------------------------------------------------------
 // Value rendering (plan §2.4 v1: all-VARCHAR).
@@ -158,7 +162,7 @@ impl VScalar for EdnTransact {
             let (Some(db), Some(edn)) = (str_arg(input, 0, i), str_arg(input, 1, i)) else {
                 return Ok(None);
             };
-            let report = Store::open(&db)?.transact(&edn)?;
+            let report = store_cache::transact(&db, &edn)?;
             Ok(Some(tx_report_json(&report)))
         })
     }
@@ -228,13 +232,12 @@ fn pull_json(db: &str, pattern: &str, eid: i64) -> Result<String, BoxErr> {
         )
         .into());
     }
-    let store = Store::open(db)?;
     let query = format!("[:find (pull ?e {pattern}) . :in ?e :where [?e _ _]]");
     let inputs = QueryInputs::with_value_sequence(vec![(
         Variable::from_valid_name("?e"),
         TypedValue::Ref(eid),
     )]);
-    let mut m = match store.q_once(&query, inputs)?.results {
+    let mut m = match store_cache::read(db, |store| store.q_once(&query, inputs))?.results {
         QueryResults::Scalar(Some(Binding::Map(sm))) => map_json(&sm),
         _ => serde_json::Map::new(),
     };
@@ -561,18 +564,19 @@ impl VTab for EdnQuery {
         let query = param(bind, 1).ok_or("edn_q: query must not be NULL")?;
         let opts = parse_opts(param(bind, 2).as_deref())?;
 
-        // Per-call open (plan §3.1); run the query once to learn the FindSpec
-        // columns AND materialize the results (smallest correct diff).
-        let store = Store::open(&db_path)?;
-        let inputs = match opts.inputs {
-            Some(vals) => Some(build_inputs(&store, &query, vals)?),
-            None => None,
-        };
-        let output = match (opts.as_of, opts.since) {
-            (Some(t), _) => store.q_once_as_of(&query, inputs, t)?,
-            (_, Some(t)) => store.q_once_since(&query, inputs, t)?,
-            _ => store.q_once(&query, inputs)?,
-        };
+        // Run the query once to learn the FindSpec columns AND materialize
+        // the results (smallest correct diff).
+        let output = store_cache::read(&db_path, |store| -> Result<_, BoxErr> {
+            let inputs = match opts.inputs {
+                Some(vals) => Some(build_inputs(store, &query, vals)?),
+                None => None,
+            };
+            Ok(match (opts.as_of, opts.since) {
+                (Some(t), _) => store.q_once_as_of(&query, inputs, t)?,
+                (_, Some(t)) => store.q_once_since(&query, inputs, t)?,
+                _ => store.q_once(&query, inputs)?,
+            })
+        })?;
 
         // Declare one VARCHAR column per FindSpec element, named like the CLI.
         let mut ncols = 0;

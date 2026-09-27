@@ -38,6 +38,8 @@ use mentat::{
 
 type Res<T> = Result<T, String>;
 
+mod store_cache;
+
 // ---------------------------------------------------------------------------
 // Host SQLite C API, via the sqlite3_api_routines pointer.
 // ---------------------------------------------------------------------------
@@ -294,21 +296,27 @@ pub unsafe extern "C" fn sqlite3_mentatsqlite_init(
 
 // ---------------------------------------------------------------------------
 // The four functions, as plain Rust over the embedded store (unit-testable).
-// Per-call `Store::open`: open -> use -> drop within one invocation.
+// Stores come from `store_cache` (reused per path, checked for staleness);
+// `edn_eval` opens its own through the interpreter.
 //
 // ponytail: the JSON encoders and the inputs contract below are shared in
 // spirit with crates/duckdb/src/lib.rs (a cdylib, so not a dependency). Hoist
 // both into `mentat` when a third consumer appears.
 // ---------------------------------------------------------------------------
 
-fn open(db: &str, f: &str) -> Res<Store> {
-    Store::open(db).map_err(|e| format!("{f}: opening store {db:?}: {e}"))
+/// Prefix an error with the SQL function name, once.
+fn ctx(f: &'static str) -> impl Fn(String) -> String {
+    move |e| {
+        if e.starts_with(f) {
+            e
+        } else {
+            format!("{f}: {e}")
+        }
+    }
 }
 
 fn transact_json(db: &str, edn: &str) -> Res<String> {
-    let report = open(db, "edn_t")?
-        .transact(edn)
-        .map_err(|e| format!("edn_t: {e}"))?;
+    let report = store_cache::transact(db, edn).map_err(ctx("edn_t"))?;
     Ok(tx_report_json(&report))
 }
 
@@ -346,15 +354,13 @@ fn pull_json(db: &str, pattern: &str, eid: i64) -> Res<String> {
             "edn_pull: pattern must be an EDN vector like [*] or [:person/name], got {pattern}"
         ));
     }
-    let store = open(db, "edn_pull")?;
     let query = format!("[:find (pull ?e {pattern}) . :in ?e :where [?e _ _]]");
     let inputs = QueryInputs::with_value_sequence(vec![(
         Variable::from_valid_name("?e"),
         TypedValue::Ref(eid),
     )]);
-    let results = store
-        .q_once(&query, inputs)
-        .map_err(|e| format!("edn_pull: {e}"))?
+    let results = store_cache::read(db, |store| store.q_once(&query, inputs))
+        .map_err(ctx("edn_pull"))?
         .results;
     let mut m = match results {
         QueryResults::Scalar(Some(Binding::Map(sm))) => map_json(&sm),
@@ -437,17 +443,19 @@ fn results_json(spec: &FindSpec, results: QueryResults) -> Json {
 
 fn query_json(db: &str, query: &str, opts: Option<&str>) -> Res<String> {
     let opts = parse_opts(opts)?;
-    let store = open(db, "edn_q")?;
-    let inputs = opts
-        .inputs
-        .map(|vals| build_inputs(&store, query, vals))
-        .transpose()?;
-    let out = match (opts.as_of, opts.since) {
-        (Some(t), _) => store.q_once_as_of(query, inputs, t),
-        (_, Some(t)) => store.q_once_since(query, inputs, t),
-        _ => store.q_once(query, inputs),
-    }
-    .map_err(|e| format!("edn_q: {e}"))?;
+    let out = store_cache::read(db, |store| {
+        let inputs = opts
+            .inputs
+            .map(|vals| build_inputs(store, query, vals))
+            .transpose()?;
+        match (opts.as_of, opts.since) {
+            (Some(t), _) => store.q_once_as_of(query, inputs, t),
+            (_, Some(t)) => store.q_once_since(query, inputs, t),
+            _ => store.q_once(query, inputs),
+        }
+        .map_err(|e| e.to_string())
+    })
+    .map_err(ctx("edn_q"))?;
     Ok(results_json(&out.spec, out.results).to_string())
 }
 

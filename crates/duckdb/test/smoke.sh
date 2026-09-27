@@ -14,11 +14,29 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT="${EXT:-$HERE/build/debug/mentat.duckdb_extension}"
 DUCKDB="${DUCKDB:-duckdb}"
 DB="$(mktemp -u /tmp/mentat_smoke.XXXXXX.sqlite)"
-trap 'rm -f "$DB"' EXIT
+OTHER="$(mktemp /tmp/mentat_duck_other.XXXXXX)"
+trap 'rm -f "$DB" "$DB"-wal "$DB"-shm "$OTHER" "$OTHER".sql' EXIT
 
 [ -f "$EXT" ] || { echo "FAIL: $EXT not found (run 'make debug' first)"; exit 1; }
 
 run() { "$DUCKDB" -unsigned -noheader -list -c "LOAD '$EXT';" -c "$1" 2>&1; }
+
+# Store cache: a SECOND process adds an attribute and an entity while the
+# session below holds a cached store; `fds` counts the session's open handles
+# on the store file (1 = one reused connection).
+cat > "$OTHER.sql" <<SQL
+LOAD '$EXT';
+SELECT 'other=' || (edn_t('$DB', '[{:db/ident :person/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
+SELECT 'other_e=' || (edn_t('$DB', '[{:db/id "o" :person/name "Olga" :person/email "o@x"}]')::JSON->>'\$.tempids.o');
+SQL
+cat > "$OTHER" <<SH
+#!/bin/sh
+case "\$1" in
+  fds) echo "fds=\$(ls -l /proc/\$PPID/fd | grep -c -- '-> $DB\$')" ;;
+  *) "$DUCKDB" -unsigned -noheader -list < "$OTHER.sql" ;;
+esac
+SH
+chmod +x "$OTHER"
 
 out="$("$DUCKDB" -unsigned -noheader -list <<SQL
 LOAD '$EXT';
@@ -73,6 +91,14 @@ SELECT 'eval=' || edn_eval('$DB', '(def c (mentat.store/open))
   (count (mentat.store/q (mentat.store/db c) (quote [:find ?n :where [_ :person/name ?n]])))');
 SELECT 'after_eval=' || string_agg(n, ',' ORDER BY n)
   FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '') AS t(n);
+
+-- Store cache: another process commits a new attribute + entity; this
+-- session's cached store is now stale and must see the attribute and
+-- allocate a DIFFERENT entid.
+.system $OTHER
+SELECT 'mine_e=' || (edn_t('$DB', '[{:db/id "m" :person/name "Mona" :person/email "m@x"}]')::JSON->>'\$.tempids.m');
+SELECT 'emails=' || string_agg(m, ',' ORDER BY m)
+  FROM edn_q('$DB', '[:find ?m :where [_ :person/email ?m]]', '') AS t(m);
 SQL
 )"
 
@@ -94,6 +120,18 @@ expect "pull_id=true"
 expect "pull_attrs=31"
 expect "eval=3"
 expect "after_eval=Alice,Bob,Carol"
+expect "other=true"
+expect "emails=m@x,o@x"
+oe="$(sed -n 's/^other_e=//p' <<<"$out")"; me="$(sed -n 's/^mine_e=//p' <<<"$out")"
+[ -n "$oe" ] && [ -n "$me" ] && [ "$oe" != "$me" ] || { echo "FAIL: entids other=$oe mine=$me"; exit 1; }
+
+# Store reuse, in a fresh session: after 20 calls the store stays open (one
+# handle on the file; per-call open would leave none).
+reuse="$("$DUCKDB" -unsigned -noheader -list -c "LOAD '$EXT';" \
+  -c "SELECT 'many=' || count(edn_pull('$DB', '[*]', i::BIGINT)) FROM range(20) t(i);" \
+  -c ".system $OTHER fds" 2>&1)"
+echo "$reuse"
+grep -qxF "many=20" <<<"$reuse" && grep -qxF "fds=1" <<<"$reuse" || { echo "FAIL: store not reused"; exit 1; }
 
 # Error paths: each must fail with a recognisable message.
 expect_err() {
