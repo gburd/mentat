@@ -30,3 +30,16 @@ Bottlenecks to fix (in priority order):
 6. embedded: many-thread readers collapse (likely SQLite global allocator mutex).
 7. pg: (count ?i) -> COUNT(DISTINCT e) + full sort; edn_q JSONB 256MB result cap;
    max_result_rows / temp_file_limit defaults bite at scale (document).
+
+## IN FLIGHT (1.10.0) — started 2026-09-27
+User asked: CLI + Datomic layer updated/tested? DuckDB registry ran? Quack server +
+benchmark; fix all 5 benchmark issues; auto index create/drop; optimize count.
+- Answer given: CLI was NOT updated for 1.8/1.9 (no inputs/as-of/pull/eval, only
+  parser unit tests); model suite lacked :in/history/cas coverage. Registry: 3 runs
+  "action_required" (fork CI needs a DuckDB maintainer; we can't approve - 403).
+  PR #2812 marked READY for review 2026-09-27.
+- Dev boxes (c7i.8xlarge each): /tmp/mentat_dev.env  PG_ID/EMBEDDED_ID/EXT_ID + IPs,
+  KEY=mentat-dev-20260927-132950-key SG=sg-0265c9d1805273c66. TERMINATE ALL 3 when done.
+- Agents: PG 7e8d9f6a (auto-index, count, edn_q_rows, limits; version->1.10.0)
+          EMBEDDED 9e024292 (5 engine bugs, auto-index, count, CLI, model tests, shared inputs helper)
+          EXT ecb272fa (per-path Store cache in both exts, DuckDB Quack server + benchmark)
