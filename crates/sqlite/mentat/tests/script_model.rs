@@ -30,6 +30,10 @@ model_test!(datoms_returns_tuples);
 model_test!(with_is_speculative_and_does_not_commit);
 model_test!(as_of_and_since_reflect_the_basis);
 model_test!(tx_report_has_the_datomic_shape);
+model_test!(q_takes_in_inputs);
+model_test!(q_mixed_inputs);
+model_test!(history_patterns_see_added);
+model_test!(cas_and_retract_entity);
 
 #[test]
 fn inst_and_uuid_builders_round_trip_through_the_reader() {

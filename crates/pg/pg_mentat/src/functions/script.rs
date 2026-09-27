@@ -144,6 +144,17 @@ impl ScriptBackend for PgBackend {
         Ok(query_result_value(&out.0))
     }
 
+    fn q_with_inputs(&self, db: &DbRef, query_edn: &str, inputs: &[J]) -> Result<Value, String> {
+        // edn_q's own options shape: the temporal bound plus positional inputs.
+        let mut opts = temporal_inputs(db);
+        if let J::Object(ref mut o) = opts {
+            o.insert("inputs".to_string(), J::Array(inputs.to_vec()));
+        }
+        let out =
+            super::query::mentat_query(query_edn, pgrx::JsonB(opts)).map_err(|e| e.to_string())?;
+        Ok(query_result_value(&out.0))
+    }
+
     fn pull(&self, _db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String> {
         let out = super::pull::mentat_pull(pattern_edn, eid).map_err(|e| e.to_string())?;
         Ok(json_to_mino(&out.0))

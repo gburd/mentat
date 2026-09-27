@@ -251,3 +251,154 @@ pub fn inst_and_uuid_builders_round_trip_through_the_reader() {
         assert_eq!(print_str(&v), print_str(&v2));
     }
 }
+
+// ---------------------------------------------------------------------------
+// :in inputs, history, cas / retractEntity (Datomic-like layer, 1.10).
+// ---------------------------------------------------------------------------
+
+/// `(q db query arg ...)`: Datomic's `:in $ ?x` with the args after the query.
+/// A scalar input filters the value place. Runs on every backend (the fake
+/// understands `:in $ ?x` and `:in $ [?x ...]` on one clause).
+pub fn q_takes_in_inputs(it: &mut Interpreter) {
+    seed(it);
+    it.eval_to_string("(mentat.store/transact c [{:person/name \"Bob\"}])")
+        .unwrap();
+    assert_eq!(
+        it.eval_to_string(
+            "(mentat.store/q (mentat.store/db c) \
+               '[:find ?n :in $ ?n :where [?e :person/name ?n]] \"Bob\")"
+        )
+        .unwrap(),
+        "#{[\"Bob\"]}"
+    );
+    // A collection input binds any of its values.
+    let both = it
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) \
+               '[:find ?n :in $ [?n ...] :where [?e :person/name ?n]] [\"Alice\" \"Bob\" \"Zed\"])",
+        )
+        .unwrap();
+    assert!(
+        both.contains("\"Alice\"") && both.contains("\"Bob\"") && !both.contains("Zed"),
+        "{both}"
+    );
+    // A missing input is an error, not a silently unbound variable.
+    assert!(it
+        .eval(
+            "(mentat.store/q (mentat.store/db c) '[:find ?n :in $ ?n :where [?e :person/name ?n]])"
+        )
+        .is_err());
+}
+
+/// Seed people with ages, bound to `c`. Real engines only (the fake is a toy).
+fn seed_people(it: &mut Interpreter) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :person/name :db/valueType :db.type/string \
+             :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/index true} \
+            {:db/ident :person/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :person/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}])",
+    )
+    .expect("schema");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/id \"a\" :person/name \"Alice\" :person/age 30 :person/friend \"b\"} \
+            {:db/id \"b\" :person/name \"Bob\" :person/age 40}])",
+    )
+    .expect("people");
+}
+
+/// Mixed inputs on a real engine: a ref-typed scalar, a collection, and a
+/// relation, bound by position; an entity-position integer is a ref.
+pub fn q_mixed_inputs(it: &mut Interpreter) {
+    seed_people(it);
+    let bob = it
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :person/name \"Bob\"]])",
+        )
+        .unwrap();
+    assert_eq!(
+        it.eval_to_string(&format!(
+            "(mentat.store/q (mentat.store/db c) \
+               '[:find ?n . :in $ ?f [?a ...] :where [?e :person/friend ?f] [?e :person/age ?a] [?e :person/name ?n]] \
+               {bob} [30 31])"
+        ))
+        .unwrap(),
+        "\"Alice\""
+    );
+    let rel = it
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) \
+               '[:find ?n :in $ [[?n ?a]] :where [?e :person/name ?n] [?e :person/age ?a]] \
+               [[\"Alice\" 30] [\"Bob\" 41]])",
+        )
+        .unwrap();
+    assert_eq!(rel, "#{[\"Alice\"]}");
+}
+
+/// The eid of a seeded person, as a number string.
+fn person(it: &mut Interpreter, name: &str) -> String {
+    it.eval_to_string(&format!(
+        "(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :person/name \"{name}\"]])"
+    ))
+    .unwrap()
+}
+
+/// History patterns: `[?e ?a ?v ?tx ?added]` sees retractions (`false`) and
+/// assertions (`true`) across transactions.
+pub fn history_patterns_see_added(it: &mut Interpreter) {
+    seed_people(it);
+    let alice = person(it, "Alice");
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {alice} :person/age 31]])"
+    ))
+    .unwrap();
+    let h = it
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) \
+               '[:find ?v ?added :where [?e :person/age ?v ?tx ?added] [?e :person/name \"Alice\"]])",
+        )
+        .unwrap();
+    for want in ["[30 true]", "[30 false]", "[31 true]"] {
+        assert!(h.contains(want), "history should contain {want}: {h}");
+    }
+}
+
+/// `:db/cas` swaps only from the expected old value; `:db/retractEntity`
+/// removes every datom of the entity. Both take an entid: unlike Datomic,
+/// neither backend resolves a lookup ref in a tx fn.
+pub fn cas_and_retract_entity(it: &mut Interpreter) {
+    seed_people(it);
+    let (alice, bob) = (person(it, "Alice"), person(it, "Bob"));
+    let age = "(mentat.store/q (mentat.store/db c) \
+               '[:find ?a . :where [?e :person/name \"Alice\"] [?e :person/age ?a]])";
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/cas {alice} :person/age 30 31]])"
+    ))
+    .expect("cas from the right value");
+    assert_eq!(it.eval_to_string(age).unwrap(), "31");
+    assert!(
+        it.eval(&format!(
+            "(mentat.store/transact c [[:db/cas {alice} :person/age 30 32]])"
+        ))
+        .is_err(),
+        "cas from a stale value must fail"
+    );
+    assert_eq!(it.eval_to_string(age).unwrap(), "31");
+
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/retractEntity {bob}]])"
+    ))
+    .expect("retractEntity");
+    assert_eq!(person(it, "Bob"), "nil");
+    // Datomic also retracts refs TO the entity; neither backend does yet (the
+    // shared suite pins only what both do). Bob's own datoms are all gone:
+    assert_eq!(
+        it.eval_to_string(&format!(
+            "(mentat.store/q (mentat.store/db c) '[:find ?a . :where [{bob} :person/age ?a]])"
+        ))
+        .unwrap(),
+        "nil"
+    );
+}

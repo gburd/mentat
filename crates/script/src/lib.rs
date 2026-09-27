@@ -61,6 +61,23 @@ pub trait ScriptBackend {
     /// converted to a mino [`Value`] in Datomic result shape.
     fn q(&self, db: &DbRef, query_edn: &str) -> Result<Value, String>;
 
+    /// `(q db query arg1 arg2 ...)`: `q` with the `:in` values after `$`, in
+    /// order, as JSON (the `"inputs"` array of SQL `edn_q`'s options: numbers,
+    /// strings, `":kw"` keywords, booleans, and arrays for collection / tuple
+    /// / relation bindings). Default: only the no-input case.
+    fn q_with_inputs(
+        &self,
+        db: &DbRef,
+        query_edn: &str,
+        inputs: &[serde_json::Value],
+    ) -> Result<Value, String> {
+        if inputs.is_empty() {
+            self.q(db, query_edn)
+        } else {
+            Err("this backend does not take :in arguments".into())
+        }
+    }
+
     /// Pull `pattern_edn` for a single `eid` against `db` → a mino map.
     fn pull(&self, db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String>;
 

@@ -205,6 +205,30 @@ impl ScriptBackend for MentatBackend {
         Ok(query_output_value(out))
     }
 
+    fn q_with_inputs(
+        &self,
+        db: &DbRef,
+        query_edn: &str,
+        inputs: &[serde_json::Value],
+    ) -> Result<Value, String> {
+        if inputs.is_empty() {
+            return self.q(db, query_edn);
+        }
+        if db.as_of.is_some() || db.since.is_some() {
+            return self.q(db, query_edn); // the same honest error
+        }
+        let map = self.stores.borrow();
+        let store = map
+            .get(&db.conn)
+            .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
+        let opts = serde_json::json!({ "inputs": inputs });
+        let (inputs, _) =
+            crate::options_from_json(&store.conn().current_schema(), query_edn, &opts)
+                .map_err(|e| e.to_string())?;
+        let out = store.q_once(query_edn, inputs).map_err(|e| e.to_string())?;
+        Ok(query_output_value(out))
+    }
+
     fn pull(&self, db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String> {
         if db.as_of.is_some() || db.since.is_some() {
             return Err(

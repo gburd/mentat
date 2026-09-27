@@ -38,6 +38,10 @@ mod tests {
     model_pg_test!(with_is_speculative_and_does_not_commit);
     model_pg_test!(as_of_and_since_reflect_the_basis);
     model_pg_test!(tx_report_has_the_datomic_shape);
+    model_pg_test!(q_takes_in_inputs);
+    model_pg_test!(q_mixed_inputs);
+    model_pg_test!(history_patterns_see_added);
+    model_pg_test!(cas_and_retract_entity);
 
     #[pgrx::pg_test]
     fn inst_and_uuid_builders_round_trip_through_the_reader() {

@@ -149,6 +149,17 @@ impl ScriptBackend for Fake {
     }
 
     fn q(&self, db: &DbRef, query_edn: &str) -> Result<Value, String> {
+        self.q_with_inputs(db, query_edn, &[])
+    }
+
+    /// The fake's :in support: `:in $ ?x` or `:in $ [?x ...]` binding the
+    /// clause's value place (a scalar filter, or any of a collection).
+    fn q_with_inputs(
+        &self,
+        db: &DbRef,
+        query_edn: &str,
+        inputs: &[serde_json::Value],
+    ) -> Result<Value, String> {
         let rows = self.rows(db);
         // Parse the query enough to recognize the shapes the model tests use.
         let (form, _) = read_one(query_edn).map_err(|e| format!("bad query: {e}"))?;
@@ -161,8 +172,44 @@ impl ScriptBackend for Fake {
             .iter()
             .position(|x| matches!(x, Value::Keyword(s) if kw_text(s) == ":where"))
             .ok_or("query missing :where")?;
-        let find = &items[1..where_pos];
+        let in_pos = items
+            .iter()
+            .position(|x| matches!(x, Value::Keyword(s) if kw_text(s) == ":in"));
+        let find = &items[1..in_pos.unwrap_or(where_pos)];
         let clauses = &items[where_pos + 1..];
+        // :in forms after `$`, paired with the inputs: var name -> allowed EDN values.
+        let mut bound: Vec<(String, Vec<String>)> = Vec::new();
+        if let Some(p) = in_pos {
+            let forms: Vec<&Value> = items[p + 1..where_pos]
+                .iter()
+                .filter(|x| !matches!(x, Value::Sym(s) if &*s.name == "$"))
+                .collect();
+            if forms.len() != inputs.len() {
+                return Err(format!(
+                    "{} :in forms, {} inputs",
+                    forms.len(),
+                    inputs.len()
+                ));
+            }
+            let edn = |j: &serde_json::Value| match j {
+                serde_json::Value::String(t) if t.starts_with(':') => t.clone(),
+                other => other.to_string(),
+            };
+            for (f, j) in forms.iter().zip(inputs) {
+                match (f, j) {
+                    (Value::Sym(s), j) => bound.push((s.name.to_string(), vec![edn(j)])),
+                    (Value::Vector(v), serde_json::Value::Array(js)) => match v.nth(0) {
+                        Some(Value::Sym(s)) => {
+                            bound.push((s.name.to_string(), js.iter().map(edn).collect()))
+                        }
+                        _ => return Err("fake: unsupported :in form".into()),
+                    },
+                    _ => return Err("fake: unsupported :in form".into()),
+                }
+            }
+        } else if !inputs.is_empty() {
+            return Err("inputs given but the query has no :in".into());
+        }
         // Single clause [?e :attr ?v] or [?e :attr "lit"] or [?e :attr _].
         let clause = clauses
             .iter()
@@ -181,7 +228,10 @@ impl ScriptBackend for Fake {
             .iter()
             .filter(|(_, a, _)| *a == attr)
             .filter(|(_, _, v)| match &v_lit {
-                Some(Value::Sym(_)) => true, // ?v variable
+                Some(Value::Sym(s)) => match bound.iter().find(|(n, _)| **n == *s.name) {
+                    Some((_, allowed)) => allowed.contains(&print_str(v)),
+                    None => true, // ?v variable
+                },
                 Some(lit) => print_str(v) == print_str(lit),
                 None => true,
             })
@@ -349,6 +399,12 @@ fn as_of_and_since_reflect_the_basis() {
 fn tx_report_has_the_datomic_shape() {
     m::tx_report_has_the_datomic_shape(&mut faked());
 }
+#[test]
+fn q_takes_in_inputs() {
+    m::q_takes_in_inputs(&mut faked());
+}
+// q_mixed_inputs, history_patterns_see_added, cas_and_retract_entity need a
+// real engine (Datalog joins, the log, tx fns): run on SQLite and pg only.
 #[test]
 fn inst_and_uuid_builders_round_trip_through_the_reader() {
     m::inst_and_uuid_builders_round_trip_through_the_reader();

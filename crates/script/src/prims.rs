@@ -112,17 +112,28 @@ pub fn install(it: &mut mino_rs::Interpreter, backend: Backend) {
         });
     }
 
-    // q / q-once: (q db query) -> Datomic-shaped result. as-of/since handling
-    // is the backend's (SQLite errors; pg forwards the temporal bound).
+    // q / q-once: (q db query & inputs) -> Datomic-shaped result. The inputs
+    // bind the query's :in forms after `$`, in order (Datomic's
+    // `(d/q query db arg1 ...)`, db first as in the rest of this surface).
+    // as-of/since handling is the backend's.
     for name in ["mentat.store/q", "mentat.store/q-once"] {
         let b = backend.clone();
         it.register_prim_fn(name, move |_it, args| {
             let db = destructure_db("mentat.store/q", args.first())?;
             let query = args
                 .get(1)
-                .ok_or_else(|| throw_str("mentat.store/q: expected (db query)"))?;
+                .ok_or_else(|| throw_str("mentat.store/q: expected (db query & inputs)"))?;
             let edn = print_str(query);
-            thr("mentat.store/q", b.borrow().q(&db, &edn))
+            let inputs = args
+                .get(2..)
+                .unwrap_or_default()
+                .iter()
+                .map(|v| input_json("mentat.store/q", v))
+                .collect::<Result<Vec<_>, _>>()?;
+            thr(
+                "mentat.store/q",
+                b.borrow().q_with_inputs(&db, &edn, &inputs),
+            )
         });
     }
 
@@ -228,6 +239,51 @@ pub fn install(it: &mut mino_rs::Interpreter, backend: Backend) {
 // ---------------------------------------------------------------------------
 // Argument helpers
 // ---------------------------------------------------------------------------
+
+/// A `q` input as JSON, the `"inputs"` element shape: keywords as `":ns/n"`
+/// text, vectors/lists/sets as arrays (collection, tuple, relation).
+fn input_json(prim: &str, v: &Value) -> Result<serde_json::Value, Throw> {
+    use serde_json::Value as J;
+    let seq = |items: Vec<Value>| -> Result<J, Throw> {
+        items
+            .iter()
+            .map(|x| input_json(prim, x))
+            .collect::<Result<Vec<_>, _>>()
+            .map(J::Array)
+    };
+    Ok(match v {
+        Value::Bool(b) => J::Bool(*b),
+        Value::Int(n) => J::from(*n),
+        Value::Float(f) => J::from(*f),
+        Value::Str(s) => J::String(s.as_str().to_string()),
+        Value::Keyword(sym) => J::String(sym_to_kw_str(sym)),
+        Value::Vector(xs) => seq(xs.iter().cloned().collect())?,
+        Value::Set(xs) => seq(xs.iter().cloned().collect())?,
+        Value::EmptyList => J::Array(vec![]),
+        Value::Cons(_) => {
+            let mut items = Vec::new();
+            let mut cur = v.clone();
+            while let Value::Cons(c) = &cur {
+                items.push(c.0.clone());
+                let next = c.1.clone();
+                cur = next;
+            }
+            seq(items)?
+        }
+        // A db value / conn handle can't be a data input (only one source).
+        Value::Map(m) if m.get(&kw_ns("mentat.store", "db")).is_some() => {
+            return Err(throw_str(&format!(
+                "{prim}: only one db source is supported; pass it first"
+            )))
+        }
+        other => {
+            return Err(throw_str(&format!(
+                "{prim}: unsupported :in value {}",
+                print_str(other)
+            )))
+        }
+    })
+}
 
 /// Extract an integer connection handle from a prim argument.
 fn conn_handle(prim: &str, arg: Option<&Value>) -> Result<i64, Throw> {
