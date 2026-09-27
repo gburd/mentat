@@ -259,8 +259,9 @@ fn cmd_serve(store: &str, data: &str) {
             Err(e) => json!({"error": e.to_string()}).to_string(),
         };
         let mut o = out.lock();
-        writeln!(o, "{r}").unwrap();
-        o.flush().unwrap();
+        if writeln!(o, "{r}").and_then(|_| o.flush()).is_err() {
+            return; // reader went away
+        }
     }
 }
 
