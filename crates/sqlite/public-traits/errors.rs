@@ -46,6 +46,10 @@ pub enum MentatError {
     #[error("invalid argument name: '{0}'")]
     InvalidArgumentName(String),
 
+    /// Bad JSON query options (`mentat::options_from_json`).
+    #[error("query options: {0}")]
+    BadQueryOptions(String),
+
     #[error("unknown attribute: '{0}'")]
     UnknownAttribute(String),
 

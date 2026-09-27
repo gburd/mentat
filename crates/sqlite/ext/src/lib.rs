@@ -27,13 +27,10 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use serde_json::{json, Value as Json};
 
-use mentat::edn::query::{
-    Binding as InBinding, Element, FindSpec, OrWhereClause, PatternNonValuePlace,
-    PatternValuePlace, VariableOrPlaceholder, WhereClause,
-};
+use mentat::edn::query::{Element, FindSpec};
 use mentat::{
-    Binding, HasSchema, QueryInputs, QueryResults, Queryable, Schema, Store, StructuredMap,
-    TxReport, TypedValue, ValueType, Variable,
+    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TemporalBound, TxReport,
+    TypedValue, Variable,
 };
 
 type Res<T> = Result<T, String>;
@@ -444,14 +441,13 @@ fn results_json(spec: &FindSpec, results: QueryResults) -> Json {
 fn query_json(db: &str, query: &str, opts: Option<&str>) -> Res<String> {
     let opts = parse_opts(opts)?;
     let out = store_cache::read(db, |store| {
-        let inputs = opts
-            .inputs
-            .map(|vals| build_inputs(store, query, vals))
-            .transpose()?;
-        match (opts.as_of, opts.since) {
-            (Some(t), _) => store.q_once_as_of(query, inputs, t),
-            (_, Some(t)) => store.q_once_since(query, inputs, t),
-            _ => store.q_once(query, inputs),
+        let (inputs, temporal) =
+            mentat::options_from_json(&store.conn().current_schema(), query, &opts)
+                .map_err(|e| format!("edn_q: {e}"))?;
+        match temporal {
+            Some(TemporalBound::AsOf(t)) => store.q_once_as_of(query, inputs, t),
+            Some(TemporalBound::Since(t)) => store.q_once_since(query, inputs, t),
+            None => store.q_once(query, inputs),
         }
         .map_err(|e| e.to_string())
     })
@@ -461,191 +457,15 @@ fn query_json(db: &str, query: &str, opts: Option<&str>) -> Res<String> {
 
 // ---------------------------------------------------------------------------
 // edn_q options: {"inputs": [...], "asOf": T, "since": T}; {} / NULL / '' = none.
+// Parsed by mentat::options_from_json, shared with the DuckDB extension and CLI.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, PartialEq)]
-struct QueryOpts {
-    inputs: Option<Vec<Json>>,
-    as_of: Option<i64>,
-    since: Option<i64>,
-}
-
-fn parse_opts(text: Option<&str>) -> Res<QueryOpts> {
-    let mut opts = QueryOpts::default();
+fn parse_opts(text: Option<&str>) -> Res<Json> {
     let text = text.map(str::trim).unwrap_or("");
     if text.is_empty() {
-        return Ok(opts);
+        return Ok(Json::Null);
     }
-    let obj = match serde_json::from_str(text) {
-        Ok(Json::Null) => return Ok(opts),
-        Ok(Json::Object(o)) => o,
-        Ok(_) => return Err("edn_q: options must be a JSON object".into()),
-        Err(e) => return Err(format!("edn_q: options are not valid JSON: {e}")),
-    };
-    let tx = |k: &str, v: &Json| {
-        v.as_i64()
-            .ok_or_else(|| format!("edn_q: \"{k}\" must be an integer tx id, got {v}"))
-    };
-    for (k, v) in obj {
-        match k.as_str() {
-            "inputs" => match v {
-                Json::Array(a) => opts.inputs = Some(a),
-                other => return Err(format!("edn_q: \"inputs\" must be an array, got {other}")),
-            },
-            "asOf" => opts.as_of = Some(tx(&k, &v)?),
-            "since" => opts.since = Some(tx(&k, &v)?),
-            other => {
-                return Err(format!(
-                    "edn_q: unknown option \"{other}\" (expected inputs, asOf, since)"
-                ))
-            }
-        }
-    }
-    if opts.as_of.is_some() && opts.since.is_some() {
-        return Err("edn_q: \"asOf\" and \"since\" are mutually exclusive".into());
-    }
-    Ok(opts)
-}
-
-/// Variables that stand for entities: the entity/tx place of a pattern, or the
-/// value place of a `:db.type/ref` attribute. A JSON integer bound to one
-/// becomes `TypedValue::Ref` (a `Long` in entity position is a type mismatch,
-/// i.e. a silently empty result).
-/// ponytail: walks patterns/or/not only, not rule bodies; add rules if needed.
-fn ref_vars(clauses: &[WhereClause], schema: &Schema, out: &mut Vec<Variable>) {
-    for c in clauses {
-        match c {
-            WhereClause::Pattern(p) => {
-                for place in [&p.entity, &p.tx] {
-                    if let PatternNonValuePlace::Variable(v) = place {
-                        out.push(v.clone());
-                    }
-                }
-                if let (PatternNonValuePlace::Ident(a), PatternValuePlace::Variable(v)) =
-                    (&p.attribute, &p.value)
-                {
-                    if schema
-                        .attribute_for_ident(a)
-                        .is_some_and(|(attr, _)| attr.value_type == ValueType::Ref)
-                    {
-                        out.push(v.clone());
-                    }
-                }
-            }
-            WhereClause::NotJoin(n) => ref_vars(&n.clauses, schema, out),
-            WhereClause::OrJoin(o) => {
-                for oc in &o.clauses {
-                    match oc {
-                        OrWhereClause::Clause(c) => ref_vars(std::slice::from_ref(c), schema, out),
-                        OrWhereClause::And(cs) => ref_vars(cs, schema, out),
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// JSON -> TypedValue, mirroring pg_mentat's `bind_input_value`: integer ->
-/// Long (Ref for an entity var), float -> Double, bool -> Boolean, `":kw"` ->
-/// Keyword, other string -> String.
-fn json_to_typed(j: &Json, is_ref: bool) -> Res<TypedValue> {
-    Ok(match j {
-        Json::Bool(b) => TypedValue::Boolean(*b),
-        Json::Number(n) => match (n.as_i64(), n.as_f64()) {
-            (Some(i), _) if is_ref => TypedValue::Ref(i),
-            (Some(i), _) => TypedValue::Long(i),
-            (None, Some(f)) => TypedValue::from(f),
-            _ => return Err(format!("edn_q: unrepresentable number {n}")),
-        },
-        Json::String(s) if s.starts_with(':') => {
-            match mentat::edn::parse::value(s).map(|v| v.without_spans()) {
-                Ok(mentat::edn::Value::Keyword(k)) => TypedValue::from(k),
-                _ => return Err(format!("edn_q: invalid keyword input {s}")),
-            }
-        }
-        Json::String(s) => TypedValue::typed_string(s),
-        other => return Err(format!("edn_q: unsupported input value {other}")),
-    })
-}
-
-/// `QueryInputs` from the positional `inputs` array: one element per `:in`
-/// binding form (source vars like `$` are not binding forms).
-fn build_inputs(store: &Store, query: &str, vals: Vec<Json>) -> Res<QueryInputs> {
-    let parsed = mentat::edn::parse::parse_query(query).map_err(|e| format!("edn_q: {e}"))?;
-    if vals.len() != parsed.in_bindings.len() {
-        return Err(format!(
-            "edn_q: query has {} :in binding(s) but \"inputs\" has {} value(s)",
-            parsed.in_bindings.len(),
-            vals.len()
-        ));
-    }
-    let mut refs = Vec::new();
-    ref_vars(
-        &parsed.where_clauses,
-        &store.conn().current_schema(),
-        &mut refs,
-    );
-    let tv = |v: &Variable, j: &Json| json_to_typed(j, refs.contains(v));
-    let array = |j: Json, what: &str| match j {
-        Json::Array(a) => Ok(a),
-        other => Err(format!(
-            "edn_q: {what} input must be a JSON array, got {other}"
-        )),
-    };
-    // One tuple row; `_` placeholder columns are dropped.
-    let row = |vps: &[VariableOrPlaceholder], vals: Vec<Json>| {
-        if vals.len() != vps.len() {
-            return Err(format!(
-                "edn_q: tuple needs {} value(s), got {}",
-                vps.len(),
-                vals.len()
-            ));
-        }
-        let mut vars = Vec::new();
-        let mut out = Vec::new();
-        for (vp, j) in vps.iter().zip(vals) {
-            if let VariableOrPlaceholder::Variable(v) = vp {
-                out.push(tv(v, &j)?);
-                vars.push(v.clone());
-            }
-        }
-        Ok((vars, out))
-    };
-
-    let mut scalars = Vec::new();
-    let mut non_scalar = Vec::new();
-    for (b, j) in parsed.in_bindings.iter().zip(vals) {
-        match b {
-            InBinding::BindScalar(v) => scalars.push((v.clone(), tv(v, &j)?)),
-            InBinding::BindColl(v) => {
-                let xs = array(j, "collection [?x ...]")?;
-                let xs = xs.iter().map(|x| tv(v, x)).collect::<Res<_>>()?;
-                non_scalar.push(QueryInputs::with_collection(v.clone(), xs));
-            }
-            InBinding::BindTuple(vps) => {
-                let (vars, xs) = row(vps, array(j, "tuple [?a ?b]")?)?;
-                non_scalar.push(QueryInputs::with_tuple(vars, xs));
-            }
-            InBinding::BindRel(vps) => {
-                let mut vars: Vec<Variable> =
-                    vps.iter().filter_map(|vp| vp.clone().into_var()).collect();
-                let mut rows = Vec::new();
-                for r in array(j, "relation [[?a ?b]]")? {
-                    let (vs, xs) = row(vps, array(r, "relation row")?)?;
-                    vars = vs;
-                    rows.push(xs);
-                }
-                non_scalar.push(QueryInputs::with_relation(vars, rows));
-            }
-        }
-    }
-    // Scalars plus any number of collection/tuple/relation bindings, merged.
-    let mut out = QueryInputs::with_value_sequence(scalars);
-    for ns in non_scalar {
-        out = out.merge(ns).map_err(|e| format!("edn_q: inputs: {e}"))?;
-    }
-    Ok(out)
+    serde_json::from_str(text).map_err(|e| format!("edn_q: options are not valid JSON: {e}"))
 }
 
 #[cfg(test)]
@@ -653,56 +473,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opts_contract() {
-        for empty in [None, Some(""), Some("  "), Some("null"), Some("{}")] {
-            assert_eq!(
-                parse_opts(empty).unwrap(),
-                QueryOpts::default(),
-                "{empty:?}"
-            );
+    fn opts_text() {
+        for empty in [None, Some(""), Some("  "), Some("null")] {
+            assert_eq!(parse_opts(empty).unwrap(), Json::Null, "{empty:?}");
         }
-        let o = parse_opts(Some(r#"{"inputs":["Alice", 3], "asOf": 7}"#)).unwrap();
-        assert_eq!(o.inputs.unwrap(), vec![json!("Alice"), json!(3)]);
-        assert_eq!((o.as_of, o.since), (Some(7), None));
-        assert_eq!(parse_opts(Some(r#"{"since": 9}"#)).unwrap().since, Some(9));
-        for (bad, why) in [
-            ("{nope", "not valid JSON"),
-            ("[1]", "must be a JSON object"),
-            (r#"{"bogus":1}"#, r#"unknown option "bogus""#),
-            (r#"{"inputs":"x"}"#, "must be an array"),
-            (r#"{"asOf":"x"}"#, "integer tx id"),
-            (r#"{"asOf":1,"since":2}"#, "mutually exclusive"),
-        ] {
-            let e = parse_opts(Some(bad)).unwrap_err();
-            assert!(e.contains(why), "{bad}: {e}");
-        }
-    }
-
-    #[test]
-    fn json_input_values() {
         assert_eq!(
-            json_to_typed(&json!(5), false).unwrap(),
-            TypedValue::Long(5)
+            parse_opts(Some(r#"{"since": 9}"#)).unwrap(),
+            json!({"since": 9})
         );
-        assert_eq!(json_to_typed(&json!(5), true).unwrap(), TypedValue::Ref(5));
-        assert_eq!(
-            json_to_typed(&json!(1.5), false).unwrap(),
-            TypedValue::from(1.5)
-        );
-        assert_eq!(
-            json_to_typed(&json!(true), false).unwrap(),
-            TypedValue::Boolean(true)
-        );
-        assert_eq!(
-            json_to_typed(&json!(":person/name"), false).unwrap(),
-            TypedValue::typed_ns_keyword("person", "name")
-        );
-        assert_eq!(
-            json_to_typed(&json!("Alice"), false).unwrap(),
-            TypedValue::typed_string("Alice")
-        );
-        assert!(json_to_typed(&json!(null), false).is_err());
-        assert!(json_to_typed(&json!(":"), false).is_err());
+        assert!(parse_opts(Some("{nope"))
+            .unwrap_err()
+            .contains("not valid JSON"));
     }
 
     /// End to end over a real store file: tx-report, every result shape, the

@@ -2424,6 +2424,7 @@ dependencies = [
  "query_pull_traits",
  "rusqlite",
  "rustc_version",
+ "serde_json",
  "sql_traits",
  "time",
  "uuid",

@@ -95,6 +95,7 @@ pub use mentat_transaction::Metadata;
 pub use mentat_query_algebrizer::TemporalBound;
 
 pub use crate::auto_index::{AutoIndex, IndexAction};
+pub use crate::options::options_from_json;
 
 pub use mentat_transaction::entity_builder;
 pub use mentat_transaction::query;
@@ -113,6 +114,7 @@ macro_rules! bail {
 
 pub mod auto_index;
 pub mod conn;
+pub mod options;
 pub mod query_builder;
 pub mod store;
 pub mod vocabulary;

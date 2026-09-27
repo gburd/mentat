@@ -25,15 +25,11 @@ use duckdb::{
     Connection, Result,
 };
 use serde_json::{json, Value as Json};
-use std::{collections::BTreeSet, error::Error, sync::Mutex};
+use std::{error::Error, sync::Mutex};
 
-use mentat::edn::query::{
-    Binding as InBinding, OrWhereClause, PatternNonValuePlace, PatternValuePlace,
-    VariableOrPlaceholder, WhereClause,
-};
 use mentat::{
-    Binding, HasSchema, QueryInputs, QueryResults, Queryable, Schema, Store, StructuredMap,
-    TxReport, TypedValue, ValueType, Variable,
+    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TemporalBound, TxReport,
+    TypedValue, Variable,
 };
 
 type BoxErr = Box<dyn Error>;
@@ -326,194 +322,15 @@ impl VScalar for EdnEval {
 
 // ---------------------------------------------------------------------------
 // edn_q options: {"inputs": [...], "asOf": T, "since": T} (pg_mentat's shape).
+// Parsed by mentat::options_from_json, shared with the SQLite extension and CLI.
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
-struct QueryOpts {
-    inputs: Option<Vec<Json>>,
-    as_of: Option<i64>,
-    since: Option<i64>,
-}
-
-fn parse_opts(text: Option<&str>) -> Result<QueryOpts, String> {
-    let mut opts = QueryOpts::default();
+fn parse_opts(text: Option<&str>) -> Result<Json, String> {
     let text = text.map(str::trim).unwrap_or("");
     if text.is_empty() {
-        return Ok(opts);
+        return Ok(Json::Null);
     }
-    let obj = match serde_json::from_str(text) {
-        Ok(Json::Null) => return Ok(opts),
-        Ok(Json::Object(o)) => o,
-        Ok(_) => return Err("edn_q: options must be a JSON object".into()),
-        Err(e) => return Err(format!("edn_q: options are not valid JSON: {e}")),
-    };
-    let tx = |k: &str, v: &Json| {
-        v.as_i64()
-            .ok_or_else(|| format!("edn_q: \"{k}\" must be an integer tx id, got {v}"))
-    };
-    for (k, v) in obj {
-        match k.as_str() {
-            "inputs" => match v {
-                Json::Array(a) => opts.inputs = Some(a),
-                other => return Err(format!("edn_q: \"inputs\" must be an array, got {other}")),
-            },
-            "asOf" => opts.as_of = Some(tx(&k, &v)?),
-            "since" => opts.since = Some(tx(&k, &v)?),
-            other => {
-                return Err(format!(
-                    "edn_q: unknown option \"{other}\" (expected inputs, asOf, since)"
-                ))
-            }
-        }
-    }
-    if opts.as_of.is_some() && opts.since.is_some() {
-        return Err("edn_q: \"asOf\" and \"since\" are mutually exclusive".into());
-    }
-    Ok(opts)
-}
-
-/// Variables that stand for entities: the entity/tx place of a pattern, or the
-/// value place of a `:db.type/ref` attribute. A JSON integer bound to one of
-/// these becomes `TypedValue::Ref` (else `Long`, which the algebrizer would
-/// treat as a type mismatch in entity position -> silently empty).
-/// ponytail: walks patterns/or/not only, not rule bodies; add rules if needed.
-fn ref_vars(clauses: &[WhereClause], schema: &Schema, out: &mut BTreeSet<Variable>) {
-    for c in clauses {
-        match c {
-            WhereClause::Pattern(p) => {
-                for place in [&p.entity, &p.tx] {
-                    if let PatternNonValuePlace::Variable(v) = place {
-                        out.insert(v.clone());
-                    }
-                }
-                if let (PatternNonValuePlace::Ident(a), PatternValuePlace::Variable(v)) =
-                    (&p.attribute, &p.value)
-                {
-                    if schema
-                        .attribute_for_ident(a)
-                        .is_some_and(|(attr, _)| attr.value_type == ValueType::Ref)
-                    {
-                        out.insert(v.clone());
-                    }
-                }
-            }
-            WhereClause::NotJoin(n) => ref_vars(&n.clauses, schema, out),
-            WhereClause::OrJoin(o) => {
-                for oc in &o.clauses {
-                    match oc {
-                        OrWhereClause::Clause(c) => ref_vars(std::slice::from_ref(c), schema, out),
-                        OrWhereClause::And(cs) => ref_vars(cs, schema, out),
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// JSON -> TypedValue, mirroring pg_mentat's `bind_input_value`: integer ->
-/// Long (Ref for an entity var), float -> Double, bool -> Boolean, `":kw"` ->
-/// Keyword, other string -> String.
-fn json_to_typed(j: &Json, is_ref: bool) -> Result<TypedValue, String> {
-    Ok(match j {
-        Json::Bool(b) => TypedValue::Boolean(*b),
-        Json::Number(n) => match (n.as_i64(), n.as_f64()) {
-            (Some(i), _) if is_ref => TypedValue::Ref(i),
-            (Some(i), _) => TypedValue::Long(i),
-            (None, Some(f)) => TypedValue::from(f),
-            _ => return Err(format!("edn_q: unrepresentable number {n}")),
-        },
-        Json::String(s) if s.starts_with(':') => {
-            match mentat::edn::parse::value(s).map(|v| v.without_spans()) {
-                Ok(mentat::edn::Value::Keyword(k)) => TypedValue::from(k),
-                _ => return Err(format!("edn_q: invalid keyword input {s}")),
-            }
-        }
-        Json::String(s) => TypedValue::typed_string(s),
-        other => return Err(format!("edn_q: unsupported input value {other}")),
-    })
-}
-
-/// Build `QueryInputs` from the positional `inputs` array: one element per
-/// `:in` binding form (source vars like `$` are not binding forms).
-fn build_inputs(store: &Store, query: &str, vals: Vec<Json>) -> Result<QueryInputs, BoxErr> {
-    let parsed = mentat::edn::parse::parse_query(query)?;
-    if vals.len() != parsed.in_bindings.len() {
-        return Err(format!(
-            "edn_q: query has {} :in binding(s) but \"inputs\" has {} value(s)",
-            parsed.in_bindings.len(),
-            vals.len()
-        )
-        .into());
-    }
-    let mut refs = BTreeSet::new();
-    ref_vars(
-        &parsed.where_clauses,
-        &store.conn().current_schema(),
-        &mut refs,
-    );
-    let tv = |v: &Variable, j: &Json| json_to_typed(j, refs.contains(v));
-    let array = |j: Json, what: &str| match j {
-        Json::Array(a) => Ok(a),
-        other => Err(format!(
-            "edn_q: {what} input must be a JSON array, got {other}"
-        )),
-    };
-    // One tuple row: drop `_` placeholder columns.
-    let row = |vps: &[VariableOrPlaceholder], vals: Vec<Json>| {
-        if vals.len() != vps.len() {
-            return Err(format!(
-                "edn_q: tuple needs {} value(s), got {}",
-                vps.len(),
-                vals.len()
-            ));
-        }
-        let mut vars = Vec::new();
-        let mut out = Vec::new();
-        for (vp, j) in vps.iter().zip(vals) {
-            if let VariableOrPlaceholder::Variable(v) = vp {
-                out.push(tv(v, &j)?);
-                vars.push(v.clone());
-            }
-        }
-        Ok((vars, out))
-    };
-
-    let mut scalars = Vec::new();
-    let mut non_scalar = Vec::new();
-    for (b, j) in parsed.in_bindings.iter().zip(vals) {
-        match b {
-            InBinding::BindScalar(v) => scalars.push((v.clone(), tv(v, &j)?)),
-            InBinding::BindColl(v) => {
-                let xs = array(j, "collection [?x ...]")?;
-                let xs = xs.iter().map(|x| tv(v, x)).collect::<Result<_, _>>()?;
-                non_scalar.push(QueryInputs::with_collection(v.clone(), xs));
-            }
-            InBinding::BindTuple(vps) => {
-                let (vars, xs) = row(vps, array(j, "tuple [?a ?b]")?)?;
-                non_scalar.push(QueryInputs::with_tuple(vars, xs));
-            }
-            InBinding::BindRel(vps) => {
-                let mut vars = Vec::new();
-                let mut rows = Vec::new();
-                for r in array(j, "relation [[?a ?b]]")? {
-                    let (vs, xs) = row(vps, array(r, "relation row")?)?;
-                    vars = vs;
-                    rows.push(xs);
-                }
-                if rows.is_empty() {
-                    vars = vps.iter().filter_map(|vp| vp.clone().into_var()).collect();
-                }
-                non_scalar.push(QueryInputs::with_relation(vars, rows));
-            }
-        }
-    }
-    // Scalars plus any number of collection/tuple/relation bindings, merged.
-    let mut out = QueryInputs::with_value_sequence(scalars);
-    for ns in non_scalar {
-        out = out.merge(ns).map_err(|e| format!("edn_q: inputs: {e}"))?;
-    }
-    Ok(out)
+    serde_json::from_str(text).map_err(|e| format!("edn_q: options are not valid JSON: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -567,14 +384,13 @@ impl VTab for EdnQuery {
         // Run the query once to learn the FindSpec columns AND materialize
         // the results (smallest correct diff).
         let output = store_cache::read(&db_path, |store| -> Result<_, BoxErr> {
-            let inputs = match opts.inputs {
-                Some(vals) => Some(build_inputs(store, &query, vals)?),
-                None => None,
-            };
-            Ok(match (opts.as_of, opts.since) {
-                (Some(t), _) => store.q_once_as_of(&query, inputs, t)?,
-                (_, Some(t)) => store.q_once_since(&query, inputs, t)?,
-                _ => store.q_once(&query, inputs)?,
+            let (inputs, temporal) =
+                mentat::options_from_json(&store.conn().current_schema(), &query, &opts)
+                    .map_err(|e| format!("edn_q: {e}"))?;
+            Ok(match temporal {
+                Some(TemporalBound::AsOf(t)) => store.q_once_as_of(&query, inputs, t)?,
+                Some(TemporalBound::Since(t)) => store.q_once_since(&query, inputs, t)?,
+                None => store.q_once(&query, inputs)?,
             })
         })?;
 
