@@ -159,12 +159,14 @@ fn test_drop_after_idle_window_only_mentat_indexes() {
     // A forged registry row naming a core index is ignored.
     s.sqlite_ref()
         .execute(
-            "INSERT INTO mentat_managed_indexes VALUES ('idx_datoms_aevt', 1, 0, 0)",
+            "INSERT INTO mentat_managed_indexes VALUES ('idx_datoms_aevt', 1, 0, 0, 'adaptive'),
+                                                       ('idx_datoms_eavt', 1, 0, 0, 'schema')",
             [],
         )
         .unwrap();
     assert_eq!(s.tune_indexes(false).unwrap(), vec![]);
     assert!(indexes(&s).contains(&"idx_datoms_aevt".to_string()));
+    assert!(indexes(&s).contains(&"idx_datoms_eavt".to_string()));
 }
 
 #[test]
@@ -229,4 +231,190 @@ fn test_modes_off_and_schema() {
     assert!(indexes(&s).iter().any(|i| i.starts_with("idx_auto_avet_")));
     assert_eq!(s.tune_indexes(false).unwrap(), dry);
     assert!(!indexes(&s).iter().any(|i| i.starts_with("idx_auto_avet_")));
+}
+
+// ---------------------------------------------------------------------------
+// Schema value indexes: :db/index / :db/unique get a usable index by default.
+// ---------------------------------------------------------------------------
+
+fn email_plan(s: &Store) -> String {
+    let q = "[:find ?e . :in ?m :where [?e :u/email ?m]]";
+    let i = QueryInputs::with_value_sequence(vec![(
+        Variable::from_valid_name("?m"),
+        TypedValue::typed_string("a@x"),
+    )]);
+    match s.q_explain(q, i).expect("explain") {
+        QueryExplanation::ExecutionPlan { steps, .. } => steps
+            .iter()
+            .map(|s| s.detail.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => panic!("expected a plan"),
+    }
+}
+
+fn users(s: &mut Store, attr: &str) -> i64 {
+    s.transact(&format!(
+        r#"[{{:db/ident :u/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one {attr}}}
+            {{:db/ident :u/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}}]"#
+    ))
+    .expect("schema");
+    s.transact(r#"[{:u/email "a@x" :u/name "A"} {:u/email "b@x" :u/name "B"}]"#)
+        .expect("users");
+    mentat::HasSchema::get_entid(
+        &*s.conn().current_schema(),
+        &mentat::Keyword::namespaced("u", "email"),
+    )
+    .unwrap()
+    .0
+}
+
+fn kind(s: &Store, a: i64) -> Option<String> {
+    s.sqlite_ref()
+        .query_row(
+            "SELECT kind FROM mentat_managed_indexes WHERE a = ?",
+            [a],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+#[test]
+fn test_unique_attribute_gets_a_usable_index_in_default_mode() {
+    let mut s = Store::open("").unwrap();
+    let a = users(&mut s, ":db/unique :db.unique/identity :db/index true");
+    let idx = format!("idx_auto_avet_{a}");
+    assert!(indexes(&s).contains(&idx), "{:?}", indexes(&s));
+    assert_eq!(kind(&s, a).as_deref(), Some("schema"));
+    let p = email_plan(&s);
+    assert!(
+        p.contains(&format!("USING COVERING INDEX {idx} (a=? AND v=?)")),
+        "{p}"
+    );
+    // :db.unique/value too. Plain attributes (:u/name) get nothing.
+    let mut s = Store::open("").unwrap();
+    let a = users(&mut s, ":db/unique :db.unique/value :db/index true");
+    assert_eq!(kind(&s, a).as_deref(), Some("schema"));
+    let auto: Vec<_> = indexes(&s)
+        .into_iter()
+        .filter(|i| i.starts_with("idx_auto_avet_"))
+        .collect();
+    assert_eq!(auto, vec![format!("idx_auto_avet_{a}")]);
+}
+
+#[test]
+fn test_schema_index_follows_the_flag_and_survives_adaptive() {
+    let mut s = Store::open("").unwrap();
+    let a = users(&mut s, ":db/unique :db.unique/identity :db/index true");
+    let idx = format!("idx_auto_avet_{a}");
+    assert!(indexes(&s).contains(&idx));
+    // Adaptive vestigial drops leave a schema index alone while the flag is set.
+    s.set_auto_index(AutoIndex::Adaptive);
+    s.set_index_tuning(1, Duration::from_secs(0));
+    assert_eq!(s.tune_indexes(false).unwrap(), vec![]);
+    assert!(indexes(&s).contains(&idx));
+    // So does Schema mode's cleanup of adaptive indexes.
+    s.set_auto_index(AutoIndex::Schema);
+    assert_eq!(s.tune_indexes(false).unwrap(), vec![]);
+    assert!(indexes(&s).contains(&idx));
+    // Retracting :db/unique drops it.
+    s.transact(r#"[[:db/retract :u/email :db/unique :db.unique/identity]]"#)
+        .expect("retract unique");
+    assert!(!indexes(&s).contains(&idx), "{:?}", indexes(&s));
+    assert_eq!(kind(&s, a), None);
+    // And back.
+    s.transact(r#"[[:db/add :u/email :db/unique :db.unique/value]]"#)
+        .expect("unique again");
+    assert!(indexes(&s).contains(&idx));
+}
+
+fn owners(s: &mut Store, extra: &str) -> (i64, i64) {
+    s.transact(&format!(
+        r#"[{{:db/ident :t/owner :db/valueType :db.type/ref :db/cardinality :db.cardinality/one {extra}}}
+            {{:db/ident :t/state :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one :db/index true}}]"#
+    ))
+    .unwrap();
+    let schema = s.conn().current_schema();
+    let id = |n: &str| {
+        mentat::HasSchema::get_entid(&*schema, &mentat::Keyword::namespaced("t", n))
+            .unwrap()
+            .0
+    };
+    (id("owner"), id("state"))
+}
+
+#[test]
+fn test_ref_index_follows_db_index() {
+    let mut s = Store::open("").unwrap();
+    let (owner, state) = owners(&mut s, ":db/index true");
+    // A ref with :db/index gets one; a scalar enum doesn't (see wants_schema_index).
+    assert_eq!(kind(&s, owner).as_deref(), Some("schema"));
+    assert_eq!(kind(&s, state), None);
+    // Removing :db/index drops it.
+    s.transact(r#"[[:db/add :t/owner :db/index false]]"#)
+        .expect("alter");
+    assert_eq!(kind(&s, owner), None);
+    assert!(!indexes(&s).contains(&format!("idx_auto_avet_{owner}")));
+}
+
+#[test]
+fn test_adaptive_index_is_adopted_when_the_flag_is_set() {
+    let mut s = Store::open("").unwrap();
+    let (a, _) = owners(&mut s, "");
+    let mut tx = String::from("[");
+    for i in 0..100 {
+        tx.push_str(&format!(r#"{{:db/id "o{i}" :t/owner "o{i}"}}"#));
+    }
+    tx.push(']');
+    let r = s.transact(&tx).unwrap(); // selective enough to keep an adaptive index
+    let o = r.tempids["o7"];
+    s.set_auto_index(AutoIndex::Adaptive);
+    s.set_index_tuning(1, Duration::from_secs(0));
+    s.q_once(&format!("[:find ?e . :where [?e :t/owner {o}]]"), None)
+        .unwrap(); // K = 1: an adaptive index
+    assert_eq!(kind(&s, a).as_deref(), Some("adaptive"));
+    s.transact(r#"[[:db/add :t/owner :db/index true]]"#)
+        .unwrap();
+    assert_eq!(kind(&s, a).as_deref(), Some("schema"));
+    // Now idle, but not dropped: the flag keeps it.
+    assert_eq!(s.tune_indexes(false).unwrap(), vec![]);
+    assert!(indexes(&s).contains(&format!("idx_auto_avet_{a}")));
+}
+
+#[test]
+fn test_upgraded_store_gets_schema_indexes() {
+    let dir = std::env::temp_dir().join(format!("mentat-schema-idx-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    for from in [1, 2] {
+        let path = dir.join(format!("v{from}.db"));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+        let path = path.to_str().unwrap().to_string();
+        let a = {
+            let mut s = Store::open(&path).unwrap();
+            users(&mut s, ":db/unique :db.unique/identity :db/index true")
+        };
+        // Make it look like an old store: no registry, no schema index.
+        let sql = if from == 1 {
+            "DROP INDEX idx_transactions_aevt; ALTER TABLE known_parts DROP COLUMN idx;"
+        } else {
+            ""
+        };
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(&format!(
+                "{sql} DROP INDEX idx_auto_avet_{a}; DROP TABLE mentat_managed_indexes;
+                 PRAGMA user_version = {from};"
+            ))
+            .unwrap();
+        let s = Store::open(&path).expect("upgrade");
+        assert!(
+            indexes(&s).contains(&format!("idx_auto_avet_{a}")),
+            "v{from}"
+        );
+        assert_eq!(kind(&s, a).as_deref(), Some("schema"));
+        let p = email_plan(&s);
+        assert!(p.contains(&format!("idx_auto_avet_{a}")), "v{from}: {p}");
+    }
 }

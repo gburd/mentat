@@ -35,7 +35,7 @@ use crate::entids;
 
 use core_traits::{attribute, Attribute, AttributeBitFlags, Entid, TypedValue, ValueType};
 
-use mentat_core::{AttributeMap, FromMicros, IdentMap, Schema, ToMicros, ValueRc};
+use mentat_core::{AttributeMap, FromMicros, HasSchema, IdentMap, Schema, ToMicros, ValueRc};
 
 use db_traits::errors::{DbErrorKind, Result};
 
@@ -174,7 +174,9 @@ where
 /// 2: `idx_transactions_aevt`, a covering history index for as-of/since, and
 ///    persisted partition high-water marks (`known_parts.idx`), so opening a
 ///    store no longer scans the whole log. Version-1 stores are upgraded on open.
-pub const CURRENT_VERSION: i32 = 2;
+/// 3: `mentat_managed_indexes` with a `kind` column, and a usable value index
+///    per `:db/index` / `:db/unique` attribute (`sync_schema_indexes`).
+pub const CURRENT_VERSION: i32 = 3;
 
 /// MIN_SQLITE_VERSION should be changed when there's a new minimum version of sqlite required
 /// for the project to work.
@@ -295,6 +297,15 @@ lazy_static! {
         r#"ALTER TABLE known_parts ADD COLUMN idx INTEGER"#,
         ]
     };
+
+    /// Version 3: the registry of indexes mentat creates on `datoms`. `kind`
+    /// is `schema` (from `:db/index` / `:db/unique`) or `adaptive` (mentat's
+    /// `AutoIndex::Adaptive`). See `create_v3_registry` for upgrades.
+    #[cfg_attr(rustfmt, rustfmt_skip)]
+    static ref V3_STATEMENTS: Vec<&'static str> = { vec![
+        r#"CREATE TABLE mentat_managed_indexes (name TEXT PRIMARY KEY, a INTEGER NOT NULL, created INTEGER NOT NULL, last_used INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'adaptive')"#,
+        ]
+    };
 }
 
 /// Set the SQLite user version.
@@ -327,7 +338,11 @@ pub fn create_empty_current_version(
 ) -> Result<(rusqlite::Transaction<'_>, DB)> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
 
-    for statement in V1_STATEMENTS.iter().chain(V2_STATEMENTS.iter()) {
+    for statement in V1_STATEMENTS
+        .iter()
+        .chain(V2_STATEMENTS.iter())
+        .chain(V3_STATEMENTS.iter())
+    {
         tx.execute(statement, rusqlite::params![])?;
     }
 
@@ -428,8 +443,8 @@ pub fn ensure_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     let user_version = get_user_version(conn)?;
     match user_version {
         0 => create_current_version(conn),
-        1 => {
-            upgrade_from_v1(conn)?;
+        1 | 2 => {
+            upgrade(conn)?;
             read_db(conn)
         }
         CURRENT_VERSION => read_db(conn),
@@ -442,20 +457,46 @@ pub fn ensure_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     }
 }
 
-/// Upgrade a version-1 store to version 2 (see `CURRENT_VERSION`). One-time
-/// cost: builds the history index and derives the partition marks from the log.
-fn upgrade_from_v1(conn: &mut rusqlite::Connection) -> Result<()> {
+/// Upgrade a version-1 or -2 store to the current version (see
+/// `CURRENT_VERSION`). One-time cost: v1 -> v2 builds the history index and
+/// derives the partition marks from the log; v2 -> v3 builds the schema value
+/// indexes.
+fn upgrade(conn: &mut rusqlite::Connection) -> Result<()> {
     // Concurrent openers of the same v1 file queue behind the one upgrading.
     let busy: i64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0))?;
     conn.busy_timeout(std::time::Duration::from_secs(600))?;
     let r = (|| -> Result<()> {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Exclusive)?;
-        if get_user_version(&tx)? == 1 {
+        // Re-read under the lock: a concurrent opener may have upgraded.
+        let v = get_user_version(&tx)?;
+        if v == 1 {
             for statement in V2_STATEMENTS.iter() {
                 tx.execute(statement, rusqlite::params![])?;
             }
             let partition_map = read_partition_map_from_log(&tx)?;
             write_partition_map(&tx, &partition_map)?;
+        }
+        if (1..=2).contains(&v) {
+            // A v2 store may already have the (4-column) registry, created by
+            // AutoIndex::Adaptive before `kind` existed.
+            if !has_table(&tx, "mentat_managed_indexes")? {
+                for statement in V3_STATEMENTS.iter() {
+                    tx.execute(statement, rusqlite::params![])?;
+                }
+            } else {
+                let has_kind: i64 = tx.query_row(
+                    "SELECT count(*) FROM pragma_table_info('mentat_managed_indexes') WHERE name = 'kind'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                if has_kind == 0 {
+                    tx.execute_batch(
+                        "ALTER TABLE mentat_managed_indexes ADD COLUMN kind TEXT NOT NULL DEFAULT 'adaptive'",
+                    )?;
+                }
+            }
+            let schema = read_db(&tx)?.schema;
+            sync_schema_indexes(&tx, &schema)?;
             set_user_version(&tx, CURRENT_VERSION)?;
         }
         tx.commit()?;
@@ -463,6 +504,110 @@ fn upgrade_from_v1(conn: &mut rusqlite::Connection) -> Result<()> {
     })();
     conn.busy_timeout(std::time::Duration::from_millis(busy as u64))?;
     r
+}
+
+/// The name of mentat's usable value index for attribute `a`. Adaptive and
+/// schema indexes share it: one index per attribute, whoever created it.
+pub fn value_index_name(a: Entid) -> String {
+    format!("idx_auto_avet_{a}")
+}
+
+/// Create a value index for `a` and register it as `kind`. The planner uses it
+/// with no SQL change: the query already says `a = <a>`. (The schema's
+/// `idx_datoms_avet ... WHERE index_avet IS NOT 0` never matches mentat's SQL,
+/// which doesn't state that predicate.) ANALYZEs just this index, fully, so
+/// the planner sees how selective it is, and drops its STAT4 samples: with
+/// them, every later prepare costs ~12 us more for no plan change.
+pub fn create_value_index(conn: &rusqlite::Connection, a: Entid, kind: &str) -> Result<()> {
+    let index = value_index_name(a);
+    let limit: i64 = conn.query_row("PRAGMA analysis_limit", [], |r| r.get(0))?;
+    // `a` is an integer entid, so the DDL can't be injected into.
+    conn.execute_batch(&format!(
+        "CREATE INDEX IF NOT EXISTS {index} ON datoms (a, v, e) WHERE a = {a};
+         PRAGMA analysis_limit = 0; ANALYZE {index}; PRAGMA analysis_limit = {limit};"
+    ))?;
+    if has_table(conn, "sqlite_stat4")? {
+        conn.execute("DELETE FROM sqlite_stat4 WHERE idx = ?", [&index])?;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    conn.execute(
+        "INSERT INTO mentat_managed_indexes (name, a, created, last_used, kind) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET kind = excluded.kind",
+        rusqlite::params![index, a, now, now, kind],
+    )?;
+    Ok(())
+}
+
+/// Drop mentat's value index for `a`, its statistics and its registry row.
+pub fn drop_value_index(conn: &rusqlite::Connection, a: Entid) -> Result<()> {
+    let index = value_index_name(a);
+    conn.execute_batch(&format!("DROP INDEX IF EXISTS {index}"))?;
+    if has_table(conn, "sqlite_stat1")? {
+        conn.execute("DELETE FROM sqlite_stat1 WHERE idx = ?", [&index])?;
+    }
+    conn.execute(
+        "DELETE FROM mentat_managed_indexes WHERE name = ?",
+        [&index],
+    )?;
+    Ok(())
+}
+
+pub fn has_table(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// True if attribute `a` should have a schema value index: a user attribute
+/// that is `:db/unique` (so a value picks at most one entity), or `:db/index
+/// true` on a ref (entity joins, e.g. issues -> assignee), not fulltext (its
+/// `v` is a rowid).
+///
+/// `:db/index` on a scalar (an enum, a priority) doesn't get one: with only a
+/// few values per attribute, SQLite starts the join at that index and probes
+/// the rest per row, which on the scale suite's `:issue/state` +
+/// `:issue/priority >= 4` made q4 2x slower (28 -> 55 ms at 1M datoms) than
+/// the AEVT scan it replaced. The adaptive mode decides those per workload.
+// ponytail: a fixed rule, not per-attribute costing; widen once the planner
+// is given better statistics (STAT4 samples, or an ANALYZE'd datoms table).
+pub fn wants_schema_index(schema: &Schema, a: Entid) -> bool {
+    a >= bootstrap::USER0
+        && schema.attribute_for_entid(a).is_some_and(|attr| {
+            !attr.fulltext
+                && (attr.unique.is_some() || (attr.index && attr.value_type == ValueType::Ref))
+        })
+}
+
+/// Make the registry's `schema`-kind indexes match the schema: create one for
+/// every attribute that wants it (an existing adaptive index is adopted), drop
+/// those whose attribute lost the flag. Runs when a transaction changes the
+/// schema, on upgrade, and from `Store::tune_indexes`.
+pub fn sync_schema_indexes(conn: &rusqlite::Connection, schema: &Schema) -> Result<()> {
+    if !has_table(conn, "mentat_managed_indexes")? {
+        return Ok(()); // Not yet upgraded (the upgrade calls this).
+    }
+    let registered: Vec<(Entid, String)> = conn
+        .prepare("SELECT a, kind FROM mentat_managed_indexes")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (a, kind) in &registered {
+        if kind == "schema" && !wants_schema_index(schema, *a) {
+            drop_value_index(conn, *a)?;
+        }
+    }
+    for &a in schema.attribute_map.keys() {
+        let have = registered.iter().any(|(x, k)| *x == a && k == "schema");
+        if !have && wants_schema_index(schema, a) {
+            create_value_index(conn, a, "schema")?;
+        }
+    }
+    Ok(())
 }
 
 pub trait TypedSQLValue {
@@ -1407,6 +1552,13 @@ SELECT EXISTS
                 }
             }
         }
+    }
+
+    // Schema value indexes follow :db/index / :db/unique (installed or altered).
+    if !metadata_report.attributes_installed.is_empty()
+        || !metadata_report.attributes_altered.is_empty()
+    {
+        sync_schema_indexes(conn, new_schema)?;
     }
 
     Ok(())

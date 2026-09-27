@@ -13,10 +13,12 @@
 //! `datoms` always has EAVT and AEVT indexes. The schema's `:db/index` and
 //! `:db/unique` add partial AVET indexes (`WHERE index_avet IS NOT 0`), but the
 //! query SQL never states that predicate, so SQLite can't use them: a
-//! value-filtered pattern like `[?u :user/email "x"]` scans every
-//! `:user/email` datom through AEVT.
+//! value-filtered pattern like `[?u :user/email "x"]` would scan every
+//! `:user/email` datom through AEVT. So every `:db/index` / `:db/unique`
+//! attribute also gets a *schema* value index (below), created and dropped
+//! with the flag by `mentat_db::db::sync_schema_indexes`, in every mode.
 //!
-//! In [`AutoIndex::Adaptive`] mode the store counts, per attribute, the queries
+//! In [`AutoIndex::Adaptive`] mode the store also counts, per attribute, the queries
 //! whose pattern pins that attribute's value (a constant or a bound `:in`
 //! scalar). When an attribute reaches `min_uses` queries within one tuning
 //! period, mentat creates
@@ -25,9 +27,10 @@
 //! no `value_type_tag` column: an attribute has one value type, and the SQL
 //! doesn't pin the tag when the type is known, so a tag column between `a` and
 //! `v` would stop the index serving `v = ?`.
-//! Indexes mentat creates are listed in `mentat_managed_indexes`. An index is
+//! Indexes mentat creates are listed in `mentat_managed_indexes`, with `kind`
+//! `schema` or `adaptive`. An adaptive index is
 //! dropped when a whole period passes without a use *and* its last use is at
-//! least `idle` old. That gap between "`min_uses` in a period" and "no use for
+//! least `idle` old; a schema index only when its attribute loses the flag. That gap between "`min_uses` in a period" and "no use for
 //! `idle`" is the hysteresis. Nothing outside that table is ever dropped.
 //! An index whose average value matches over 5% of the attribute's datoms is
 //! dropped straight after it's built: SQLite would probe it and lose to the
@@ -39,14 +42,20 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use core_traits::Entid;
 use mentat_core::{HasSchema, Keyword, Schema};
+use mentat_db::db;
 use public_traits::errors::Result;
 
 /// How mentat manages secondary indexes on `datoms`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AutoIndex {
-    /// Mentat never creates or drops an index.
+    /// No adaptive indexes, and [`Store::tune_indexes`] does nothing. Schema
+    /// value indexes still follow `:db/index` / `:db/unique` (they're part of
+    /// the schema, like SQLite's own indexes).
+    ///
+    /// [`Store::tune_indexes`]: crate::Store::tune_indexes
     Off,
-    /// Only the schema's indexes. [`Store::tune_indexes`] drops any adaptive
+    /// Only the schema's indexes: a value index per `:db/index` /
+    /// `:db/unique` attribute. [`Store::tune_indexes`] drops any adaptive
     /// index mentat created earlier. This is the default.
     ///
     /// [`Store::tune_indexes`]: crate::Store::tune_indexes
@@ -103,7 +112,6 @@ impl fmt::Display for IndexAction {
 
 /// Queries between automatic tuning runs in `Adaptive` mode.
 pub const PERIOD: u32 = 1000;
-const PREFIX: &str = "idx_auto_avet_";
 /// User attributes only: bootstrap attributes are few and cached.
 const USER0: Entid = 0x10000;
 
@@ -146,37 +154,27 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// `(name, attribute, last_used)` for every index mentat created.
-fn registry(conn: &rusqlite::Connection) -> Result<Vec<(String, Entid, i64)>> {
-    if !has_table(conn, "mentat_managed_indexes")? {
+/// `(name, attribute, last_used, is_schema)` for every index mentat created.
+fn registry(conn: &rusqlite::Connection) -> Result<Vec<(String, Entid, i64, bool)>> {
+    if !db::has_table(conn, "mentat_managed_indexes")? {
         return Ok(vec![]);
     }
-    let mut stmt = conn.prepare("SELECT name, a, last_used FROM mentat_managed_indexes")?;
-    let rows: Vec<(String, Entid, i64)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let mut stmt = conn.prepare("SELECT name, a, last_used, kind FROM mentat_managed_indexes")?;
+    let rows: Vec<(String, Entid, i64, bool)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get::<_, String>(3)? == "schema",
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     // Only ever act on names mentat generates, whatever the table says.
     Ok(rows
         .into_iter()
-        .filter(|(n, a, _)| *n == format!("{PREFIX}{a}"))
+        .filter(|(n, a, _, _)| *n == db::value_index_name(*a))
         .collect())
-}
-
-fn has_table(conn: &rusqlite::Connection, name: &str) -> Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
-        [name],
-        |r| r.get(0),
-    )?;
-    Ok(n > 0)
-}
-
-/// Drop the index's `sqlite_stat4` samples, if any.
-fn stat4(conn: &rusqlite::Connection, index: &str) -> Result<()> {
-    if has_table(conn, "sqlite_stat4")? {
-        conn.execute("DELETE FROM sqlite_stat4 WHERE idx = ?", [index])?;
-    }
-    Ok(())
 }
 
 /// From the index's fresh `sqlite_stat1` row (`nrow rows/a rows/(a,v) 1`): is
@@ -226,11 +224,16 @@ impl Advisor {
         if self.mode == AutoIndex::Off {
             return Ok(vec![]);
         }
-        let managed = registry(conn)?;
+        let tx = conn.unchecked_transaction()?;
+        if !dry_run {
+            // Existing stores, and anything a transaction missed.
+            db::sync_schema_indexes(&tx, schema)?;
+        }
+        let managed = registry(&tx)?;
         let ident = |a: Entid| schema.get_ident(a).cloned();
         let now = now();
         let mut actions = vec![];
-        let have: BTreeSet<Entid> = managed.iter().map(|(_, a, _)| *a).collect();
+        let have: BTreeSet<Entid> = managed.iter().map(|(_, a, _, _)| *a).collect();
         if self.mode == AutoIndex::Adaptive {
             for (&a, &uses) in &self.uses {
                 let eligible = a >= USER0
@@ -243,7 +246,7 @@ impl Advisor {
                     && !self.rejected.contains(&a)
                 {
                     actions.push(IndexAction::Create {
-                        index: format!("{PREFIX}{a}"),
+                        index: db::value_index_name(a),
                         attribute: a,
                         ident: ident(a),
                         uses,
@@ -251,7 +254,10 @@ impl Advisor {
                 }
             }
         }
-        for (index, a, last_used) in &managed {
+        for (index, a, last_used, is_schema) in &managed {
+            if *is_schema {
+                continue; // Follows the schema flag, not the workload.
+            }
             let used = self.uses.get(a).copied().unwrap_or(0) > 0;
             let idle = now.saturating_sub(*last_used) as u64 >= self.idle.as_secs();
             if self.mode == AutoIndex::Schema || (!used && idle) {
@@ -266,14 +272,7 @@ impl Advisor {
             return Ok(actions);
         }
 
-        let tx = conn.unchecked_transaction()?;
-        let limit: i64 = tx.query_row("PRAGMA analysis_limit", [], |r| r.get(0))?;
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS mentat_managed_indexes
-               (name TEXT PRIMARY KEY, a INTEGER NOT NULL,
-                created INTEGER NOT NULL, last_used INTEGER NOT NULL)",
-        )?;
-        for (_, a, _) in &managed {
+        for (_, a, _, _) in &managed {
             if self.uses.get(a).copied().unwrap_or(0) > 0 {
                 tx.execute(
                     "UPDATE mentat_managed_indexes SET last_used = ? WHERE a = ?",
@@ -287,42 +286,22 @@ impl Advisor {
                 IndexAction::Create {
                     index, attribute, ..
                 } => {
-                    // `a` is an integer entid, so the DDL can't be injected into.
-                    // ANALYZE just this index, fully (O(attribute), like the
-                    // build): with no stat1 row the planner may probe it last,
-                    // after joining everything else, and `selective` reads it.
-                    // Not `analysis_limit`: it reads the first N entries of the
-                    // sorted index, which all share one value.
-                    tx.execute_batch(&format!(
-                        "CREATE INDEX IF NOT EXISTS {index} ON datoms (a, v, e) WHERE a = {attribute};
-                         PRAGMA analysis_limit = 0; ANALYZE {index}; PRAGMA analysis_limit = {limit}"
-                    ))?;
-                    // STAT4 samples (this build has ENABLE_STAT4) make every
-                    // later prepare slower (~12 us on a 1M store) for no plan
-                    // change on an `a = ?` index; keep only the stat1 row.
-                    stat4(&tx, index)?;
+                    // Built and fully ANALYZEd (O(attribute), like the build):
+                    // with no stat1 row the planner may probe it last, after
+                    // joining everything else, and `selective` reads it.
+                    db::create_value_index(&tx, *attribute, "adaptive")?;
                     if !selective(&tx, index)? {
-                        tx.execute_batch(&format!("DROP INDEX {index}"))?;
-                        tx.execute("DELETE FROM sqlite_stat1 WHERE idx = ?", [index])?;
+                        db::drop_value_index(&tx, *attribute)?;
                         rejected.insert(*attribute);
-                        continue;
                     }
-                    tx.execute(
-                        "INSERT OR REPLACE INTO mentat_managed_indexes (name, a, created, last_used) VALUES (?, ?, ?, ?)",
-                        rusqlite::params![index, attribute, now, now],
-                    )?;
                 }
-                IndexAction::Drop { index, .. } => {
-                    tx.execute_batch(&format!("DROP INDEX IF EXISTS {index}"))?;
-                    if has_table(&tx, "sqlite_stat1")? {
-                        tx.execute("DELETE FROM sqlite_stat1 WHERE idx = ?", [index])?;
-                    }
-                    tx.execute("DELETE FROM mentat_managed_indexes WHERE name = ?", [index])?;
+                IndexAction::Drop { attribute, .. } => {
+                    db::drop_value_index(&tx, *attribute)?;
                 }
             }
         }
         tx.commit()?;
-        self.indexed = registry(conn)?.into_iter().map(|(_, a, _)| a).collect();
+        self.indexed = registry(conn)?.into_iter().map(|(_, a, _, _)| a).collect();
         actions.retain(
             |a| !matches!(a, IndexAction::Create { attribute, .. } if rejected.contains(attribute)),
         );

@@ -281,7 +281,8 @@ fn test_v1_store_is_upgraded_on_open() {
     };
     raw(
         &path,
-        "DROP INDEX idx_transactions_aevt; ALTER TABLE known_parts DROP COLUMN idx; PRAGMA user_version = 1;",
+        "DROP INDEX idx_transactions_aevt; ALTER TABLE known_parts DROP COLUMN idx;
+         DROP TABLE mentat_managed_indexes; PRAGMA user_version = 1;",
     );
     let mut store = Store::open(&path).expect("upgrade");
     let c = store.sqlite_ref();
