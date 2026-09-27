@@ -73,7 +73,7 @@ echo "perf_capture: resetting + loading mentat..."
     CREATE EXTENSION pg_mentat;" > /dev/null
 "${PSQL}" -X -v ON_ERROR_STOP=1 -q -c "
     SET search_path = mentat, public;
-    SELECT length((mentat_transact(pg_read_file('${REPO_ROOT}/benchmarks/phase2/schema.edn')))::text);" > /dev/null
+    SELECT length((edn_t(pg_read_file('${REPO_ROOT}/benchmarks/phase2/schema.edn')))::text);" > /dev/null
 "${PSQL}" -X -v ON_ERROR_STOP=1 -q -f "${DATA_DIR}/mentat_tx.sql" > /dev/null
 "${PSQL}" -X -v ON_ERROR_STOP=1 -q -c "
     ANALYZE mentat.datoms_ref_new, mentat.datoms_long_new,
@@ -145,10 +145,10 @@ DECLARE
     i int;
 BEGIN
     FOR i IN 1..${ITERS} LOOP
-        PERFORM mentat_query('[:find ?e ?name :where [?e :user/email "user100000@example.com"] [?e :user/name ?name]]', '{}'::jsonb);
-        PERFORM mentat_query('[:find ?i ?title ?state :where [?u :user/email "user100000@example.com"] [?i :issue/assignee ?u] [?i :issue/title ?title] [?i :issue/state ?state]]', '{}'::jsonb);
-        PERFORM mentat_query('[:find ?state (count ?i) :where [?i :issue/state ?state]]', '{}'::jsonb);
-        PERFORM mentat_query('[:find ?i ?title ?priority :where [?i :issue/state :state/open] [?i :issue/priority ?priority] [?i :issue/title ?title] [(>= ?priority 4)]]', '{}'::jsonb);
+        PERFORM edn_q('[:find ?e ?name :where [?e :user/email "user100000@example.com"] [?e :user/name ?name]]', '{}'::jsonb);
+        PERFORM edn_q('[:find ?i ?title ?state :where [?u :user/email "user100000@example.com"] [?i :issue/assignee ?u] [?i :issue/title ?title] [?i :issue/state ?state]]', '{}'::jsonb);
+        PERFORM edn_q('[:find ?state (count ?i) :where [?i :issue/state ?state]]', '{}'::jsonb);
+        PERFORM edn_q('[:find ?i ?title ?priority :where [?i :issue/state :state/open] [?i :issue/priority ?priority] [?i :issue/title ?title] [(>= ?priority 4)]]', '{}'::jsonb);
     END LOOP;
 END \$\$;
 SQL

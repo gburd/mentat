@@ -1,0 +1,2 @@
+;; predicate_scan (q4): open issues with priority >= N. inputs: [N]
+[:find ?i ?title ?priority :in $ ?min :where [?i :issue/state :state/open] [?i :issue/priority ?priority] [?i :issue/title ?title] [(>= ?priority ?min)]]

@@ -98,7 +98,7 @@ q_file "${REPO_ROOT}/benchmarks/phase2/eav_baseline/schema.sql"
 
 # ---- define mentat schema (runs once; it's the same across scenarios) ---
 q_exec "SET search_path = mentat, public;
-        SELECT mentat_transact(pg_read_file('${REPO_ROOT}/benchmarks/phase2/schema.edn'));"
+        SELECT edn_t(pg_read_file('${REPO_ROOT}/benchmarks/phase2/schema.edn'));"
 
 # ---- CSV header ---------------------------------------------------------
 CSV="${OUT_DIR}/timings.csv"
@@ -181,7 +181,7 @@ for SPEC in "${SCENARIOS[@]}"; do
 
         # mentat
         edn=$(cat "${q_edn}" | sed "s/'/''/g")
-        mentat_expr="mentat_query('${edn}', '{}'::jsonb)::text"
+        mentat_expr="edn_q('${edn}', '{}'::jsonb)::text"
         read mp50 mp95 mp99 < <(time_query "SELECT ${mentat_expr} AS r")
         echo "${label},${n_datoms},mentat,${q_base},${mp50},${mp95},${mp99}" >> "${CSV}"
 

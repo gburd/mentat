@@ -1,0 +1,2 @@
+;; since: issues whose state changed after tx T (distinct ?i). opts {"since": T}
+[:find ?i :where [?i :issue/state _]]

@@ -4,7 +4,7 @@
 Deterministic (fixed seed) generator for the issue-tracker workload
 described in benchmarks/phase2/schema.edn. Emits two files per run:
 
-  mentat_tx.sql   — SELECT mentat_transact('[{:db/id ... ...}]'); batches
+  mentat_tx.sql   — SELECT edn_t('[{:db/id ... ...}]'); batches
   eav_load.sql    — INSERT INTO eav.<type> (e, a, v) VALUES ...; batches
 
 Both files load exactly the same entities and produce the same datom
@@ -135,7 +135,7 @@ def main():
             batch = entities[start:start + BATCH]
             edn = "[\n  " + "\n  ".join(batch) + "\n]"
             edn_sql = edn.replace("'", "''")
-            f.write(f"SELECT mentat_transact('{edn_sql}');\n")
+            f.write(f"SELECT edn_t('{edn_sql}');\n")
 
     # -- Write EAV load file -----------------------------------------------
     eav_path = os.path.join(out_dir, "eav_load.sql")

@@ -1,0 +1,16 @@
+[package]
+name = "mentat_scale_runner"
+description = "Scale/load benchmark driver for embedded mentat (benchmarks/scale). Not a default member."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mentat-scale"
+path = "src/main.rs"
+
+[dependencies]
+mentat = { path = "../../../crates/sqlite/mentat" }
+serde_json = "1"

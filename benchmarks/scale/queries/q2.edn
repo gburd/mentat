@@ -1,0 +1,2 @@
+;; ref_traversal (q2): issues assigned to a user (by email). inputs: [email]. Also as_of.
+[:find ?i ?title ?state :in $ ?email :where [?u :user/email ?email] [?i :issue/assignee ?u] [?i :issue/title ?title] [?i :issue/state ?state]]

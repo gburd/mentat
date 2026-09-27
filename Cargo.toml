@@ -12,6 +12,8 @@ members = [
   "crates/pg/pg_mentat",
   "crates/pg/mentatd",
   "crates/duckdb",
+  # Scale-benchmark driver: a member (shares Cargo.lock) but NOT a default member.
+  "benchmarks/scale/runner",
 ]
 default-members = [
   "crates/edn",

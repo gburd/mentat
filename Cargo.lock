@@ -2566,6 +2566,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mentat_scale_runner"
+version = "1.9.0"
+dependencies = [
+ "mentat",
+ "serde_json",
+]
+
+[[package]]
 name = "mentat_script"
 version = "1.9.0"
 dependencies = [

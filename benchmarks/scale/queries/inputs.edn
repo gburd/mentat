@@ -1,0 +1,2 @@
+;; input_bindings: users for a collection of emails. inputs: [[email ...]]
+[:find ?e ?name :in $ [?email ...] :where [?e :user/email ?email] [?e :user/name ?name]]

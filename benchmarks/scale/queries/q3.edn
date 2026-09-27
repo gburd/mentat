@@ -1,0 +1,2 @@
+;; aggregate (q3): issue count per state
+[:find ?state (count ?i) :where [?i :issue/state ?state]]

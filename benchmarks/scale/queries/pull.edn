@@ -1,0 +1,2 @@
+;; pull (embedded runner only; the SQL backends call edn_pull(pattern, e)). inputs: [e]
+[:find (pull ?e [*]) . :in $ ?e :where [?e :issue/title _]]
