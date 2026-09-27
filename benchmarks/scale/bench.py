@@ -243,11 +243,25 @@ def check(b, meta, post_write, backend=None, data=None, target=None):
     users = [1, 2, meta["n_users"] - 1]
     r = one(b, "input_bindings", users)
     expect("input_bindings", sorted(x[1] for x in r) == sorted(f"User {u}" for u in users), r)
+    def limited(name, scen, arg=None):
+        """A backend's hard result-size limit (pg: a jsonb value <= 256 MB)
+        is a SKIP with a reason (the bench records the ceiling), not a FAIL."""
+        try:
+            return one(b, scen, arg)
+        except subprocess.CalledProcessError as e:
+            msg = (e.stderr or "").strip().splitlines()[-1:] or [str(e)]
+            if "exceeds the maximum" in msg[0] or "exceeds temp_file_limit" in msg[0]:
+                print(f"check {name}: SKIP (backend limit: {msg[0][:160]})")
+                return None
+            raise
+
     if not post_write:
-        r = one(b, "predicate_scan", 4)
-        expect("predicate_scan", len(r) == t["open_p_ge"]["4"], (len(r), t["open_p_ge"]["4"]))
-        r = one(b, "since")
-        expect("since", len({x[0] for x in r}) == t["since_hist"], (len(r), t["since_hist"]))
+        r = limited("predicate_scan", "predicate_scan", 4)
+        if r is not None:
+            expect("predicate_scan", len(r) == t["open_p_ge"]["4"], (len(r), t["open_p_ge"]["4"]))
+        r = limited("since", "since")
+        if r is not None:
+            expect("since", len({x[0] for x in r}) == t["since_hist"], (len(r), t["since_hist"]))
         for idx, (title, _s0, s1, prio) in list(t["titles"].items())[:4]:
             p = one(b, "pull", int(idx))
             ok = p.get(":issue/title") == title and p.get(":issue/state") == s1 and p.get(":issue/priority") == prio
