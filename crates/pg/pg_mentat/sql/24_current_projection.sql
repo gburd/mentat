@@ -100,6 +100,24 @@ CREATE INDEX IF NOT EXISTS idx_current_boolean_aev ON mentat.current_boolean (st
 -- datoms_ref_new VAET index but over current state only.
 CREATE INDEX IF NOT EXISTS idx_current_ref_vae ON mentat.current_ref (store_id, v, a, e);
 
+-- AVET index per non-ref projection table (1.10.0): value-bound patterns
+-- [?e :user/email "x"], :in bindings and value joins resolve (a, v) -> e as
+-- an index probe instead of scanning every value of the attribute via the
+-- AEV index with `Filter: v = ...` (O(n) in the attribute's size). One
+-- shared index per type covers every attribute, so no per-attribute DDL.
+-- e is a key column (not INCLUDE) so rows come out ordered by (a, v, e):
+-- same size, and range scans / DISTINCT on e need no extra sort. The ref
+-- table's value-leading VAE index above already serves (a, v) equality.
+-- Width: v is already in the PK, so a value that fits the PK fits here.
+CREATE INDEX IF NOT EXISTS idx_current_long_avet    ON mentat.current_long    (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_text_avet    ON mentat.current_text    (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_double_avet  ON mentat.current_double  (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_instant_avet ON mentat.current_instant (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_keyword_avet ON mentat.current_keyword (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_uuid_avet    ON mentat.current_uuid    (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_bytes_avet   ON mentat.current_bytes   (store_id, a, v, e);
+CREATE INDEX IF NOT EXISTS idx_current_boolean_avet ON mentat.current_boolean (store_id, a, v, e);
+
 -- These tables take in-place upserts; keep autovacuum aggressive so the
 -- HOT-pruning + dead-tuple reclaim keeps pace with churn.
 DO $$

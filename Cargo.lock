@@ -2399,7 +2399,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mentat"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "assert_approx_eq",
  "chrono",
@@ -2494,7 +2494,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_duckdb"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "duckdb",
  "mentat",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_scale_runner"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "mentat",
  "serde_json",
@@ -2575,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_script"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "core_traits",
  "edn",
@@ -2596,7 +2596,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_sqlite_ext"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "mentat",
  "serde_json",
@@ -2622,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "mentatd"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3064,7 +3064,7 @@ dependencies = [
 
 [[package]]
 name = "pg_mentat"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "chrono",
  "ciborium",

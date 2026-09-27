@@ -291,4 +291,37 @@ mod tests {
         Spi::get_one::<i64>("SELECT mentat.rebuild_current_projection(0)").expect("rebuild");
         verify_clean();
     }
+
+    /// 1.10.0: a value-bound lookup ([?e :p/email "x"], [?e :p/age 42]) is an
+    /// index probe on the AVET index, not an AEV scan + `Filter: v = ...`.
+    #[pg_test]
+    fn pg_test_proj_value_lookup_uses_avet() {
+        setup();
+        schema();
+        Spi::run(
+            "SELECT edn_t('[' || string_agg(format('{:db/id \"p%s\" :p/email \"u%s@x.io\" :p/age %s}', g, g, g), ' ') || ']')
+             FROM generate_series(1, 300) g",
+        )
+        .expect("tx");
+        Spi::run("ANALYZE mentat.current_text").expect("analyze");
+        Spi::run("ANALYZE mentat.current_long").expect("analyze");
+        Spi::run("SET LOCAL enable_seqscan = off").expect("set");
+        for (q, idx) in [
+            ("[:find ?e :where [?e :p/email \"u7@x.io\"]]", "idx_current_text_avet"),
+            ("[:find ?e :where [?e :p/age 42]]", "idx_current_long_avet"),
+        ] {
+            let plan = Spi::get_one::<String>(&format!(
+                "SELECT mentat_explain($q${q}$q$, '{{}}'::jsonb)->>'explain_plan'"
+            ))
+            .expect("explain")
+            .expect("NULL");
+            assert!(plan.contains(idx), "{q} should use {idx}, got:\n{plan}");
+        }
+        let n = Spi::get_one::<pgrx::JsonB>(
+            "SELECT edn_q('[:find ?e :where [?e :p/email \"u7@x.io\"]]', '{}')",
+        )
+        .expect("q")
+        .expect("NULL");
+        assert_eq!(n.0["results"].as_array().map(|a| a.len()), Some(1), "one match: {:?}", n.0);
+    }
 }
