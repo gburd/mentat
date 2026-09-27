@@ -32,13 +32,15 @@ MIXED_READERS="${MIXED_READERS:-8}"
 SUSTAINED_S="${SUSTAINED_S:-0}"    # >0: run `sustained` on the largest scale for this long
 SUSTAINED_CLIENTS="${SUSTAINED_CLIENTS:-32}"
 LOAD_MAX_S="${LOAD_MAX_S:-5400}"   # per-backend bulk-load cap => ceiling record
+EXT_LOAD_MAX_S="${EXT_LOAD_MAX_S:-$LOAD_MAX_S}"   # same, for sqlite-ext/duckdb (edn_t per tx)
+PHASE="${PHASE:-all}"              # all | load (load+check only) | bench (reuse loaded stores/DBs)
 PG_LOAD_JOBS="${PG_LOAD_JOBS:-32}"
 EXT_SCENARIO_FILTER="${EXT_SCENARIO_FILTER:-}"   # scenarios to skip on sqlite-ext/duckdb (space list)
 export LOAD_MAX_S
 
 PGBIN="${PGBIN:-$(dirname "$(command -v pg_config || echo /usr/bin/pg_config)")}"
 export PATH="$PGBIN:$PATH"
-export PGDATABASE="${PGDATABASE:-mentat_bench}" PGOPTIONS="--client-min-messages=warning"
+export PGOPTIONS="--client-min-messages=warning"   # PGDATABASE is mentat_<scale>
 PY="${PY:-python3}"             # needs duckdb==1.5.5 for the duckdb backend
 RUNNER="${RUNNER:-$REPO/target/release/mentat-scale}"
 SQLITE_EXT="${SQLITE_EXT:-$REPO/target/release/libmentat_sqlite}"
@@ -58,7 +60,19 @@ has() { [[ " $1 " == *" $2 "* ]]; }
 psql1() { psql -X -qAt -v ON_ERROR_STOP=1 "$@"; }
 
 # ---------------------------------------------------------------- env.txt
+knobs_txt() {
+  {
+    echo
+    echo "invocation $(date -u +%FT%TZ): PHASE=$PHASE SCALES='$SCALES' BACKENDS='$BACKENDS'"
+    echo "  SCENARIOS='$SCENARIOS' EXTRA='$EXTRA' CLIENTS='$CLIENTS' REPS=$REPS MIN_S=$MIN_S MIN_N=$MIN_N MAX_S=$MAX_S"
+    echo "  PROBE_S=$PROBE_S MIXED_S=$MIXED_S MIXED_READERS=$MIXED_READERS SUSTAINED_S=$SUSTAINED_S SUSTAINED_CLIENTS=$SUSTAINED_CLIENTS"
+    echo "  LOAD_MAX_S=$LOAD_MAX_S EXT_LOAD_MAX_S=$EXT_LOAD_MAX_S PG_LOAD_JOBS=$PG_LOAD_JOBS EXT_SCENARIO_FILTER='$EXT_SCENARIO_FILTER'"
+    echo "  warmup=3 calls (discarded) seed=20260509"
+  } >> "$OUT/env.txt"
+}
+
 env_txt() {
+  [ -f "$OUT/env.txt" ] && return 0
   {
     echo "date_utc:        $(date -u +%FT%TZ)"
     echo "host:            $(hostname)"
@@ -83,11 +97,6 @@ env_txt() {
     echo "sqlite(host py): $($PY -c 'import sqlite3; print(sqlite3.sqlite_version)')"
     echo "postgres:        $(postgres --version 2>/dev/null || echo n/a)"
     echo "pg_configure:    $(pg_config --configure 2>/dev/null || echo n/a)"
-    echo
-    echo "knobs: SCALES='$SCALES' BACKENDS='$BACKENDS' SCENARIOS='$SCENARIOS' EXTRA='$EXTRA'"
-    echo "       CLIENTS='$CLIENTS' REPS=$REPS MIN_S=$MIN_S MIN_N=$MIN_N MAX_S=$MAX_S PROBE_S=$PROBE_S"
-    echo "       MIXED_S=$MIXED_S MIXED_READERS=$MIXED_READERS SUSTAINED_S=$SUSTAINED_S SUSTAINED_CLIENTS=$SUSTAINED_CLIENTS"
-    echo "       LOAD_MAX_S=$LOAD_MAX_S PG_LOAD_JOBS=$PG_LOAD_JOBS warmup=3 iterations (discarded) seed=20260509"
     if psql1 -d postgres -c 'SELECT 1' >/dev/null 2>&1; then
       echo; echo "postgresql.conf (non-default settings):"
       psql1 -d postgres -F ' = ' -c "SELECT name, setting || COALESCE(unit,'') FROM pg_settings WHERE source NOT IN ('default','override') ORDER BY 1" | sed 's/^/  /'
@@ -157,12 +166,15 @@ pg_vars() {  # -D flags for the pgbench scripts
 }
 
 # pgbench one point. pgbench_point DATA SCALE REP SCEN CLIENTS SECS SCRIPT...
+# -M simple, not prepared/extended: those modes rewrite EVERY `:name` in the
+# script into $N, including the `:find`/`:where` keywords inside the Datalog
+# string literals. Simple mode substitutes only defined variables.
 pgbench_point() {
   local d=$1 sc=$2 rep=$3 scen=$4 c=$5 secs=$6; shift 6
   local lp="$WORK/pgb-$scen-$sc-$c-$rep"; rm -f "$lp".*
   local j=$(( c < $(nproc) ? c : $(nproc) ))
   # shellcheck disable=SC2046
-  pgbench -n -M prepared -c "$c" -j "$j" -T "$secs" $(pg_vars "$d") --log --log-prefix="$lp" \
+  pgbench -n -M simple -c "$c" -j "$j" -T "$secs" $(pg_vars "$d") --log --log-prefix="$lp" \
      "$@" > "$OUT/logs/pg-$scen-$sc-c$c-r$rep.txt" 2>&1 || { log "pgbench $scen failed"; tail -5 "$OUT/logs/pg-$scen-$sc-c$c-r$rep.txt" >&2; }
 }
 
@@ -171,11 +183,12 @@ pg_bench_scen() {  # DATA SCALE SCEN
   local S="$HERE/pgbench"
   # Probe: one call timed; too slow => ceiling.
   local t0 t1 ms
+  local vars; vars=$(pg_vars "$d")
   t0=$(date +%s%N)
-  # shellcheck disable=SC2046
-  timeout "$((PROBE_S * 3))" pgbench -n -t 1 -c 1 $(pg_vars "$d") -f "$S/$scen.sql" >/dev/null 2>&1 || true
+  # shellcheck disable=SC2086
+  PGOPTIONS="$PGOPTIONS -c statement_timeout=${PROBE_S}s" pgbench -n -t 1 -c 1 $vars -f "$S/$scen.sql" >/dev/null 2>&1 || true
   t1=$(date +%s%N); ms=$(( (t1 - t0) / 1000000 ))
-  if [ "$ms" -gt $((PROBE_S * 1000)) ]; then
+  if [ "$ms" -ge $((PROBE_S * 1000)) ]; then
     echo "$scen,pg,$sc,$n,1,ceiling,1,$ms,$ms,$ms,$ms,0,0,1" >> "$RAW"; log "pg $scen: ceiling (${ms}ms)"; return
   fi
   local secs=$MIN_S; [ "$ms" -gt 300 ] && secs=$MAX_S
@@ -199,9 +212,10 @@ pg_explain() {  # plans of the generated SQL for each query
 
 run_pg() {  # DATA SCALE
   local d=$1 sc=$2 n; n=$(mget "$d" n_datoms)
-  pg_load "$d" "$sc" || return 0
+  if [ "$PHASE" != bench ]; then pg_load "$d" "$sc" || return 0; fi
   log "pg: check $sc"
   if ! $PY "$HERE/bench.py" check pg "$d" - >> "$CHECKS" 2>&1; then FAILED=1; log "pg: CHECK FAILED"; return 0; fi
+  [ "$PHASE" = load ] && return 0
   psql1 -c "SELECT pg_stat_statements_reset()" >/dev/null
   for scen in $SCENARIOS; do log "pg $sc $scen"; pg_bench_scen "$d" "$sc" "$scen"; done
   pg_explain "$sc"
@@ -256,12 +270,12 @@ pg_sustained() {  # DATA SCALE: long mixed run + 10s samplers
   local sp=$!
   local lp="$WORK/pgb-sus-$sc"; rm -f "$lp".* "$lp"w.*
   # shellcheck disable=SC2046
-  pgbench -n -M prepared -c "$SUSTAINED_CLIENTS" -j "$SUSTAINED_CLIENTS" -T "$SUSTAINED_S" -P 10 $(pg_vars "$d") \
+  pgbench -n -M simple -c "$SUSTAINED_CLIENTS" -j "$SUSTAINED_CLIENTS" -T "$SUSTAINED_S" -P 10 $(pg_vars "$d") \
      --log --log-prefix="$lp" -f "$S/point_lookup.sql" -f "$S/ref_traversal.sql" -f "$S/pull.sql" \
      > "$OUT/logs/pg-sustained-$sc.txt" 2>&1 &
   local rp=$!
   # shellcheck disable=SC2046
-  pgbench -n -M prepared -c 1 -T "$SUSTAINED_S" -P 10 $(pg_vars "$d") --log --log-prefix="${lp}w" \
+  pgbench -n -M simple -c 1 -T "$SUSTAINED_S" -P 10 $(pg_vars "$d") --log --log-prefix="${lp}w" \
      -f "$S/write_state.sql" > "$OUT/logs/pg-sustained-write-$sc.txt" 2>&1
   wait $rp || true
   kill $sp 2>/dev/null || true
@@ -293,13 +307,16 @@ sampler() {  # BACKEND SCALE: every 10s -> logs/sampler-*.log (RSS, iostat, pg_s
 # ---------------------------------------------------------------- embedded / ext
 run_embedded() {  # DATA SCALE
   local d=$1 sc=$2 st="$WORK/embedded-$2.db" n; n=$(mget "$d" n_datoms)
-  log "embedded: load $sc"
-  local rc=0
-  "$RUNNER" load "$d" "$st" > "$OUT/logs/embedded-load-$sc.json" 2> "$OUT/logs/embedded-load-$sc.log" || rc=$?
-  ext_load_row embedded "$sc" "$n" "$st" || return 0
-  [ $rc -eq 0 ] || return 0
+  if [ "$PHASE" != bench ]; then
+    log "embedded: load $sc"
+    local rc=0
+    "$RUNNER" load "$d" "$st" > "$OUT/logs/embedded-load-$sc.json" 2> "$OUT/logs/embedded-load-$sc.log" || rc=$?
+    ext_load_row embedded "$sc" "$n" "$st" || return 0
+    [ $rc -eq 0 ] || return 0
+  fi
   log "embedded: check $sc"
   if ! $PY "$HERE/bench.py" check embedded "$d" "$st" >> "$CHECKS" 2>&1; then FAILED=1; log "embedded: CHECK FAILED"; return 0; fi
+  [ "$PHASE" = load ] && return 0
   local scens=${SCENARIOS// /,}
   "$RUNNER" bench "$st" "$d" "$sc" "$REPS" 1 "$scens" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/embedded-$sc.log"
   if has "$EXTRA" concurrency_sweep; then
@@ -334,11 +351,23 @@ EOF
 
 run_ext() {  # BACKEND DATA SCALE
   local be=$1 d=$2 sc=$3 st="$WORK/$1-$3.db" n; n=$(mget "$d" n_datoms)
-  log "$be: load $sc"
-  $PY "$HERE/bench.py" load "$be" "$d" "$st" > "$OUT/logs/$be-load-$sc.json" 2> "$OUT/logs/$be-load-$sc.log" || true
-  ext_load_row "$be" "$sc" "$n" "$st" || return 0
+  if [ "$PHASE" != bench ]; then
+    log "$be: load $sc"
+    LOAD_MAX_S=$EXT_LOAD_MAX_S $PY "$HERE/bench.py" load "$be" "$d" "$st" > "$OUT/logs/$be-load-$sc.json" 2> "$OUT/logs/$be-load-$sc.log" || true
+    if ! ext_load_row "$be" "$sc" "$n" "$st"; then
+      # The load through the extension hit its cap. The on-disk store format
+      # is the same mentat crate, so measure the READ path on a copy of the
+      # store the embedded loader built (logged; loads.csv keeps the ceiling).
+      local e="$WORK/embedded-$sc.db"
+      [ -f "$e.load.json" ] && ! grep -q '"ceiling"' "$e.load.json" || return 0
+      log "$be: load capped; benchmarking reads on a copy of $e"
+      cp "$e" "$st"; cp "$e.entids" "$st.entids"; cp "$e.load.json" "$st.load.json"
+      echo "$be $sc: reads measured on a copy of the embedded-built store (ext bulk load capped at ${EXT_LOAD_MAX_S}s)" >> "$OUT/sizes.txt"
+    fi
+  fi
   log "$be: check $sc"
   if ! $PY "$HERE/bench.py" check "$be" "$d" "$st" >> "$CHECKS" 2>&1; then FAILED=1; log "$be: CHECK FAILED"; return 0; fi
+  [ "$PHASE" = load ] && return 0
   local scens="" s
   for s in $SCENARIOS; do has "$EXT_SCENARIO_FILTER" "$s" || scens="$scens,$s"; done
   $PY "$HERE/bench.py" run "$be" "$d" "$st" "$sc" "$REPS" 1 "${scens#,}" "$MIN_S" "$MAX_S" "$MIN_N" "$PROBE_S" >> "$RAW" 2>> "$OUT/logs/$be-$sc.log"
@@ -356,11 +385,13 @@ run_ext() {  # BACKEND DATA SCALE
 # ---------------------------------------------------------------- main
 export HERE
 env_txt
+knobs_txt
 log "results -> $OUT"
 LAST=""
 for sc in $SCALES; do
   d=$(gen "$sc"); LAST=$sc
-  echo "$sc: $(mget "$d" n_datoms) datoms ($(mget "$d" n_users) users, $(mget "$d" n_issues) issues, $(mget "$d" n_hist) history updates)" >> "$OUT/sizes.txt"
+  export PGDATABASE=mentat_$sc
+  grep -q "^$sc: " "$OUT/sizes.txt" 2>/dev/null || echo "$sc: $(mget "$d" n_datoms) datoms ($(mget "$d" n_users) users, $(mget "$d" n_issues) issues, $(mget "$d" n_hist) history updates)" >> "$OUT/sizes.txt"
   for be in $BACKENDS; do
     case $be in
       pg) run_pg "$d" "$sc" ;;
@@ -372,8 +403,8 @@ for sc in $SCALES; do
   rm -f "$WORK"/pgb-*
 done
 
-if [ "$SUSTAINED_S" -gt 0 ] && [ -n "$LAST" ]; then
-  d=$(gen "$LAST")
+if [ "$SUSTAINED_S" -gt 0 ] && [ -n "$LAST" ] && [ "$PHASE" != load ]; then
+  d=$(gen "$LAST"); export PGDATABASE=mentat_$LAST
   if has "$BACKENDS" pg; then pg_sustained "$d" "$LAST"; fi
   if has "$BACKENDS" embedded && [ -f "$WORK/embedded-$LAST.db" ]; then
     log "embedded $LAST sustained ${SUSTAINED_S}s"
@@ -384,7 +415,6 @@ if [ "$SUSTAINED_S" -gt 0 ] && [ -n "$LAST" ]; then
   fi
 fi
 
-env_txt
 $PY "$HERE/bench.py" medians "$RAW" "$OUT/timings.csv"
 $PY "$HERE/report.py" "$OUT" > "$OUT/summary.md" || log "report.py failed"
 for f in "$OUT"/logs/*.log "$OUT"/logs/*.txt; do [ -s "$f" ] && [ "$(stat -c %s "$f")" -gt 1048576 ] && gzip -f "$f"; done

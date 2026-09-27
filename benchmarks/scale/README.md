@@ -75,7 +75,7 @@ Concurrency model:
   extensions open the mentat store *on every call* (`Store::open`), and that
   cost is part of what they measure. DuckDB is in-process with a single writer,
   so the sweep runs parallel reader processes.
-- **pg**: `pgbench -c N -j min(N, nproc) -M prepared`.
+- **pg**: `pgbench -c N -j min(N, nproc) -M simple`. Prepared/extended mode would rewrite the `:keywords` inside the Datalog literals into `$N` parameters.
 
 ## Output
 

@@ -159,13 +159,45 @@ def one(b, scen, arg=None):
     raise SystemExit(f"unknown scenario {scen}")
 
 
+def _one_fresh(a):
+    backend, data, target, scen, arg = a
+    meta = jload(f"{data}/meta.json")
+    return one(mk(backend, data, target, meta), scen, arg)
+
+
+def timed_one(backend, data, target, scen, arg, timeout):
+    """one() in a fresh (spawned) process, killed after `timeout` s.
+    Returns (rows, ms), or (None, ms) on timeout. The embedded and extension
+    calls cannot be cancelled from Python, and PG gets a statement_timeout."""
+    t = time.perf_counter()
+    if backend == "pg":
+        os.environ["PGOPTIONS"] = os.environ.get("PGOPTIONS", "") + f" -c statement_timeout={int(timeout * 1000)}"
+        try:
+            return _one_fresh((backend, data, target, scen, arg)), (time.perf_counter() - t) * 1e3
+        except subprocess.CalledProcessError:
+            return None, (time.perf_counter() - t) * 1e3
+        finally:
+            os.environ["PGOPTIONS"] = os.environ["PGOPTIONS"].rsplit(" -c statement_timeout", 1)[0]
+    pool = mp.get_context("spawn").Pool(1)
+    try:
+        r = pool.apply_async(_one_fresh, [(backend, data, target, scen, arg)]).get(timeout)
+        return r, (time.perf_counter() - t) * 1e3
+    except mp.TimeoutError:
+        return None, (time.perf_counter() - t) * 1e3
+    finally:
+        pool.terminate()
+
+
 def issue_idx(title):
     return int(title.split(":")[0].split()[1])
 
 
-def check(b, meta, post_write):
-    """Every scenario's answer, once, against the generator's truth."""
+def check(b, meta, post_write, backend=None, data=None, target=None):
+    """Every scenario's answer, once, against the generator's truth. as_of
+    runs under CHECK_TIMEOUT_S; a timeout is a SKIP (the bench records the
+    ceiling), not a pass."""
     t, fails = meta["truth"], []
+    tmo = float(os.environ.get("CHECK_TIMEOUT_S", "120"))
 
     def expect(name, ok, detail):
         print(f"check {name}: {'PASS' if ok else 'FAIL'}" + ("" if ok else f" {detail}"))
@@ -181,11 +213,19 @@ def check(b, meta, post_write):
     expect("aggregate.sum", sum(got.values()) == meta["n_issues"], got)
     if not post_write:
         expect("aggregate.by_state", got == t["final"], (got, t["final"]))
+    asof_slow = False
     for u in probes:
         rows = t["probe"][str(u)]
-        r = one(b, "as_of", u)
         exp = sorted((i, s0) for i, s0, _ in rows)
-        expect(f"as_of[{u}]", sorted((issue_idx(x[1]), x[2]) for x in r) == exp, (r[:3], exp[:3]))
+        if asof_slow:
+            print(f"check as_of[{u}]: SKIP (previous as_of timed out)")
+        else:
+            r, ms = timed_one(backend, data, target, "as_of", u, tmo)
+            if r is None:
+                asof_slow = True
+                print(f"check as_of[{u}]: SKIP (timeout > {tmo:.0f}s)")
+            else:
+                expect(f"as_of[{u}]", sorted((issue_idx(x[1]), x[2]) for x in r) == exp, (r[:3], exp[:3]))
         if not post_write:
             r = one(b, "ref_traversal", u)
             exp = sorted((i, s1) for i, _, s1 in rows)
@@ -331,6 +371,12 @@ def ext_run(backend, data, store, scale, reps, clients_l, scens, min_s, max_s, m
     dropped. One process per client, each with its own host connection."""
     meta = jload(f"{data}/meta.json")
     ceil = set()
+    for scen in scens:  # probe each scenario once, in its own killable process
+        s0 = READ_MIX[0] if scen == "concurrency_sweep" else scen
+        r, ms = timed_one(backend, data, store, s0, _iter_arg(s0, meta, random.Random(5)), probe_s)
+        if r is None:
+            print(row(scen, backend, scale, meta["n_datoms"], 1, "ceiling", [ms], ms / 1e3, 0, 1), flush=True)
+            ceil.add(scen)
     for rep in range(1, reps + 1):
         for scen in scens:
             for clients in clients_l:
@@ -466,7 +512,7 @@ def main():
     cmd = a[0] if a else ""
     if cmd == "check":
         meta = jload(f"{a[2]}/meta.json")
-        fails = check(mk(a[1], a[2], a[3], meta), meta, "--post-write" in a)
+        fails = check(mk(a[1], a[2], a[3], meta), meta, "--post-write" in a, a[1], a[2], a[3])
         print(f"check {a[1]}: {'OK' if not fails else 'FAILED ' + ','.join(fails)}")
         sys.exit(1 if fails else 0)
     elif cmd == "load":

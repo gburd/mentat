@@ -437,20 +437,39 @@ fn client(
     let mut first = 0.0;
     for i in 0..3 {
         let t = Instant::now();
-        if run_one(s, ctx, scen, &mut rng, &qs).is_err() {
+        // The first call is the probe: a watchdog interrupts SQLite at PROBE_S,
+        // so a pathological plan costs PROBE_S, not minutes.
+        let (done, rx) = std::sync::mpsc::channel::<()>();
+        let h = s.sqlite_ref().get_interrupt_handle();
+        let limit = Duration::from_secs_f64(lim.probe_s);
+        let wd = (i == 0).then(|| {
+            std::thread::spawn(move || {
+                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(limit) {
+                    h.interrupt();
+                }
+            })
+        });
+        // An interrupted query panics inside mentat's projector (it unwraps
+        // the row iterator), so the probe must also catch unwinds.
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_one(s, ctx, scen, &mut rng, &qs)));
+        if !matches!(r, Ok(Ok(_))) {
             errors += 1;
+        }
+        let _ = done.send(());
+        if let Some(wd) = wd {
+            wd.join().unwrap();
         }
         if i == 0 {
             first = t.elapsed().as_secs_f64() * 1e3;
         }
-        if first > lim.probe_s * 1e3 || w0.elapsed().as_secs_f64() > lim.max_s / 4.0 {
+        if first >= lim.probe_s * 1e3 || w0.elapsed().as_secs_f64() > lim.max_s / 4.0 {
             break;
         }
     }
     bar.wait();
     let mut lat = Vec::new();
     let t0 = Instant::now();
-    if first > lim.probe_s * 1e3 {
+    if first >= lim.probe_s * 1e3 {
         return (lat, errors, 0.0, first);
     }
     loop {
@@ -527,7 +546,12 @@ fn cmd_bench(
                 });
                 let first = res.iter().map(|r| r.3).fold(0.0, f64::max);
                 let errors: usize = res.iter().map(|r| r.1).sum();
-                if first > lim.probe_s * 1e3 {
+                if first >= lim.probe_s * 1e3 {
+                    // The interrupted probe panicked inside mentat and poisoned
+                    // the Store's metadata mutex: reopen those stores.
+                    for st in stores[..c].iter_mut() {
+                        *st = Store::open(store).unwrap();
+                    }
                     row(
                         &ctx.meta,
                         scale,
@@ -764,6 +788,13 @@ fn cmd_coldwarm(store: &str, data: &str, scale: &str, scens: &[&str]) {
 }
 
 fn main() {
+    // Silence the expected panic message from an interrupted probe.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |i| {
+        if !i.to_string().contains("interrupted") {
+            hook(i)
+        }
+    }));
     let a: Vec<String> = std::env::args().collect();
     let a: Vec<&str> = a.iter().map(String::as_str).collect();
     match a.get(1).copied() {

@@ -14,7 +14,7 @@
 #     max_connections 300 x work_mem 64MB (worst case ~19 GiB for one sort
 #     each), plus maintenance_work_mem 8GB x 8 autovacuum/maintenance workers.
 #   effective_cache_size = s_b + 64GB (the planner is told the data is cached).
-#   WAL: max_wal_size 100GB, checkpoint_timeout 30min, wal_compression lz4,
+#   WAL: max_wal_size 100GB, checkpoint_timeout 30min, wal_compression pglz (PG built without lz4),
 #     wal_buffers 1GB. synchronous_commit stays ON: durability is reported
 #     honestly (single NVMe RAID-0 fsync per commit).
 #   THP never, governor performance (where the metal box exposes cpufreq),
@@ -55,7 +55,7 @@ max_wal_size = 100GB
 min_wal_size = 8GB
 checkpoint_timeout = 30min
 checkpoint_completion_target = 0.9
-wal_compression = lz4
+wal_compression = pglz
 wal_buffers = 1GB
 synchronous_commit = ${SYNC_COMMIT:-on}
 max_worker_processes = 128

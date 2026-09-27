@@ -55,7 +55,7 @@ SCALES = {
 # PG entid bands: far above pg_mentat's partition_user_seq (starts at 1000001),
 # far below the tx band (1e12).
 U0, L0, I0 = 10_000_000_000, 11_000_000_000, 12_000_000_000
-SHARD = 200_000   # issues per shard file
+SHARD = 50_000    # issues per shard file (the PG loader runs shards in parallel)
 # Issues (or history updates) per transaction. Keep it under ~700 issues:
 # embedded mentat panics on any tx with >= 5461 datoms (off-by-one assert in
 # crates/sqlite/db/src/db.rs insert_non_fts_searches: 6 * (32766/6) is not < 32766).
