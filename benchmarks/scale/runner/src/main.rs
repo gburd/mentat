@@ -284,8 +284,8 @@ impl Ids {
         let mut k = 0;
         while k < b.len() {
             if b[k] == b'@' && b.get(k + 1) == Some(&b'@') {
-                let kind = b[k + 2];
-                let mut j = k + 3;
+                // A bare `@@<n>` (datasets from before the u/l/i tags) is an issue.
+                let (kind, mut j) = if b[k + 2].is_ascii_digit() { (b'i', k + 2) } else { (b[k + 2], k + 3) };
                 let mut n = 0usize;
                 while j < b.len() && b[j].is_ascii_digit() {
                     n = n * 10 + (b[j] - b'0') as usize;

@@ -272,8 +272,8 @@ def ext_load(backend, data, store, max_s=float("inf")):
     import re
     ids = {"u": array.array("q", [0] * meta["n_users"]), "l": array.array("q", [0] * meta["n_labels"]),
            "i": array.array("q", [0] * meta["n_issues"])}
-    sub = re.compile(r"@@([uli])(\d+)")
-    fill = lambda line: sub.sub(lambda m: str(ids[m.group(1)][int(m.group(2))]), line)  # noqa: E731
+    sub = re.compile(r"@@([uli]?)(\d+)")   # bare @@<n> (older datasets) = issue
+    fill = lambda line: sub.sub(lambda m: str(ids[m.group(1) or "i"][int(m.group(2))]), line)  # noqa: E731
     t_mid = 0
     for f in [f"{data}/store/base.edn"] + sorted(glob.glob(f"{data}/store/issues-*.edn")):
         for line in open(f):
