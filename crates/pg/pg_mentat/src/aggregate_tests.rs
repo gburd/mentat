@@ -515,4 +515,58 @@ mod tests {
         let dup = sql_of("[:find (sum ?h) . :where [?m :monster/heads ?h]]");
         assert!(dup.contains("SELECT DISTINCT"), "{dup}");
     }
+
+    // ========================================================================
+    // get-else / missing? / attribute pushdown resolve the attribute (before
+    // 1.10.0 they looked up "::ns/attr", found nothing, and silently returned
+    // the default / matched everything / fell back to an InitPlan).
+    // ========================================================================
+
+    #[pg_test]
+    fn test_get_else_and_missing_resolve_the_attribute() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[
+                {:db/ident :ge/n :db/valueType :db.type/string  :db/cardinality :db.cardinality/one}
+                {:db/ident :ge/x :db/valueType :db.type/long    :db/cardinality :db.cardinality/one}
+                {:db/ident :ge/k :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+            ]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run(
+            "SELECT edn_t('[{:db/id \"a\" :ge/n \"a\" :ge/x 1 :ge/k :k/one} {:ge/n \"b\"}]'::TEXT)",
+        )
+        .expect("data");
+        // Replace a's :ge/x: the superseded 1 must not leak into either form.
+        let e: i64 = Spi::get_one(
+            "SELECT e FROM mentat.current_text WHERE v = 'a' AND a = \
+             (SELECT entid FROM mentat.idents WHERE ident = ':ge/n')",
+        )
+        .expect("e")
+        .expect("NULL");
+        Spi::run(&format!("SELECT edn_t('[[:db/add {e} :ge/x 5]]'::TEXT)")).expect("replace");
+
+        assert_eq!(
+            rows("[:find ?n ?x :where [?e :ge/n ?n] [(get-else $ ?e :ge/x 0) ?x]]"),
+            vec![serde_json::json!(["a", 5]), serde_json::json!(["b", 0])]
+        );
+        assert_eq!(
+            rows("[:find ?n ?k :where [?e :ge/n ?n] [(get-else $ ?e :ge/k :k/none) ?k]]"),
+            vec![
+                serde_json::json!(["a", ":k/one"]),
+                serde_json::json!(["b", ":k/none"])
+            ]
+        );
+        assert_eq!(
+            rows("[:find ?n :where [?e :ge/n ?n] [(missing? $ ?e :ge/x)]]"),
+            vec![serde_json::json!(["b"])]
+        );
+        // The constant attribute is pushed into the typed FROM fragment as a
+        // literal entid (partial indexes WHERE a = <entid> need it).
+        let sql = sql_of("[:find ?n :where [?e :ge/n ?n]]");
+        let a: i64 = Spi::get_one("SELECT entid FROM mentat.idents WHERE ident = ':ge/n'")
+            .expect("a")
+            .expect("NULL");
+        assert!(sql.contains(&format!("AND a = {a})")), "{sql}");
+    }
 }

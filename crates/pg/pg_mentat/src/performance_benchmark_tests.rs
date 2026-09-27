@@ -64,7 +64,18 @@ mod tests {
                 .unwrap_or_else(|e| panic!("populate batch at offset {}: {}", offset, e));
             offset = end;
         }
-        start.elapsed().as_secs_f64() * 1000.0
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        // Every pg_test rolls back, so autovacuum only ever sees dead rows in
+        // the shared tables and records reltuples = 0 (in place: survives the
+        // rollback). The planner then estimates 1 row per scan and can pick a
+        // 10k x 10k nested loop (4 s instead of 12 ms). Give it the stats a
+        // real bulk load would get from autovacuum.
+        Spi::run(
+            "ANALYZE mentat.current_text, mentat.current_long, mentat.current_double, \
+             mentat.current_boolean, mentat.current_keyword, mentat.current_ref",
+        )
+        .expect("analyze");
+        elapsed
     }
 
     /// Run a Datalog query and return (result_count, elapsed_ms).

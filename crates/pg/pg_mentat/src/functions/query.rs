@@ -435,6 +435,22 @@ fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
     }
 }
 
+/// The table + liveness filter that answers "does e have a live value for
+/// attribute a" (get-else, missing?): the current-state projection for
+/// current-time queries -- the log with `AND added` would also match
+/// superseded assertions (a replaced cardinality-one value) -- and the log
+/// otherwise.
+fn attr_lookup_table(value_type: &str, temporal: &TemporalOption) -> String {
+    let current = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+    match value_type_to_table_info(value_type) {
+        Some(info) if current => info.current_table.to_string(),
+        _ => format!(
+            "(SELECT * FROM mentat.{} WHERE added)",
+            typed_table_for_value_type(value_type)
+        ),
+    }
+}
+
 /// Map a value_type string to its narrow table name (without schema prefix).
 fn typed_table_for_value_type(value_type: &str) -> &'static str {
     match value_type {
@@ -2371,7 +2387,7 @@ fn build_sql_from_datalog_enriched(
                     format!("'{}'::TEXT", if *b { "true" } else { "false" })
                 }
                 FnArg::IdentOrKeyword(kw) => {
-                    let kw_str = format!(":{}", keyword_to_ident(kw));
+                    let kw_str = keyword_to_ident(kw);
                     let p = builder.bind_text(kw_str);
                     format!("{}::TEXT", p)
                 }
@@ -3027,7 +3043,7 @@ fn build_sql_from_datalog_enriched(
 
             // Attribute position
             let attribute = match &pattern.attribute {
-                PatternNonValuePlace::Ident(kw) => format!(":{}", keyword_to_ident(kw)),
+                PatternNonValuePlace::Ident(kw) => keyword_to_ident(kw),
                 PatternNonValuePlace::Entid(id) => format!("entid:{}", id),
                 PatternNonValuePlace::Variable(v) => {
                     variables.insert("attribute".to_string(), format!("{}", v));
@@ -5656,7 +5672,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                     let store_name = store_name_from_prefix(schema_prefix);
                     let cache = crate::cache::get_cache_for_store(store_name);
                     cache
-                        .resolve_ident(&format!(":{}", ident_str))
+                        .resolve_ident(&ident_str)
                         .map(|eid| format!("{}", eid))
                 }
                 _ => None,
@@ -5705,12 +5721,12 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     for (ge_idx, ge) in get_else_clauses.iter().enumerate() {
         let ge_alias = format!("ge_{}", ge_idx);
         // Resolve the attribute to determine the typed table
-        let cache = crate::cache::get_cache();
-        let attr_entid = cache.resolve_ident(&format!(":{}", ge.attr_ident));
+        let cache = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix));
+        let attr_entid = cache.resolve_ident(&ge.attr_ident);
         let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
         if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-            let table = typed_table_for_value_type(&info.value_type);
+            let table = attr_lookup_table(&info.value_type, temporal);
             let value_col = typed_value_col_for_type(&info.value_type);
 
             // Determine the entity alias from var_to_alias
@@ -5723,7 +5739,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
 
             // LEFT JOIN typed_table AS ge_N ON (...)
             let join_sql = format!(
-                "LEFT JOIN mentat.{table} AS {ge_alias} ON ({ge_alias}.store_id = {sid} AND {ge_alias}.e = {entity} AND {ge_alias}.a = {attr} AND {ge_alias}.added)",
+                "LEFT JOIN {table} AS {ge_alias} ON ({ge_alias}.store_id = {sid} AND {ge_alias}.e = {entity} AND {ge_alias}.a = {attr})",
                 table = table,
                 ge_alias = ge_alias,
                 sid = store_id_param,
@@ -5733,12 +5749,20 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             left_joins.push(join_sql);
 
             // Register the result variable as COALESCE(ge_N.v, default)::TEXT
-            let coalesce_expr = format!(
-                "COALESCE({ge_alias}.{value_col}::TEXT, {default})",
-                ge_alias = ge_alias,
-                value_col = value_col,
-                default = ge.default_sql,
-            );
+            // Render the value as build_value_decode_expr does, so it
+            // decodes like any other value column.
+            let v = format!("{ge_alias}.{value_col}");
+            let rendered = match info.value_type.as_str() {
+                "keyword" => format!("':' || {v}"),
+                "double" => double_text(&v),
+                "instant" => {
+                    format!("to_char({v} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")
+                }
+                "bytes" => format!("encode({v}, 'hex')"),
+                _ => format!("{v}::TEXT"),
+            };
+            let coalesce_expr =
+                format!("COALESCE({rendered}, {default})", default = ge.default_sql);
             // Override the placeholder in extra_var_bindings
             extra_var_bindings.insert(ge.result_var.clone(), coalesce_expr);
         }
@@ -5746,12 +5770,12 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
 
     // Add missing? NOT EXISTS conditions
     for mc in missing_clauses {
-        let cache = crate::cache::get_cache();
-        let attr_entid = cache.resolve_ident(&format!(":{}", mc.attr_ident));
+        let cache = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix));
+        let attr_entid = cache.resolve_ident(&mc.attr_ident);
         let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
         if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-            let table = typed_table_for_value_type(&info.value_type);
+            let table = attr_lookup_table(&info.value_type, temporal);
 
             let entity_expr = if let Some((alias, col)) = var_to_alias.get(mc.entity_var.as_str()) {
                 format!("{}.{}", alias, col)
@@ -5760,7 +5784,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             };
 
             let not_exists = format!(
-                "NOT EXISTS (SELECT 1 FROM mentat.{table} WHERE store_id = {sid} AND e = {entity} AND a = {attr} AND added)",
+                "NOT EXISTS (SELECT 1 FROM {table} WHERE store_id = {sid} AND e = {entity} AND a = {attr})",
                 table = table,
                 sid = store_id_param,
                 entity = entity_expr,
@@ -5891,16 +5915,17 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                     FnArg::IdentOrKeyword(kw) => keyword_to_ident(kw),
                     _ => continue,
                 };
-                let cache = crate::cache::get_cache();
-                let attr_entid = cache.resolve_ident(&format!(":{}", attr_ident));
+                let cache =
+                    crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix));
+                let attr_entid = cache.resolve_ident(&attr_ident);
                 let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
                 if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-                    let table = typed_table_for_value_type(&info.value_type);
+                    let table = attr_lookup_table(&info.value_type, temporal);
                     if let Some((alias, col)) = var_to_alias.get(entity_var.as_str()) {
                         let entity_expr = format!("{}.{}", alias, col);
                         let not_exists = format!(
-                            "NOT EXISTS (SELECT 1 FROM mentat.{table} WHERE store_id = {sid} AND e = {entity} AND a = {attr} AND added)",
+                            "NOT EXISTS (SELECT 1 FROM {table} WHERE store_id = {sid} AND e = {entity} AND a = {attr})",
                             table = table,
                             sid = store_id_param,
                             entity = entity_expr,
@@ -6664,7 +6689,7 @@ fn build_not_exists_subquery(
                             let store_name = store_name_from_prefix(schema_prefix);
                             let cache = crate::cache::get_cache_for_store(store_name);
                             cache
-                                .resolve_ident(&format!(":{}", ident_str))
+                                .resolve_ident(&ident_str)
                                 .map(|eid| format!("{}", eid))
                         }
                         _ => None,
@@ -7595,7 +7620,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                             let store_name = store_name_from_prefix(schema_prefix);
                             let cache = crate::cache::get_cache_for_store(store_name);
                             cache
-                                .resolve_ident(&format!(":{}", ident_str))
+                                .resolve_ident(&ident_str)
                                 .map(|eid| format!("{}", eid))
                         }
                         _ => None,
