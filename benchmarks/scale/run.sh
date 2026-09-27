@@ -129,6 +129,11 @@ pg_load() {  # pg_load DATA SCALE
   # Likewise mentat.temp_file_limit (default 1GB, SET LOCAL per query): q3's
   # COUNT(DISTINCT) sort spills past it at xl (300M datoms).
   psql1 -d postgres -c "ALTER DATABASE $PGDATABASE SET mentat.temp_file_limit = '${PG_TEMP_FILE_LIMIT:-100GB}'"
+  # pg_mentat logs every query slower than mentat.slow_query_threshold_ms
+  # (default 100) as a WARNING carrying 500 chars of SQL, sent to the client
+  # and to the server log. PG_SLOW_QUERY_MS=0 turns that off. The default is
+  # to keep the shipped behaviour (the scale-2026-09-27 run used it).
+  psql1 -d postgres -c "ALTER DATABASE $PGDATABASE SET mentat.slow_query_threshold_ms = ${PG_SLOW_QUERY_MS:-100}"
   psql1 -c "CREATE EXTENSION pg_mentat" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" \
         -c "CREATE SCHEMA bench" -c "CREATE TABLE bench.kv (key text primary key, value text)"
   local t0 t1 ta tv; t0=$(date +%s.%N)
