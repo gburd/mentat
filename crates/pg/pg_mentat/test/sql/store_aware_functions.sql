@@ -98,7 +98,7 @@ BEGIN
          [?e :product/name ?name]
          [?e :product/price ?p]
          [(> ?p ?min-price)]]
-    ', '{"min-price": 100}')::JSONB INTO result;
+    ', '{"inputs": [100]}')::JSONB INTO result;
     ASSERT result IS NOT NULL, 'Parameterized query should return results';
     RAISE NOTICE 'PASS: mentat_query_in_store with parameters';
 END;

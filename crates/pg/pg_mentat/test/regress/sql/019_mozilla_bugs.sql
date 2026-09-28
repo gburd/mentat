@@ -67,7 +67,7 @@ SELECT edn_q(
 
 SELECT edn_q(
   '[:find ?name :in ?unused :where [?e :person/name ?name]]',
-  '{"?unused": 42}'::jsonb
+  '{"inputs": [42]}'::jsonb
 );
 
 -- Bug #813: Escape sequences in strings are preserved

@@ -821,8 +821,9 @@ async fn execute_operation(op: Operation, state: &AppState) -> Result<ResponseVa
                 inputs.insert("asOf".to_string(), serde_json::Value::Number(t.into()));
                 serde_json::Value::Object(inputs)
             } else {
-                // Regular query without snapshot
-                args_json
+                // Regular query without snapshot: edn_q takes positional
+                // :in values under "inputs", as the snapshot branch does.
+                serde_json::json!({"inputs": args_json})
             };
             let prepare_time = prepare_start.elapsed();
 

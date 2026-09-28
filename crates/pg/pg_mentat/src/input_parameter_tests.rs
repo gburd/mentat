@@ -179,4 +179,50 @@ mod tests {
         assert_eq!(results[0][0].as_str().expect("n"), "Alice");
         assert_eq!(results[0][1].as_i64().expect("v"), 100);
     }
+
+    // ========================================================================
+    // :in bindings must all be supplied (Datomic / embedded semantics)
+    // ========================================================================
+
+    fn q_err(query: &str, inputs: serde_json::Value) -> String {
+        crate::functions::query::mentat_query(query, pgrx::JsonB(inputs))
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| panic!("{query} should fail"))
+    }
+
+    #[pg_test]
+    fn test_ip_unbound_in_var_is_an_error() {
+        setup();
+        setup_ip_schema_and_data();
+        let q = "[:find ?n :in $ ?n :where [?e :ip/name ?n]]";
+        for opts in [serde_json::json!({}), serde_json::json!({"inputs": []})] {
+            let e = q_err(q, opts);
+            assert!(
+                e.contains(
+                    ":in ?n declared but no input value was given (expected 1 inputs, got 0)"
+                ),
+                "{e}"
+            );
+        }
+        // The first missing form is named, whatever its shape.
+        let e = q_err(
+            "[:find ?n :in $ ?d [?n ...] :where [?e :ip/dept ?d] [?e :ip/name ?n]]",
+            serde_json::json!({"inputs": ["Eng"]}),
+        );
+        assert!(
+            e.contains(":in [?n ...] declared") && e.contains("expected 2 inputs, got 1"),
+            "{e}"
+        );
+        // Too many is as wrong as too few.
+        let e = q_err(q, serde_json::json!({"inputs": ["Bob", "Carol"]}));
+        assert!(e.contains("1 :in binding(s) but \"inputs\" has 2"), "{e}");
+        // Supplied, it filters.
+        let r = crate::functions::query::mentat_query(
+            q,
+            pgrx::JsonB(serde_json::json!({"inputs": ["Bob"]})),
+        )
+        .expect("bound query");
+        assert_eq!(r.0["results"], serde_json::json!([["Bob"]]));
+    }
 }

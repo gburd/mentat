@@ -79,5 +79,5 @@ SELECT edn_q(
 
 SELECT edn_q(
   '[:find ?label :where [?e :tc/label ?label] [?e :tc/num ?n] [(> ?n ?limit)] :in ?limit]',
-  '{"?limit": "not-a-number"}'::jsonb
+  '{"inputs": ["not-a-number"]}'::jsonb
 );

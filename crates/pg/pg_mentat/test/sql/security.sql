@@ -129,7 +129,7 @@ DECLARE
 BEGIN
     SELECT edn_q(
         '[:find ?e :in $ ?name :where [?e :person/name ?name]]',
-        '{"name": "Robert''); DROP TABLE mentat.datoms;--"}'
+        '{"inputs": ["Robert''); DROP TABLE mentat.datoms;--"]}'
     )::JSONB INTO result;
     RAISE NOTICE 'PASS: query with injection in input value handled safely';
 EXCEPTION WHEN OTHERS THEN

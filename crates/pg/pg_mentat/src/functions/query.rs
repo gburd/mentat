@@ -905,32 +905,71 @@ enum InputBinding {
     },
 }
 
-/// Parse :in clause input bindings from the inputs JSON parameter.
+/// The scalar :in bindings, by variable name, from the positional "inputs"
+/// array (one element per binding form; a source like `$` is not one). Given
+/// `:in $ ?name [?age ...]` and `{"inputs": ["Alice", [30]]}`, returns
+/// `{"?name": "Alice"}`; parse_input_bindings_v2 takes the other forms.
 ///
-/// Matches the "inputs" JSON array positionally against the parsed query's
-/// :in variables. For example, given `:in ?name ?age` and
-/// `{"inputs": ["Alice", 30]}`, returns `{"?name": "Alice", "?age": 30}`.
-///
-/// Also handles collection bindings `[?x ...]`, tuple bindings `[?x ?y]`,
-/// and relation bindings `[[?x ?y]]`.
+/// As in Datomic and the embedded backend, every :in binding needs exactly one
+/// value: an unbound :in variable would otherwise constrain nothing and
+/// silently match every datom.
 fn parse_input_bindings(
-    in_vars: &[edn::query::Variable],
+    parsed: &ParsedQuery,
     inputs_json: &serde_json::Value,
-) -> HashMap<String, serde_json::Value> {
-    let mut bindings = HashMap::new();
-    if let Some(arr) = inputs_json
-        .as_object()
-        .and_then(|obj| obj.get("inputs"))
-        .and_then(|v| v.as_array())
-    {
-        for (i, var) in in_vars.iter().enumerate() {
-            if let Some(val) = arr.get(i) {
-                let var_name = format!("{}", var);
-                bindings.insert(var_name, val.clone());
-            }
-        }
+) -> Result<HashMap<String, serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
+    use edn::query::{Binding, VariableOrPlaceholder as Vp};
+    let invalid = |message: String| -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(MentatError::InvalidQuery {
+            message,
+            suggestion: Some(
+                "Pass one value per :in binding, in order: {\"inputs\": [v1, v2, ...]}."
+                    .to_string(),
+            ),
+        })
+    };
+    let none = Vec::new();
+    let arr = match inputs_json.get("inputs") {
+        None => &none,
+        Some(serde_json::Value::Array(a)) => a,
+        Some(other) => return Err(invalid(format!("\"inputs\" must be an array, got {other}"))),
+    };
+    let (want, got) = (parsed.in_bindings.len(), arr.len());
+    if got < want {
+        let vars = |vs: &[Vp]| {
+            let names: Vec<String> = vs
+                .iter()
+                .map(|v| match v {
+                    Vp::Variable(v) => v.to_string(),
+                    Vp::Placeholder => "_".to_string(),
+                })
+                .collect();
+            names.join(" ")
+        };
+        let form = match &parsed.in_bindings[got] {
+            Binding::BindScalar(v) => v.to_string(),
+            Binding::BindColl(v) => format!("[{v} ...]"),
+            Binding::BindTuple(vs) => format!("[{}]", vars(vs)),
+            Binding::BindRel(vs) => format!("[[{}]]", vars(vs)),
+        };
+        return Err(invalid(format!(
+            ":in {form} declared but no input value was given \
+             (expected {want} inputs, got {got})"
+        )));
     }
-    bindings
+    if got > want {
+        return Err(invalid(format!(
+            "query has {want} :in binding(s) but \"inputs\" has {got} value(s)"
+        )));
+    }
+    Ok(parsed
+        .in_bindings
+        .iter()
+        .zip(arr)
+        .filter_map(|(b, v)| match b {
+            Binding::BindScalar(var) => Some((var.to_string(), v.clone())),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Parse enriched input bindings using the full binding forms from the parser.
@@ -1246,7 +1285,7 @@ fn prepare_query<'a>(
     let parsed = mentat_core::parse_query(query)?;
 
     let temporal = parse_temporal_options(inputs);
-    let input_bindings = parse_input_bindings(&parsed.in_vars, inputs);
+    let input_bindings = parse_input_bindings(&parsed, inputs)?;
     let enriched = parse_input_bindings_v2(&parsed.in_bindings, inputs);
     let has_aggregates = find_spec_has_aggregates(&parsed.find_spec);
     let find_vars = extract_find_variables(&parsed.find_spec);
@@ -1602,7 +1641,7 @@ fn mentat_explain_internal(
     let parsed_query = mentat_core::parse_query(query)?;
 
     let temporal = parse_temporal_options(&inputs.0);
-    let input_bindings = parse_input_bindings(&parsed_query.in_vars, &inputs.0);
+    let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     let find_vars = extract_find_variables(&parsed_query.find_spec);
     let pagination = parse_pagination_options(&inputs.0);
 
@@ -1790,7 +1829,7 @@ fn mentat_query_sql_internal(
     let parsed_query = mentat_core::parse_query(query)?;
 
     let temporal = parse_temporal_options(&inputs.0);
-    let input_bindings = parse_input_bindings(&parsed_query.in_vars, &inputs.0);
+    let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     let find_vars = extract_find_variables(&parsed_query.find_spec);
 
     let mut builder = SqlBuilder::new();
@@ -1887,7 +1926,7 @@ fn mentat_query_view_internal(
     let parsed_query = mentat_core::parse_query(query)?;
 
     let temporal = parse_temporal_options(&inputs.0);
-    let input_bindings = parse_input_bindings(&parsed_query.in_vars, &inputs.0);
+    let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     let find_vars = extract_find_variables(&parsed_query.find_spec);
     let pagination = parse_pagination_options(&inputs.0);
 

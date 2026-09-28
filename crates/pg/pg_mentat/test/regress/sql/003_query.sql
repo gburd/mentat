@@ -28,5 +28,5 @@ SELECT edn_q(
 -- Input binding: parameterized lookup
 SELECT edn_q(
   '[:find ?name :in ?target-age :where [?e :person/name ?name] [?e :person/age ?target-age]]',
-  '{"?target-age": 25}'::jsonb
+  '{"inputs": [25]}'::jsonb
 );
