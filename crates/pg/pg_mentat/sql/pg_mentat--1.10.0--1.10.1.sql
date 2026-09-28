@@ -1,0 +1,5 @@
+-- pg_mentat 1.10.0 -> 1.10.1 upgrade.
+--
+-- No schema or data change: 1.10.1 re-releases 1.10.0 with a fixed test script
+-- (the v1.10.0 release build never published). The edge exists so an install
+-- built from the v1.10.0 tag can ALTER EXTENSION ... UPDATE TO '1.10.1'.

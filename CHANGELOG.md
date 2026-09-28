@@ -8,6 +8,19 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.1] — re-release of 1.10.0
+
+1.10.0's release build never published: the SQLite and DuckDB extension smoke
+tests failed on Ubuntu CI runners in a check that counts the session's open
+handles on the store file (it assumed bash runs `.system` commands; Ubuntu's
+dash runs them differently). Only the test scripts changed. Everything in
+1.10.0 below ships in 1.10.1.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.10.1';` from 1.9.0, 1.9.1 or 1.10.0.
+From 1.10.0 it changes nothing; from 1.9.x it is the 1.10.0 upgrade below.
+
 ## [1.10.0] — automatic indexes, faster count, stable at scale
 
 The fixes for everything the 1.9.0 scale benchmark found
