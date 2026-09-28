@@ -18,6 +18,17 @@ mod tests {
              FROM generate_series(1, 300) g",
         )
         .expect("data");
+        // A second, larger long attribute: :ai/n must be a minority of
+        // datoms_long_new, or its VAET index already serves it (skip rule).
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :ai/m :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run(
+            "SELECT edn_t('[' || string_agg(format('{:ai/m %s}', g), ' ') || ']') \
+             FROM generate_series(1, 900) g",
+        )
+        .expect("data");
         // pg_tests roll back, so autovacuum's reltuples for the shared tables
         // are 0 (every scan looks like 1 row); give the planner real stats.
         Spi::run("ANALYZE mentat.datoms_long_new, mentat.current_long").expect("analyze");
@@ -246,5 +257,30 @@ mod tests {
             Some(1),
             "the edn_t tick should have created the index"
         );
+    }
+
+    #[pg_test]
+    fn test_auto_index_skips_attribute_that_owns_its_table() {
+        setup();
+        // Only :ai/m's range is queried; make it ~all of datoms_long_new.
+        Spi::run(
+            "SELECT edn_t('[' || string_agg(format('{:ai/m %s}', g), ' ') || ']') \
+             FROM generate_series(1000, 30000) g",
+        )
+        .expect("data");
+        Spi::run("ANALYZE mentat.datoms_long_new").expect("analyze");
+        let t = max_tx();
+        for i in 0..6 {
+            Spi::run(&format!(
+                "SELECT edn_q('[:find ?e :where [?e :ai/m ?n] [(>= ?n {})]]'::TEXT, \
+                 '{{\"asOf\": {t}}}'::jsonb)",
+                29990 - i
+            ))
+            .expect("q");
+        }
+        let r = tune(false);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(r[0].0, "skip");
+        assert_eq!(managed(), 0);
     }
 }

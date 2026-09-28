@@ -423,7 +423,8 @@ SELECT * FROM mentat.managed_indexes;       -- what it owns, and why
 
 Each row returned is `(action, index_name, table_name, reason)` with
 `action` one of `create`, `drop`, `forget` (a managed index someone
-dropped by hand), or `skip` (see below). Every create / drop is also
+dropped by hand), or `skip` (the skip rule below; an amortized run that
+hits a lock timeout is `LOG`ged as skipped). Every create / drop is also
 `LOG`ged with its reason. `dry_run` changes no index and no registry row.
 
 **Evidence.** Every compiled query with a range predicate (`<`, `<=`,
@@ -447,9 +448,19 @@ index `(store_id, a, v, e)` already turns a range on one attribute into
 an index range scan (a 1% range of a 1.3M-value attribute at 10M
 datoms: 1.5 ms; a per-attribute partial index measured 1.1 ms -- not worth
 an index per attribute). The history
-tables' VAET index leads with `v`, not `a`, so a temporal range query on
-one attribute otherwise scans all of that attribute's values through
-AEVT with a `Filter` (4.9 ms vs 23.6 ms for a 25% range of 200k values).
+tables' VAET index leads with `v`, not `a`, so for a wide range the
+planner scans all of that attribute's values through AEVT with a
+`Filter`. The index scan itself gets ~5x cheaper (4.9 ms vs 23.6 ms for
+a 25% range of 200k values), but an as-of query also resolves
+supersession with an anti-join, so end to end the gain is modest: that
+query went 162 -> 141 ms through `edn_q` (-13%), and a narrow (0.5%)
+range 2.8 -> 2.6 ms. Expect a real but small win on large, hot
+temporal range queries -- not an order of magnitude.
+
+**Skip rule.** An attribute that is at least half of its history table
+(from `pg_stats` on `a`) is reported as `skip`: the VAET index is then
+already effectively per-attribute (measured: `:issue/priority` at 100% of
+`datoms_long_new`, 10M datoms: 655 -> 606 ms for a 62 MB index).
 The predicate carries only literals (`store_id` is a bound parameter in
 the generated SQL, so it is a key column), and the generated SQL pushes
 the attribute down as a literal `a = <entid>`, so the planner can match

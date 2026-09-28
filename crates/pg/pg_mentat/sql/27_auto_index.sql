@@ -61,6 +61,7 @@ DECLARE
     n_rows BIGINT;
     n_scans BIGINT;
     n_writes BIGINT;
+    share FLOAT8;
     why TEXT;
     idle INTERVAL := make_interval(secs => idle_window_s);
 BEGIN
@@ -83,6 +84,21 @@ BEGIN
                        'LIMIT $3) s', ev.table_name)
            INTO n_rows USING ev.store_id, ev.attr, min_rows;
         CONTINUE WHEN n_rows < min_rows;
+        -- An attribute holding most of its table gains nothing: the shipped
+        -- VAET index (store_id, v, a, ...) is then already effectively
+        -- per-attribute. Share from the planner's statistics for column a.
+        SELECT u.f INTO share
+          FROM pg_stats st,
+               unnest(st.most_common_vals::TEXT::BIGINT[], st.most_common_freqs) AS u(v, f)
+         WHERE st.schemaname = 'mentat' AND st.tablename = replace(ev.table_name, 'mentat.', '')
+           AND st.attname = 'a' AND u.v = ev.attr;
+        IF share >= 0.5 THEN
+            action := 'skip'; index_name := idx; table_name := ev.table_name;
+            reason := format('attribute %s is %s%% of %s: its VAET index already serves the range',
+                             ev.attr, round(share::NUMERIC * 100), ev.table_name);
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
         why := format('%s temporal queries with a range predicate on attribute %s (store %s), '
                       '>= mentat.auto_index_min_queries = %s; >= %s rows in %s',
                       ev.hits, ev.attr, ev.store_id, min_queries, n_rows, ev.table_name);
