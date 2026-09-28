@@ -74,3 +74,15 @@ Decided: commit root .cargo/config.toml [env] LIBSQLITE3_FLAGS=-USQLITE_ENABLE_M
   -DSQLITE_DEFAULT_MEMSTATUS=0 (8 clients: 20 -> 542 ops/s) + runtime mmap_size.
 DuckDB registry #2812: marked ready for review; fork CI runs "action_required" (needs a
   DuckDB maintainer to approve; we got 403). Mergers are mostly sebastiaan-dev.
+
+## 1.10.0 — DONE on master (unpushed), 2026-09-28
+33 commits since origin/master (72ee3765..8583d5bf). Final gates on the committed tree:
+fmt clean, clippy -D warnings 0 (workspace + both exts), 87 test binaries, mino/script/cli
+features, cargo deny ok, SQLite + DuckDB smoke PASS, pg16+script 1916/0/1, pg16 1871/0,
+mentatd builds. Not yet: version tag v1.10.0 / push (awaiting user), pg13-18 matrix on CI.
+Registry PR #2812: ready for review; fork CI still "action_required" (DuckDB maintainer
+must approve; we get 403). Its ref is 1.9.0 (5f03696b) — bump to the v1.10.0 commit when tagged.
+Open follow-ups: WAL restart could also run on Store drop; process-wide ext store cache for
+the Quack server; Quack backlog=5 upstream; retractEntity doesn't retract incoming refs;
+cas/retractEntity lookup refs; pg 5-place pattern inside not/rules; edn_q_rows collects in
+one call; sparsemap v5.7.0 evaluation (TODO above).
