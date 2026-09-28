@@ -1,0 +1,6 @@
+after 1 sequential calls from one client: server holds 1 open handles on the store file
+after 10 sequential calls from one client: server holds 10 open handles on the store file
+after 50 sequential calls from one client: server holds 49 open handles on the store file
+after 200 sequential calls from one client: server holds 125 open handles on the store file
+after 500 sequential calls from one client: server holds 128 open handles on the store file
+stopped 460794

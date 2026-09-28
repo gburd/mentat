@@ -1,0 +1,58 @@
+== serve.sh
+mentat quack server: quack:127.0.0.1:9700 pid 451623 log /tmp/gate-quack.log
+LISTEN 0      5          127.0.0.1:9700      0.0.0.0:*   
+== remote edn_t
+$ duckdb: SELECT * FROM quack_query('quack:127.0.0.1:9700', $$SELECT edn_t('/tmp/gate_quack.9TvtCN.db', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]') AS r$$, token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
+{"tempids":{},"tx_id":268435457,"tx_instant":"2026-09-28T03:26:59.568456+00:00"}
+(duckdb exit 0)
+$ duckdb: SELECT * FROM quack_query('quack:127.0.0.1:9700', $$SELECT edn_t('/tmp/gate_quack.9TvtCN.db', '[{:person/name "Alice"} {:person/name "Bob"}]') AS r$$, token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
+{"tempids":{},"tx_id":268435458,"tx_instant":"2026-09-28T03:26:59.610379+00:00"}
+(duckdb exit 0)
+== remote edn_q
+$ duckdb: SELECT * FROM quack_query('quack:127.0.0.1:9700', $$SELECT * FROM edn_q('/tmp/gate_quack.9TvtCN.db', '[:find ?n :where [_ :person/name ?n]]', '{}') ORDER BY 1$$, token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
+Alice
+Bob
+(duckdb exit 0)
+== remote edn_q, joined with a client-local table (client has no mentat loaded)
+$ duckdb: CREATE TABLE ages AS SELECT * FROM (VALUES ('Alice', 30), ('Bob', 41)) t(name, age); SELECT q.*, a.age FROM quack_query('quack:127.0.0.1:9700', $$SELECT * FROM edn_q('/tmp/gate_quack.9TvtCN.db', '[:find ?n :where [_ :person/name ?n]]', '{}')$$, token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true) q JOIN ages a ON a.name = q."?n" ORDER BY 1;
+Alice|30
+Bob|41
+(duckdb exit 0)
+== wrong token
+$ duckdb: SELECT * FROM quack_query('quack:127.0.0.1:9700', 'SELECT 1', token => 'wrong-token-1234', disable_ssl => true);
+Invalid Input Error: Authentication failed
+
+LINE 1: SELECT * FROM quack_query('quack:127.0.0.1:9700', 'SELECT 1', token =...
+                      ^
+(duckdb exit 1)
+== no token
+$ duckdb: SELECT * FROM quack_query('quack:127.0.0.1:9700', 'SELECT 1', disable_ssl => true);
+Invalid Input Error: Could not find a Quack authentication token
+
+LINE 1: SELECT * FROM quack_query('quack:127.0.0.1:9700', 'SELECT 1', disable_ssl...
+                      ^
+(duckdb exit 1)
+== ATTACH, wrong token
+$ duckdb: ATTACH 'quack:127.0.0.1:9700' AS r (TOKEN 'wrong-token-1234', DISABLE_SSL true);
+Invalid Input Error: Authentication failed
+(duckdb exit 1)
+== ATTACH, right token: tables yes, mentat functions no
+$ duckdb: SELECT * FROM quack_query('quack:127.0.0.1:9700', 'CREATE OR REPLACE TABLE t AS SELECT 42 AS k', token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true); ATTACH 'quack:127.0.0.1:9700' AS r (TOKEN getenv('MENTAT_QUACK_TOKEN'), DISABLE_SSL true); SELECT * FROM r.t;
+1
+42
+(duckdb exit 0)
+$ duckdb: ATTACH 'quack:127.0.0.1:9700' AS r (TOKEN getenv('MENTAT_QUACK_TOKEN'), DISABLE_SSL true); SELECT * FROM r.edn_q('/tmp/gate_quack.9TvtCN.db', '[:find ?n :where [_ :person/name ?n]]', '{}');
+Catalog Error: Table Function with name edn_q does not exist!
+Did you mean "main.read_parquet"?
+(duckdb exit 1)
+== server log
+-- Loading resources from /tmp/mentat-quack.u1FNAC.sql
+┌──────────────────────┬───────────────────────┐
+│      listen_uri      │      listen_url       │
+│       varchar        │        varchar        │
+├──────────────────────┼───────────────────────┤
+│ quack:127.0.0.1:9700 │ http://127.0.0.1:9700 │
+└──────────────────────┴───────────────────────┘
+== stop.sh
+stopped 451623
+0

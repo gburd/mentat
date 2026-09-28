@@ -1,0 +1,8 @@
+A s backlog=5 nlwp= 161 secs=44 overflows+syn_retrans: before=[2353 1625 ] after=[4114 2908 ]
+A m backlog=5 nlwp= 161 secs=46 overflows+syn_retrans: before=[4114 2908 ] after=[4250 3000 ]
+B s backlog=4096 nlwp= 161 secs=42 overflows+syn_retrans: before=[4250 3000 ] after=[4250 3000 ]
+B m backlog=4096 nlwp= 161 secs=45 overflows+syn_retrans: before=[4250 3000 ] after=[4250 3000 ]
+C s backlog=4096 nlwp= 193 secs=41 overflows+syn_retrans: before=[4250 3000 ] after=[4250 3000 ]
+C m backlog=4096 nlwp= 193 secs=45 overflows+syn_retrans: before=[4250 3000 ] after=[4250 3000 ]
+D s backlog=5 nlwp= 193 secs=43 overflows+syn_retrans: before=[4250 3000 ] after=[6019 4286 ]
+D m backlog=5 nlwp= 193 secs=45 overflows+syn_retrans: before=[6019 4286 ] after=[6157 4384 ]

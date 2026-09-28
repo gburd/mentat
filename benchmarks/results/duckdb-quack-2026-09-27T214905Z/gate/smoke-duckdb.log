@@ -1,0 +1,29 @@
+schema=true
+data=true
+q=Alice,Bob
+join=Bob=25,Alice=30
+in_scalar=true
+in_coll=Alice
+in_mixed=Bob
+tx2=true
+now=31
+asof=30
+since=31
+pull=true
+pull_id=true
+pull_attrs=31
+eval=3
+after_eval=Alice,Bob,Carol
+other=true
+other_e=65542
+mine_e=65543
+emails=m@x,o@x
+fds=1
+many=20
+ok (error): unbound symbol: slurp
+ok (error): unknown option "bogus"
+ok (error): not valid JSON
+ok (error): mentat_hello does not exist
+ok (error): mentat_transact does not exist
+ok (error): mentat_query does not exist
+PASS: mentat DuckDB extension smoke test

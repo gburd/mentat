@@ -1,0 +1,34 @@
+3.40.0 2023-06-02 12:56:32 00a1256aa915eba233626a380102f8e74157cde64f0cd68731893b588c97alt1
+schema=1
+data=1
+cols=["?e","?name"]
+q=Alice,Bob
+join=Bob=25,Alice=30
+in_scalar=1
+in_coll=["Alice"]
+in_mixed=["Bob"]
+tx2=1
+now=31
+asof=30
+since=31
+pull=1
+pull_id=1
+pull_attrs=31
+eval=3
+after_eval=Alice,Bob,Carol
+other=1
+other_e=65542
+mine_e=65543
+emails=m@x,o@x
+null=1
+fds=1
+many=20
+ok (error): unbound symbol: slurp
+ok (error): unknown option "bogus"
+ok (error): not valid JSON
+ok (error): edn_q:
+ok (error): must be an EDN vector
+ok (error): entity must be an INTEGER
+ok (error): host's own database
+ok (error): unsafe use of edn_q
+PASS: mentat SQLite extension smoke test

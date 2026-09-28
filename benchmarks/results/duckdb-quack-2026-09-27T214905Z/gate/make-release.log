@@ -1,0 +1,32 @@
+DUCKDB_EXTENSION_NAME=mentat DUCKDB_EXTENSION_MIN_DUCKDB_VERSION=v1.5.5 cargo build  --release -p mentat_duckdb
+   Compiling mentat v1.10.0 (/home/ec2-user/mentat/crates/sqlite/mentat)
+   Compiling mentat_script v1.10.0 (/home/ec2-user/mentat/crates/script)
+   Compiling mentat_db v0.0.2 (/home/ec2-user/mentat/crates/sqlite/db)
+   Compiling public_traits v0.0.2 (/home/ec2-user/mentat/crates/sqlite/public-traits)
+   Compiling mentat_query_pull v0.0.2 (/home/ec2-user/mentat/crates/sqlite/query-pull)
+   Compiling mentat_query_projector v0.0.2 (/home/ec2-user/mentat/crates/sqlite/query-projector)
+   Compiling mentat_transaction v0.0.2 (/home/ec2-user/mentat/crates/sqlite/transaction)
+   Compiling mentat_duckdb v1.10.0 (/home/ec2-user/mentat/crates/duckdb)
+    Finished `release` profile [optimized] target(s) in 54.35s
+./configure/venv/bin/python3 -c "from pathlib import Path;Path('./build/release/extension/mentat').mkdir(parents=True, exist_ok=True)"
+./configure/venv/bin/python3 -c "import shutil;shutil.copyfile('./target/release/libmentat_duckdb.so', './build/release/libmentat_duckdb.so')"
+./configure/venv/bin/python3 extension-ci-tools/scripts/append_extension_metadata.py \
+		-l ./build/release/libmentat_duckdb.so \
+		-o ./build/release/mentat.duckdb_extension \
+		-n mentat \
+		-dv v1.5.5 \
+		-evf configure/extension_version.txt \
+		-pf configure/platform.txt --abi-type C_STRUCT_UNSTABLE
+Creating extension binary:
+ - Input file: ./build/release/libmentat_duckdb.so
+ - Output file: ./build/release/mentat.duckdb_extension
+ - Metadata:
+   - FIELD8 (unused)            = EMPTY
+   - FIELD7 (unused)            = EMPTY
+   - FIELD6 (unused)            = EMPTY
+   - FIELD5 (abi_type)          = C_STRUCT_UNSTABLE
+   - FIELD4 (extension_version) = v1.9.0
+   - FIELD3 (duckdb_version)    = v1.5.5
+   - FIELD2 (duckdb_platform)   = linux_amd64
+   - FIELD1 (header signature)  = 4 (special value to identify a duckdb extension)
+./configure/venv/bin/python3 -c "import shutil;shutil.copyfile('./build/release/mentat.duckdb_extension', './build/release/extension/mentat/mentat.duckdb_extension')"

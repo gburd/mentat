@@ -1,0 +1,2 @@
+s: 984803 datoms (1600 users, 130000 issues, 6492 history updates)
+m: duckdb-quack reads a copy of the embedded-built store (as ext-cache did)

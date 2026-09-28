@@ -1,0 +1,3 @@
+concurrency_sweep,duckdb-quack,m,9850258,32,read,1061,9.676,863.863,1154.651,1624.621,99.53,0,1
+concurrency_sweep,duckdb-quack,m,9850258,64,read,1152,28.578,1885.927,2061.358,3046.780,103.34,0,1
+concurrency_sweep,duckdb-quack,m,9850258,128,read,1205,46.438,3499.068,3615.307,3790.085,98.32,0,1

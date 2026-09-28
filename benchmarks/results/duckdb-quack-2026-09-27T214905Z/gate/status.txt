@@ -1,0 +1,5 @@
+cargo build --release -p mentat_sqlite_ext exit=0
+cd crates/duckdb && make release exit=0
+EXT=target/release/libmentat_sqlite crates/sqlite/ext/test/smoke.sh exit=0
+cargo clippy -p mentat_sqlite_ext -p mentat_duckdb -- -D warnings exit=0
+EXT=build/release/mentat.duckdb_extension DUCKDB=~/duckdb crates/duckdb/test/smoke.sh exit=0

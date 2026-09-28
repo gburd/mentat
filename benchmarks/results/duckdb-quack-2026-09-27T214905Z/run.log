@@ -1,0 +1,18 @@
+[21:49:05] results -> /home/ec2-user/results/duckdb-quack
+[21:49:05] duckdb-quack: load s
+[21:50:13] duckdb-quack: check s
+[21:51:52] duckdb-quack s concurrency_sweep
+[21:53:00] duckdb-quack s write_mixed
+[21:54:01] done: /home/ec2-user/results/duckdb-quack (checks: 26 pass, 0
+0 fail)
+[21:54:01] results -> /home/ec2-user/results/duckdb-quack
+[21:54:02] duckdb-quack: check m
+[21:57:20] duckdb-quack m concurrency_sweep
+[21:58:31] duckdb-quack m write_mixed
+[21:59:41] duckdb-quack m sustained 300s c=32
+[22:04:53] done: /home/ec2-user/results/duckdb-quack (checks: 52 pass, 0
+0 fail)
+[22:04:53] results -> /home/ec2-user/results/duckdb-quack
+[22:04:53] duckdb m sustained 300s c=32
+[22:09:56] done: /home/ec2-user/results/duckdb-quack (checks: 52 pass, 0
+0 fail)

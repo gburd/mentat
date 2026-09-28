@@ -1,0 +1,6 @@
+WAL 1369821752 bytes (as left by the 300 s sustained run):
+ref_traversal ms: 11760 11361 11365 11359
+checkpoint(TRUNCATE): (0, 0, 0)
+stat: cannot statx '/home/ec2-user/data/wc/wal-m.db-wal': No such file or directory
+WAL  bytes:
+ref_traversal ms: 500 496 498 492
