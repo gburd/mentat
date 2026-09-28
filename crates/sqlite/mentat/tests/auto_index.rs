@@ -418,3 +418,57 @@ fn test_upgraded_store_gets_schema_indexes() {
         assert!(p.contains(&format!("idx_auto_avet_{a}")), "v{from}: {p}");
     }
 }
+
+/// A schema index created with its attribute (before any data) is ANALYZEd
+/// as empty; stale "0 0 0 0" statistics made the planner start joins at it.
+/// Opening (or tuning) the store refreshes them once there is data.
+#[test]
+fn test_empty_schema_index_stats_are_refreshed() {
+    let dir = std::env::temp_dir().join(format!("mentat-stale-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("s.db");
+    for ext in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+    }
+    let path = path.to_str().unwrap().to_string();
+    let stat = |s: &Store, a: i64| -> String {
+        s.sqlite_ref()
+            .query_row(
+                "SELECT stat FROM sqlite_stat1 WHERE idx = ?",
+                [format!("idx_auto_avet_{a}")],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let a = {
+        let mut s = Store::open(&path).unwrap();
+        s.transact(
+            r#"[{:db/ident :u/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/index true}]"#,
+        )
+        .unwrap();
+        let a = mentat::HasSchema::get_entid(
+            &*s.conn().current_schema(),
+            &mentat::Keyword::namespaced("u", "email"),
+        )
+        .unwrap()
+        .0;
+        assert!(stat(&s, a).starts_with("0 "), "{}", stat(&s, a));
+        s.transact(r#"[{:u/email "a"} {:u/email "b"} {:u/email "c"}]"#)
+            .unwrap();
+        a
+    };
+    let mut s = Store::open(&path).unwrap();
+    assert_eq!(stat(&s, a), "3 3 1 1");
+    // And via tune_indexes on a live store.
+    s.transact(r#"[{:db/ident :u/code :db/valueType :db.type/long :db/cardinality :db.cardinality/one :db/unique :db.unique/value :db/index true}]"#)
+        .unwrap();
+    s.transact(r#"[{:u/code 1} {:u/code 2}]"#).unwrap();
+    let c = mentat::HasSchema::get_entid(
+        &*s.conn().current_schema(),
+        &mentat::Keyword::namespaced("u", "code"),
+    )
+    .unwrap()
+    .0;
+    s.tune_indexes(false).unwrap();
+    assert_eq!(stat(&s, c), "2 2 1 1");
+}

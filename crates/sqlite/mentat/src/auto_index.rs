@@ -228,6 +228,7 @@ impl Advisor {
         if !dry_run {
             // Existing stores, and anything a transaction missed.
             db::sync_schema_indexes(&tx, schema)?;
+            db::refresh_value_index_stats(&tx)?;
         }
         let managed = registry(&tx)?;
         let ident = |a: Entid| schema.get_ident(a).cloned();

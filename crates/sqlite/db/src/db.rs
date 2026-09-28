@@ -447,7 +447,14 @@ pub fn ensure_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
             upgrade(conn)?;
             read_db(conn)
         }
-        CURRENT_VERSION => read_db(conn),
+        CURRENT_VERSION => {
+            // Cheap when nothing is stale; best effort (a reader may lack the
+            // write lock, e.g. while another connection is writing).
+            if let Err(e) = refresh_value_index_stats(conn) {
+                log::debug!("refresh_value_index_stats: {e}");
+            }
+            read_db(conn)
+        }
 
         // TODO: support updating an existing store.
         v => bail!(DbErrorKind::NotYetImplemented(format!(
@@ -497,6 +504,7 @@ fn upgrade(conn: &mut rusqlite::Connection) -> Result<()> {
             }
             let schema = read_db(&tx)?.schema;
             sync_schema_indexes(&tx, &schema)?;
+            refresh_value_index_stats(&tx)?;
             set_user_version(&tx, CURRENT_VERSION)?;
         }
         tx.commit()?;
@@ -608,6 +616,44 @@ pub fn sync_schema_indexes(conn: &rusqlite::Connection, schema: &Schema) -> Resu
         }
     }
     Ok(())
+}
+
+/// Re-ANALYZE mentat's value indexes whose statistics say "empty" (a schema
+/// index is usually created with its attribute, before any data) but that
+/// now have rows. Stale `0 0 0 0` statistics make SQLite treat the index as
+/// free and start joins there: the scale suite's 100-email `:in` collection
+/// query went 0.39 -> 0.72 ms. O(managed indexes) when nothing is stale.
+/// Runs on open and from `Store::tune_indexes`.
+pub fn refresh_value_index_stats(conn: &rusqlite::Connection) -> Result<usize> {
+    if !has_table(conn, "mentat_managed_indexes")? || !has_table(conn, "sqlite_stat1")? {
+        return Ok(0);
+    }
+    let stale: Vec<Entid> = conn
+        .prepare(
+            "SELECT m.a FROM mentat_managed_indexes m
+               LEFT JOIN sqlite_stat1 s ON s.idx = m.name
+              WHERE (s.stat IS NULL OR s.stat LIKE '0 %')
+                AND m.name = 'idx_auto_avet_' || m.a
+                AND EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = m.name)
+                AND EXISTS (SELECT 1 FROM datoms WHERE a = m.a)",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if stale.is_empty() {
+        return Ok(0);
+    }
+    let limit: i64 = conn.query_row("PRAGMA analysis_limit", [], |r| r.get(0))?;
+    for a in &stale {
+        let index = value_index_name(*a);
+        conn.execute_batch(&format!(
+            "PRAGMA analysis_limit = 0; ANALYZE {index}; PRAGMA analysis_limit = {limit};"
+        ))?;
+        if has_table(conn, "sqlite_stat4")? {
+            conn.execute("DELETE FROM sqlite_stat4 WHERE idx = ?", [&index])?;
+        }
+    }
+    // ANALYZE bumps the schema cookie: every connection reloads the stats.
+    Ok(stale.len())
 }
 
 pub trait TypedSQLValue {
