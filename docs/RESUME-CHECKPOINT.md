@@ -99,3 +99,16 @@ one call; sparsemap v5.7.0 evaluation (TODO above).
 - Registry PR #2812 head 25eabfde: version 1.10.0, ref 3d4e73a2 (ext code identical
   at 5d5b1573). Workflows still await maintainer approval; comment posted.
 - EC2: all mentat instances/keys/SGs deleted.
+
+## v1.10.1 RELEASED (2026-09-28)
+- Tag v1.10.1 = 3e1100e3 (1.10.0 + test-script fix 5d5b1573, empty upgrade edge
+  pg_mentat--1.10.0--1.10.1.sql). CI green on it (all jobs, pg13-18).
+- Release run 36429089526: attempts 1-2 failed build-duckdb-ext on a rustup
+  mid-build component install ("detected conflict: bin/cargo-fmt|cargo-clippy");
+  fixed in abe1f605 (release.yml installs rustfmt+clippy with the toolchain);
+  attempt 3 green. GitHub Release has 6 assets; PGXN shows pg_mentat 1.10.1; the
+  pg tarball ships 1.9.0->1.9.1->1.10.0->1.10.1.
+- v1.10.0 stays as a tag with no release (documented in CHANGELOG 1.10.1).
+- Registry PR #2812 head 8bda202a: version 1.10.1, ref 3e1100e3. Still awaits a
+  maintainer to approve its build workflows. COMMUNITY_EXT_PAT is unset, so
+  release.yml's registry job skips (bumps are manual on branch mentat-1.8.0).
