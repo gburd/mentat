@@ -225,4 +225,92 @@ mod tests {
         .expect("bound query");
         assert_eq!(r.0["results"], serde_json::json!([["Bob"]]));
     }
+
+    // ========================================================================
+    // An integer input in a ref attribute's value place is an entid
+    // ========================================================================
+
+    #[pg_test]
+    fn test_ip_ref_value_input_is_an_entid() {
+        setup();
+        setup_ip_schema_and_data();
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :ip/friend :db/valueType :db.type/ref \
+                               :db/cardinality :db.cardinality/many}]'::TEXT)",
+        )
+        .expect("ref schema");
+        let q = |query: &str, inputs: serde_json::Value| {
+            crate::functions::query::mentat_query(query, pgrx::JsonB(inputs))
+                .expect(query)
+                .0
+        };
+        let eid = |name: &str| {
+            q(
+                &format!("[:find ?e . :where [?e :ip/name \"{name}\"]]"),
+                serde_json::json!({}),
+            )["result"]
+                .as_i64()
+                .expect("eid")
+        };
+        let (alice, bob, carol, dave) = (eid("Alice"), eid("Bob"), eid("Carol"), eid("Dave"));
+        // Cardinality-many: Alice has two friends, Dave befriends Bob too.
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {alice} :ip/friend {bob}] [:db/add {alice} :ip/friend {carol}] \
+                            [:db/add {dave} :ip/friend {bob}]]'::TEXT)"
+        ))
+        .expect("friends");
+
+        let who = |query: &str, inputs: serde_json::Value| {
+            let mut v: Vec<String> = q(query, inputs)["results"]
+                .as_array()
+                .expect("rel")
+                .iter()
+                .map(|r| r[0].as_str().expect("name").to_string())
+                .collect();
+            v.sort();
+            v
+        };
+        // Scalar.
+        let scalar = "[:find ?n :in $ ?f :where [?e :ip/friend ?f] [?e :ip/name ?n]]";
+        assert_eq!(
+            who(scalar, serde_json::json!({"inputs": [bob]})),
+            ["Alice", "Dave"]
+        );
+        assert_eq!(
+            who(scalar, serde_json::json!({"inputs": [carol]})),
+            ["Alice"]
+        );
+        // An entid that is nobody's friend is no match, not an error.
+        assert!(who(scalar, serde_json::json!({"inputs": [alice]})).is_empty());
+        // Scalar ref mixed with a collection of longs (the model test's shape).
+        assert_eq!(
+            q(
+                "[:find ?n . :in $ ?f [?v ...] :where [?e :ip/friend ?f] [?e :ip/val ?v] [?e :ip/name ?n]]",
+                serde_json::json!({"inputs": [carol, [100, 101]]}),
+            )["result"],
+            "Alice"
+        );
+        // Collection, tuple and relation forms of a ref value.
+        assert_eq!(
+            who(
+                "[:find ?n :in $ [?f ...] :where [?e :ip/friend ?f] [?e :ip/name ?n]]",
+                serde_json::json!({"inputs": [[carol, 999_999_999]]}),
+            ),
+            ["Alice"]
+        );
+        assert_eq!(
+            who(
+                "[:find ?n :in $ [?f ?v] :where [?e :ip/friend ?f] [?e :ip/val ?v] [?e :ip/name ?n]]",
+                serde_json::json!({"inputs": [[bob, 300]]}),
+            ),
+            ["Dave"]
+        );
+        assert_eq!(
+            who(
+                "[:find ?n :in $ [[?f ?v]] :where [?e :ip/friend ?f] [?e :ip/val ?v] [?e :ip/name ?n]]",
+                serde_json::json!({"inputs": [[[bob, 300], [carol, 100], [carol, 300]]]}),
+            ),
+            ["Alice", "Dave"]
+        );
+    }
 }

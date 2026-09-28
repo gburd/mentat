@@ -1073,6 +1073,7 @@ fn parse_input_bindings_v2(
 fn bind_input_value(
     alias: &str,
     value: &serde_json::Value,
+    is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
 ) -> Option<String> {
@@ -1096,9 +1097,14 @@ fn bind_input_value(
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 let param = builder.bind_bigint(i);
+                // In a ref attribute's value place an integer is an entid.
+                let (col, tag) = if is_ref {
+                    ("v_ref", type_tag::REF)
+                } else {
+                    ("v_long", type_tag::LONG)
+                };
                 Some(format!(
-                    "({alias}.v_long = {param} AND {alias}.value_type_tag = {tag})",
-                    tag = type_tag::LONG
+                    "({alias}.{col} = {param} AND {alias}.value_type_tag = {tag})"
                 ))
             } else if let Some(f) = n.as_f64() {
                 let param = builder.bind_double(f);
@@ -1128,6 +1134,13 @@ fn bind_input_value(
         }
         _ => None,
     }
+}
+
+/// Whether a value-place variable was first bound in the value place of a
+/// `:db.type/ref` attribute: a JSON integer input for it is then an entid
+/// (v_ref), not a long -- the embedded backend's `ref_vars` rule.
+fn is_ref_var(var_to_type: &HashMap<String, Option<String>>, var: &str) -> bool {
+    matches!(var_to_type.get(var), Some(Some(t)) if t == "ref")
 }
 
 /// Bind an :in clause variable to a WHERE constraint on an entity column.
@@ -5396,6 +5409,7 @@ fn build_collection_in_clause(
     alias: &str,
     col: &str,
     values: &[serde_json::Value],
+    is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     _schema_prefix: &str,
 ) -> Option<String> {
@@ -5416,7 +5430,8 @@ fn build_collection_in_clause(
             let first = &values[0];
             if first.is_i64() || first.is_u64() {
                 let p = builder.bind_any(ints()?);
-                Some(format!("{alias}.v_long = ANY({p})"))
+                let c = if is_ref { "v_ref" } else { "v_long" };
+                Some(format!("{alias}.{c} = ANY({p})"))
             } else if first.is_f64() {
                 let v: Vec<f64> = values.iter().filter_map(|v| v.as_f64()).collect();
                 if v.is_empty() {
@@ -5467,6 +5482,7 @@ fn build_relation_values_join(
     vars: &[String],
     rows: &[Vec<serde_json::Value>],
     var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
     builder: &mut SqlBuilder<'_>,
     _schema_prefix: &str,
     joins: &mut Vec<String>,
@@ -5525,7 +5541,13 @@ fn build_relation_values_join(
         if *col == "v" {
             let sample = rows.first().and_then(|r| r.get(i));
             let typed_col = match sample {
-                Some(serde_json::Value::Number(n)) if n.is_i64() || n.is_u64() => "v_long",
+                Some(serde_json::Value::Number(n)) if n.is_i64() || n.is_u64() => {
+                    if is_ref_var(var_to_type, var) {
+                        "v_ref"
+                    } else {
+                        "v_long"
+                    }
+                }
                 Some(serde_json::Value::Number(_)) => "v_double",
                 Some(serde_json::Value::String(s)) if s.starts_with(':') => "v_keyword",
                 Some(serde_json::Value::String(_)) => "v_text",
@@ -5984,7 +6006,13 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     for (var_name, value) in input_bindings {
         if let Some((alias, col)) = var_to_alias.get(var_name.as_str()) {
             let constraint = match *col {
-                "v" => bind_input_value(alias, value, builder, schema_prefix),
+                "v" => bind_input_value(
+                    alias,
+                    value,
+                    is_ref_var(&var_to_type, var_name),
+                    builder,
+                    schema_prefix,
+                ),
                 "e" => bind_input_entity(alias, value, builder, schema_prefix),
                 "a" => {
                     // Attribute column: bind as bigint
@@ -6021,8 +6049,14 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             InputBinding::Collection { var, values } => {
                 // alias.v_long = ANY($n) etc.
                 if let Some((alias, col)) = var_to_alias.get(var.as_str()) {
-                    let in_clause =
-                        build_collection_in_clause(alias, col, values, builder, schema_prefix);
+                    let in_clause = build_collection_in_clause(
+                        alias,
+                        col,
+                        values,
+                        is_ref_var(&var_to_type, var),
+                        builder,
+                        schema_prefix,
+                    );
                     if let Some(c) = in_clause {
                         where_clauses.push(c);
                     }
@@ -6037,7 +6071,13 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                     if let Some(val) = values.get(i) {
                         if let Some((alias, col)) = var_to_alias.get(var.as_str()) {
                             let constraint = match *col {
-                                "v" => bind_input_value(alias, val, builder, schema_prefix),
+                                "v" => bind_input_value(
+                                    alias,
+                                    val,
+                                    is_ref_var(&var_to_type, var),
+                                    builder,
+                                    schema_prefix,
+                                ),
                                 "e" => bind_input_entity(alias, val, builder, schema_prefix),
                                 "a" => val.as_i64().map(|i| {
                                     let param = builder.bind_bigint(i);
@@ -6062,6 +6102,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                     vars,
                     rows,
                     &var_to_alias,
+                    &var_to_type,
                     builder,
                     schema_prefix,
                     &mut joins,
