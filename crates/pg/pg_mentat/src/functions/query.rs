@@ -2202,6 +2202,14 @@ fn element_to_var_name(elem: &Element) -> Option<String> {
     }
 }
 
+/// Whether a pattern reads history (assertions and retractions): the query
+/// asked for it, or the pattern has a 5th (`added`) place.
+// ponytail: main pattern path only; a 5-place pattern inside not/rule bodies
+// still reads current state (those paths bind no `added` var yet).
+fn reads_history(temporal: &TemporalOption, pattern: &edn::query::Pattern) -> bool {
+    temporal.history || pattern.added != PatternNonValuePlace::Placeholder
+}
+
 /// Extract a variable name string from a PatternNonValuePlace, if it is a variable.
 fn non_value_var_name(place: &PatternNonValuePlace) -> Option<String> {
     match place {
@@ -5780,8 +5788,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             .as_ref()
             .and_then(|vt| value_type_to_table_info(vt));
 
+        // A history pattern -- a non-placeholder 5th place, `[?e ?a ?v ?tx
+        // ?added]` -- reads the append-only log, assertions and retractions
+        // alike, as if the query had {"history": true}; a 4-place pattern
+        // stays on the current-state projection. (The embedded backend routes
+        // it to its transactions table the same way.)
+        let history = reads_history(temporal, pattern);
+
         // Temporal filtering per datom table
-        if temporal.history {
+        if history {
             // History mode: include both added=true and added=false (no filter)
         } else {
             where_clauses.push(format!("{alias}.added = true"));
@@ -5816,7 +5831,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 _ => false, // variable or placeholder: skip filter (safe due to explicit retractions)
             };
 
-            if !is_cardinality_many {
+            // History as of T is every datom with tx <= T: nothing is superseded.
+            if !is_cardinality_many && !history {
                 let param2 = builder.bind_bigint(as_of_tx);
                 // Use single typed table for NOT EXISTS when attribute type is known.
                 // This avoids the 9-way UNION ALL in the correlated subquery.
@@ -5863,7 +5879,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         // Pushing `added` and constant attribute entid into the subquery lets PG
         // use partial indexes like (store_id, a, e, tx) WHERE added directly.
         let pushdown = {
-            let added_true = !temporal.history;
+            let added_true = !history;
             let attribute_entid = match &pattern.attribute {
                 PatternNonValuePlace::Entid(id) => Some(format!("{}", id)),
                 PatternNonValuePlace::Ident(kw) => {
@@ -5886,8 +5902,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         // (no as-of / since / history): it holds only live datoms, so it
         // needs no `added` filter or latest-tx-wins resolution. Temporal
         // queries must read the append-only log.
-        let use_projection =
-            temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+        let use_projection = temporal.as_of.is_none() && temporal.since.is_none() && !history;
 
         // Use the typed single-table FROM fragment or fall back to UNION ALL
         if let Some(info) = &typed_info {
@@ -5912,7 +5927,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             joins.push(build_datoms_from_fragment(
                 &alias,
                 store_id_param,
-                temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                use_projection,
             ));
             crate::monitoring::record_union_all_fallback();
         }
@@ -6032,6 +6047,10 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                         None
                     }
                 }
+                "added" => value.as_bool().map(|b| {
+                    let param = builder.bind_bool(b);
+                    format!("{alias}.added = {param}")
+                }),
                 _ => None,
             };
             if let Some(c) = constraint {
@@ -6356,7 +6375,10 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
         }
     }
-    let use_projection = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+    // Projection rows are keyed by (e, a[, v]); history rows are not.
+    let use_projection = temporal.as_of.is_none()
+        && temporal.since.is_none()
+        && !patterns.iter().any(|p| reads_history(temporal, p));
     let may_multiply = !fts_joins.is_empty()
         || rule_cte_info.is_some()
         || !get_else_clauses.is_empty()

@@ -408,4 +408,101 @@ mod tests {
         let vb: serde_json::Value = serde_json::from_str(&qb).expect("parse");
         assert_eq!(vb["result"].as_i64().expect("v"), 500);
     }
+
+    // ========================================================================
+    // A 5-place pattern reads history without {"history": true}
+    // ========================================================================
+
+    fn q(query: &str, inputs: serde_json::Value) -> serde_json::Value {
+        crate::functions::query::mentat_query(query, pgrx::JsonB(inputs))
+            .expect(query)
+            .0
+    }
+
+    /// The rows of a FindRel result, sorted, as compact JSON strings.
+    fn rows(query: &str, inputs: serde_json::Value) -> Vec<String> {
+        let mut v: Vec<String> = q(query, inputs)["results"]
+            .as_array()
+            .expect("rel")
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[pg_test]
+    fn test_hi_added_place_reads_history() {
+        setup();
+        setup_hist_schema();
+        let (eid, _) = create_entity_with_tx();
+        let tx = |edn: String| {
+            let r = Spi::get_one::<String>(&format!("SELECT edn_t('{edn}'::TEXT)"))
+                .expect("tx")
+                .expect("NULL");
+            let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
+            j["db-after"]["basis-t"].as_i64().expect("tx id")
+        };
+        let t2 = tx(format!(
+            "[[:db/add {eid} :hi/val 2] [:db/add {eid} :hi/tags \"x\"]]"
+        ));
+        tx(format!(
+            "[[:db/retract {eid} :hi/tags \"x\"] [:db/add {eid} :hi/tags \"y\"]]"
+        ));
+
+        let vals = "[:find ?v ?added :where [?e :hi/val ?v ?tx ?added] [?e :hi/name \"Test\"]]";
+        let want = [r#"[1,false]"#, r#"[1,true]"#, r#"[2,true]"#];
+        assert_eq!(rows(vals, serde_json::json!({})), want);
+        // Same with the option spelled out.
+        assert_eq!(rows(vals, serde_json::json!({"history": true})), want);
+        // Cardinality-many, through the retraction.
+        let tags = "[:find ?t ?added :where [?e :hi/tags ?t _ ?added] [?e :hi/name \"Test\"]]";
+        assert_eq!(
+            rows(tags, serde_json::json!({})),
+            [r#"["x",false]"#, r#"["x",true]"#, r#"["y",true]"#]
+        );
+        // ?added bound by an :in value picks one side.
+        let retracted =
+            "[:find ?v :in $ ?added :where [?e :hi/val ?v _ ?added] [?e :hi/name \"Test\"]]";
+        assert_eq!(
+            rows(retracted, serde_json::json!({"inputs": [false]})),
+            ["[1]"]
+        );
+        assert_eq!(
+            rows(retracted, serde_json::json!({"inputs": [true]})),
+            ["[1]", "[2]"]
+        );
+        // As of T a history pattern sees all of history up to T.
+        assert_eq!(
+            rows(vals, serde_json::json!({"asOf": t2})),
+            [r#"[1,false]"#, r#"[1,true]"#, r#"[2,true]"#]
+        );
+        assert_eq!(
+            rows(tags, serde_json::json!({"asOf": t2})),
+            [r#"["x",true]"#]
+        );
+        // A 4-place pattern stays on current state.
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?e :hi/val ?v] [?e :hi/name \"Test\"]]",
+                serde_json::json!({})
+            ),
+            ["[2]"]
+        );
+        assert_eq!(
+            rows(
+                "[:find ?t :where [?e :hi/tags ?t ?tx] [?e :hi/name \"Test\"]]",
+                serde_json::json!({})
+            ),
+            [r#"["y"]"#]
+        );
+        // An aggregate over a history pattern runs over the set of values,
+        // not one row per (e, a) as on the current projection: {1, 2}, from
+        // three datoms (1 asserted, 1 retracted, 2 asserted).
+        let n = q(
+            &format!("[:find (count ?v) . :where [{eid} :hi/val ?v _ ?added]]"),
+            serde_json::json!({}),
+        );
+        assert_eq!(n["result"], 2, "{n}");
+    }
 }

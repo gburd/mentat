@@ -210,25 +210,33 @@ impl ScriptBackend for PgBackend {
 
     fn datoms(&self, db: &DbRef) -> Result<Value, String> {
         // Full EAVT scan; the engine applies the temporal bound from inputs.
-        let query = "[:find ?e ?a ?v ?tx ?added :where [?e ?a ?v ?tx ?added]]";
-        let mut inputs = temporal_inputs(db);
-        // A datoms listing wants the raw datom log, so include retractions for a
-        // since/current window; as-of reconstructs the live set.
-        if db.as_of.is_none() {
-            if let J::Object(ref mut o) = inputs {
-                o.insert("history".to_string(), J::from(true));
-            }
-        }
-        let out =
-            super::query::mentat_query(query, pgrx::JsonB(inputs)).map_err(|e| e.to_string())?;
-        // FindRel envelope: {"results": [[e,a,v,tx,added], ...]}.
+        // A 5-place pattern reads the datom log (retractions too): the raw log
+        // for a current / since window. As-of wants the live set at T, which a
+        // 4-place pattern reconstructs; each of those datoms is an assertion.
+        let as_of = db.as_of.is_some();
+        let query = if as_of {
+            "[:find ?e ?a ?v ?tx :where [?e ?a ?v ?tx]]"
+        } else {
+            "[:find ?e ?a ?v ?tx ?added :where [?e ?a ?v ?tx ?added]]"
+        };
+        let out = super::query::mentat_query(query, pgrx::JsonB(temporal_inputs(db)))
+            .map_err(|e| e.to_string())?;
+        // FindRel envelope: {"results": [[e,a,v,tx(,added)], ...]}.
         let rows = out
             .0
             .get("results")
             .and_then(J::as_array)
             .cloned()
             .unwrap_or_default();
-        let tuples: Vec<Value> = rows.iter().map(json_to_mino).collect();
+        let tuples: Vec<Value> = rows
+            .into_iter()
+            .map(|mut r| {
+                if let (true, J::Array(ref mut a)) = (as_of, &mut r) {
+                    a.push(J::Bool(true));
+                }
+                json_to_mino(&r)
+            })
+            .collect();
         Ok(Value::Vector(Gc::new(PVec::from_vec(tuples))))
     }
 
