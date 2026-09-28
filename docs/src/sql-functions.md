@@ -35,6 +35,7 @@ removed in a future major release. Other functions keep their `mentat_` prefix.
 |-------------------|--------------|-------------|
 | `mentat.t(edn)` | `edn_t(edn)` | Transact EDN data |
 | `mentat.q(query, inputs)` | `edn_q(query, inputs)` | Run a Datalog query |
+| -- | `edn_q_rows(query, inputs)` | Run a query, one JSONB row per result |
 | `mentat.pull(pattern, eid)` | `edn_pull(pattern, eid)` | Pull entity attributes |
 | `mentat.pull_many(pattern, eids)` | `mentat_pull_many(pattern, eids)` | Pull multiple entities |
 | `mentat.entity(eid)` | `mentat_entity(eid)` | All attributes as JSON |
@@ -107,6 +108,34 @@ SELECT mentat.q('
 The `inputs` parameter is a JSON value:
 - Simple array for positional bindings: `'[25]'`
 - Empty for no inputs: `'{}'` or `'[]'`
+
+### `edn_q_rows(query, inputs DEFAULT '{}')` -- streamed rows
+
+`RETURNS SETOF JSONB`: one JSON array per result row, in `:find` order,
+with the same value encoding and the same `inputs` (`:in` bindings,
+`asOf` / `since` / `history`, `limit` / `offset`) as `edn_q`. Use it when
+the result is large -- `edn_q` returns one JSONB value, which PostgreSQL
+caps at 1 GB and which must be built in memory before the first row
+reaches the client -- or when you want to join / filter / aggregate the
+rows in SQL:
+
+```sql
+SELECT r->>0 AS name, (r->>1)::int AS age
+FROM edn_q_rows('[:find ?n ?a :where [?e :person/name ?n] [?e :person/age ?a]]') r
+WHERE (r->>1)::int > 21;
+```
+
+Rows are read from a cursor in batches of 1000. `mentat.max_result_rows`
+applies exactly as for `edn_q` (more rows than the limit is an error, not
+a silent truncation), so both functions give the same answer for the
+same settings; `SET LOCAL mentat.max_result_rows = 0` for an unbounded
+stream. Default store only (like `edn_q`).
+
+### `mentat_tune_indexes(dry_run DEFAULT true)` -- automatic indexes
+
+Report (dry run) or apply the automatic index manager's creates / drops:
+`RETURNS TABLE(action, index_name, table_name, reason)`. See
+[Operations: automatic index management](operations.md#7-automatic-index-management).
 
 ### `mentat.explain(query)` / `mentat_explain(query)`
 

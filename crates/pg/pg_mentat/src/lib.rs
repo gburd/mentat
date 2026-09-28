@@ -701,6 +701,7 @@ pub mod auto_index;
 mod auto_index_tests;
 mod cache;
 pub mod monitoring;
+mod query_rows_tests;
 
 /// Ensure the pg_mentat extension SQL DDL is loaded in the current database.
 ///

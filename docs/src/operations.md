@@ -482,3 +482,34 @@ large store, prefer `schema` mode and run `mentat_tune_indexes(false)` in
 a maintenance window, or create the reported index yourself `CONCURRENTLY`
 under the reported name and insert its registry row.
 
+## 8. Scaling notes: large results and big stores
+
+Measured on a 32-vCPU box, PostgreSQL 16.15, current-time queries
+(`benchmarks/scale`, 1M and 10M datoms; see
+`benchmarks/results/pg-autoindex-*` for the full tables).
+
+- **Point lookups and ref traversal are flat in store size.** A
+  value-bound pattern (`[?e :user/email ?x]`) is an AVET index probe on
+  the current-state projection: ~0.19 ms at 1M and at 10M datoms.
+- **Aggregates scale with the attribute, not the store.** `(count ?x)`
+  whose tuple is a key of the join (a single cardinality-one pattern, or a
+  chain of them) runs as `COUNT(*)` with parallel workers (10M datoms, 1.3M
+  values: ~55 ms). When the tuple is not a key (a cardinality-many join, a
+  non-unique value) it is de-duplicated first with `SELECT DISTINCT` +
+  HashAggregate -- correct, but proportional to the join's size.
+- **Results are bounded by `mentat.max_result_rows` (100k).** `edn_q`
+  builds its answer as one JSONB value in memory (PostgreSQL caps a
+  value at 1 GB). For large results use `edn_q_rows`, which returns one
+  row per result and can be consumed by `COPY (SELECT ...) TO STDOUT` or
+  a client-side cursor, together with `SET LOCAL mentat.max_result_rows =
+  0` -- or paginate with `{"limit": N, "offset": M}` inputs (offsets are
+  O(offset); prefer a range predicate on a key for deep pages).
+- **Spills.** Large DISTINCT / sort steps spill to disk under
+  `work_mem`; `mentat.temp_file_limit` (1 GB) bounds that per query and
+  the error names it. Raising `work_mem` for the session (or
+  `mentat.default_work_mem` with optimizer hints on) keeps them in memory.
+- **Temporal range queries** (as-of / since / history with `<`/`>` on a
+  value) are the one access path the shipped indexes do not cover
+  per attribute; the automatic index manager (section 7) adds those
+  indexes from observed use.
+

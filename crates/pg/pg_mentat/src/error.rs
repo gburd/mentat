@@ -396,8 +396,8 @@ impl fmt::Display for MentatError {
             Self::ResultLimitExceeded { limit, message } => {
                 write!(
                     f,
-                    ":db.error/result-limit-exceeded Query result exceeded the maximum of {} rows. \
-                     {}. Adjust mentat.max_result_rows or add :limit to your query.",
+                    ":db.error/result-limit-exceeded Query returned more than \
+                     mentat.max_result_rows = {} rows. {}.",
                     limit, message
                 )
             }

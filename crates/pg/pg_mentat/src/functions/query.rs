@@ -1216,29 +1216,39 @@ fn resolve_schema_prefix(store_name: &str) -> String {
     format!("{}.", quote_ident(&schema))
 }
 
-/// Internal implementation of the Datalog query executor, parameterized by schema prefix.
-///
-/// All public query entry points delegate to this function.
-pub(crate) fn mentat_query_internal(
+/// A compiled Datalog query, ready to execute: shared by edn_q (collects
+/// the rows into one JSON value) and edn_q_rows (streams them).
+struct PreparedQuery<'a> {
+    parsed: ParsedQuery,
+    find_vars: Vec<String>,
+    sql: String,
+    params: Vec<DatumWithOid<'a>>,
+    complexity: QueryComplexity,
+    has_aggregates: bool,
+    /// Which result columns are pull columns (JSON text to nest).
+    pull_cols: Vec<bool>,
+    /// mentat.max_result_rows applies (no explicit :limit / "limit").
+    max_rows: Option<i32>,
+}
+
+fn prepare_query<'a>(
     query: &str,
-    inputs: JsonB,
+    inputs: &serde_json::Value,
     schema_prefix: &str,
-) -> Result<JsonB, Box<dyn std::error::Error + Send + Sync>> {
-    let mut timer = crate::monitoring::QueryTimer::start(query);
-
+) -> Result<PreparedQuery<'a>, Box<dyn std::error::Error + Send + Sync>> {
     let _parsed_value = parse::value(query)?;
-    let parsed_query = mentat_core::parse_query(query)?;
+    let parsed = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
-    let input_bindings = parse_input_bindings(&parsed_query.in_vars, &inputs.0);
-    let enriched = parse_input_bindings_v2(&parsed_query.in_bindings, &inputs.0);
-    let has_aggregates = find_spec_has_aggregates(&parsed_query.find_spec);
-    let find_vars = extract_find_variables(&parsed_query.find_spec);
-    let pagination = parse_pagination_options(&inputs.0);
+    let temporal = parse_temporal_options(inputs);
+    let input_bindings = parse_input_bindings(&parsed.in_vars, inputs);
+    let enriched = parse_input_bindings_v2(&parsed.in_bindings, inputs);
+    let has_aggregates = find_spec_has_aggregates(&parsed.find_spec);
+    let find_vars = extract_find_variables(&parsed.find_spec);
+    let pagination = parse_pagination_options(inputs);
 
     let mut builder = SqlBuilder::new();
-    let (mut sql_query, complexity, _datalog_plan) = build_sql_from_datalog_enriched(
-        &parsed_query,
+    let (mut sql, complexity, _datalog_plan) = build_sql_from_datalog_enriched(
+        &parsed,
         &find_vars,
         &mut builder,
         &temporal,
@@ -1249,112 +1259,246 @@ pub(crate) fn mentat_query_internal(
 
     // Apply pagination from inputs JSON. This appends LIMIT/OFFSET to the
     // generated SQL, overriding any Datalog :limit if both are present.
-    let has_explicit_limit = pagination.limit.is_some() || sql_query.contains(" LIMIT ");
+    let has_explicit_limit = pagination.limit.is_some() || sql.contains(" LIMIT ");
     if let Some(limit) = pagination.limit {
         // Remove any existing LIMIT clause (from Datalog :limit) to avoid
         // a SQL syntax error from duplicate LIMIT. The generated SQL always
         // uses uppercase " LIMIT " so we can search directly.
-        if let Some(pos) = sql_query.rfind(" LIMIT ") {
-            sql_query.truncate(pos);
+        if let Some(pos) = sql.rfind(" LIMIT ") {
+            sql.truncate(pos);
         }
-        sql_query.push_str(&format!(" LIMIT {}", limit));
+        sql.push_str(&format!(" LIMIT {}", limit));
     }
     if let Some(offset) = pagination.offset {
-        sql_query.push_str(&format!(" OFFSET {}", offset));
+        sql.push_str(&format!(" OFFSET {}", offset));
     }
 
-    // Enforce max result rows as a safety net. If no explicit LIMIT is set
-    // and the GUC mentat.max_result_rows is positive, append a LIMIT clause
-    // to prevent cartesian explosions from returning unbounded results.
+    // Enforce max result rows as a safety net: with no explicit LIMIT and a
+    // positive mentat.max_result_rows, fetch one extra row to detect (and
+    // refuse) truncation instead of returning a silently partial answer.
     let max_rows = crate::planner::max_result_rows();
-    if !has_explicit_limit && max_rows > 0 {
-        // Request one extra row to detect truncation
-        sql_query.push_str(&format!(" LIMIT {}", i64::from(max_rows) + 1));
+    let max_rows = (!has_explicit_limit && max_rows > 0).then_some(max_rows);
+    if let Some(m) = max_rows {
+        sql.push_str(&format!(" LIMIT {}", i64::from(m) + 1));
     }
 
-    // Record the generated SQL for monitoring (slow query logging)
-    timer.set_sql(&sql_query);
+    // Pull columns return a JSON object as text; parse those as JSON so
+    // they nest as real objects in the result rather than as a string.
+    let pull_cols = (0..find_vars.len())
+        .map(|i| {
+            matches!(
+                get_find_element(&parsed.find_spec, i),
+                Some(Element::Pull(_))
+            )
+        })
+        .collect();
 
-    let params = builder.params;
+    Ok(PreparedQuery {
+        parsed,
+        find_vars,
+        sql,
+        params: builder.params,
+        complexity,
+        has_aggregates,
+        pull_cols,
+        max_rows,
+    })
+}
+
+impl PreparedQuery<'_> {
+    /// Decode one result row (TEXT columns) into a JSON array.
+    fn decode_row(&self, row: &pgrx::spi::SpiHeapTupleData<'_>) -> serde_json::Value {
+        let mut vals = Vec::with_capacity(self.find_vars.len());
+        for idx in 0..self.find_vars.len() {
+            vals.push(match row.get::<String>(idx + 1) {
+                Ok(Some(val)) if self.pull_cols[idx] => {
+                    serde_json::from_str::<serde_json::Value>(&val).unwrap_or_else(|_| json!(val))
+                }
+                Ok(Some(val)) => decode_text_result(&val),
+                _ => json!(null),
+            });
+        }
+        serde_json::Value::Array(vals)
+    }
+
+    fn result_limit_error(&self, limit: i32) -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(MentatError::ResultLimitExceeded {
+            limit,
+            message: format!(
+                "Raise it for this transaction with SET LOCAL mentat.max_result_rows = {} \
+                 (0 = unlimited), add :limit to the query or a \"limit\" input, or stream \
+                 the rows with edn_q_rows",
+                suggest_limit(limit)
+            ),
+        })
+    }
+}
+
+/// The next power of ten above `limit` (a round number to suggest).
+fn suggest_limit(limit: i32) -> i64 {
+    let mut n: i64 = 10;
+    while n <= i64::from(limit) {
+        n *= 10;
+    }
+    n
+}
+
+fn spi_exec_error(e: pgrx::spi::SpiError) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(MentatError::InvalidQuery {
+        message: format!("SPI execution error: {}", e),
+        suggestion: None,
+    })
+}
+
+/// Run `f` (which executes generated SQL) and, if PostgreSQL aborts it for
+/// exceeding temp_file_limit -- which edn_q sets from mentat.temp_file_limit
+/// -- re-raise the error naming the mentat GUC and a value to try. Any other
+/// error propagates unchanged.
+fn with_limit_hints<R>(f: impl FnOnce() -> R + std::panic::UnwindSafe) -> R {
+    use pgrx::pg_sys::panic::{CaughtError, ErrorReport};
+    use pgrx::PgSqlErrorCode;
+    let mut f = Some(f);
+    PgTryBuilder::new(std::panic::AssertUnwindSafe(|| (f.take().expect("once"))()))
+        .catch_when(PgSqlErrorCode::ERRCODE_CONFIGURATION_LIMIT_EXCEEDED, |e| {
+            let current = crate::planner::temp_file_limit();
+            let msg = match &e {
+                CaughtError::PostgresError(r) | CaughtError::ErrorReport(r) => {
+                    r.message().to_string()
+                }
+                CaughtError::RustPanic { ereport, .. } => ereport.message().to_string(),
+            };
+            if !msg.contains("temp_file_limit") {
+                e.rethrow();
+            }
+            ErrorReport::new(
+                PgSqlErrorCode::ERRCODE_CONFIGURATION_LIMIT_EXCEEDED,
+                format!(
+                    ":db.error/temp-file-limit-exceeded {msg} (edn_q applies \
+                     temp_file_limit from mentat.temp_file_limit = {current})"
+                ),
+                "mentat",
+            )
+            .set_hint(format!(
+                "As a superuser: SET LOCAL mentat.temp_file_limit = '{}' (or '-1' for no \
+                 limit), or narrow the query (more specific :where clauses, :limit) so it \
+                 sorts/hashes less. Large results: stream them with edn_q_rows.",
+                suggest_size(&current)
+            ))
+            .report(pgrx::PgLogLevel::ERROR);
+            unreachable!("ERROR does not return")
+        })
+        .execute()
+}
+
+/// Four times a memory-size GUC value like "1GB" / "512MB" (or "4GB").
+fn suggest_size(current: &str) -> String {
+    let digits: String = current.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let unit = &current[digits.len()..];
+    match digits.parse::<i64>() {
+        Ok(n) if n > 0 => format!("{}{}", n * 4, unit.trim()),
+        _ => "4GB".to_string(),
+    }
+}
+
+/// Internal implementation of the Datalog query executor, parameterized by schema prefix.
+///
+/// All public query entry points delegate to this function.
+pub(crate) fn mentat_query_internal(
+    query: &str,
+    inputs: JsonB,
+    schema_prefix: &str,
+) -> Result<JsonB, Box<dyn std::error::Error + Send + Sync>> {
+    let mut timer = crate::monitoring::QueryTimer::start(query);
+    let pq = prepare_query(query, &inputs.0, schema_prefix)?;
+    // Record the generated SQL for monitoring (slow query logging)
+    timer.set_sql(&pq.sql);
+
     // Read-only SPI connection: the Datalog query path only reads mentat.datoms
     // and issues SET LOCAL hints, neither of which mutates data. Using
     // `Spi::connect` (not `connect_mut`) keeps the transaction immutable so no
     // XID is assigned -- required to run on a hot-standby in recovery.
-    let results = Spi::connect(|client| {
-        // Apply optimizer hints and resource limits (SET LOCAL) before
-        // executing the query. These are transaction-local and revert
-        // automatically.
-        apply_optimizer_hints(client, &complexity);
+    let results = with_limit_hints(|| {
+        Spi::connect(|client| {
+            // Apply optimizer hints and resource limits (SET LOCAL) before
+            // executing the query. These are transaction-local and revert
+            // automatically.
+            apply_optimizer_hints(client, &pq.complexity);
 
-        // Pull columns return a JSON object as text; parse those as JSON so
-        // they nest as real objects in the result rather than as a string.
-        let pull_cols: Vec<bool> = (0..find_vars.len())
-            .map(|i| {
-                matches!(
-                    get_find_element(&parsed_query.find_spec, i),
-                    Some(Element::Pull(_))
-                )
-            })
-            .collect();
-
-        let mut rows_json = Vec::new();
-        let row_limit = if !has_explicit_limit && max_rows > 0 {
-            max_rows as usize
-        } else {
-            usize::MAX
-        };
-
-        for row in execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
-            Box::new(crate::error::MentatError::InvalidQuery {
-                message: format!("SPI execution error: {}", e),
-                suggestion: None,
-            }) as Box<dyn std::error::Error + Send + Sync>
-        })? {
-            if rows_json.len() >= row_limit {
-                return Err(Box::new(crate::error::MentatError::ResultLimitExceeded {
-                    limit: max_rows,
-                    message: format!(
-                        "Query returned more than {} rows. \
-                         Use :limit in your query, add more specific :where clauses, \
-                         or increase mentat.max_result_rows",
-                        max_rows
-                    ),
-                })
-                    as Box<dyn std::error::Error + Send + Sync>);
-            }
-
-            let mut row_values = Vec::new();
-
-            for (idx, _var) in find_vars.iter().enumerate() {
-                let col_idx = (idx + 1) as usize;
-
-                if let Ok(Some(val)) = row.get::<String>(col_idx) {
-                    if pull_cols.get(idx).copied().unwrap_or(false) {
-                        // Parse pull JSON text into a nested object/array.
-                        match serde_json::from_str::<serde_json::Value>(&val) {
-                            Ok(v) => row_values.push(v),
-                            Err(_) => row_values.push(json!(val)),
-                        }
-                    } else {
-                        row_values.push(decode_text_result(&val));
-                    }
-                } else {
-                    row_values.push(json!(null));
+            let mut rows_json = Vec::new();
+            let row_limit = pq.max_rows.map_or(usize::MAX, |m| m as usize);
+            for row in execute_cached_query(client, &pq.sql, &pq.params, &pq.complexity)
+                .map_err(spi_exec_error)?
+            {
+                if rows_json.len() >= row_limit {
+                    return Err(pq.result_limit_error(pq.max_rows.unwrap_or(0)));
                 }
+                rows_json.push(pq.decode_row(&row));
             }
-
-            rows_json.push(json!(row_values));
-        }
-
-        Ok(rows_json)
+            Ok(rows_json)
+        })
     })?;
 
-    let response =
-        format_find_response(&parsed_query.find_spec, &find_vars, results, has_aggregates);
+    let response = format_find_response(
+        &pq.parsed.find_spec,
+        &pq.find_vars,
+        results,
+        pq.has_aggregates,
+    );
 
     let _elapsed_ms = timer.finish();
 
     Ok(JsonB(response))
+}
+
+/// Execute a Datalog query and stream the result rows: one JSON array per
+/// row, in :find order, fetched from a cursor in batches of 1000 so the
+/// result is never materialized as one value (edn_q builds a single JSONB,
+/// which PostgreSQL caps at 1 GB).
+///
+/// Honours mentat.max_result_rows exactly like edn_q (a query that would
+/// return more rows fails rather than silently truncating), so the two
+/// never disagree; set it to 0 to stream an unbounded result. The inputs
+/// (:in bindings, asOf / since / history, limit / offset) are edn_q's.
+///
+/// ```sql
+/// SELECT r->>0 AS name FROM edn_q_rows('[:find ?n :where [_ :person/name ?n]]') r;
+/// ```
+#[pg_extern(name = "edn_q_rows")]
+pub fn mentat_query_rows(
+    query: &str,
+    inputs: default!(JsonB, "'{}'"),
+) -> Result<SetOfIterator<'static, JsonB>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut timer = crate::monitoring::QueryTimer::start(query);
+    let pq = prepare_query(query, &inputs.0, "mentat.")?;
+    timer.set_sql(&pq.sql);
+
+    // ponytail: the SPI connection lives for one call, so batches are
+    // fetched eagerly here and handed to the SRF as a Vec per batch; true
+    // row-at-a-time streaming across calls needs a detached cursor.
+    let rows = with_limit_hints(|| {
+        Spi::connect(|client| {
+            apply_optimizer_hints(client, &pq.complexity);
+            let mut cursor = client
+                .try_open_cursor(pq.sql.as_str(), &pq.params)
+                .map_err(spi_exec_error)?;
+            let mut out: Vec<JsonB> = Vec::new();
+            loop {
+                let batch = cursor.fetch(1000).map_err(spi_exec_error)?;
+                if batch.is_empty() {
+                    break;
+                }
+                for row in batch {
+                    if pq.max_rows.is_some_and(|m| out.len() >= m as usize) {
+                        return Err(pq.result_limit_error(pq.max_rows.unwrap_or(0)));
+                    }
+                    out.push(JsonB(pq.decode_row(&row)));
+                }
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(out)
+        })
+    })?;
+    let _elapsed_ms = timer.finish();
+    Ok(SetOfIterator::new(rows))
 }
 
 /// Execute a Datalog query and return results as JSON (default store)

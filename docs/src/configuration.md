@@ -50,6 +50,17 @@ SET mentat.query_timeout_ms = 60000;  -- 60 seconds
 
 Maximum number of result rows returned by a single query. Prevents cartesian explosions from consuming all available memory. Set to 0 for unlimited (not recommended in production).
 
+It applies to `edn_q` and `edn_q_rows` alike, only when the query has no
+explicit `:limit` / `"limit"` input. A query that would return more rows
+fails -- it is never silently truncated -- with an error naming the
+setting and a value to try:
+
+```
+ERROR:  :db.error/result-limit-exceeded Query returned more than mentat.max_result_rows = 100000 rows.
+        Raise it for this transaction with SET LOCAL mentat.max_result_rows = 1000000 (0 = unlimited),
+        add :limit to the query or a "limit" input, or stream the rows with edn_q_rows.
+```
+
 ```sql
 SET mentat.max_result_rows = 50000;
 ```
@@ -78,6 +89,17 @@ SET mentat.max_recursion_depth = 50;
 | Context | userset |
 
 Maximum disk space for intermediate results during query execution (sorts, hash joins, materialization). Applied via `SET LOCAL temp_file_limit`. Prevents disk exhaustion from large queries.
+
+`temp_file_limit` is a superuser parameter, so it is applied only when the
+caller may set it (a non-superuser's queries run under the server's own
+`temp_file_limit`). When a query exceeds it, the error names this setting
+and suggests a value (4x the current one):
+
+```
+ERROR:  :db.error/temp-file-limit-exceeded temporary file size exceeds temp_file_limit (1048576kB)
+        (edn_q applies temp_file_limit from mentat.temp_file_limit = 1GB)
+HINT:   As a superuser: SET LOCAL mentat.temp_file_limit = '4GB' (or '-1' for no limit), ...
+```
 
 ```sql
 SET mentat.temp_file_limit = '2GB';

@@ -211,3 +211,9 @@ CREATE FUNCTION "mentat_tune_indexes"("dry_run" bool DEFAULT true)
 RETURNS TABLE ("action" TEXT, "index_name" TEXT, "table_name" TEXT, "reason" TEXT)
 STRICT LANGUAGE c
 AS 'MODULE_PATHNAME', 'mentat_tune_indexes_wrapper';
+
+-- 3. edn_q_rows: stream a query's result rows (one JSON array per row).
+CREATE FUNCTION "edn_q_rows"("query" TEXT, "inputs" jsonb DEFAULT '{}')
+RETURNS SETOF jsonb
+STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', 'mentat_query_rows_wrapper';
