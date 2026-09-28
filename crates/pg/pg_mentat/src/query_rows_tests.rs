@@ -136,4 +136,40 @@ mod tests {
             "{err}"
         );
     }
+
+    /// Collection :in bindings bind one array parameter (`= ANY($n)`), so
+    /// the statement is the same for any collection size; every value type
+    /// still matches.
+    #[pg_test]
+    fn test_collection_input_binds_one_array() {
+        setup();
+        let q = |query: &str, inputs: &str| -> i64 {
+            Spi::get_one::<i64>(&format!(
+                "SELECT count(*) FROM edn_q_rows('{query}', '{inputs}')"
+            ))
+            .expect("q")
+            .unwrap_or(-1)
+        };
+        let long = "[:find ?e :in $ [?n ...] :where [?e :qr/n ?n]]";
+        assert_eq!(q(long, r#"{"inputs": [[1, 2, 3, 99999]]}"#), 3);
+        assert_eq!(q(long, r#"{"inputs": [[]]}"#), 0);
+        let text = "[:find ?e :in $ [?s ...] :where [?e :qr/s ?s]]";
+        assert_eq!(q(text, r#"{"inputs": [["s1", "s2", "nope"]]}"#), 2);
+        let e = Spi::get_one::<i64>(
+            "SELECT e FROM mentat.current_long WHERE v = 7 AND a = \
+             (SELECT entid FROM mentat.idents WHERE ident = ':qr/n')",
+        )
+        .expect("e")
+        .expect("NULL");
+        let ent = "[:find ?n :in $ [?e ...] :where [?e :qr/n ?n]]";
+        assert_eq!(q(ent, &format!(r#"{{"inputs": [[{e}, 1]]}}"#)), 1);
+        // Keywords (stored without the ':').
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :qr/k :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                            {:qr/k :k/a} {:qr/k :k/b} {:qr/k :k/c}]'::TEXT)",
+        )
+        .expect("kw");
+        let kw = "[:find ?e :in $ [?k ...] :where [?e :qr/k ?k]]";
+        assert_eq!(q(kw, r#"{"inputs": [[":k/a", ":k/c"]]}"#), 2);
+    }
 }

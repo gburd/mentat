@@ -444,7 +444,9 @@ CREATE INDEX mentat_auto_datoms_<type>_new_a<entid>
 
 Why only this: current-time queries read the projection, whose AVET
 index `(store_id, a, v, e)` already turns a range on one attribute into
-an index range scan (measured flat from 1M to 10M datoms). The history
+an index range scan (a 1% range of a 1.3M-value attribute at 10M
+datoms: 1.5 ms; a per-attribute partial index measured 1.1 ms -- not worth
+an index per attribute). The history
 tables' VAET index leads with `v`, not `a`, so a temporal range query on
 one attribute otherwise scans all of that attribute's values through
 AEVT with a `Filter` (4.9 ms vs 23.6 ms for a 25% range of 200k values).

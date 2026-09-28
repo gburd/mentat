@@ -187,6 +187,12 @@ impl<'a> SqlBuilder<'a> {
         self.params.push(DatumWithOid::from(value));
         format!("${}", self.params.len())
     }
+
+    /// Add an array parameter (for `= ANY($N)`) and return its placeholder.
+    fn bind_any<T: pgrx::datum::IntoDatum>(&mut self, values: Vec<T>) -> String {
+        self.params.push(DatumWithOid::from(values));
+        format!("${}", self.params.len())
+    }
 }
 
 // ============================================================================
@@ -5346,7 +5352,7 @@ fn remap_param_indices(sql: &str, offset: usize) -> String {
 
 /// Build an IN clause for a collection binding `[?x ...]`.
 ///
-/// Generates: `alias.v_long IN ($1, $2, $3)` (or appropriate typed column).
+/// Generates: `alias.v_long = ANY($1)` (or the appropriate typed column).
 fn build_collection_in_clause(
     alias: &str,
     col: &str,
@@ -5357,69 +5363,55 @@ fn build_collection_in_clause(
     if values.is_empty() {
         return Some("FALSE".to_string()); // Empty collection matches nothing
     }
-
+    // One array parameter (`= ANY($n)`), not one parameter per value: the
+    // statement text and parameter count stay the same for any collection
+    // size, so edn_q's cached plan settles on a generic plan instead of
+    // replanning a 100-parameter IN list on every call.
+    let ints = || -> Option<Vec<i64>> {
+        let v: Vec<i64> = values.iter().filter_map(|v| v.as_i64()).collect();
+        (!v.is_empty()).then_some(v)
+    };
     match col {
         "v" => {
             // Determine the type from the first value and build typed IN clause
             let first = &values[0];
             if first.is_i64() || first.is_u64() {
-                let params: Vec<String> = values
-                    .iter()
-                    .filter_map(|v| v.as_i64().map(|i| builder.bind_bigint(i)))
-                    .collect();
-                if params.is_empty() {
-                    return None;
-                }
-                Some(format!("{alias}.v_long IN ({})", params.join(", ")))
+                let p = builder.bind_any(ints()?);
+                Some(format!("{alias}.v_long = ANY({p})"))
             } else if first.is_f64() {
-                let params: Vec<String> = values
-                    .iter()
-                    .filter_map(|v| v.as_f64().map(|f| builder.bind_double(f)))
-                    .collect();
-                if params.is_empty() {
+                let v: Vec<f64> = values.iter().filter_map(|v| v.as_f64()).collect();
+                if v.is_empty() {
                     return None;
                 }
-                Some(format!("{alias}.v_double IN ({})", params.join(", ")))
-            } else if first.is_string() {
-                // Determine if keywords or strings
-                let first_str = first.as_str().unwrap_or("");
-                if first_str.starts_with(':') {
-                    let params: Vec<String> = values
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| {
-                            let stripped = s.strip_prefix(':').unwrap_or(s);
-                            builder.bind_text(stripped.to_string())
-                        })
-                        .collect();
-                    if params.is_empty() {
-                        return None;
-                    }
-                    Some(format!("{alias}.v_keyword IN ({})", params.join(", ")))
-                } else {
-                    let params: Vec<String> = values
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| builder.bind_text(s.to_string()))
-                        .collect();
-                    if params.is_empty() {
-                        return None;
-                    }
-                    Some(format!("{alias}.v_text IN ({})", params.join(", ")))
+                let p = builder.bind_any(v);
+                Some(format!("{alias}.v_double = ANY({p})"))
+            } else if let Some(first_str) = first.as_str() {
+                // Keywords are stored without the leading ':'.
+                let keyword = first_str.starts_with(':');
+                let v: Vec<String> = values
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| {
+                        if keyword {
+                            s.strip_prefix(':').unwrap_or(s).to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .collect();
+                if v.is_empty() {
+                    return None;
                 }
+                let p = builder.bind_any(v);
+                let c = if keyword { "v_keyword" } else { "v_text" };
+                Some(format!("{alias}.{c} = ANY({p})"))
             } else {
                 None
             }
         }
         "e" | "tx" => {
-            let params: Vec<String> = values
-                .iter()
-                .filter_map(|v| v.as_i64().map(|i| builder.bind_bigint(i)))
-                .collect();
-            if params.is_empty() {
-                return None;
-            }
-            Some(format!("{alias}.{col} IN ({})", params.join(", ")))
+            let p = builder.bind_any(ints()?);
+            Some(format!("{alias}.{col} = ANY({p})"))
         }
         _ => None,
     }
@@ -5988,7 +5980,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 // Already handled above via the scalar HashMap path
             }
             InputBinding::Collection { var, values } => {
-                // Generate IN clause: alias.v_long IN ($1, $2, $3) etc.
+                // alias.v_long = ANY($n) etc.
                 if let Some((alias, col)) = var_to_alias.get(var.as_str()) {
                     let in_clause =
                         build_collection_in_clause(alias, col, values, builder, schema_prefix);
