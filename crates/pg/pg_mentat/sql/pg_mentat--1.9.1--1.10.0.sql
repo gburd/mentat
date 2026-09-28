@@ -1,4 +1,4 @@
--- pg_mentat 1.9.0 -> 1.10.0 upgrade.
+-- pg_mentat 1.9.1 -> 1.10.0 upgrade (1.9.0 installs chain through 1.9.1).
 --
 -- 1. AVET indexes on the non-ref current_<type> projection tables (see
 --    sql/24_current_projection.sql). Plain CREATE INDEX: ALTER EXTENSION
@@ -233,3 +233,38 @@ CREATE FUNCTION "edn_q_rows"("query" TEXT, "inputs" jsonb DEFAULT '{}')
 RETURNS SETOF jsonb
 STRICT LANGUAGE c
 AS 'MODULE_PATHNAME', 'mentat_query_rows_wrapper';
+
+-- Register the tables this release adds (managed_indexes, index_evidence)
+-- for pg_dump, as 1.9.1 did for the rest. Re-registering a table only
+-- replaces its filter. Keep in sync with sql/27_dump_config.sql.
+DO $dump$
+DECLARE
+    seed_filter CONSTANT jsonb := jsonb_build_object(
+        'stores',           $f$WHERE store_name <> 'default'$f$,
+        'idents',           'WHERE entid >= 100',
+        'schema',           'WHERE entid >= 100',
+        'partitions',       $f$WHERE name NOT IN ('db.part/db', 'db.part/user', 'db.part/tx')$f$,
+        'transactions',     'WHERE tx <> 1000000',
+        'cache_generation', $f$WHERE store_name <> 'default'$f$
+    );
+    r record;
+BEGIN
+    FOR r IN
+        SELECT c.oid, c.relname, c.relkind
+          FROM pg_depend d
+          JOIN pg_class c ON c.oid = d.objid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE d.classid = 'pg_class'::regclass
+           AND d.refclassid = 'pg_extension'::regclass
+           AND d.refobjid = (SELECT oid FROM pg_extension WHERE extname = 'pg_mentat')
+           AND d.deptype = 'e'
+           AND n.nspname = 'mentat'
+           AND c.relkind IN ('r', 'S')
+           AND NOT c.relispartition
+    LOOP
+        PERFORM pg_catalog.pg_extension_config_dump(
+            r.oid::regclass,
+            COALESCE(seed_filter ->> r.relname, ''));
+    END LOOP;
+END
+$dump$;

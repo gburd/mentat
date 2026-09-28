@@ -1215,6 +1215,13 @@ extension_sql_file!(
     ],
 );
 
+// Register every mentat table and sequence with pg_extension_config_dump so
+// pg_dump includes their DATA (extension members are otherwise schema-only in
+// a dump, so a logical backup restored empty stores). Runs last: it registers
+// whatever member tables exist once every other install script has run.
+// See sql/27_dump_config.sql.
+extension_sql_file!("../sql/27_dump_config.sql", name = "dump_config", finalize,);
+
 #[cfg(test)]
 pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {
