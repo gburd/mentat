@@ -8,6 +8,122 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.0] — automatic indexes, faster count, stable at scale
+
+The fixes for everything the 1.9.0 scale benchmark found
+(`benchmarks/results/scale-2026-09-27T010840Z/`), with before/after runs in
+`benchmarks/results/{pg-autoindex,embedded-fixes,ext-cache,duckdb-quack}-*`.
+
+### Added
+
+- **Automatic index management** on both engines. Mentat creates value indexes
+  where queries need them and drops the ones it created once they go unused.
+  - PostgreSQL: every `current_*` table gets an AVET index `(store_id, a, v, e)`.
+    `mentat.auto_index` = `off` | `schema` (default) | `adaptive`; in `adaptive`
+    mode, range-filtered history attributes get partial indexes, tracked in
+    `mentat.managed_indexes` and dropped after `mentat.auto_index_idle_window`
+    (7 days) without scans. `mentat_tune_indexes(dry_run)` reports or applies
+    the changes. Tuning never blocks a transaction (`lock_timeout`, skip and log).
+  - Embedded: `:db/unique` attributes and `:db/index` refs get a usable value
+    index in the default mode (the schema's old partial AVET indexes never matched
+    mentat's SQL). `AutoIndex::Adaptive` adds per-attribute indexes after repeated
+    value-filtered queries, rejects unselective ones, and drops idle ones.
+    `Store::tune_indexes`, `Store::set_auto_index`, `MENTAT_AUTO_INDEX`. Only
+    indexes in the `mentat_managed_indexes` registry are ever dropped.
+- **`edn_q_rows(query, inputs)`** (PostgreSQL): streams one JSONB array per row,
+  for results too large for `edn_q`'s single JSONB value.
+- **DuckDB as a server**: `crates/duckdb/server/serve.sh` runs mentat inside a
+  long-lived DuckDB Quack server (`quack_serve`, token auth, localhost by
+  default), so clients without mentat send `edn_q`/`edn_t` over `quack_query`.
+  Measured: each call costs about 2.2 ms over in-process DuckDB (Quack opens three
+  TCP connections per call), so in-process with the store cache is always faster;
+  Quack's hard-coded listen backlog of 5 causes 1-5 s stalls from about 32
+  clients. See the DuckDB README.
+- **CLI**: `.q` takes the same options JSON as SQL `edn_q` (`inputs`, `asOf`,
+  `since`), plus `.pull`, `.eval` (`--features mino`), `.tune` / `.tune!`, and
+  a batch mode (`-e`, `--file`, piped stdin).
+- **Scripting**: `(mentat.store/q db query arg1 …)` binds `:in` inputs, and the
+  shared Datomic model suite now covers inputs, history patterns, `cas` and
+  `retractEntity` on every backend.
+- `mentat::options_from_json`: one parser for the options JSON, shared by the
+  CLI and both extensions. `Store::q_explain_temporal`.
+
+### Changed
+
+- **Aggregates follow Datalog set semantics on PostgreSQL** (as Datomic and the
+  embedded backend already did): `sum`, `avg` and `count` of a value variable
+  aggregate the *set* of bindings. `(sum ?heads)` over heads 1, 1, 1, 3 is now 4
+  (was 6); add `:with ?e` for the old result. `:with` is now honoured (it was
+  ignored), `count-distinct` works (it was rejected), and `sum`/`avg` over doubles
+  work.
+- The embedded store's schema is version 3. Older stores upgrade once on open
+  (about 20 s for 10M datoms): a covering history index, persisted partition
+  high-water marks, and the value indexes above.
+- Embedded SQLite connections use file-backed temp storage (`temp_store=1`,
+  was 2): in-memory sorting made repeated large `GROUP BY`s on one connection
+  slower every time. `MENTAT_TEMP_STORE=2` restores it (e.g. for Android).
+- Builds in this repo compile the bundled SQLite without
+  `SQLITE_ENABLE_MEMORY_MANAGEMENT` (`.cargo/config.toml`), which put every
+  connection behind one global page-cache lock. Every connection also sets
+  `mmap_size` (`MENTAT_MMAP_SIZE`, default 1 GiB), which helps downstream builds
+  that don't use this repo's config.
+- The `mentat.max_result_rows` and `mentat.temp_file_limit` errors now name the
+  setting and suggest a value.
+
+### Fixed
+
+- **Embedded:** a transaction of 5,461 or more datoms panicked; an interrupted
+  query panicked and left the Store's lock poisoned; as-of queries took over 20 s
+  (no history index); `Store::open` scanned the whole transaction log (16 s at 10M
+  datoms, now 50 ms); concurrent readers ran slower than one.
+- **PostgreSQL:** `get-else` always returned the default, `missing?` matched
+  everything, and the attribute pushdown never fired, because attribute idents
+  were looked up as `::ns/attr`.
+- **PostgreSQL:** a 5-place `[?e ?a ?v ?tx ?added]` pattern now reads the
+  transaction log (it saw only current state unless the caller also passed
+  `{"history": true}`); an integer `:in` input for a ref attribute's value now
+  matches the entity (it was compared as a long and matched nothing); and a
+  declared `:in` binding with no input value is an error instead of being
+  silently ignored. `mentatd`'s `:q` path had been dropping query args because
+  of that last one.
+- **Embedded:** under constant readers the SQLite WAL grew without bound (442 MB
+  after 120 s of 32 readers + 1 writer; reads slowed 20x on a 1.37 GB WAL). After
+  a commit, a writer now restarts a WAL past `MENTAT_WAL_RESTART_BYTES` (default
+  64 MiB).
+- **SQLite and DuckDB extensions:** every call reopened the store, so bulk loads
+  were quadratic and a point lookup took 466 ms at 1M datoms (5 s at 10M). Each
+  thread now caches its open stores per path and reopens one when another
+  connection has committed: 0.63 ms at 1M datoms, 1.1 ms at 10M.
+
+### Performance (p50, v1.9.0 → 1.10.0, c7i.8xlarge)
+
+| | s (1M datoms) | m (10M datoms) |
+|---|---|---|
+| PG point lookup | 0.43 → 0.19 ms | 1.65 → 0.19 ms |
+| PG count by state (q3) | 112 → 9.2 ms | 1428 → 58 ms |
+| PG read mix, 32 clients | 27.6K → 32.6K ops/s | 12.5K → 30.7K ops/s |
+| Embedded point lookup | 0.070 → 0.019 ms | 0.515 → 0.019 ms |
+| Embedded count (q3) | 102 → 31 ms | 1352 → 372 ms |
+| Embedded as-of | 20.8 s → 88 ms | >20 s → 1.04 s |
+| Embedded read mix, 32 clients | 6.8 → 2,095 ops/s | timed out → 157 ops/s |
+
+Costs: the embedded store is about 28% larger and bulk loads about 27% slower,
+from the new history and value indexes.
+
+### Known gaps
+
+- `:db/retractEntity` doesn't retract references to the entity (Datomic does),
+  and `cas`/`retractEntity` don't take lookup refs, on either backend.
+- The embedded scripting `q` still refuses an as-of/since db.
+- PostgreSQL `mentat_explain` / `mentat_query_sql` ignore collection `:in`
+  inputs, and a 5-place history pattern inside `not` or a rule body still reads
+  current state.
+- `edn_q_rows` builds the whole result within one call (it avoids the single
+  JSONB value limit, but isn't row-at-a-time streaming).
+- Quack's listen backlog (5) limits the DuckDB server under bursts; the SQLite
+  and DuckDB extensions cache one store per thread, so a Quack server can hold up
+  to ~128 connections per store.
+
 ## [1.9.0] — one SQL surface (`edn_*`) on SQLite, PostgreSQL and DuckDB
 
 ### Changed — renamed functions

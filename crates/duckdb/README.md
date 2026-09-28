@@ -268,10 +268,26 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
   mentat is not a signed community extension yet. That flag lets *the server*
   load any unsigned extension file, including one a token holder asks it to
   `LOAD`; treat that as part of "the token grants everything".
-- **Listen backlog** is 5 (`ss -ltn`); bursts of new connections beyond that
-  may be refused and retried by the client.
+- **Listen backlog** is 5 (`ss -ltn`), hard-coded in Quack, and `somaxconn`
+  can't raise it. From about 32 concurrent clients, or a single query returning
+  100k+ rows (the client fetches large results over 30+ parallel connections),
+  the queue overflows and clients retry after 1, 2 then 4 s: 1-5 s stalls. With
+  the backlog raised to 4096 (an `LD_PRELOAD` shim around `listen()`, measured in
+  `benchmarks/results/duckdb-quack-*`), throughput at 32 clients went up 22% and
+  worst-case latency fell from 3-4.6 s to under 0.5 s. The real fix is upstream.
 
 ### Caveats
+
+- **Per-call cost.** Each `quack_query` opens three new TCP connections (no
+  keep-alive), about 2.2 ms per call on localhost, plus ~35-110 ns per result row.
+  In-process DuckDB with the store cache is always faster; the server's value is
+  that clients don't need mentat loaded and can join results with their own tables.
+- **`ATTACH 'quack:...'`** exposes the server's tables, but not its table
+  functions: `r.edn_q(...)` fails with "Table Function with name edn_q does not
+  exist". Use `quack_query`.
+- **One cached store per server thread.** The store cache is per thread, so a
+  server can hold one connection per HTTP worker (up to ~128) per store, and each
+  write makes all of them reopen.
 
 Quack is pre-2.0 at DuckDB v1.5.5 (`quack` build `c154811`): its wire protocol
 and function signatures may change in any DuckDB release, and the mentat

@@ -321,6 +321,35 @@ datoms) is in
 [`benchmarks/results/scale-2026-09-27T010840Z/`](benchmarks/results/scale-2026-09-27T010840Z/findings.md).
 See [`benchmarks/scale/README.md`](benchmarks/scale/README.md) to run it.
 
+The 1.10.0 before/after runs for each fix are in
+`benchmarks/results/{pg-autoindex,embedded-fixes,ext-cache,duckdb-quack}-*`.
+
+---
+
+## Indexes: automatic
+
+Mentat manages value indexes itself, on both engines. Out of the box (mode
+`schema`), every value is indexed for lookup on PostgreSQL (an AVET index per
+current-state table), and on the embedded store every `:db/unique` attribute
+and `:db/index` ref gets a value index, created when you declare the attribute
+and dropped when you remove the flag. In `adaptive` mode mentat also watches the
+queries you run: an attribute that is repeatedly filtered by value (embedded) or
+by a range over history (PostgreSQL) gets its own partial index, and an index
+mentat created that goes unused for a while is dropped again. Mentat only ever
+drops indexes it created and recorded in its registry, never ones you made.
+
+| | Embedded (Rust / CLI) | PostgreSQL |
+|---|---|---|
+| Choose the mode | `Store::set_auto_index(AutoIndex::Adaptive)`, `MENTAT_AUTO_INDEX=adaptive`, or `.tune adaptive` in the CLI | `SET mentat.auto_index = 'adaptive'` (superuser) |
+| See what it would do | `Store::tune_indexes(true)`, `.tune` | `SELECT * FROM mentat_tune_indexes()` (dry run) |
+| Apply now | `Store::tune_indexes(false)`, `.tune!` | `SELECT * FROM mentat_tune_indexes(false)` |
+| Registry | `mentat_managed_indexes` table | `mentat.managed_indexes` |
+
+Tuning also runs on its own every so often (after a number of queries on the
+embedded store, or of transactions on PostgreSQL). On PostgreSQL it gives up
+rather than wait for a lock. See `docs/src/configuration.md` for the thresholds
+and idle windows.
+
 ---
 
 ## Scripting: mino
