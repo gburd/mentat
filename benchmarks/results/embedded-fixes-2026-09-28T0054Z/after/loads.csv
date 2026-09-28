@@ -1,0 +1,3 @@
+backend,scale,n_datoms,load_s,datoms_per_s,analyze_s,vacuum_s,store_bytes,ceiling,note
+embedded,s,984803,86.6,11373,,,212922368,0,
+embedded,m,9850258,2041.3,4825,,,2147377152,0,

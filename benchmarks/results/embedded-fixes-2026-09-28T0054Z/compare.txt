@@ -1,0 +1,118 @@
+key                                                                    metric                    old         new    delta
+aggregate/embedded/m/1/read                                            p50_ms               1351.921     371.578   -72.5%  improved
+aggregate/embedded/m/1/read                                            p99_ms               1373.187     373.500   -72.8%  improved
+aggregate/embedded/m/1/read                                            throughput_ops_s        0.750       2.690  +258.7%  improved
+aggregate/embedded/s/1/read                                            p50_ms                101.769      31.214   -69.3%  improved
+aggregate/embedded/s/1/read                                            p99_ms                104.314      31.763   -69.6%  improved
+aggregate/embedded/s/1/read                                            throughput_ops_s        9.820      32.010  +226.0%  improved
+as_of/embedded/m/1/ceiling                                             MISSING          
+as_of/embedded/s/1/read                                                p50_ms              20769.420      88.058   -99.6%  improved
+as_of/embedded/s/1/read                                                p99_ms              23047.020      89.195   -99.6%  improved
+as_of/embedded/s/1/read                                                throughput_ops_s        0.050      11.360 +22620.0%  improved
+cold_vs_warm/embedded/m/1/cold_aggregate                               p50_ms               3831.194    4984.030   +30.1%  REGRESSION
+cold_vs_warm/embedded/m/1/cold_aggregate                               p99_ms               3831.194    4984.030   +30.1%  REGRESSION
+cold_vs_warm/embedded/m/1/cold_aggregate                               throughput_ops_s        0.260       0.200   -23.1%  REGRESSION
+cold_vs_warm/embedded/m/1/cold_point_lookup                            p50_ms                 59.671      12.646   -78.8%  improved
+cold_vs_warm/embedded/m/1/cold_point_lookup                            p99_ms                 59.671      12.646   -78.8%  improved
+cold_vs_warm/embedded/m/1/cold_point_lookup                            throughput_ops_s       16.760      79.070  +371.8%  improved
+cold_vs_warm/embedded/m/1/cold_pull                                    p50_ms                  5.785       1.421   -75.4%  improved
+cold_vs_warm/embedded/m/1/cold_pull                                    p99_ms                  5.785       1.421   -75.4%  improved
+cold_vs_warm/embedded/m/1/cold_pull                                    throughput_ops_s      172.870     703.820  +307.1%  improved
+cold_vs_warm/embedded/m/1/cold_ref_traversal                           p50_ms               6756.629    4940.682   -26.9%  improved
+cold_vs_warm/embedded/m/1/cold_ref_traversal                           p99_ms               6756.629    4940.682   -26.9%  improved
+cold_vs_warm/embedded/m/1/cold_ref_traversal                           throughput_ops_s        0.150       0.200   +33.3%  improved
+cold_vs_warm/embedded/m/1/open                                         p50_ms              16498.944      50.201   -99.7%  improved
+cold_vs_warm/embedded/m/1/open                                         p99_ms              16498.944      50.201   -99.7%  improved
+cold_vs_warm/embedded/m/1/open                                         throughput_ops_s        0.060      19.920 +33100.0%  improved
+cold_vs_warm/embedded/m/1/warm_aggregate                               p50_ms               1332.867     374.378   -71.9%  improved
+cold_vs_warm/embedded/m/1/warm_aggregate                               p99_ms               1369.577     375.533   -72.6%  improved
+cold_vs_warm/embedded/m/1/warm_aggregate                               throughput_ops_s        0.760       2.670  +251.3%  improved
+cold_vs_warm/embedded/m/1/warm_point_lookup                            p50_ms                  1.431       1.080   -24.5%  improved
+cold_vs_warm/embedded/m/1/warm_point_lookup                            p99_ms                  1.647       2.592   +57.4%  REGRESSION
+cold_vs_warm/embedded/m/1/warm_point_lookup                            throughput_ops_s      790.310     928.470   +17.5%  improved
+cold_vs_warm/embedded/m/1/warm_pull                                    p50_ms                  4.189       5.078   +21.2%  REGRESSION
+cold_vs_warm/embedded/m/1/warm_pull                                    p99_ms                  6.615       8.643   +30.7%  REGRESSION
+cold_vs_warm/embedded/m/1/warm_pull                                    throughput_ops_s      230.660     185.970   -19.4%  REGRESSION
+cold_vs_warm/embedded/m/1/warm_ref_traversal                           p50_ms                576.792     392.530   -31.9%  improved
+cold_vs_warm/embedded/m/1/warm_ref_traversal                           p99_ms                608.399     520.620   -14.4%  improved
+cold_vs_warm/embedded/m/1/warm_ref_traversal                           throughput_ops_s        1.730       2.490   +43.9%  improved
+cold_vs_warm/embedded/s/1/cold_aggregate                               p50_ms                123.480      41.181   -66.6%  improved
+cold_vs_warm/embedded/s/1/cold_aggregate                               p99_ms                123.480      41.181   -66.6%  improved
+cold_vs_warm/embedded/s/1/cold_aggregate                               throughput_ops_s        8.100      24.280  +199.8%  improved
+cold_vs_warm/embedded/s/1/cold_point_lookup                            p50_ms                 24.041       8.894   -63.0%  improved
+cold_vs_warm/embedded/s/1/cold_point_lookup                            p99_ms                 24.041       8.894   -63.0%  improved
+cold_vs_warm/embedded/s/1/cold_point_lookup                            throughput_ops_s       41.590     112.430  +170.3%  improved
+cold_vs_warm/embedded/s/1/cold_ref_traversal                           p50_ms                619.741     523.707   -15.5%  improved
+cold_vs_warm/embedded/s/1/cold_ref_traversal                           p99_ms                619.741     523.707   -15.5%  improved
+cold_vs_warm/embedded/s/1/cold_ref_traversal                           throughput_ops_s        1.610       1.910   +18.6%  improved
+cold_vs_warm/embedded/s/1/open                                         p50_ms               1621.120      44.886   -97.2%  improved
+cold_vs_warm/embedded/s/1/open                                         p99_ms               1621.120      44.886   -97.2%  improved
+cold_vs_warm/embedded/s/1/open                                         throughput_ops_s        0.620      22.280 +3493.5%  improved
+cold_vs_warm/embedded/s/1/warm_aggregate                               p50_ms                 97.855      31.196   -68.1%  improved
+cold_vs_warm/embedded/s/1/warm_aggregate                               p99_ms                 99.951      31.667   -68.3%  improved
+cold_vs_warm/embedded/s/1/warm_aggregate                               throughput_ops_s       10.220      32.010  +213.2%  improved
+cold_vs_warm/embedded/s/1/warm_point_lookup                            p50_ms                  0.140       0.020   -85.7%  improved
+cold_vs_warm/embedded/s/1/warm_point_lookup                            p99_ms                  1.065       1.385   +30.0%  REGRESSION
+cold_vs_warm/embedded/s/1/warm_point_lookup                            throughput_ops_s     2405.650    7225.180  +200.3%  improved
+cold_vs_warm/embedded/s/1/warm_pull                                    p50_ms                  2.168       1.416   -34.7%  improved
+cold_vs_warm/embedded/s/1/warm_pull                                    p99_ms                  4.113       5.348   +30.0%  REGRESSION
+cold_vs_warm/embedded/s/1/warm_ref_traversal                           p50_ms                 47.580      24.840   -47.8%  improved
+cold_vs_warm/embedded/s/1/warm_ref_traversal                           p99_ms                 61.416     132.994  +116.5%  REGRESSION
+cold_vs_warm/embedded/s/1/warm_ref_traversal                           throughput_ops_s       20.300      27.910   +37.5%  improved
+concurrency_sweep/embedded/m/1/read                                    p50_ms                  0.631       0.162   -74.3%  improved
+concurrency_sweep/embedded/m/1/read                                    p99_ms               1945.639     305.347   -84.3%  improved
+concurrency_sweep/embedded/m/1/read                                    throughput_ops_s        1.560      10.590  +578.8%  improved
+concurrency_sweep/embedded/m/8/ceiling                                 MISSING          
+concurrency_sweep/embedded/s/1/read                                    p50_ms                  0.214       0.114   -46.7%  improved
+concurrency_sweep/embedded/s/1/read                                    p99_ms                120.420      23.184   -80.7%  improved
+concurrency_sweep/embedded/s/1/read                                    throughput_ops_s       29.230     136.630  +367.4%  improved
+concurrency_sweep/embedded/s/32/read                                   p50_ms                  5.952       0.101   -98.3%  improved
+concurrency_sweep/embedded/s/32/read                                   p99_ms              14956.693      64.187   -99.6%  improved
+concurrency_sweep/embedded/s/32/read                                   throughput_ops_s        6.750    2095.380 +30942.7%  improved
+concurrency_sweep/embedded/s/64/ceiling                                MISSING          
+concurrency_sweep/embedded/s/8/read                                    p50_ms                  0.851       0.081   -90.5%  improved
+concurrency_sweep/embedded/s/8/read                                    p99_ms               3101.347      24.735   -99.2%  improved
+concurrency_sweep/embedded/s/8/read                                    throughput_ops_s        6.880     996.270 +14380.7%  improved
+point_lookup/embedded/m/1/read                                         p50_ms                  0.515       0.019   -96.3%  improved
+point_lookup/embedded/m/1/read                                         p99_ms                  0.586       0.025   -95.7%  improved
+point_lookup/embedded/m/1/read                                         throughput_ops_s     1905.710   50830.700 +2567.3%  improved
+point_lookup/embedded/s/1/read                                         p50_ms                  0.070       0.019   -72.9%  improved
+point_lookup/embedded/s/1/read                                         p99_ms                  0.084       0.025   -70.2%  improved
+point_lookup/embedded/s/1/read                                         throughput_ops_s    13990.780   51235.570  +266.2%  improved
+pull/embedded/m/1/read                                                 throughput_ops_s    20477.730   22690.010   +10.8%  improved
+pull/embedded/s/1/read                                                 p50_ms                  0.042       0.036   -14.3%  improved
+pull/embedded/s/1/read                                                 p99_ms                  0.057       0.050   -12.3%  improved
+pull/embedded/s/1/read                                                 throughput_ops_s    23604.090   27161.380   +15.1%  improved
+ref_traversal/embedded/m/1/read                                        p50_ms                556.256     290.191   -47.8%  improved
+ref_traversal/embedded/m/1/read                                        p99_ms                562.993     317.436   -43.6%  improved
+ref_traversal/embedded/m/1/read                                        throughput_ops_s        1.800       3.430   +90.6%  improved
+ref_traversal/embedded/s/1/read                                        p50_ms                 42.842      22.575   -47.3%  improved
+ref_traversal/embedded/s/1/read                                        p99_ms                 43.561      23.340   -46.4%  improved
+ref_traversal/embedded/s/1/read                                        throughput_ops_s       23.330      44.940   +92.6%  improved
+since/embedded/m/1/read                                                p50_ms                484.891      52.509   -89.2%  improved
+since/embedded/m/1/read                                                p99_ms                487.344      54.645   -88.8%  improved
+since/embedded/m/1/read                                                throughput_ops_s        2.060      19.040  +824.3%  improved
+since/embedded/s/1/read                                                p50_ms                 48.442       4.159   -91.4%  improved
+since/embedded/s/1/read                                                p99_ms                 49.328       4.303   -91.3%  improved
+since/embedded/s/1/read                                                throughput_ops_s       20.630     240.200 +1064.3%  improved
+write_mixed/embedded/m/1/write                                         p50_ms                  4.170       3.410   -18.2%  improved
+write_mixed/embedded/m/1/write                                         p99_ms                  5.586       8.611   +54.2%  REGRESSION
+write_mixed/embedded/m/1/write                                         throughput_ops_s      236.980     260.760   +10.0%  improved
+write_mixed/embedded/m/8/read                                          p50_ms                  4.225       6.323   +49.7%  REGRESSION
+write_mixed/embedded/m/8/read                                          p99_ms              24083.017    1148.797   -95.2%  improved
+write_mixed/embedded/m/8/read                                          throughput_ops_s        0.700      36.930 +5175.7%  improved
+write_mixed/embedded/s/1/write                                         p50_ms                  3.867       3.392   -12.3%  improved
+write_mixed/embedded/s/1/write                                         p99_ms                  4.676       4.040   -13.6%  improved
+write_mixed/embedded/s/1/write                                         throughput_ops_s      258.290     294.100   +13.9%  improved
+write_mixed/embedded/s/8/read                                          p50_ms                  2.139      10.211  +377.4%  REGRESSION
+write_mixed/embedded/s/8/read                                          p99_ms               1727.437      41.230   -97.6%  improved
+write_mixed/embedded/s/8/read                                          throughput_ops_s        9.740     577.490 +5829.1%  improved
+as_of/embedded/m/1/read                                                NEW              
+concurrency_sweep/embedded/m/128/read                                  NEW              
+concurrency_sweep/embedded/m/32/read                                   NEW              
+concurrency_sweep/embedded/m/64/read                                   NEW              
+concurrency_sweep/embedded/m/8/read                                    NEW              
+concurrency_sweep/embedded/s/128/read                                  NEW              
+concurrency_sweep/embedded/s/64/read                                   NEW              
+
+16 regression(s) at threshold 10.0%

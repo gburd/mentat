@@ -1,0 +1,2 @@
+s: 984803 datoms (1600 users, 130000 issues, 6492 history updates)
+m: 9850258 datoms (16000 users, 1300000 issues, 64986 history updates)
