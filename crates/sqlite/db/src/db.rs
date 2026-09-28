@@ -106,6 +106,50 @@ fn make_connection(
     Ok(conn)
 }
 
+/// WAL size (bytes) past which a writer tries to restart the log after commit:
+/// `MENTAT_WAL_RESTART_BYTES`, else 64 MiB; 0 disables it.
+///
+/// With readers always active, the passive `wal_autocheckpoint` copies frames
+/// back but can never *restart* the WAL, because some reader always holds a
+/// snapshot that pins its start. The file then grows without bound: 32 readers
+/// plus one writer grew it ~3.7 MB/s, and a 10M-datom `ref_traversal` went
+/// 0.50 s -> 11.4 s on a store left with a 1.37 GB WAL.
+fn wal_restart_bytes() -> u64 {
+    std::env::var("MENTAT_WAL_RESTART_BYTES")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(64 << 20)
+}
+
+/// Call after committing a write. If the WAL has grown past
+/// `wal_restart_bytes()`, run `wal_checkpoint(RESTART)` so the next writer
+/// starts the log from the beginning (and `journal_size_limit` truncates it).
+/// RESTART waits for readers of the old log to finish; that wait is capped at
+/// 100 ms here and the busy timeout is restored after. Best effort: a busy or
+/// failed checkpoint is ignored (the commit already happened) and retried after
+/// the next commit.
+pub fn restart_wal_if_large(conn: &rusqlite::Connection) {
+    let limit = wal_restart_bytes();
+    if limit == 0 {
+        return;
+    }
+    let Some(path) = conn.path().filter(|p| !p.is_empty()) else {
+        return; // in-memory: no WAL file
+    };
+    let wal_len = std::fs::metadata(format!("{path}-wal"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if wal_len < limit {
+        return;
+    }
+    let busy: i64 = conn
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .unwrap_or(0);
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(100));
+    let _ = conn.query_row("PRAGMA wal_checkpoint(RESTART)", [], |_| Ok(()));
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(busy.max(0) as u64));
+}
+
 /// Per-connection `PRAGMA temp_store`: `MENTAT_TEMP_STORE` (0 default, 1
 /// file, 2 memory), else 1. Memory (the old default, for platforms with no
 /// writable temp directory, e.g. Android) makes a large sort get slower each

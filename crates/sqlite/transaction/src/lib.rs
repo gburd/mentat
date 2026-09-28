@@ -307,7 +307,14 @@ impl<'a, 'c> InProgress<'a, 'c> {
         }
 
         // Commit the SQLite transaction while we hold the mutex.
+        // `commit` consumes the transaction but not the connection it borrows;
+        // keep a non-owning handle so we can restart an oversized WAL after.
+        // Safety: the connection outlives `self` ('c) and is not used
+        // concurrently (we hold `&mut` to it through the transaction).
+        let conn = unsafe { rusqlite::Connection::from_handle(self.transaction.handle()) }?;
         self.transaction.commit()?;
+        mentat_db::db::restart_wal_if_large(&conn);
+        drop(conn);
 
         metadata.generation += 1;
         metadata.partition_map = self.partition_map;

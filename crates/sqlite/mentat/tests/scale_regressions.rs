@@ -342,3 +342,63 @@ fn test_temp_store_is_file_backed() {
         .unwrap();
     assert_eq!(t, 1);
 }
+
+/// With a reader always holding a snapshot, the passive autocheckpoint can
+/// never restart the WAL, so it grew without bound under sustained load (2.2 GB
+/// after a 300 s benchmark; reads 20x slower). A writer now restarts it once it
+/// passes `MENTAT_WAL_RESTART_BYTES`.
+#[test]
+fn test_wal_stays_bounded_under_continuous_readers() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // 256 KiB threshold keeps the test fast. The env var is read per commit, so
+    // set it before any store in this test commits.
+    std::env::set_var("MENTAT_WAL_RESTART_BYTES", "262144");
+    let path = temp_store("wal-bounded");
+    let mut writer = Store::open(&path).expect("open");
+    schema(&mut writer);
+
+    // Readers: each has its own Store on the same file and loops on a query
+    // inside a read transaction, so some snapshot is (almost) always open.
+    let stop = Arc::new(AtomicBool::new(false));
+    let readers: Vec<_> = (0..4)
+        .map(|_| {
+            let (path, stop) = (path.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let store = Store::open(&path).expect("reader open");
+                let mut n = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = store.q_once("[:find (count ?e) . :where [?e :s/n _]]", None);
+                    n += 1;
+                }
+                n
+            })
+        })
+        .collect();
+
+    // Writer: many small commits, each ~a few KB of WAL.
+    let wal = format!("{path}-wal");
+    let mut max_wal = 0u64;
+    for i in 0..3000 {
+        writer
+            .transact(&format!(r#"[{{:s/n {i} :s/name "name-{i}"}}]"#))
+            .expect("tx");
+        max_wal = max_wal.max(std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0));
+    }
+    stop.store(true, Ordering::Relaxed);
+    let reads: u64 = readers.into_iter().map(|h| h.join().unwrap()).sum();
+    std::env::remove_var("MENTAT_WAL_RESTART_BYTES");
+
+    assert!(reads > 0, "readers never ran");
+    assert_eq!(
+        count(&writer, "[:find (count ?e) . :where [?e :s/n _]]"),
+        3000
+    );
+    // Unbounded, 3000 commits leave a multi-MB WAL. Bounded, it stays within a
+    // small multiple of the 256 KiB threshold.
+    assert!(
+        max_wal < 4 * 262_144,
+        "WAL grew to {max_wal} bytes with a 262144-byte restart threshold"
+    );
+}
