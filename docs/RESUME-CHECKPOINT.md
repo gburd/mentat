@@ -86,3 +86,16 @@ Open follow-ups: WAL restart could also run on Store drop; process-wide ext stor
 the Quack server; Quack backlog=5 upstream; retractEntity doesn't retract incoming refs;
 cas/retractEntity lookup refs; pg 5-place pattern inside not/rules; edn_q_rows collects in
 one call; sparsemap v5.7.0 evaluation (TODO above).
+
+## 1.10.0 tagged + pushed (2026-09-28)
+- Merged origin's v1.9.1 (pg_dump fix) first: upgrade edge is now
+  pg_mentat--1.9.1--1.10.0.sql (also registers managed_indexes/index_evidence for
+  pg_dump). EC2-verified: 1.9.0 -> 1.9.1 -> 1.10.0 in place, pg_dump/restore, 37
+  dump-registered tables fresh == upgraded; pg16+script 1916/0/1; workspace green.
+- v1.10.0 = 3d4e73a2. Its release run FAILED: build-sqlite-ext / build-duckdb-ext
+  smoke "store not reused" (fd check assumed bash's .system exec; Ubuntu's dash
+  forks). No GitHub Release, no PGXN. Fixed in 5d5b1573 (test-only; CI ext jobs
+  green). Decision pending: v1.10.1 at 5d5b1573 (recommended; no tag move).
+- Registry PR #2812 head 25eabfde: version 1.10.0, ref 3d4e73a2 (ext code identical
+  at 5d5b1573). Workflows still await maintainer approval; comment posted.
+- EC2: all mentat instances/keys/SGs deleted.
