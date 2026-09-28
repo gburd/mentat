@@ -1,0 +1,22 @@
+Unique  (cost=6.22..6.23 rows=1 width=56)
+  Output: ((current_text.e)::text), current_text_1.v
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':user/email'::text)
+  InitPlan 2 (returns $1)
+    ->  Seq Scan on mentat.schema schema_1  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema_1.entid
+          Filter: (schema_1.ident = ':user/name'::text)
+  ->  Sort  (cost=3.25..3.25 rows=1 width=56)
+        Output: ((current_text.e)::text), current_text_1.v
+        Sort Key: ((current_text.e)::text), current_text_1.v
+        ->  Nested Loop  (cost=0.98..3.24 rows=1 width=56)
+              Output: (current_text.e)::text, current_text_1.v
+              ->  Index Only Scan using idx_current_text_avet on mentat.current_text  (cost=0.55..1.68 rows=1 width=8)
+                    Output: current_text.store_id, current_text.a, current_text.v, current_text.e
+                    Index Cond: ((current_text.store_id = '0'::bigint) AND (current_text.a = $0) AND (current_text.v = 'user0@example.com'::text))
+              ->  Index Only Scan using idx_current_text_aev on mentat.current_text current_text_1  (cost=0.43..1.55 rows=1 width=32)
+                    Output: current_text_1.store_id, current_text_1.a, current_text_1.e, current_text_1.v, current_text_1.tx
+                    Index Cond: ((current_text_1.store_id = '0'::bigint) AND (current_text_1.a = $1) AND (current_text_1.e = current_text.e))
+Query Identifier: 3439666293614840430

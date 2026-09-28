@@ -1,0 +1,24 @@
+HashAggregate  (cost=7324.22..7327.22 rows=200 width=64)
+  Output: ((':'::text || current_keyword.v)), (count(current_ref.v))::text
+  Group Key: ((':'::text || current_keyword.v))
+  ->  HashAggregate  (cost=7072.08..7252.18 rows=14408 width=40)
+        Output: ((':'::text || current_keyword.v)), current_ref.v
+        Group Key: (':'::text || current_keyword.v), current_ref.v
+        InitPlan 1 (returns $0)
+          ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+                Output: schema.entid
+                Filter: (schema.ident = ':issue/state'::text)
+        InitPlan 2 (returns $1)
+          ->  Seq Scan on mentat.schema schema_1  (cost=0.00..1.49 rows=1 width=8)
+                Output: schema_1.entid
+                Filter: (schema_1.ident = ':issue/assignee'::text)
+        ->  Merge Join  (cost=0.84..6784.77 rows=56866 width=40)
+              Output: (':'::text || current_keyword.v), current_ref.v
+              Merge Cond: (current_keyword.e = current_ref.e)
+              ->  Index Only Scan using idx_current_keyword_aev on mentat.current_keyword  (cost=0.42..2146.42 rows=65005 width=22)
+                    Output: current_keyword.store_id, current_keyword.a, current_keyword.e, current_keyword.v, current_keyword.tx
+                    Index Cond: ((current_keyword.store_id = '0'::bigint) AND (current_keyword.a = $0))
+              ->  Index Only Scan using idx_current_ref_aev on mentat.current_ref  (cost=0.42..3480.68 rows=113733 width=16)
+                    Output: current_ref.store_id, current_ref.a, current_ref.e, current_ref.v, current_ref.tx
+                    Index Cond: ((current_ref.store_id = '0'::bigint) AND (current_ref.a = $1))
+Query Identifier: 4852971314928700961

@@ -1,0 +1,18 @@
+Limit  (cost=22793.53..22793.54 rows=1 width=32)
+  Output: ((sum(current_long.v))::text)
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/priority'::text)
+  ->  Finalize Aggregate  (cost=22792.04..22792.06 rows=1 width=32)
+        Output: (sum(current_long.v))::text
+        ->  Gather  (cost=22791.71..22792.02 rows=3 width=32)
+              Output: (PARTIAL sum(current_long.v))
+              Workers Planned: 3
+              Params Evaluated: $0
+              ->  Partial Aggregate  (cost=21791.71..21791.72 rows=1 width=32)
+                    Output: PARTIAL sum(current_long.v)
+                    ->  Parallel Seq Scan on mentat.current_long  (cost=0.00..20743.32 rows=419355 width=8)
+                          Output: current_long.store_id, current_long.e, current_long.a, current_long.v, current_long.tx
+                          Filter: ((current_long.store_id = '0'::bigint) AND (current_long.a = $0))
+Query Identifier: 4046404395004565119

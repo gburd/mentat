@@ -1,0 +1,9 @@
+15.103|3892|58780|SELECT edn_q($1, $2)
+0.284|136616|38788|SELECT edn_q($1, jsonb_build_object($2, jsonb_build_array($3 || $4::int || $5)))
+1.728|15745|27202|SELECT edn_q($1, jsonb_build_object($2, $3::bigint))
+1.428|17883|25545|SELECT edn_q($1, jsonb_build_object($2, jsonb_build_array($3 || $4::int || $5), $6, $7::bigint))
+0.663|34826|23085|SELECT edn_pull($1, $2::bigint + $3::bigint)
+0.614|34347|21081|SELECT edn_q($1, jsonb_build_object($2, jsonb_build_array((SELECT jsonb_agg($3 || (($4::int + g * $5) % $6::int) || $7) FROM generate_series($8, $9) g))))
+2.871|4|11|SELECT mentat_explain($1, $2::jsonb)::text
+0.011|64|1|SELECT value FROM bench.kv WHERE key=$1
+0.061|1|0|SELECT pg_stat_statements_reset()

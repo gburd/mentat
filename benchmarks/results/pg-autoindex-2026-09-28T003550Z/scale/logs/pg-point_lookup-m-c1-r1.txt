@@ -1,0 +1,13 @@
+pgbench (16.15)
+transaction type: /home/ec2-user/mentat/benchmarks/scale/pgbench/point_lookup.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 10 s
+number of transactions actually processed: 33550
+number of failed transactions: 0 (0.000%)
+latency average = 0.298 ms
+initial connection time = 1.818 ms
+tps = 3355.542256 (without initial connection time)

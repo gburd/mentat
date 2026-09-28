@@ -1,0 +1,57 @@
+{"inputs": [150000], "asOf": 1000000000021}
+CREATE TABLE
+DROP INDEX
+DELETE 1
+DO
+SET
+create|mentat_auto_datoms_long_new_a1000004
+ANALYZE
+DO
+before|162.50
+after|141.14
+PLAN BEFORE
+HashAggregate  (cost=31396.89..32043.77 rows=32344 width=64)
+  Group Key: ((datoms_long_new.e)::text), ((datoms_long_new.v)::text)
+  InitPlan 1 (returns $0)
+    ->  Index Scan using schema_ident_key on mentat.schema  (cost=0.15..2.37 rows=1 width=8)
+          Index Cond: (schema.ident = ':h/a3'::text)
+  ->  Gather  (cost=27836.68..31232.80 rows=32344 width=64)
+        Workers Planned: 4
+        Params Evaluated: $0
+        ->  HashAggregate  (cost=26836.68..26998.40 rows=8086 width=64)
+              Group Key: (datoms_long_new.e)::text, (datoms_long_new.v)::text
+              ->  Result  (cost=0.86..26796.25 rows=8086 width=64)
+                    One-Time Filter: ($0 = 1000004)
+                    ->  Nested Loop Anti Join  (cost=0.86..26715.39 rows=8086 width=16)
+                          ->  Parallel Index Only Scan using idx_datoms_long_new_aevt on mentat.datoms_long_new  (cost=0.43..13925.99 rows=12055 width=32)
+                                Index Cond: ((datoms_long_new.store_id = '0'::bigint) AND (datoms_long_new.a = 1000004) AND (datoms_long_new.tx <= '1000000000021'::bigint))
+                                Filter: (datoms_long_new.v >= '150000'::bigint)
+                          ->  Result  (cost=0.43..1.05 rows=1 width=24)
+                                One-Time Filter: ($0 = 1000004)
+                                ->  Index Only Scan using idx_datoms_long_new_eavt on mentat.datoms_long_new newer  (cost=0.43..1.05 rows=1 width=24)
+                                      Index Cond: ((newer.store_id = '0'::bigint) AND (newer.e = datoms_long_new.e) AND (newer.a = 1000004) AND (newer.tx > datoms_long_new.tx) AND (newer.tx <= '100000
+Query Identifier: -7173263478281195968
+PLAN AFTER
+HashAggregate  (cost=26050.20..26665.20 rows=30750 width=64)
+  Group Key: ((datoms_long_new.e)::text), ((datoms_long_new.v)::text)
+  InitPlan 1 (returns $0)
+    ->  Index Scan using schema_ident_key on mentat.schema  (cost=0.15..2.37 rows=1 width=8)
+          Index Cond: (schema.ident = ':h/a3'::text)
+  ->  Gather  (cost=22614.08..25894.08 rows=30750 width=64)
+        Workers Planned: 3
+        Params Evaluated: $0
+        ->  HashAggregate  (cost=21614.08..21819.08 rows=10250 width=64)
+              Group Key: (datoms_long_new.e)::text, (datoms_long_new.v)::text
+              ->  Result  (cost=8812.73..21562.83 rows=10250 width=64)
+                    One-Time Filter: ($0 = 1000004)
+                    ->  Parallel Hash Right Anti Join  (cost=8812.73..21460.33 rows=10250 width=16)
+                          Hash Cond: (newer.e = datoms_long_new.e)
+                          Join Filter: (newer.tx > datoms_long_new.tx)
+                          ->  Result  (cost=0.42..12171.21 rows=63518 width=24)
+                                One-Time Filter: ($0 = 1000004)
+                                ->  Parallel Index Scan using mentat_auto_datoms_long_new_a1000004 on mentat.datoms_long_new newer  (cost=0.42..12171.21 rows=63518 width=24)
+                                      Index Cond: ((newer.store_id = '0'::bigint) AND (newer.tx <= '1000000000021'::bigint))
+                          ->  Parallel Hash  (cost=8564.33..8564.33 rows=19838 width=32)
+                                ->  Parallel Index Scan using mentat_auto_datoms_long_new_a1000004 on mentat.datoms_long_new  (cost=0.42..8564.33 rows=19838 width=32)
+                                      Index Cond: ((datoms_long_new.store_id = '0'::bigint) AND (datoms_long_new.v >= '150000'::bigint) AND (datoms_long_new.tx <= '1000000000021'::bigint))
+Query Identifier: -7173263478281195968

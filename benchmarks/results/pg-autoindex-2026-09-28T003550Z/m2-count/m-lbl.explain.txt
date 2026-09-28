@@ -1,0 +1,18 @@
+Finalize HashAggregate  (cost=34562.55..34837.25 rows=13735 width=211)
+  Output: (current_ref.v)::text, (count(*))::text, '0'::smallint, current_ref.v, NULL::boolean, NULL::bigint, NULL::double precision, NULL::text, NULL::text, NULL::timestamp with time zone, NULL::uuid, NULL::bytea
+  Group Key: current_ref.v
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/label'::text)
+  ->  Gather  (cost=28655.01..34286.36 rows=54940 width=16)
+        Output: current_ref.v, (PARTIAL count(*))
+        Workers Planned: 4
+        Params Evaluated: $0
+        ->  Partial HashAggregate  (cost=27655.01..27792.36 rows=13735 width=16)
+              Output: current_ref.v, PARTIAL count(*)
+              Group Key: current_ref.v
+              ->  Parallel Index Only Scan using idx_current_ref_aev on mentat.current_ref  (cost=0.56..26232.37 rows=284528 width=8)
+                    Output: current_ref.store_id, current_ref.a, current_ref.e, current_ref.v, current_ref.tx
+                    Index Cond: ((current_ref.store_id = '0'::bigint) AND (current_ref.a = $0))
+Query Identifier: 7726257893271994107

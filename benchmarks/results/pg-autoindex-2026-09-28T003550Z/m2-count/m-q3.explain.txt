@@ -1,0 +1,21 @@
+Finalize GroupAggregate  (cost=26815.80..26817.73 rows=5 width=193)
+  Output: (':'::text || current_keyword.v), (count(*))::text, '8'::smallint, NULL::bigint, NULL::boolean, NULL::bigint, NULL::double precision, NULL::text, current_keyword.v, NULL::timestamp with time zone, NULL::uuid, NULL::bytea
+  Group Key: current_keyword.v
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/state'::text)
+  ->  Gather Merge  (cost=26814.31..26816.08 rows=15 width=22)
+        Output: current_keyword.v, (PARTIAL count(*))
+        Workers Planned: 3
+        Params Evaluated: $0
+        ->  Sort  (cost=25814.27..25814.28 rows=5 width=22)
+              Output: current_keyword.v, (PARTIAL count(*))
+              Sort Key: current_keyword.v
+              ->  Partial HashAggregate  (cost=25814.16..25814.21 rows=5 width=22)
+                    Output: current_keyword.v, PARTIAL count(*)
+                    Group Key: current_keyword.v
+                    ->  Parallel Seq Scan on mentat.current_keyword  (cost=0.00..23717.37 rows=419358 width=14)
+                          Output: current_keyword.store_id, current_keyword.e, current_keyword.a, current_keyword.v, current_keyword.tx
+                          Filter: ((current_keyword.store_id = '0'::bigint) AND (current_keyword.a = $0))
+Query Identifier: 8818745957981428102

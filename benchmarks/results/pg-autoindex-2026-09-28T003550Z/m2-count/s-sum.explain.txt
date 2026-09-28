@@ -1,0 +1,12 @@
+Limit  (cost=3722.49..3722.51 rows=1 width=32)
+  Output: ((sum(current_long.v))::text)
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/priority'::text)
+  ->  Aggregate  (cost=3721.00..3721.02 rows=1 width=32)
+        Output: (sum(current_long.v))::text
+        ->  Seq Scan on mentat.current_long  (cost=0.00..3396.00 rows=130000 width=8)
+              Output: current_long.store_id, current_long.e, current_long.a, current_long.v, current_long.tx
+              Filter: ((current_long.store_id = '0'::bigint) AND (current_long.a = $0))
+Query Identifier: 6785086879769752969

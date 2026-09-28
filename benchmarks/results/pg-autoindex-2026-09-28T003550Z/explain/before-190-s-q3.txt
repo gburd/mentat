@@ -1,0 +1,14 @@
+GroupAggregate  (cost=7507.00..7994.66 rows=7 width=64)
+  Output: ((':'::text || current_keyword.v)), (count(DISTINCT current_keyword.e))::text
+  Group Key: ((':'::text || current_keyword.v))
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/state'::text)
+  ->  Sort  (cost=7505.52..7668.03 rows=65005 width=40)
+        Output: ((':'::text || current_keyword.v)), current_keyword.e
+        Sort Key: ((':'::text || current_keyword.v)), current_keyword.e
+        ->  Index Only Scan using idx_current_keyword_aev on mentat.current_keyword  (cost=0.42..2308.93 rows=65005 width=40)
+              Output: (':'::text || current_keyword.v), current_keyword.e
+              Index Cond: ((current_keyword.store_id = '0'::bigint) AND (current_keyword.a = $0))
+Query Identifier: 2661281054348929059

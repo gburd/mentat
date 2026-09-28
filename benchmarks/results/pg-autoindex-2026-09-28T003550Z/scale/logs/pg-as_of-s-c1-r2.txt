@@ -1,0 +1,13 @@
+pgbench (16.15)
+transaction type: /home/ec2-user/mentat/benchmarks/scale/pgbench/as_of.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 10 s
+number of transactions actually processed: 5893
+number of failed transactions: 0 (0.000%)
+latency average = 1.697 ms
+initial connection time = 1.785 ms
+tps = 589.399019 (without initial connection time)

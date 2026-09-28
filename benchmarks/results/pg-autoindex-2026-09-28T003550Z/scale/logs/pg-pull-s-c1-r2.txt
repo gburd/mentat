@@ -1,0 +1,13 @@
+pgbench (16.15)
+transaction type: /home/ec2-user/mentat/benchmarks/scale/pgbench/pull.sql
+scaling factor: 1
+query mode: simple
+number of clients: 1
+number of threads: 1
+maximum number of tries: 1
+duration: 10 s
+number of transactions actually processed: 11592
+number of failed transactions: 0 (0.000%)
+latency average = 0.863 ms
+initial connection time = 1.873 ms
+tps = 1159.351295 (without initial connection time)

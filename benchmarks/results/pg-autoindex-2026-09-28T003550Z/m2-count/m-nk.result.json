@@ -1,0 +1,1 @@
+{"result": [[":state/closed", 16000], [":state/open", 16000], [":state/in-progress", 16000], [":state/resolved", 16000], [":state/reopened", 16000]], "columns": ["?state", "(count ?u)"], "results": [[":state/closed", 16000], [":state/open", 16000], [":state/in-progress", 16000], [":state/resolved", 16000], [":state/reopened", 16000]]}

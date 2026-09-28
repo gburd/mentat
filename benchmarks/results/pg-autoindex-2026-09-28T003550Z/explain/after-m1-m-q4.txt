@@ -1,0 +1,38 @@
+HashAggregate  (cost=26329.11..26847.95 rows=25942 width=88)
+  Output: ((current_keyword.e)::text), current_text.v, ((current_long.v)::text)
+  Group Key: ((current_keyword.e)::text), current_text.v, ((current_long.v)::text)
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/state'::text)
+  InitPlan 2 (returns $1)
+    ->  Seq Scan on mentat.schema schema_1  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema_1.entid
+          Filter: (schema_1.ident = ':issue/priority'::text)
+  InitPlan 3 (returns $2)
+    ->  Seq Scan on mentat.schema schema_2  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema_2.entid
+          Filter: (schema_2.ident = ':issue/title'::text)
+  ->  Gather  (cost=7738.91..26130.08 rows=25942 width=88)
+        Output: ((current_keyword.e)::text), current_text.v, ((current_long.v)::text)
+        Workers Planned: 4
+        Params Evaluated: $0, $1, $2
+        ->  Nested Loop  (cost=6738.91..22535.88 rows=6486 width=88)
+              Output: (current_keyword.e)::text, current_text.v, (current_long.v)::text
+              Join Filter: (current_keyword.e = current_long.e)
+              ->  Parallel Hash Join  (cost=6738.49..14338.66 rows=16249 width=40)
+                    Output: current_keyword.e, current_text.v, current_text.e
+                    Inner Unique: true
+                    Hash Cond: (current_text.e = current_keyword.e)
+                    ->  Parallel Index Only Scan using idx_current_text_avet on mentat.current_text  (cost=0.55..7382.11 rows=83281 width=32)
+                          Output: current_text.store_id, current_text.a, current_text.v, current_text.e
+                          Index Cond: ((current_text.store_id = '0'::bigint) AND (current_text.a = $2))
+                    ->  Parallel Hash  (cost=5937.21..5937.21 rows=64058 width=8)
+                          Output: current_keyword.e
+                          ->  Parallel Index Only Scan using idx_current_keyword_avet on mentat.current_keyword  (cost=0.43..5937.21 rows=64058 width=8)
+                                Output: current_keyword.e
+                                Index Cond: ((current_keyword.store_id = '0'::bigint) AND (current_keyword.a = $0) AND (current_keyword.v = 'state/open'::text))
+              ->  Index Only Scan using current_long_pkey on mentat.current_long  (cost=0.43..0.49 rows=1 width=16)
+                    Output: current_long.store_id, current_long.e, current_long.a, current_long.v
+                    Index Cond: ((current_long.store_id = '0'::bigint) AND (current_long.e = current_text.e) AND (current_long.a = $1) AND (current_long.v >= '4'::bigint))
+Query Identifier: 7199303563338644265

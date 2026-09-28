@@ -1,0 +1,11 @@
+HashAggregate  (cost=4050.84..4086.86 rows=1801 width=211)
+  Output: (current_ref.v)::text, (count(*))::text, '0'::smallint, current_ref.v, NULL::boolean, NULL::bigint, NULL::double precision, NULL::text, NULL::text, NULL::timestamp with time zone, NULL::uuid, NULL::bytea
+  Group Key: current_ref.v
+  InitPlan 1 (returns $0)
+    ->  Seq Scan on mentat.schema  (cost=0.00..1.49 rows=1 width=8)
+          Output: schema.entid
+          Filter: (schema.ident = ':issue/label'::text)
+  ->  Index Only Scan using idx_current_ref_aev on mentat.current_ref  (cost=0.42..3480.68 rows=113733 width=8)
+        Output: current_ref.store_id, current_ref.a, current_ref.e, current_ref.v, current_ref.tx
+        Index Cond: ((current_ref.store_id = '0'::bigint) AND (current_ref.a = $0))
+Query Identifier: 4006014106365178101

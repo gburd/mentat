@@ -1,0 +1,51 @@
+DROP INDEX
+DELETE 1
+DELETE 0
+[32m[1m    Finished[0m[39m installing pg_mentat
+CREATE EXTENSION
+t
+DO
+ANALYZE
+{"inputs": [199000], "asOf": 1000000000021}
+CREATE TABLE
+DO
+SET
+create|mentat_auto_datoms_long_new_a1000004|10 temporal queries with a range predicate on attribute 1000004 (store 0), >= mentat.auto_index_min_queries = 5; >= 100000 rows in mentat.datoms_long_new
+ANALYZE
+DO
+before|2.81
+after|2.61
+PLAN BEFORE
+Unique  (cost=3327.13..3332.26 rows=685 width=64)
+  InitPlan 1 (returns $0)
+    ->  Index Scan using schema_ident_key on mentat.schema  (cost=0.15..2.37 rows=1 width=8)
+          Index Cond: (schema.ident = ':h/a3'::text)
+  ->  Sort  (cost=3324.76..3326.47 rows=685 width=64)
+        Sort Key: ((datoms_long_new.e)::text), ((datoms_long_new.v)::text)
+        ->  Result  (cost=0.86..3292.50 rows=685 width=64)
+              One-Time Filter: ($0 = 1000004)
+              ->  Nested Loop Anti Join  (cost=0.86..3285.65 rows=685 width=16)
+                    ->  Index Only Scan using idx_datoms_long_new_vaet on mentat.datoms_long_new  (cost=0.43..672.26 rows=1012 width=32)
+                          Index Cond: ((datoms_long_new.store_id = '0'::bigint) AND (datoms_long_new.v >= '199000'::bigint) AND (datoms_long_new.a = 1000004) AND (datoms_long_new.tx <= '1000000000021'::bigint))
+                    ->  Result  (cost=0.43..2.57 rows=1 width=24)
+                          One-Time Filter: ($0 = 1000004)
+                          ->  Index Only Scan using idx_datoms_long_new_eavt on mentat.datoms_long_new newer  (cost=0.43..2.57 rows=1 width=24)
+                                Index Cond: ((newer.store_id = '0'::bigint) AND (newer.e = datoms_long_new.e) AND (newer.a = 1000004) AND (newer.tx > datoms_long_new.tx) AND (newer.tx <= '1000000000021'::bigint))
+Query Identifier: -7173263478281195968
+PLAN AFTER
+Unique  (cost=3004.24..3009.07 rows=644 width=64)
+  InitPlan 1 (returns $0)
+    ->  Index Scan using schema_ident_key on mentat.schema  (cost=0.15..2.37 rows=1 width=8)
+          Index Cond: (schema.ident = ':h/a3'::text)
+  ->  Sort  (cost=3001.87..3003.48 rows=644 width=64)
+        Sort Key: ((datoms_long_new.e)::text), ((datoms_long_new.v)::text)
+        ->  Result  (cost=0.85..2971.82 rows=644 width=64)
+              One-Time Filter: ($0 = 1000004)
+              ->  Nested Loop Anti Join  (cost=0.85..2965.38 rows=644 width=16)
+                    ->  Index Scan using mentat_auto_datoms_long_new_a1000004 on mentat.datoms_long_new  (cost=0.42..481.78 rows=960 width=32)
+                          Index Cond: ((datoms_long_new.store_id = '0'::bigint) AND (datoms_long_new.v >= '199000'::bigint) AND (datoms_long_new.tx <= '1000000000021'::bigint))
+                    ->  Result  (cost=0.43..2.58 rows=1 width=24)
+                          One-Time Filter: ($0 = 1000004)
+                          ->  Index Only Scan using idx_datoms_long_new_eavt on mentat.datoms_long_new newer  (cost=0.43..2.58 rows=1 width=24)
+                                Index Cond: ((newer.store_id = '0'::bigint) AND (newer.e = datoms_long_new.e) AND (newer.a = 1000004) AND (newer.tx > datoms_long_new.tx) AND (newer.tx <= '1000000000021'::bigint))
+Query Identifier: -7173263478281195968
