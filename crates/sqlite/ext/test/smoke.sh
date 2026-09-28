@@ -29,7 +29,10 @@ SQL
 cat > "$OTHER" <<SH
 #!/bin/sh
 case "\$1" in
-  fds) echo "fds=\$(ls -l /proc/\$PPID/fd | grep -c -- '-> $DB\$')" ;;
+  # .system runs us via /bin/sh -c: bash execs us (parent = the session), dash
+  # (Ubuntu) forks (parent = that sh). Step past the shell to the session.
+  fds) p=\$PPID; case "\$(cat /proc/\$p/comm)" in sh|dash|bash) p=\$(cut -d' ' -f4 /proc/\$p/stat) ;; esac
+       echo "fds=\$(ls -l /proc/\$p/fd | grep -c -- '-> $DB\$')" ;;
   *) "$SQLITE3" -bail -noheader -list :memory: < "$OTHER.sql" ;;
 esac
 SH
