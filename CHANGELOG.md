@@ -8,6 +8,37 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.2] — DuckDB extension: fix Windows & macOS build
+
+The DuckDB community-extension build failed on Windows and macOS while
+succeeding on Linux. The Rust code compiled cleanly on every platform; the
+failure was in the artifact-copy step of `crates/duckdb/Makefile`, which
+hardcoded the Linux shared-library suffix:
+
+```
+FileNotFoundError: ... './target/release/libmentat_duckdb.so'
+```
+
+The crate's cdylib package is `mentat_duckdb`, so cargo emits
+`libmentat_duckdb.dylib` on macOS and `mentat_duckdb.dll` on Windows (no `lib`
+prefix), never a `.so` there. The Makefile overrode `RUST_LIBNAME` (the source
+artifact cargo produces) to a fixed `libmentat_duckdb.so` and also overrode
+`EXTENSION_LIB_FILENAME` (the copy destination), clobbering the per-platform
+names the pinned `extension-ci-tools` makefiles already compute.
+
+Fix: make the `RUST_LIBNAME` override platform-specific (`.so` / `.dylib` /
+`.dll`, keyed on `OS` / `DUCKDB_PLATFORM`), and stop overriding
+`EXTENSION_LIB_FILENAME` so `base.Makefile`'s correct per-platform destination
+(`libmentat.so` / `libmentat.dylib` / `mentat.dll`) is used. Linux is
+unaffected; Windows and macOS now find the artifact and build. No engine,
+query, or storage behaviour changed — this is a build-tooling fix only.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.10.2';` from 1.9.x/1.10.x changes
+nothing (no SQL object or schema change); it exists only to keep the version
+sequence contiguous.
+
 ## [1.10.1] — re-release of 1.10.0
 
 1.10.0's release build never published: the SQLite and DuckDB extension smoke

@@ -30,13 +30,29 @@ all: configure debug
 include extension-ci-tools/makefiles/c_api_extensions/base.Makefile
 include extension-ci-tools/makefiles/c_api_extensions/rust.Makefile
 
-# The cdylib package is `mentat_duckdb`, so cargo emits `libmentat_duckdb.so`,
-# not `lib$(EXTENSION_NAME).so`. (We can't name the lib `mentat` — it collides
-# with the `mentat` path dependency in the crate graph.) Override the expected
-# raw-library filename; the footer output is still `mentat.duckdb_extension`
-# (driven separately by EXTENSION_NAME).
-EXTENSION_LIB_FILENAME=libmentat_duckdb.so
-RUST_LIBNAME=libmentat_duckdb.so
+# The cdylib package is `mentat_duckdb`, so cargo emits `libmentat_duckdb.{so,
+# dylib}` (unix) or `mentat_duckdb.dll` (Windows, no `lib` prefix) -- NOT
+# `lib$(EXTENSION_NAME).*`. (We can't name the lib `mentat`: it collides with
+# the `mentat` path dependency in the crate graph.) Only RUST_LIBNAME -- the
+# SOURCE artifact cargo produces -- needs overriding, and it is
+# platform-specific. Do NOT override EXTENSION_LIB_FILENAME: base.Makefile
+# already computes the correct per-platform copy DESTINATION name
+# (libmentat.so / libmentat.dylib / mentat.dll), and the metadata step reads
+# that same name -- overriding it to a fixed `.so` is exactly what broke the
+# Windows and macOS builds (cargo never produced a `.so` there, so the copy
+# failed with FileNotFoundError). The footer output stays
+# `mentat.duckdb_extension` (driven separately by EXTENSION_NAME).
+ifeq ($(OS),Windows_NT)
+	RUST_LIBNAME=mentat_duckdb.dll
+else ifeq ($(DUCKDB_PLATFORM),osx_amd64)
+	RUST_LIBNAME=libmentat_duckdb.dylib
+else ifeq ($(DUCKDB_PLATFORM),osx_arm64)
+	RUST_LIBNAME=libmentat_duckdb.dylib
+else ifeq ($(shell uname -s),Darwin)
+	RUST_LIBNAME=libmentat_duckdb.dylib
+else
+	RUST_LIBNAME=libmentat_duckdb.so
+endif
 
 # A bare `cargo build` inside a workspace member dir does NOT reliably build
 # THIS package (it builds the default-member set, which excludes mentat_duckdb).
