@@ -11,7 +11,7 @@
 #   MENTAT_QUACK_PORT      default 9494
 #   MENTAT_QUACK_DB        the server's own DuckDB database file, default in-memory
 #   MENTAT_EXT             default ../build/release/mentat.duckdb_extension
-#   DUCKDB                 DuckDB v1.5.5 CLI, default `duckdb`
+#   DUCKDB                 DuckDB v1.5.6 CLI, default `duckdb`
 #   MENTAT_QUACK_PIDFILE   default ${XDG_RUNTIME_DIR:-/tmp}/mentat-quack-$PORT.pid
 #   MENTAT_QUACK_LOG       default ${PIDFILE%.pid}.log (background mode)
 #   MENTAT_QUACK_FOREGROUND=1  exec in the foreground (systemd); else daemonize

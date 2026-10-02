@@ -9,12 +9,12 @@
 # opens a PR to the upstream repo — the merge there is a human gate.
 #
 # Their CI builds and signs the extension centrally, cloning `repo.github` at
-# `repo.ref` and building against DuckDB v1.5.5 (which is exactly what this
+# `repo.ref` and building against DuckDB v1.5.6 (which is exactly what this
 # extension is pinned to). See docs/registry-publishing.md.
 extension:
   name: mentat
   description: Datomic-compatible Datalog query engine as a DuckDB extension
-  version: 1.10.1
+  version: 1.10.3
   language: Rust
   build: cargo
   license: Apache-2.0

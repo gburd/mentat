@@ -8,6 +8,32 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.10.3] — DuckDB extension: DuckDB v1.5.6, macOS build
+
+The DuckDB extension now targets **DuckDB v1.5.6** (duckdb-rs `~1.10506.0`),
+the version the DuckDB Community Extensions registry builds and tests against.
+It is built on the unstable C API, so a v1.5.6 binary loads only into DuckDB
+v1.5.6. Earlier mentat DuckDB builds (v1.5.5) do not load into v1.5.6, and this
+one does not load into v1.5.5. That is why the registry's Windows test failed
+("built specifically for DuckDB version 'v1.5.5' ... this version of DuckDB is
+'v1.5.6'").
+
+### Fixed
+
+- **DuckDB, macOS:** the extension build failed with `FileNotFoundError` on
+  `./target/aarch64-apple-darwin/release/libmentat_duckdb.dylib`.
+  `crates/duckdb/Makefile` *assigned* `TARGET_INFO=-p mentat_duckdb`, which
+  replaced the `--target <triple>` that extension-ci-tools sets for the macOS
+  cross builds, so cargo wrote to `./target/release/` while the copy step read
+  `./target/<triple>/release/`. It now appends (`TARGET_INFO += ...`). 1.10.2's
+  platform-specific library names were needed but did not fix this on their own.
+
+### Upgrade
+
+No pg_mentat change. `ALTER EXTENSION pg_mentat UPDATE TO '1.10.3';` from 1.10.1
+is a no-op edge (`pg_mentat--1.10.1--1.10.3.sql`). There was no pg_mentat 1.10.2
+release.
+
 ## [1.10.2] — DuckDB extension: fix Windows & macOS build
 
 The DuckDB community-extension build failed on Windows and macOS while
@@ -35,9 +61,9 @@ query, or storage behaviour changed — this is a build-tooling fix only.
 
 ### Upgrade
 
-`ALTER EXTENSION pg_mentat UPDATE TO '1.10.2';` from 1.9.x/1.10.x changes
-nothing (no SQL object or schema change); it exists only to keep the version
-sequence contiguous.
+Not published as a release (its release run was cancelled), and it bumped only
+the workspace crates, not pg_mentat, so there is no pg_mentat 1.10.2. The macOS
+build still failed; see 1.10.3.
 
 ## [1.10.1] — re-release of 1.10.0
 

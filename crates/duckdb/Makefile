@@ -5,13 +5,13 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXTENSION_NAME=mentat
 
 # Unstable C API is currently REQUIRED by duckdb-rs. Consequence: the produced
-# binary loads ONLY into TARGET_DUCKDB_VERSION (v1.5.5) — forward compat broken.
+# binary loads ONLY into TARGET_DUCKDB_VERSION (v1.5.6) — forward compat broken.
 # (plan §1.2, §9 risk 1). Bumping DuckDB = bump the crate pin + this together.
 USE_UNSTABLE_C_API=1
 
-# Target DuckDB version. Must match the `duckdb = "~1.10505.0"` crate pin
-# (= DuckDB v1.5.5) and the venv/PyPI `duckdb` used to test/load.
-TARGET_DUCKDB_VERSION=v1.5.5
+# Target DuckDB version. Must match the `duckdb = "~1.10506.0"` crate pin
+# (= DuckDB v1.5.6) and the venv/PyPI `duckdb` used to test/load.
+TARGET_DUCKDB_VERSION=v1.5.6
 
 # The version stamped into the extension footer: the workspace version from the
 # root Cargo.toml, so it can't drift from the release (this also works in copies
@@ -57,8 +57,12 @@ endif
 # A bare `cargo build` inside a workspace member dir does NOT reliably build
 # THIS package (it builds the default-member set, which excludes mentat_duckdb).
 # Force the package explicitly. TARGET_INFO is appended to the cargo invocation
-# by rust.Makefile (empty on native linux), so this is the override hook.
-TARGET_INFO=-p mentat_duckdb
+# by rust.Makefile (included above), which sets it to `--target <triple>` for
+# the macOS cross builds (osx_arm64/osx_amd64) and reads the artifact from
+# ./target/<triple>/. APPEND, never assign: `TARGET_INFO=-p ...` dropped the
+# --target, so cargo wrote ./target/release/ and the registry's macOS builds
+# failed with FileNotFoundError on ./target/aarch64-apple-darwin/release/.
+TARGET_INFO += -p mentat_duckdb
 
 configure: venv platform extension_version
 

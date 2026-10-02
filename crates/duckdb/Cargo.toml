@@ -19,10 +19,10 @@ default = ["script"]
 script = ["mentat/mino"]
 
 [dependencies]
-# Pin to the DuckDB v1.5.5 line. Tilde => crate patch updates, same DuckDB.
+# Pin to the DuckDB v1.5.6 line. Tilde => crate patch updates, same DuckDB.
 # loadable-extension transitively enables `vtab` + `duckdb-loadable-macros`;
 # `vscalar` is added for the scalar functions.
-duckdb = { version = "~1.10505.0", features = ["loadable-extension", "vscalar"] }
+duckdb = { version = "~1.10506.0", features = ["loadable-extension", "vscalar"] }
 
 # The embedded engine (plan §3.1 option (a)). Path dep on the workspace mentat
 # crate; it bundles its own sqlite via rusqlite `bundled` (the default).

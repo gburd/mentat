@@ -9,7 +9,7 @@ future releases.
 | `embedded` | the `mentat` Rust crate (`Store`) | `runner/`: the `mentat-scale` binary, one `Store` per thread |
 | `sqlite-ext` | `crates/sqlite/ext`, `libmentat_sqlite.so` in a host SQLite | `bench.py`: Python `sqlite3` + `load_extension`, one process per client |
 | `pg` | `crates/pg/pg_mentat` in PostgreSQL 16 | `pgbench -f pgbench/*.sql` (`\set` random params), `psql` for load |
-| `duckdb` | `crates/duckdb`, `mentat.duckdb_extension` in DuckDB v1.5.5 | `bench.py`: Python `duckdb==1.5.5` (needs Python >= 3.10), one process per client |
+| `duckdb` | `crates/duckdb`, `mentat.duckdb_extension` in DuckDB v1.5.6 | `bench.py`: Python `duckdb==1.5.6` (needs Python >= 3.10), one process per client |
 | `duckdb-quack` | the same extension, loaded in ONE long-lived DuckDB Quack server (`crates/duckdb/server/serve.sh`, started and stopped by `run.sh` per scale) | `bench.py`: client processes send the duckdb backend's SQL through `quack_query` (Python `duckdb` + `LOAD quack`, no mentat in the client) |
 
 The workload is phase2's issue tracker, the same `schema.edn`, SEED and value
@@ -117,7 +117,7 @@ cargo build --release -p mentat_scale_runner -p mentat_sqlite_ext
 SCALES=xs BACKENDS="embedded sqlite-ext pg" REPS=1 MIN_S=2 MAX_S=10 MIXED_S=5 \
   CLIENTS="1 4" benchmarks/scale/run.sh
 # duckdb: add it to BACKENDS and set PY=/path/to/python3.11-venv/bin/python
-# (with duckdb==1.5.5) and DUCKDB_EXT=crates/duckdb/build/release/mentat.duckdb_extension
+# (with duckdb==1.5.6) and DUCKDB_EXT=crates/duckdb/build/release/mentat.duckdb_extension
 ```
 
 ### On EC2 at full scale (what produced `results/scale-*`)
@@ -162,7 +162,7 @@ records the ratio at each scale. On r6id.metal, s_b is about 870 GiB.
 - `PG_MAX_RESULT_ROWS`, `PG_TEMP_FILE_LIMIT`, `PG_SLOW_QUERY_MS`: pg_mentat
   GUCs set per bench DB.
 - `DATA_ROOT`, `WORK`, `OUT`, `PY`, `RUNNER`, `SQLITE_EXT`, `DUCKDB_EXT`, `PGBIN`, `PGDATA`, `MENTAT_GIT`.
-- `DUCKDB_CLI` (DuckDB v1.5.5 CLI that runs the duckdb-quack server),
+- `DUCKDB_CLI` (DuckDB v1.5.6 CLI that runs the duckdb-quack server),
   `QUACK_PORT` (default 9494), `MENTAT_QUACK_TOKEN` (default: random per run).
 - `SUSTAINED_S` > 0 also runs `sustained` for sqlite-ext, duckdb and
   duckdb-quack when they are in BACKENDS (`bench.py mixed … sustained`: 1

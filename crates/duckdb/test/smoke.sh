@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Smoke test for the mentat DuckDB extension (edn_t / edn_q / edn_pull /
-# edn_eval), using a standalone DuckDB v1.5.5 CLI (matches the extension
-# target). Use this when the SQLLogicTest venv duckdb doesn't match v1.5.5
+# edn_eval), using a standalone DuckDB v1.5.6 CLI (matches the extension
+# target). Use this when the SQLLogicTest venv duckdb doesn't match v1.5.6
 # (e.g. host Python 3.9 caps at duckdb 1.4.5). Asserts on output so it fails
 # loudly if the logic breaks.
 #
 # Usage:
-#   DUCKDB=/path/to/duckdb-v1.5.5 crates/duckdb/test/smoke.sh
+#   DUCKDB=/path/to/duckdb-v1.5.6 crates/duckdb/test/smoke.sh
 # Assumes `make debug` has produced build/debug/mentat.duckdb_extension.
 set -euo pipefail
 

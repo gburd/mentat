@@ -131,34 +131,36 @@ versions. You provide only a buildable repo at `repo.ref`. Verified from
 `community-extensions/.github/workflows/build.yml`:
 
 ```
-DUCKDB_LATEST_STABLE: 'v1.5.5'
-DUCKDB_VERSION:       v1.5.5           # default
+DUCKDB_LATEST_STABLE: 'v1.5.6'         # was v1.5.5 until 2026-09-30
+DUCKDB_VERSION:       v1.5.6           # default
 uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
-  duckdb_version:    v1.5.5
+  duckdb_version:    v1.5.6
   ci_tools_version:  v1.5-variegata
   extra_toolchains:  <requires_toolchains from descriptor>
 ```
 
-**This is the key alignment:** community‑extensions currently builds against
-**DuckDB v1.5.5**, which is *exactly* what `mentat_duckdb` is pinned to
-(`duckdb = "~1.10505.0"`, `TARGET_DUCKDB_VERSION=v1.5.5`, `USE_UNSTABLE_C_API=1`).
-Our version‑lock is not a blocker right now — it matches the registry's stable
-target. The official Rust template (`extension-template-rs`) uses the *identical*
-`USE_UNSTABLE_C_API=1` + `TARGET_DUCKDB_VERSION=v1.5.5`, so our unstable‑C‑API
-posture is normal for a duckdb‑rs extension, not an exception.
+**Keep this aligned:** community-extensions builds against
+`DUCKDB_LATEST_STABLE`, and `mentat_duckdb` must target exactly that version
+(`duckdb = "~1.10506.0"`, `TARGET_DUCKDB_VERSION=v1.5.6`, `USE_UNSTABLE_C_API=1`).
+The unstable C API makes the binary load only into the DuckDB version it was
+built for, and the registry tests it by loading it into its own DuckDB. When
+the registry bumped v1.5.5 -> v1.5.6, our v1.5.5 build failed its Windows test
+with "built specifically for DuckDB version 'v1.5.5'". Linux looked green only
+because extension-ci-tools skips tests on linux_amd64 (and inside the Linux
+Docker build), so only the Windows and macOS jobs actually load the binary.
 
-Caveat to watch: when DuckDB bumps its stable (v1.6+), community CI will try to
-rebuild `mentat` against the new version. Because we pin the unstable C API to
-v1.5.5, that rebuild will fail until we bump the `duckdb` crate + Makefile
-`TARGET_DUCKDB_VERSION` together and PR a new `repo.ref`. That's the standard
-Rust‑extension maintenance treadmill (`UPDATING.md` "Upgrading to a new DuckDB
-version"), not a defect.
+Every DuckDB patch release therefore needs a mentat release: bump the three
+duckdb-rs crates (`1.10X0Y.0` = DuckDB v1.X.Y), `TARGET_DUCKDB_VERSION`, and
+`DUCKDB_VERSION` in ci.yml, then PR the new `repo.ref`. The official Rust
+template (`extension-template-rs`) works the same way, so this is the normal
+maintenance treadmill for duckdb-rs extensions (`UPDATING.md` "Upgrading to a
+new DuckDB version").
 
 What our repo must expose for their CI (all already present in `crates/duckdb`):
 - `Makefile` including
   `extension-ci-tools/makefiles/c_api_extensions/{base,rust}.Makefile`,
   with `EXTENSION_NAME=mentat`, `USE_UNSTABLE_C_API=1`,
-  `TARGET_DUCKDB_VERSION=v1.5.5`, and the `configure`/`debug`/`release`/`test`
+  `TARGET_DUCKDB_VERSION=v1.5.6`, and the `configure`/`debug`/`release`/`test`
   targets. ✅ present.
 - `EXTENSION_LIB_FILENAME`/`RUST_LIBNAME` override (our cdylib is
   `libmentat_duckdb.so`). ✅ present.
@@ -407,8 +409,8 @@ One‑time maintainer steps:
 | | DuckDB Community Extensions | PGXN |
 |---|---|---|
 | Publish mechanism | PR editing `extensions/mentat/description.yml` in `duckdb/community-extensions` | `pgxn-bundle` + `pgxn-release` (image `pgxn/pgxn-tools`) |
-| Build/sign | **Central** (their CI, all platforms, DuckDB v1.5.5, `ci_tools_version v1.5-variegata`) | You bundle a zip; PGXN Manager just stores it |
-| Our version‑lock | **Matches** (registry stable = v1.5.5 = our pin) ✅ | n/a |
+| Build/sign | **Central** (their CI, all platforms, DuckDB v1.5.6, `ci_tools_version v1.5-variegata`) | You bundle a zip; PGXN Manager just stores it |
+| Our version‑lock | **Matches** (registry stable = v1.5.6 = our pin) ✅ | n/a |
 | First time | Manual PR + upstream review | Create + get PGXN account approved |
 | Per release (automatable?) | CI opens PR (needs `COMMUNITY_EXT_PAT`); **merge is a human gate** | Fully automatable (`PGXN_USERNAME`/`PGXN_PASSWORD`) |
 | Secrets | `COMMUNITY_EXT_PAT` (fork+PR scope) | `PGXN_USERNAME`, `PGXN_PASSWORD` |
@@ -420,13 +422,13 @@ One‑time maintainer steps:
 
 - DuckDB community: `github.com/duckdb/community-extensions`
   (`README.md`, `UPDATING.md`, `scripts/build.py`,
-  `.github/workflows/build.yml` → `DUCKDB_LATEST_STABLE: v1.5.5`,
+  `.github/workflows/build.yml` → `DUCKDB_LATEST_STABLE: v1.5.6`,
   `_extension_distribution.yml@v1.5-variegata`).
 - Real descriptors: `extensions/quackformers/description.yml` (pure Rust,
   `build: cargo`), `extensions/crypto/description.yml`,
   `extensions/waddle/description.yml` (in `UPDATING.md`).
 - Rust template: `github.com/duckdb/extension-template-rs`
-  (`Makefile` → `USE_UNSTABLE_C_API=1`, `TARGET_DUCKDB_VERSION=v1.5.5`;
+  (`Makefile` → `USE_UNSTABLE_C_API=1`, `TARGET_DUCKDB_VERSION=v1.5.6`;
   `.github/workflows/MainDistributionPipeline.yml`).
 - PGXN tooling: `github.com/pgxn/docker-pgxn-tools`
   (`README.md`, `bin/pgxn-bundle`, `bin/pgxn-release`); image `pgxn/pgxn-tools`;

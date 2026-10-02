@@ -2,11 +2,11 @@
 # One-time host bootstrap for the scale suite on a fresh AL2023 box (tested on
 # r6id.metal). Idempotent-ish: re-running skips finished steps.
 #   - RAID-0 every "Instance Storage" NVMe disk -> XFS at /nvme
-#   - toolchain: gcc/clang/rustup 1.90/cargo-pgrx 0.17.0/python3.11 venv (duckdb 1.5.5)
+#   - toolchain: gcc/clang/rustup 1.90/cargo-pgrx 0.17.0/python3.11 venv (duckdb 1.5.6)
 #   - PostgreSQL 16 built from source WITHOUT --enable-cassert (pgrx's
 #     `init --pg16 download` builds an assert-enabled server, which is not a
 #     fair benchmark target), registered with pgrx via its pg_config.
-#   - DuckDB v1.5.5 CLI
+#   - DuckDB v1.5.6 CLI
 set -euxo pipefail
 PGV="${PGV:-16.15}"
 NV=/nvme
@@ -39,11 +39,11 @@ cargo pgrx --version 2>/dev/null | grep -q 0.17.0 || cargo +1.90 install cargo-p
 cargo pgrx init --pg16 $NV/pg16/bin/pg_config
 
 [ -x $NV/venv/bin/python ] || python3.11 -m venv $NV/venv
-$NV/venv/bin/pip install -q duckdb==1.5.5
+$NV/venv/bin/pip install -q duckdb==1.5.6
 
 if [ ! -x $NV/bin/duckdb ]; then
   mkdir -p $NV/bin && cd $NV/bin
-  curl -sfLo duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip
+  curl -sfLo duckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
   unzip -o duckdb.zip && rm duckdb.zip
 fi
 $NV/bin/duckdb --version

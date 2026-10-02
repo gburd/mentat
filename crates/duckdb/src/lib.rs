@@ -424,7 +424,7 @@ impl VTab for EdnQuery {
 
         // DuckDB's STANDARD_VECTOR_SIZE; the output chunk is pre-sized to this.
         // ponytail: hardcoded 2048 (the crate exposes no capacity accessor at
-        // v1.5.5); revisit if a future crate version adds one.
+        // v1.5.6); revisit if a future crate version adds one.
         const VECTOR_SIZE: usize = 2048;
         let remaining = bind_data.rows.len().saturating_sub(*cursor);
         let n = remaining.min(VECTOR_SIZE);

@@ -3,9 +3,9 @@
 # group: [mentat]
 #
 # Run with the SQLLogicTest harness (`make test_debug`) ONLY when the venv/host
-# duckdb matches the extension target (v1.5.5, i.e. Python 3.10+). On Python 3.9
-# the venv caps at duckdb 1.4.5 and cannot load a v1.5.5 extension; use
-# test/smoke.sh with the standalone v1.5.5 CLI instead.
+# duckdb matches the extension target (v1.5.6, i.e. Python 3.10+). On Python 3.9
+# the venv caps at duckdb 1.4.5 and cannot load a v1.5.6 extension; use
+# test/smoke.sh with the standalone v1.5.6 CLI instead.
 
 require mentat
 

@@ -42,12 +42,12 @@ export LOAD_MAX_S
 PGBIN="${PGBIN:-$(dirname "$(command -v pg_config || echo /usr/bin/pg_config)")}"
 export PATH="$PGBIN:$PATH"
 export PGOPTIONS="--client-min-messages=warning"   # PGDATABASE is mentat_<scale>
-PY="${PY:-python3}"             # needs duckdb==1.5.5 for the duckdb backend
+PY="${PY:-python3}"             # needs duckdb==1.5.6 for the duckdb backend
 RUNNER="${RUNNER:-$REPO/target/release/mentat-scale}"
 SQLITE_EXT="${SQLITE_EXT:-$REPO/target/release/libmentat_sqlite}"
 DUCKDB_EXT="${DUCKDB_EXT:-$REPO/crates/duckdb/build/release/mentat.duckdb_extension}"
 export RUNNER SQLITE_EXT DUCKDB_EXT
-DUCKDB_CLI="${DUCKDB_CLI:-duckdb}"   # DuckDB v1.5.5 CLI: runs the duckdb-quack server
+DUCKDB_CLI="${DUCKDB_CLI:-duckdb}"   # DuckDB v1.5.6 CLI: runs the duckdb-quack server
 QUACK_PORT="${QUACK_PORT:-9494}"
 export QUACK_URI="quack:127.0.0.1:$QUACK_PORT"
 export MENTAT_QUACK_TOKEN="${MENTAT_QUACK_TOKEN:-$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')}"

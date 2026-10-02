@@ -9,13 +9,13 @@ option (a)). See `docs/duckdb-extension-plan.md`.
 
 | Component | Version |
 |---|---|
-| `duckdb` / `libduckdb-sys` / `duckdb-loadable-macros` | `~1.10505.0` (= DuckDB **v1.5.5**) |
-| `TARGET_DUCKDB_VERSION` | `v1.5.5` |
+| `duckdb` / `libduckdb-sys` / `duckdb-loadable-macros` | `~1.10506.0` (= DuckDB **v1.5.6**) |
+| `TARGET_DUCKDB_VERSION` | `v1.5.6` |
 | `USE_UNSTABLE_C_API` | `1` (required by duckdb-rs today) |
 
 Because duckdb-rs currently requires the **unstable C API**
 (`USE_UNSTABLE_C_API=1`), the produced `.duckdb_extension` loads **only** into
-DuckDB **v1.5.5**. Forward compatibility is not guaranteed. Bumping DuckDB means
+DuckDB **v1.5.6**. Forward compatibility is not guaranteed. Bumping DuckDB means
 bumping the crate pin **and** `TARGET_DUCKDB_VERSION` together, then rebuilding
 (plan §9 risk 1).
 
@@ -68,20 +68,20 @@ cargo build -p mentat_duckdb   # from repo root; produces a bare .so, NOT loadab
 ## Load & use
 
 DuckDB refuses unsigned extensions unless started with `-unsigned` (or
-`allow_unsigned_extensions=true`). Use a **DuckDB v1.5.5** CLI (the pinned
+`allow_unsigned_extensions=true`). Use a **DuckDB v1.5.6** CLI (the pinned
 target). The standalone CLI:
 
 ```bash
 curl -sfL -o duckdb_cli.zip \
-  https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip
+  https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
 unzip duckdb_cli.zip
-./duckdb --version   # v1.5.5 (Variegata)
+./duckdb --version   # v1.5.6 (Variegata)
 ```
 
 (The `make configure` venv installs the latest `duckdb` PyPI wheel available for
-the host Python; on Python 3.9 that caps at 1.4.5, which can NOT load a v1.5.5
-extension — hence the standalone v1.5.5 CLI for load/smoke tests. On Python
-3.10+ the venv wheel is 1.5.5 and `make test_debug` works.)
+the host Python; on Python 3.9 that caps at 1.4.5, which can NOT load a v1.5.6
+extension — hence the standalone v1.5.6 CLI for load/smoke tests. On Python
+3.10+ the venv wheel is 1.5.6 and `make test_debug` works.)
 
 ```sql
 -- duckdb -unsigned
@@ -188,7 +188,7 @@ SELECT edn_eval('/tmp/demo.mentat', '
 
 ## Running as a server (Quack)
 
-DuckDB v1.5.5 ships the core `quack` extension: a DuckDB process serves SQL
+DuckDB v1.5.6 ships the core `quack` extension: a DuckDB process serves SQL
 over HTTP to other DuckDB clients. With mentat loaded in that server, every
 client gets `edn_t`/`edn_q`/`edn_pull`/`edn_eval` without loading (or even
 having) the mentat extension, and all of them share one long-lived process, so
@@ -198,7 +198,7 @@ the store cache (above) stays warm across clients and connections.
 
 ```sh
 export MENTAT_QUACK_TOKEN=$(openssl rand -hex 24)   # clients need this
-DUCKDB=/path/to/duckdb-v1.5.5 crates/duckdb/server/serve.sh
+DUCKDB=/path/to/duckdb-v1.5.6 crates/duckdb/server/serve.sh
 # mentat quack server: quack:127.0.0.1:9494 pid 4242 log /run/user/1000/mentat-quack-9494.log
 crates/duckdb/server/stop.sh
 ```
@@ -251,13 +251,13 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
   directory (the systemd unit does). DuckDB's in-process lockdowns do not help
   here: with `enable_external_access = false`, `lock_configuration = true` or
   `autoload_known_extensions = false` set, every Quack request fails with
-  HTTP 500 at v1.5.5. The server insists on a token of at least 4 characters;
+  HTTP 500 at v1.5.6. The server insists on a token of at least 4 characters;
   use 32+ random ones.
 - **Bind address.** Quack accepts only localhost unless `allow_other_hostname`
   is set; `serve.sh` sets it automatically when `MENTAT_QUACK_HOST` is not
   loopback, and warns.
 - **TLS.** The server speaks plain HTTP (`serve.sh` passes
-  `disable_ssl => true`; v1.5.5 reports an `http://` listen URL either way).
+  `disable_ssl => true`; v1.5.6 reports an `http://` listen URL either way).
   Clients use `http://` for `localhost`/`127.0.0.1` and `https://` for any
   other host unless given `disable_ssl => true` (`disable_ssl => false`
   forces `https://` even on localhost). So for anything beyond one host,
@@ -289,18 +289,18 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
   server can hold one connection per HTTP worker (up to ~128) per store, and each
   write makes all of them reopen.
 
-Quack is pre-2.0 at DuckDB v1.5.5 (`quack` build `c154811`): its wire protocol
+Quack is pre-2.0 at DuckDB v1.5.6 (`quack` build `c154811`): its wire protocol
 and function signatures may change in any DuckDB release, and the mentat
-extension is version-locked to v1.5.5 anyway (see "Pinned versions"). Server
+extension is version-locked to v1.5.6 anyway (see "Pinned versions"). Server
 and clients must run the same DuckDB version. A server holds its stores open,
 so stop it before moving or deleting store files.
 
 ## Tests
 
-- `test/smoke.sh` — standalone DuckDB v1.5.5 CLI; asserts on every output line
+- `test/smoke.sh` — standalone DuckDB v1.5.6 CLI; asserts on every output line
   and on the error paths. `DUCKDB=/path/to/duckdb bash test/smoke.sh`.
 - `test/sql/mentat.test` — SQLLogicTest, same coverage. Needs a Python 3.10+
-  venv with `duckdb==1.5.5` and `duckdb-sqllogictest-python`, e.g.
+  venv with `duckdb==1.5.6` and `duckdb-sqllogictest-python`, e.g.
   `python -m duckdb_sqllogictest --test-dir test/sql --external-extension build/debug/mentat.duckdb_extension`.
 
 ## Milestones

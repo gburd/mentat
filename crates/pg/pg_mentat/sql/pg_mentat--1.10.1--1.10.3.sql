@@ -1,0 +1,5 @@
+-- pg_mentat 1.10.1 -> 1.10.3 upgrade.
+--
+-- No schema or data change: 1.10.2 and 1.10.3 change only the DuckDB
+-- extension's build (and its DuckDB version). 1.10.2 did not bump pg_mentat, so
+-- there is no 1.10.2 pg_mentat release and this edge goes straight from 1.10.1.
