@@ -112,3 +112,23 @@ one call; sparsemap v5.7.0 evaluation (TODO above).
 - Registry PR #2812 head 8bda202a: version 1.10.1, ref 3e1100e3. Still awaits a
   maintainer to approve its build workflows. COMMUNITY_EXT_PAT is unset, so
   release.yml's registry job skips (bumps are manual on branch mentat-1.8.0).
+
+## v1.10.3 RELEASED (2026-10-02) — DuckDB registry fixes
+- PR #2812 at v1.10.2 (e5613091, cut 2026-09-30 by another session; release run
+  cancelled, no pg/META bump) still failed macOS + Windows. Two causes:
+  (1) crates/duckdb/Makefile `TARGET_INFO=-p mentat_duckdb` replaced ci-tools'
+  macOS `--target <triple>` -> now `+=`; (2) registry DUCKDB_LATEST_STABLE moved
+  to v1.5.6 and our unstable-C-API build was v1.5.5 -> duckdb-rs ~1.10506.0,
+  TARGET_DUCKDB_VERSION/CI/release/docs v1.5.6.
+- v1.10.3 = a835c85e. Verified BEFORE touching the PR by running the registry's
+  build.yml on fork branch mentat-test-1.10.3 (deleted after): all 5 platforms
+  green, osx_arm64 + windows ran SQLLogicTest (linux_amd64/arm64 and osx_amd64
+  skip tests). Local ubuntu:24.04: make test_release SUCCESS (venv duckdb 1.5.6),
+  smoke PASS with v1.5.6 CLI, v1.5.5 CLI refuses the binary.
+- mentat CI green on a835c85e; release run green first try: GitHub Release 6
+  assets, PGXN pg_mentat 1.10.3, pg edge pg_mentat--1.10.1--1.10.3.sql.
+- PR #2812 head 0aaca0f0 (version 1.10.3, ref a835c85e); comment posted correcting
+  the 1.10.2 claim. Its CI is "action_required" again (each push to the PR needs
+  maintainer approval for fork workflows).
+- Treadmill: every DuckDB patch release (registry stable bump) needs a mentat
+  release while on the unstable C API. See docs/registry-publishing.md.
