@@ -171,3 +171,16 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   re-run both; if green tag v1.11.0 at 89288a08, watch release.yml + PGXN, open a NEW registry PR
   (version 1.11.0, ref = tag commit; #2812 already merged), delete fork test branch, terminate
   EC2 i-0d9deacbbbb1b24bd (+ key mentat-duck-20261005-135857-key, SG sg-03e8945a1022cb82d).
+
+## v1.11.0 RELEASED (2026-10-05) — DuckDB extension stores its datoms in DuckDB
+- Tag v1.11.0 = 89288a08. mentat CI green (all jobs incl. pg13-18, test-duckdb + store harness);
+  release run green: GitHub Release 6 assets (duckdb ext 2.7 MB tarball), PGXN pg_mentat 1.11.0.
+  Release asset verified in a clean ubuntu container: datoms land in DuckDB, no file written.
+- Registry: NEW PR duckdb/community-extensions#2935 (branch gburd:mentat-1.11.0, version 1.11.0,
+  ref 89288a08). Same descriptor passed the registry build on the fork (5 platforms; SQLLogicTest
+  on osx_arm64 + windows). #2812 (initial listing) was merged 2026-10-05.
+- README / registry description intentionally NOT updated (user instruction); they still say
+  "embeds the mentat SQLite store". CHANGELOG lists this under Known gaps.
+- EC2 (account 170848442262) terminated; key + SG deleted.
+- Follow-ups: connection pool (calls serialized), batch per-call statements (point lookups
+  ~3 ms), fulltext on DuckDB, ATTACHed-database stores, migration from 1.10.x SQLite files.
