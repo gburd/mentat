@@ -296,6 +296,11 @@ impl QueryFragment for Expression {
 /// - doubles, and `avg` of anything: `mentat_num(v)` (long or double, as DOUBLE);
 /// - longs, instants, booleans, refs: the `i` member; strings, keywords: `s`;
 /// - `count`, and anything else: the value as is.
+// The DuckDB store's `v` type (mentat_duckdb_store::schema::VALUE_TYPE).
+const DUCK_AS_VALUE_CLOSE: &str = " AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)))";
+const DUCK_AS_VALUE_I: &str = " AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)), 'i')";
+const DUCK_AS_VALUE_S: &str = " AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)), 's')";
+
 fn push_duckdb_aggregate(
     out: &mut dyn QueryBuilder,
     e: &Expression,
@@ -304,13 +309,11 @@ fn push_duckdb_aggregate(
     let Expression::Unary { sql_op, ref arg } = e;
     let (prefix, suffix) = match (*sql_op, t) {
         ("count", _) => ("", ""),
-        ("avg", _) | (_, ValueType::Double) => ("mentat_num(CAST(", " AS mentat_value))"),
+        ("avg", _) | (_, ValueType::Double) => ("mentat_num(CAST(", DUCK_AS_VALUE_CLOSE),
         (_, ValueType::Long | ValueType::Instant | ValueType::Boolean | ValueType::Ref) => {
-            ("union_extract(CAST(", " AS mentat_value), 'i')")
+            ("union_extract(CAST(", DUCK_AS_VALUE_I)
         }
-        (_, ValueType::String | ValueType::Keyword) => {
-            ("union_extract(CAST(", " AS mentat_value), 's')")
-        }
+        (_, ValueType::String | ValueType::Keyword) => ("union_extract(CAST(", DUCK_AS_VALUE_S),
         _ => ("", ""),
     };
     out.push_sql(sql_op);
