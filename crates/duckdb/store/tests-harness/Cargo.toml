@@ -12,8 +12,14 @@ publish = false
 
 [dependencies]
 duckdb = { version = "~1.10506.0", features = ["bundled"] }
-mentat_duckdb_store = { path = ".." }
+mentat_duckdb_store = { path = "..", features = ["script"] }
+mentat_script = { path = "../../../script" }
+mino-rs = { path = "../../../mino" }
 mentat_query_algebrizer = { path = "../../../sqlite/query-algebrizer" }
 mentat_query_projector = { path = "../../../sqlite/query-projector" }
 core_traits = { path = "../../../core-traits" }
 edn = { path = "../../../edn" }
+
+[dev-dependencies]
+# The SQLite engine, for the differential test (its own bundled SQLite).
+mentat = { path = "../../../sqlite/mentat" }

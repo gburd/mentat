@@ -16,7 +16,7 @@ crate-type = ["cdylib"]
 # script runs sandboxed (no host filesystem) with step/heap/depth limits.
 default = ["script"]
 # The mino scripting surface: `edn_eval(store, script)`.
-script = ["dep:mino-rs", "dep:mentat_script"]
+script = ["mentat_duckdb_store/script"]
 
 [dependencies]
 # Pin to the DuckDB v1.5.6 line. Tilde => crate patch updates, same DuckDB.
@@ -35,5 +35,3 @@ mentat_query_projector = { path = "../sqlite/query-projector" }
 mentat_transaction = { path = "../sqlite/transaction" }
 serde_json = "1"
 
-mino-rs = { path = "../mino", optional = true }
-mentat_script = { path = "../script", optional = true }

@@ -40,8 +40,6 @@ type BoxErr = Box<dyn Error>;
 
 #[path = "../store/src/duck_conn.rs"]
 mod duck_conn;
-#[cfg(feature = "script")]
-mod script;
 
 /// The extension's connection to the host database, made in the entrypoint.
 /// It has to be made there: the database handle DuckDB passes the entrypoint
@@ -341,7 +339,8 @@ impl VScalar for EdnEval {
             // Sandboxed (no host fs prims) + step/heap/depth limits; a no-arg
             // `(mentat.store/open)` opens store `db`.
             let (c, _lock) = conn()?;
-            let out = script::eval(c, &db, &src).map_err(|e| format!("edn_eval: {e}"))?;
+            let out = mentat_duckdb_store::script::eval(c, &db, &src)
+                .map_err(|e| format!("edn_eval: {e}"))?;
             Ok(Some(out))
         })
     }

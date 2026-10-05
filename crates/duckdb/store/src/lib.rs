@@ -24,6 +24,8 @@
 pub use mentat_sql::{Dialect, SqlConn, SqlConnExt, SqlError, SqlRow, SqlValue};
 
 mod schema;
+#[cfg(feature = "script")]
+pub mod script;
 mod store;
 mod storing;
 

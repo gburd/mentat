@@ -2506,9 +2506,7 @@ dependencies = [
  "mentat_duckdb_store",
  "mentat_query_algebrizer",
  "mentat_query_projector",
- "mentat_script",
  "mentat_transaction",
- "mino-rs",
  "serde_json",
 ]
 
@@ -2524,8 +2522,10 @@ dependencies = [
  "mentat_query_algebrizer",
  "mentat_query_projector",
  "mentat_query_pull",
+ "mentat_script",
  "mentat_sql",
  "mentat_transaction",
+ "mino-rs",
  "public_traits",
  "serde_json",
 ]

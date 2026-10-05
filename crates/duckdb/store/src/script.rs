@@ -25,9 +25,9 @@ use mino_rs::collections::vector::PVec;
 use mino_rs::symbol::Symbol;
 use mino_rs::{Gc, Value};
 
+use crate::{DuckStore, SqlConn};
 use core_traits::{Binding, StructuredMap, TypedValue};
 use mentat_core::{HasSchema, Keyword};
-use mentat_duckdb_store::{DuckStore, SqlConn};
 use mentat_query_algebrizer::TemporalBound;
 use mentat_query_projector::{QueryOutput, QueryResults};
 use mentat_script::{DbRef, ScriptBackend, TxReport};
@@ -207,9 +207,9 @@ impl ScriptBackend for DuckBackend {
     }
 }
 
-/// A sandboxed, limited interpreter whose no-arg `(mentat.store/open)` opens
-/// `store` in the DuckDB database behind `conn`.
-pub fn eval(conn: &'static dyn SqlConn, store: &str, src: &str) -> Result<String, String> {
+/// A sandboxed, limited interpreter with the `mentat.store/*` prims over
+/// DuckDB stores; a no-arg `(mentat.store/open)` opens `store`.
+pub fn interpreter(conn: &'static dyn SqlConn, store: &str) -> mino_rs::Interpreter {
     let mut it = mino_rs::Interpreter::sandboxed();
     it.set_limits(SCRIPT_LIMITS);
     let backend = std::rc::Rc::new(RefCell::new(DuckBackend {
@@ -219,7 +219,12 @@ pub fn eval(conn: &'static dyn SqlConn, store: &str, src: &str) -> Result<String
         next_id: Cell::new(1),
     }));
     mentat_script::install(&mut it, backend);
-    it.eval_to_string(src)
+    it
+}
+
+/// Evaluate `src` in a fresh [`interpreter`]; returns `pr-str` of the result.
+pub fn eval(conn: &'static dyn SqlConn, store: &str, src: &str) -> Result<String, String> {
+    interpreter(conn, store).eval_to_string(src)
 }
 
 // ---------------------------------------------------------------------------

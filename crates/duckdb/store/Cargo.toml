@@ -13,6 +13,10 @@ description = "mentat's storage on DuckDB tables (the DuckDB extension's backend
 # #[path]-included by the extension and by `tests-harness`, which build duckdb
 # with different features.
 
+[features]
+# `edn_eval`'s mino scripting surface over DuckDB stores.
+script = ["dep:mino-rs", "dep:mentat_script"]
+
 [dependencies]
 core_traits = { path = "../../core-traits" }
 db_traits = { path = "../../sqlite/db-traits" }
@@ -26,6 +30,8 @@ mentat_sql = { path = "../../sqlite/sql" }
 mentat_transaction = { path = "../../sqlite/transaction" }
 public_traits = { path = "../../sqlite/public-traits" }
 serde_json = "1"
+mino-rs = { path = "../../mino", optional = true }
+mentat_script = { path = "../../script", optional = true }
 
 [lints]
 workspace = true
