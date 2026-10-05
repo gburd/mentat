@@ -33,6 +33,19 @@ pub const VERSION: i64 = 1;
 /// The type of every `v` column.
 pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
 
+/// Plain copies of `v`'s members, on `datoms` and `timelined_transactions`.
+/// DuckDB handles a UNION column slowly (scanned, hashed and joined as a
+/// struct): a ref traversal over 100k datoms took 16 ms on `v` and 3.3 ms on
+/// plain columns. The DuckDB query dialect filters, joins, compares and
+/// aggregates on these whenever the value's type is known, and falls back to
+/// `v` otherwise. Written with `v` on every insert, so they always agree.
+pub const TYPED_COLUMNS: &str = "v_i BIGINT, v_d DOUBLE, v_s VARCHAR";
+
+/// The typed columns' values for a `v`-typed expression `x`, for an INSERT.
+pub fn typed_values(x: &str) -> String {
+    format!("union_extract({x}, 'i'), union_extract({x}, 'd'), union_extract({x}, 's')")
+}
+
 /// DDL for a new store in DuckDB schema `s`.
 pub fn create_statements(s: &str) -> Vec<String> {
     vec![
@@ -51,7 +64,8 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "CREATE TABLE {s}.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
              v {VALUE_TYPE} NOT NULL, tx BIGINT NOT NULL, value_type_tag SMALLINT NOT NULL, \
              index_avet BOOLEAN NOT NULL DEFAULT false, index_vaet BOOLEAN NOT NULL DEFAULT false, \
-             index_fulltext BOOLEAN NOT NULL DEFAULT false, unique_value BOOLEAN NOT NULL DEFAULT false)"
+             index_fulltext BOOLEAN NOT NULL DEFAULT false, unique_value BOOLEAN NOT NULL DEFAULT false, \
+             {TYPED_COLUMNS})"
         ),
         // The SQLite store's (e, a, ...) indexes, minus `v`. Point lookups by
         // entity (pull, retractEntity, cardinality checks) stay index scans.
@@ -60,12 +74,13 @@ pub fn create_statements(s: &str) -> Vec<String> {
         format!(
             "CREATE TABLE {s}.timelined_transactions (e BIGINT NOT NULL, a BIGINT NOT NULL, \
              v {VALUE_TYPE} NOT NULL, tx BIGINT NOT NULL, added BOOLEAN NOT NULL DEFAULT true, \
-             value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0)"
+             value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0, \
+             {TYPED_COLUMNS})"
         ),
         format!("CREATE INDEX idx_tt_tx ON {s}.timelined_transactions (tx)"),
         format!(
-            "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added \
-             FROM {s}.timelined_transactions WHERE timeline = 0"
+            "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
+             v_i, v_d, v_s FROM {s}.timelined_transactions WHERE timeline = 0"
         ),
         // Fulltext: not tokenized on DuckDB (see module docs). The views keep
         // the engine's `all_datoms` / `fulltext_datoms` references valid.
@@ -74,11 +89,11 @@ pub fn create_statements(s: &str) -> Vec<String> {
         ),
         format!(
             "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value FROM {s}.datoms WHERE index_fulltext"
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms WHERE index_fulltext"
         ),
         format!(
             "CREATE VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value FROM {s}.datoms"
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms"
         ),
         format!(
             "CREATE TABLE {s}.idents (e BIGINT NOT NULL, a BIGINT NOT NULL, \

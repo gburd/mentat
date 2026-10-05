@@ -118,25 +118,31 @@ impl DuckStoring<'_> {
     }
 
     fn insert_transaction(&self, tx: Entid) -> Result<()> {
-        let s = "
-          INSERT INTO timelined_transactions (e, a, v, tx, added, value_type_tag)
-          SELECT e0, a0, v0, ?, true, value_type_tag0
+        let s = format!(
+            "
+          INSERT INTO timelined_transactions (e, a, v, tx, added, value_type_tag, v_i, v_d, v_s)
+          SELECT e0, a0, v0, ?, true, value_type_tag0, {}
           FROM temp.search_results
-          WHERE added0 AND ((rid IS NULL) OR (v0 IS DISTINCT FROM v))";
+          WHERE added0 AND ((rid IS NULL) OR (v0 IS DISTINCT FROM v))",
+            schema::typed_values("v0")
+        );
         self.exec(
-            s,
+            &s,
             &[SqlValue::Integer(tx)],
             DbErrorKind::TxInsertFailedToAddMissingDatoms,
         )?;
-        let s = "
-          INSERT INTO timelined_transactions (e, a, v, tx, added, value_type_tag)
-          SELECT DISTINCT e0, a0, v, ?, false, value_type_tag0
+        let s = format!(
+            "
+          INSERT INTO timelined_transactions (e, a, v, tx, added, value_type_tag, v_i, v_d, v_s)
+          SELECT DISTINCT e0, a0, v, ?, false, value_type_tag0, {}
           FROM temp.search_results
           WHERE rid IS NOT NULL AND
                 ((NOT added0) OR
-                 (added0 AND search_type = ':db.cardinality/one' AND v0 IS DISTINCT FROM v))";
+                 (added0 AND search_type = ':db.cardinality/one' AND v0 IS DISTINCT FROM v))",
+            schema::typed_values("v")
+        );
         self.exec(
-            s,
+            &s,
             &[SqlValue::Integer(tx)],
             DbErrorKind::TxInsertFailedToRetractDatoms,
         )
@@ -152,15 +158,16 @@ impl DuckStoring<'_> {
         self.exec(s, &[], DbErrorKind::DatomsUpdateFailedToRetract)?;
         let s = format!(
             "
-          INSERT INTO datoms (e, a, v, tx, value_type_tag, index_avet, index_vaet, index_fulltext, unique_value)
+          INSERT INTO datoms (e, a, v, tx, value_type_tag, index_avet, index_vaet, index_fulltext, unique_value, v_i, v_d, v_s)
           SELECT e0, a0, v0, ?, value_type_tag0,
-                 (flags0 & {}) <> 0, (flags0 & {}) <> 0, (flags0 & {}) <> 0, (flags0 & {}) <> 0
+                 (flags0 & {}) <> 0, (flags0 & {}) <> 0, (flags0 & {}) <> 0, (flags0 & {}) <> 0, {}
           FROM temp.search_results
           WHERE added0 AND ((rid IS NULL) OR (v0 IS DISTINCT FROM v))",
             AttributeBitFlags::IndexAVET as u8,
             AttributeBitFlags::IndexVAET as u8,
             AttributeBitFlags::IndexFulltext as u8,
-            AttributeBitFlags::UniqueValue as u8
+            AttributeBitFlags::UniqueValue as u8,
+            schema::typed_values("v0")
         );
         self.exec(
             &s,

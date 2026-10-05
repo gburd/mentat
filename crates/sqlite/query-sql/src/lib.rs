@@ -290,37 +290,46 @@ impl QueryFragment for Expression {
     }
 }
 
-/// An aggregate on DuckDB. Its argument is a `v` (a UNION), which DuckDB's
-/// aggregates don't accept, so unwrap it to the member the result type implies
-/// (SQLite's aggregates work on its storage classes directly):
-/// - doubles, and `avg` of anything: `mentat_num(v)` (long or double, as DOUBLE);
+/// An aggregate on DuckDB. Its argument names a projected column that holds a
+/// `v` (a UNION), which DuckDB's aggregates don't accept, so unwrap it to the
+/// member the result type implies (SQLite's aggregates work on its storage
+/// classes directly):
+/// - doubles, and `avg` of anything: long or double, as DOUBLE;
 /// - longs, instants, booleans, refs: the `i` member; strings, keywords: `s`;
 /// - `count`, and anything else: the value as is.
-// The DuckDB store's `v` type (mentat_duckdb_store::schema::VALUE_TYPE).
-const DUCK_AS_VALUE_CLOSE: &str = " AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)))";
-const DUCK_AS_VALUE_I: &str = " AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)), 'i')";
-const DUCK_AS_VALUE_S: &str = " AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)), 's')";
-
 fn push_duckdb_aggregate(
     out: &mut dyn QueryBuilder,
     e: &Expression,
     t: ValueType,
 ) -> BuildQueryResult {
     let Expression::Unary { sql_op, ref arg } = e;
-    let (prefix, suffix) = match (*sql_op, t) {
-        ("count", _) => ("", ""),
-        ("avg", _) | (_, ValueType::Double) => ("mentat_num(CAST(", DUCK_AS_VALUE_CLOSE),
-        (_, ValueType::Long | ValueType::Instant | ValueType::Boolean | ValueType::Ref) => {
-            ("union_extract(CAST(", DUCK_AS_VALUE_I)
-        }
-        (_, ValueType::String | ValueType::Keyword) => ("union_extract(CAST(", DUCK_AS_VALUE_S),
-        _ => ("", ""),
-    };
+    // The argument is an inner query's column (`"?x"`), whose type is the
+    // store's UNION; a constant is cast to it first.
+    let union = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
     out.push_sql(sql_op);
     out.push_sql("(");
-    out.push_sql(prefix);
-    arg.push_sql(out)?;
-    out.push_sql(suffix);
+    let member = match (*sql_op, t) {
+        ("count", _) => None,
+        ("avg", _) | (_, ValueType::Double) => Some("num"),
+        (_, ValueType::Long | ValueType::Instant | ValueType::Boolean | ValueType::Ref) => {
+            Some("i")
+        }
+        (_, ValueType::String | ValueType::Keyword) => Some("s"),
+        _ => None,
+    };
+    match member {
+        None => arg.push_sql(out)?,
+        Some("num") => {
+            out.push_sql("mentat_num(CAST(");
+            arg.push_sql(out)?;
+            out.push_sql(&format!(" AS {union}))"));
+        }
+        Some(m) => {
+            out.push_sql("union_extract(CAST(");
+            arg.push_sql(out)?;
+            out.push_sql(&format!(" AS {union}), '{m}')"));
+        }
+    }
     out.push_sql(")");
     Ok(())
 }
@@ -383,10 +392,30 @@ impl QueryFragment for Constraint {
                     && matches!(op.0, "=" | "<>")
                     && (is_value_column(left) != is_value_column(right))
                     && (is_integer_column(left) || is_integer_column(right));
+                // `v = <constant>`: compare the constant's own typed column
+                // (a plain column DuckDB filters in the scan).
+                let typed_eq = |c: &ColumnOrExpression| match c {
+                    ColumnOrExpression::Value(tv) => duck_member(tv),
+                    ColumnOrExpression::Entid(_) | ColumnOrExpression::Long(_) => Some("v_i"),
+                    _ => None,
+                };
+                let eq_member = if duck && matches!(op.0, "=" | "<>") {
+                    if is_value_column(left) {
+                        typed_eq(right)
+                    } else if is_value_column(right) {
+                        typed_eq(left)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 let mode = if numeric {
                     Comparand::Numeric
                 } else if int_join {
-                    Comparand::Integer
+                    Comparand::Member("v_i")
+                } else if let Some(m) = eq_member {
+                    Comparand::Member(m)
                 } else {
                     Comparand::AsIs
                 };
@@ -498,10 +527,23 @@ fn is_integer_column(c: &ColumnOrExpression) -> bool {
 #[derive(Clone, Copy)]
 enum Comparand {
     AsIs,
-    /// `v` as a number (DuckDB ordering comparisons).
+    /// `v` as a number (DuckDB ordering comparisons): its plain long or double
+    /// copy, as DOUBLE.
     Numeric,
-    /// `v`'s integer member (DuckDB joins with an entity/tx column).
-    Integer,
+    /// One of `v`'s plain typed copies (`v_i`, `v_d`, `v_s`; DuckDB).
+    Member(&'static str),
+}
+
+/// The DuckDB store's plain column holding a value of `tv`'s storage class,
+/// or None for blobs (uuid, bytes), which are compared on `v` itself.
+fn duck_member(tv: &TypedValue) -> Option<&'static str> {
+    use TypedValue::*;
+    match tv {
+        Ref(_) | Boolean(_) | Long(_) | Instant(_) => Some("v_i"),
+        Double(_) => Some("v_d"),
+        String(_) | Keyword(_) => Some("v_s"),
+        Uuid(_) | Bytes(_) => None,
+    }
 }
 
 fn push_comparand(
@@ -509,21 +551,25 @@ fn push_comparand(
     c: &ColumnOrExpression,
     mode: Comparand,
 ) -> BuildQueryResult {
-    if is_value_column(c) {
-        match mode {
-            Comparand::Numeric => {
-                out.push_sql("mentat_num(");
-                c.push_sql(out)?;
-                out.push_sql(")");
-                return Ok(());
+    if let ColumnOrExpression::Column(QualifiedAlias(alias, _)) = c {
+        if is_value_column(c) {
+            match mode {
+                Comparand::Numeric => {
+                    out.push_sql("coalesce(");
+                    out.push_identifier(alias.as_str())?;
+                    out.push_sql(".v_i::DOUBLE, ");
+                    out.push_identifier(alias.as_str())?;
+                    out.push_sql(".v_d)");
+                    return Ok(());
+                }
+                Comparand::Member(m) => {
+                    out.push_identifier(alias.as_str())?;
+                    out.push_sql(".");
+                    out.push_sql(m);
+                    return Ok(());
+                }
+                Comparand::AsIs => {}
             }
-            Comparand::Integer => {
-                out.push_sql("union_extract(");
-                c.push_sql(out)?;
-                out.push_sql(", 'i')");
-                return Ok(());
-            }
-            Comparand::AsIs => {}
         }
     }
     c.push_sql(out)
