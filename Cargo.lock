@@ -1089,6 +1089,7 @@ dependencies = [
  "core_traits",
  "edn",
  "rusqlite",
+ "sql_traits",
  "thiserror 2.0.21",
 ]
 
@@ -2504,6 +2505,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mentat_duckdb_store"
+version = "1.10.3"
+dependencies = [
+ "core_traits",
+ "db_traits",
+ "edn",
+ "mentat_core",
+ "mentat_db",
+ "mentat_query_algebrizer",
+ "mentat_query_projector",
+ "mentat_query_pull",
+ "mentat_sql",
+ "mentat_transaction",
+ "public_traits",
+ "serde_json",
+]
+
+[[package]]
 name = "mentat_ffi"
 version = "0.0.2"
 dependencies = [
@@ -2550,6 +2569,7 @@ dependencies = [
  "edn",
  "mentat_core",
  "mentat_db",
+ "mentat_sql",
  "query_pull_traits",
  "rusqlite",
 ]
@@ -2620,6 +2640,7 @@ dependencies = [
  "mentat_sql",
  "public_traits",
  "rusqlite",
+ "serde_json",
 ]
 
 [[package]]
@@ -3523,6 +3544,7 @@ dependencies = [
  "mentat_query_sql",
  "query_pull_traits",
  "rusqlite",
+ "sql_traits",
  "thiserror 2.0.21",
 ]
 
