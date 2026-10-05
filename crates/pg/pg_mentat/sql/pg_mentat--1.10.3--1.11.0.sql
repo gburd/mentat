@@ -1,0 +1,4 @@
+-- pg_mentat 1.10.3 -> 1.11.0 upgrade.
+--
+-- No schema or data change: 1.11.0 moves the DuckDB extension's storage into
+-- DuckDB tables. pg_mentat is unchanged; the edge keeps the versions in step.

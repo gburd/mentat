@@ -263,7 +263,7 @@ jobs:
   test-duckdb:
     name: test-duckdb
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -304,6 +304,12 @@ jobs:
       - name: Load + query smoke test (edn_t/edn_q/edn_pull/edn_eval + a native JOIN)
         working-directory: crates/duckdb
         run: DUCKDB=/tmp/duckdb-cli/duckdb bash test/smoke.sh
+      # The DuckDB storage backend outside the extension, on a bundled DuckDB:
+      # the differential test against the SQLite engine and the scripting
+      # model suite. A separate workspace (duckdb `bundled` vs the
+      # extension's `loadable-extension`).
+      - name: DuckDB store tests (differential vs SQLite, model suite)
+        run: cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml
 
   # --- Nix flake: builds the SQLite CLI + one extension major -----------
   nix-build:

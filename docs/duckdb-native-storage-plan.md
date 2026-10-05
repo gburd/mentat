@@ -1,6 +1,7 @@
 # DuckDB extension: native DuckDB storage
 
-Status: in progress (target release 1.11.0). Supersedes the storage decision in
+Status: implemented in 1.11.0 (see the CHANGELOG and
+`benchmarks/results/duckdb-native-*/findings.md`). Supersedes the storage decision in
 `docs/duckdb-extension-plan.md` §3.1 ("option (a): embed the SQLite store").
 
 ## Goal
@@ -14,10 +15,10 @@ Status: in progress (target release 1.11.0). Supersedes the storage decision in
 Today the DuckDB extension embeds mentat's SQLite engine and `edn_t('/x.mentat',
 …)` writes a separate SQLite file. After this change every datom, transaction
 and schema row lives in DuckDB tables, and every query runs as DuckDB SQL. No
-SQLite connection or file is ever opened by the DuckDB extension. The SQLite
-library is still *linked* (unused), because the shared engine crates depend on
-rusqlite. Feature-gating rusqlite out of them is a follow-up, not part of this
-release.
+SQLite connection or file is ever opened by the DuckDB extension. The shared
+engine crates still depend on rusqlite, but nothing in the extension calls it,
+so the release link drops it: the 1.11 binary has no `sqlite3_*` symbols (1.10.3
+had 226) and is 7.0 MB instead of 9.2 MB.
 
 ## What the spike proved (2026-10-05, DuckDB v1.5.6)
 

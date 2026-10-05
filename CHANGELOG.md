@@ -8,6 +8,84 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.0] — the DuckDB extension stores its datoms in DuckDB
+
+### Changed (breaking for the DuckDB extension)
+
+- **The DuckDB extension keeps its data in DuckDB.** `edn_t` / `edn_q` /
+  `edn_pull` / `edn_eval` used to embed mentat's SQLite engine and write a
+  separate SQLite file. They now store in tables of the DuckDB database the
+  extension is loaded into:
+  - **A store is a DuckDB schema.** `mentat` holds the `'default'` store; any
+    other name maps to `mentat_<name>_<hash>`. Its `datoms`,
+    `timelined_transactions` (+ the `transactions` view), `idents`, `schema`
+    and `known_parts` are ordinary DuckDB tables. Plain SQL can read them, and
+    they persist and checkpoint with the database.
+  - **No SQLite file is ever opened.** SQLite isn't in the release binary
+    either: the shared engine crates depend on rusqlite, but the linker drops
+    it as unused (0 `sqlite3_*` symbols, vs 226 in 1.10.3; 7.0 MB vs 9.2 MB).
+  - **Same SQL surface and JSON shapes.** The first argument is now a store
+    name. A path such as `'/tmp/demo.mentat'` still works, but as a name: it
+    becomes its own schema in the current database, not a file.
+  - **Old data isn't migrated.** Stores written by 1.10.x are SQLite files and
+    aren't read automatically. Re-transact their data, for example by dumping
+    it with the mentat CLI.
+- **Transactions:** every `edn_t` commits its own DuckDB transaction; it isn't
+  part of a caller's `BEGIN … ROLLBACK`. Calls are serialized on one internal
+  connection, which is opened when the extension loads.
+- **`edn_eval`:** `(mentat.store/q ...)` on an as-of / since db value now runs
+  temporal Datalog. `mentat.store/with` (speculative transact) isn't supported
+  on DuckDB stores and returns an error.
+
+### Internals
+
+The extension reuses mentat's engine (transactor, algebrizer, projector,
+pull) through a storage seam rather than a second engine. The design is in
+`docs/duckdb-native-storage-plan.md`.
+- **Storage seam:** `mentat_sql::SqlConn` / `SqlValue`, and `MentatStoring` as
+  the transactor's whole storage interface. SQLite's SQL is unchanged.
+- **New crate `mentat_duckdb_store`:** the DuckDB schema and the DuckDB SQL.
+- **Value columns:** `v` is a `UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)`
+  using SQLite's storage-class mapping, with plain typed copies (`v_i`, `v_d`,
+  `v_s`) for filters, joins and comparisons.
+- **Tests:** a differential test runs the same transactions and 60 queries
+  (now, as-of and since every transaction) on the SQLite engine and on DuckDB
+  and requires identical results. The shared scripting model suite also runs
+  on DuckDB.
+
+### Performance
+
+Versus 1.10.3 on the same data, one client
+(`benchmarks/results/duckdb-native-*/findings.md`).
+- **Faster at 1M datoms:** aggregates 5.5x, as-of 3.5x, ref traversal 2.2x,
+  since 1.9x and bulk load 2.8x. The store is 26% smaller.
+- **Slower:** point lookups, pull and `:in` bindings take 3-8 ms instead of
+  about 1 ms, and single-datom transactions run at about 55/s instead of
+  180/s. These are per-statement DuckDB costs, and DuckDB has no index on
+  values.
+
+### Fixed
+
+- **A store's schema type broke WAL replay.** On DuckDB 1.5.6, a type created
+  in a non-`main` schema makes WAL replay fail ("Schema with name ... does not
+  exist"). The value type is now written inline, and a test reopens a store
+  from an un-checkpointed WAL.
+
+### Known gaps
+
+- **Fulltext:** `:db/fulltext` values are stored as plain strings, not
+  tokenized. `(fulltext ...)` queries aren't supported on DuckDB stores.
+- **One connection:** concurrent calls in one DuckDB process run one at a time.
+- **Stores live in the loading database:** a store can't yet be placed in a
+  different `ATTACH`ed database.
+- **Docs not updated:** the README and the registry description still describe
+  the old SQLite-file storage.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.11.0';` is a no-op; pg_mentat didn't
+change.
+
 ## [1.10.3] — DuckDB extension: DuckDB v1.5.6, macOS build
 
 The DuckDB extension now targets **DuckDB v1.5.6** (duckdb-rs `~1.10506.0`),
