@@ -1001,6 +1001,87 @@ pub trait MentatStoring {
     /// Extract metadata-related [e a typed_value added] datoms resolved in the last
     /// materialized transaction.
     fn resolved_metadata_assertions(&self) -> Result<Vec<(Entid, Entid, TypedValue, bool)>>;
+
+    /// Persist the partitions' high-water marks, in the same storage transaction
+    /// as the writes that allocated them.
+    fn write_partition_map(&self, partition_map: &PartitionMap) -> Result<()>;
+
+    /// Metadata-related [e a v added] datoms committed in transaction `tx_id`.
+    fn committed_metadata_assertions(
+        &self,
+        tx_id: Entid,
+    ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>>;
+
+    /// Update the idents/schema materialized views (and per-attribute storage
+    /// flags) after a transaction changed the schema.
+    fn update_metadata(
+        &self,
+        old_schema: &Schema,
+        new_schema: &Schema,
+        metadata_report: &metadata::MetadataReport,
+    ) -> Result<()>;
+
+    /// The live values of `[e a]` (for `:db.fn/cas`).
+    fn current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>>;
+
+    /// Every live `[a v]` with `e` in the entity position (for `:db/retractEntity`).
+    fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>>;
+}
+
+/// A SQLite transaction is a store too (it derefs to its connection).
+impl MentatStoring for rusqlite::Transaction<'_> {
+    fn resolve_avs<'a>(&self, avs: &'a [&'a AVPair]) -> Result<AVMap<'a>> {
+        (**self).resolve_avs(avs)
+    }
+    fn begin_tx_application(&self) -> Result<()> {
+        (**self).begin_tx_application()
+    }
+    fn insert_non_fts_searches(
+        &self,
+        entities: &[ReducedEntity],
+        search_type: SearchType,
+    ) -> Result<()> {
+        (**self).insert_non_fts_searches(entities, search_type)
+    }
+    fn insert_fts_searches(
+        &self,
+        entities: &[ReducedEntity],
+        search_type: SearchType,
+    ) -> Result<()> {
+        (**self).insert_fts_searches(entities, search_type)
+    }
+    fn materialize_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
+        (**self).materialize_mentat_transaction(tx_id)
+    }
+    fn commit_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
+        (**self).commit_mentat_transaction(tx_id)
+    }
+    fn resolved_metadata_assertions(&self) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+        (**self).resolved_metadata_assertions()
+    }
+    fn write_partition_map(&self, partition_map: &PartitionMap) -> Result<()> {
+        MentatStoring::write_partition_map(&**self, partition_map)
+    }
+    fn committed_metadata_assertions(
+        &self,
+        tx_id: Entid,
+    ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+        MentatStoring::committed_metadata_assertions(&**self, tx_id)
+    }
+    fn update_metadata(
+        &self,
+        old_schema: &Schema,
+        new_schema: &Schema,
+        metadata_report: &metadata::MetadataReport,
+    ) -> Result<()> {
+        MentatStoring::update_metadata(&**self, old_schema, new_schema, metadata_report)
+    }
+    fn current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>> {
+        (**self).current_values(e, a)
+    }
+    fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
+        (**self).entity_datoms(e)
+    }
 }
 
 /// Take search rows and complete `temp.search_results`.
@@ -1494,6 +1575,49 @@ impl MentatStoring for rusqlite::Connection {
             .query_and_then(rusqlite::params![], row_to_transaction_assertion)?
             .collect();
         m
+    }
+
+    fn write_partition_map(&self, partition_map: &PartitionMap) -> Result<()> {
+        write_partition_map(self, partition_map)
+    }
+
+    fn committed_metadata_assertions(
+        &self,
+        tx_id: Entid,
+    ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+        committed_metadata_assertions(self, tx_id)
+    }
+
+    fn update_metadata(
+        &self,
+        old_schema: &Schema,
+        new_schema: &Schema,
+        metadata_report: &metadata::MetadataReport,
+    ) -> Result<()> {
+        update_metadata(self, old_schema, new_schema, metadata_report)
+    }
+
+    fn current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>> {
+        let mut stmt =
+            self.prepare("SELECT v, value_type_tag FROM datoms WHERE e = ? AND a = ?")?;
+        let rows: Result<Vec<TypedValue>> = stmt
+            .query_and_then(rusqlite::params![e, a], |row| {
+                TypedValue::from_sql_value_pair(row.get(0)?, row.get(1)?)
+            })?
+            .collect();
+        rows
+    }
+
+    fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
+        let mut stmt = self.prepare("SELECT a, v, value_type_tag FROM datoms WHERE e = ?")?;
+        let rows: Result<Vec<(Entid, TypedValue)>> = stmt
+            .query_and_then(rusqlite::params![e], |row| {
+                let a: Entid = row.get(0)?;
+                let v = TypedValue::from_sql_value_pair(row.get(1)?, row.get(2)?)?;
+                Ok((a, v))
+            })?
+            .collect();
+        rows
     }
 }
 

@@ -51,7 +51,6 @@ use std::iter::once;
 
 use crate::db;
 use crate::db::MentatStoring;
-use crate::db::TypedSQLValue;
 use crate::entids;
 use crate::internal_types::{
     replace_lookup_ref, AEVTrie, KnownEntidOr, LookupRef, LookupRefOrTempId, TempIdHandle,
@@ -93,13 +92,13 @@ pub(crate) enum TransactorAction {
 }
 
 /// A transaction on its way to being applied.
-#[derive(Debug)]
 pub struct Tx<'conn, 'a, W>
 where
     W: TransactWatcher,
 {
-    /// The storage to apply against.  In the future, this will be a Mentat connection.
-    store: &'conn rusqlite::Connection, // TODO: db::MentatStoring,
+    /// The storage to apply against: SQLite for the library, DuckDB tables for
+    /// the DuckDB extension.
+    store: &'conn dyn MentatStoring,
 
     /// The partition map to allocate entids from.
     ///
@@ -155,7 +154,7 @@ where
     W: TransactWatcher,
 {
     pub fn new(
-        store: &'conn rusqlite::Connection,
+        store: &'conn dyn MentatStoring,
         partition_map: PartitionMap,
         schema_for_mutation: &'a Schema,
         schema: &'a Schema,
@@ -288,15 +287,7 @@ where
     /// Read the current live value(s) of `[e a]` from the store, inside this
     /// write transaction. The `datoms` view holds only asserted (live) datoms.
     fn read_current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>> {
-        let mut stmt = self
-            .store
-            .prepare("SELECT v, value_type_tag FROM datoms WHERE e = ? AND a = ?")?;
-        let rows: Result<Vec<TypedValue>> = stmt
-            .query_and_then(rusqlite::params![e, a], |row| {
-                TypedValue::from_sql_value_pair(row.get(0)?, row.get(1)?)
-            })?
-            .collect();
-        rows
+        self.store.current_values(e, a)
     }
 
     /// Expand `:db/retractEntity e` into retractions of every live datom with
@@ -312,19 +303,7 @@ where
         if !visited.insert(e) {
             return Ok(());
         }
-        let datoms: Vec<(Entid, TypedValue)> = {
-            let mut stmt = self
-                .store
-                .prepare("SELECT a, v, value_type_tag FROM datoms WHERE e = ?")?;
-            let rows: Result<Vec<(Entid, TypedValue)>> = stmt
-                .query_and_then(rusqlite::params![e], |row| {
-                    let a: Entid = row.get(0)?;
-                    let v = TypedValue::from_sql_value_pair(row.get(1)?, row.get(2)?)?;
-                    Ok((a, v))
-                })?
-                .collect();
-            rows?
-        };
+        let datoms: Vec<(Entid, TypedValue)> = self.store.entity_datoms(e)?;
 
         let mut component_targets: Vec<Entid> = Vec::new();
         for (a, v) in datoms {
@@ -1139,7 +1118,7 @@ where
                 TransactorAction::MaterializeAndCommit => {
                     self.store.materialize_mentat_transaction(self.tx_id)?;
                     self.store.commit_mentat_transaction(self.tx_id)?;
-                    db::write_partition_map(self.store, &self.partition_map)?;
+                    self.store.write_partition_map(&self.partition_map)?;
                 }
             }
         }
@@ -1151,7 +1130,7 @@ where
             let metadata_assertions = match action {
                 TransactorAction::Materialize => self.store.resolved_metadata_assertions()?,
                 TransactorAction::MaterializeAndCommit => {
-                    db::committed_metadata_assertions(self.store, self.tx_id)?
+                    self.store.committed_metadata_assertions(self.tx_id)?
                 }
             };
             let mut new_schema = (*self.schema_for_mutation).clone(); // Clone the underlying Schema for modification.
@@ -1167,8 +1146,7 @@ where
             if new_schema != *self.schema_for_mutation {
                 let old_schema = (*self.schema_for_mutation).clone(); // Clone the original Schema for comparison.
                 *self.schema_for_mutation.to_mut() = new_schema; // Store the new Schema.
-                db::update_metadata(
-                    self.store,
+                self.store.update_metadata(
                     &old_schema,
                     &self.schema_for_mutation,
                     &metadata_report,
@@ -1186,7 +1164,7 @@ where
 
 /// Initialize a new Tx object with a new tx id and a tx instant. Kick off the SQLite conn, too.
 fn start_tx<'conn, 'a, W>(
-    conn: &'conn rusqlite::Connection,
+    conn: &'conn dyn MentatStoring,
     mut partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
@@ -1230,7 +1208,7 @@ where
 /// This approach is explained in https://github.com/mozilla/mentat/wiki/Transacting.
 // TODO: move this to the transactor layer.
 pub fn transact<'a, I, V, W>(
-    conn: &rusqlite::Connection,
+    conn: &dyn MentatStoring,
     partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
@@ -1249,7 +1227,7 @@ where
 
 /// Just like `transact`, but accepts lower-level inputs to allow bypassing the parser interface.
 pub fn transact_terms<'a, I, W>(
-    conn: &rusqlite::Connection,
+    conn: &dyn MentatStoring,
     partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
@@ -1275,7 +1253,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn transact_terms_with_action<'a, I, W>(
-    conn: &rusqlite::Connection,
+    conn: &dyn MentatStoring,
     partition_map: PartitionMap,
     schema_for_mutation: &'a Schema,
     schema: &'a Schema,
