@@ -12,6 +12,7 @@ members = [
   "crates/pg/pg_mentat",
   "crates/pg/mentatd",
   "crates/duckdb",
+  "crates/duckdb/store",
   # Scale-benchmark driver: a member (shares Cargo.lock) but NOT a default member.
   "benchmarks/scale/runner",
 ]
@@ -41,9 +42,12 @@ default-members = [
   "crates/sqlite/sql-traits",
   "crates/sqlite/transaction",
   "crates/pg/mentatd",
+  # DuckDB storage backend: no duckdb dependency, so it builds and tests
+  # with the workspace. The extension (crates/duckdb) stays non-default.
+  "crates/duckdb/store",
 ]
 # crates/sqlite/* is a glob; fixtures/ is shared test data, not a crate.
-exclude = ["crates/sqlite/fixtures"]
+exclude = ["crates/sqlite/fixtures", "crates/duckdb/store/tests-harness"]
 
 [workspace.package]
 version = "1.10.3"

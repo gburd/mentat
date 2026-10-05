@@ -62,6 +62,7 @@ use mentat_db::cache::{InProgressCacheTransactWatcher, InProgressSQLiteAttribute
 
 pub mod entity_builder;
 pub mod metadata;
+pub mod options;
 pub mod query;
 
 pub use crate::entity_builder::{InProgressBuilder, TermBuilder};

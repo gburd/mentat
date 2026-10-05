@@ -1,0 +1,19 @@
+[package]
+name = "mentat_duckdb_store_tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# A separate workspace: it builds duckdb with `bundled` (a normal client
+# library) to test mentat_duckdb_store outside DuckDB, while the extension
+# builds duckdb with `loadable-extension`. Cargo unifies features per build, so
+# the two can't share one. Run: cargo test --manifest-path <this file>.
+[workspace]
+
+[dependencies]
+duckdb = { version = "~1.10506.0", features = ["bundled"] }
+mentat_duckdb_store = { path = ".." }
+mentat_query_algebrizer = { path = "../../../sqlite/query-algebrizer" }
+mentat_query_projector = { path = "../../../sqlite/query-projector" }
+core_traits = { path = "../../../core-traits" }
+edn = { path = "../../../edn" }

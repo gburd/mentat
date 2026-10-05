@@ -25,7 +25,8 @@ use mentat_core::SQLTypeAffinity;
 use edn::query::{Direction, Limit, Variable};
 
 use mentat_query_algebrizer::{
-    Column, OrderBy, QualifiedAlias, QueryValue, SourceAlias, TableAlias, VariableColumn,
+    Column, DatomsColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias, TableAlias,
+    TransactionsColumn, VariableColumn,
 };
 
 use sql_traits::errors::{BuildQueryResult, SQLError};
@@ -264,7 +265,13 @@ impl QueryFragment for ColumnOrExpression {
                 Ok(())
             }
             Value(ref v) => out.push_typed_value(v),
-            NullableAggregate(ref e, _) | &Expression(ref e, _) => e.push_sql(out),
+            NullableAggregate(ref e, ref t) | &Expression(ref e, ref t) => {
+                if out.dialect() == Dialect::DuckDb {
+                    push_duckdb_aggregate(out, e, *t)
+                } else {
+                    e.push_sql(out)
+                }
+            }
         }
     }
 }
@@ -281,6 +288,38 @@ impl QueryFragment for Expression {
             }
         }
     }
+}
+
+/// An aggregate on DuckDB. Its argument is a `v` (a UNION), which DuckDB's
+/// aggregates don't accept, so unwrap it to the member the result type implies
+/// (SQLite's aggregates work on its storage classes directly):
+/// - doubles, and `avg` of anything: `mentat_num(v)` (long or double, as DOUBLE);
+/// - longs, instants, booleans, refs: the `i` member; strings, keywords: `s`;
+/// - `count`, and anything else: the value as is.
+fn push_duckdb_aggregate(
+    out: &mut dyn QueryBuilder,
+    e: &Expression,
+    t: ValueType,
+) -> BuildQueryResult {
+    let Expression::Unary { sql_op, ref arg } = e;
+    let (prefix, suffix) = match (*sql_op, t) {
+        ("count", _) => ("", ""),
+        ("avg", _) | (_, ValueType::Double) => ("mentat_num(CAST(", " AS mentat_value))"),
+        (_, ValueType::Long | ValueType::Instant | ValueType::Boolean | ValueType::Ref) => {
+            ("union_extract(CAST(", " AS mentat_value), 'i')")
+        }
+        (_, ValueType::String | ValueType::Keyword) => {
+            ("union_extract(CAST(", " AS mentat_value), 's')")
+        }
+        _ => ("", ""),
+    };
+    out.push_sql(sql_op);
+    out.push_sql("(");
+    out.push_sql(prefix);
+    arg.push_sql(out)?;
+    out.push_sql(suffix);
+    out.push_sql(")");
+    Ok(())
 }
 
 impl QueryFragment for Projection {
@@ -324,11 +363,17 @@ impl QueryFragment for Constraint {
                 ref left,
                 ref right,
             } => {
-                left.push_sql(out)?;
+                // DuckDB stores `v` as a UNION, which orders within one member
+                // only. SQLite orders INTEGER and REAL together (5 < 9.5 < 10),
+                // and mentat's numeric predicates rely on it, so on DuckDB an
+                // ordering comparison against `v` goes through `mentat_num`.
+                let numeric =
+                    out.dialect() == Dialect::DuckDb && matches!(op.0, "<" | "<=" | ">" | ">=");
+                push_comparand(out, left, numeric)?;
                 out.push_sql(" ");
                 op.push_sql(out)?;
                 out.push_sql(" ");
-                right.push_sql(out)
+                push_comparand(out, right, numeric)
             }
 
             IsNull { ref value } => {
@@ -400,6 +445,31 @@ impl QueryFragment for Constraint {
             }
         }
     }
+}
+
+/// True if `c` is a `v` column (datoms, transactions, or fulltext).
+fn is_value_column(c: &ColumnOrExpression) -> bool {
+    match c {
+        ColumnOrExpression::Column(QualifiedAlias(_, col)) => matches!(
+            col,
+            Column::Fixed(DatomsColumn::Value) | Column::Transactions(TransactionsColumn::Value)
+        ),
+        _ => false,
+    }
+}
+
+fn push_comparand(
+    out: &mut dyn QueryBuilder,
+    c: &ColumnOrExpression,
+    numeric: bool,
+) -> BuildQueryResult {
+    if numeric && is_value_column(c) {
+        out.push_sql("mentat_num(");
+        c.push_sql(out)?;
+        out.push_sql(")");
+        return Ok(());
+    }
+    c.push_sql(out)
 }
 
 impl QueryFragment for JoinOp {

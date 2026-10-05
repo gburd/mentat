@@ -1,0 +1,31 @@
+[package]
+name = "mentat_duckdb_store"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "mentat's storage on DuckDB tables (the DuckDB extension's backend)"
+
+# No duckdb dependency: this crate speaks to DuckDB through mentat_sql's
+# SqlConn. `src/duck_conn.rs` (the SqlConn for duckdb::Connection) is
+# #[path]-included by the extension and by `tests-harness`, which build duckdb
+# with different features.
+
+[dependencies]
+core_traits = { path = "../../core-traits" }
+db_traits = { path = "../../sqlite/db-traits" }
+edn = { path = "../../edn" }
+mentat_core = { path = "../../core" }
+mentat_db = { path = "../../sqlite/db" }
+mentat_query_algebrizer = { path = "../../sqlite/query-algebrizer" }
+mentat_query_projector = { path = "../../sqlite/query-projector" }
+mentat_query_pull = { path = "../../sqlite/query-pull" }
+mentat_sql = { path = "../../sqlite/sql" }
+mentat_transaction = { path = "../../sqlite/transaction" }
+public_traits = { path = "../../sqlite/public-traits" }
+serde_json = "1"
+
+[lints]
+workspace = true

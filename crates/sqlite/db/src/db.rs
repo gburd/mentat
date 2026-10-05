@@ -925,6 +925,16 @@ pub(crate) fn read_ident_map(conn: &rusqlite::Connection) -> Result<IdentMap> {
     }).collect()
 }
 
+/// Build the attribute map from the schema view's `[e a v]` rows, read by any
+/// backend.
+pub fn read_attribute_map_from(
+    entid_triples: Vec<(Entid, Entid, TypedValue)>,
+) -> Result<AttributeMap> {
+    let mut attribute_map = AttributeMap::default();
+    metadata::update_attribute_map_from_entid_triples(&mut attribute_map, entid_triples, vec![])?;
+    Ok(attribute_map)
+}
+
 /// Read the schema materialized view from the given SQL store.
 pub(crate) fn read_attribute_map(conn: &rusqlite::Connection) -> Result<AttributeMap> {
     let entid_triples = read_materialized_view(conn, "schema")?;

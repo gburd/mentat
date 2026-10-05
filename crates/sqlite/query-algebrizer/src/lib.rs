@@ -388,7 +388,7 @@ pub use crate::clauses::TemporalBound;
 pub use crate::types::{
     Column, ColumnAlternation, ColumnConstraint, ColumnConstraintOrAlternation, ColumnIntersection,
     ColumnName, ComputedTable, DatomsColumn, DatomsTable, FulltextColumn, OrderBy, QualifiedAlias,
-    QueryValue, SourceAlias, TableAlias, VariableColumn,
+    QueryValue, SourceAlias, TableAlias, TransactionsColumn, VariableColumn,
 };
 
 impl FindQuery {

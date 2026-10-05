@@ -55,9 +55,16 @@ mod watcher;
 // Export these for reference from sync code and tests.
 pub use crate::bootstrap::{TX0, USER0, V1_PARTS};
 
+/// For storage backends other than SQLite (the DuckDB extension): the bootstrap
+/// transaction a new store starts from, and the schema-change report passed to
+/// `MentatStoring::update_metadata`.
+pub use crate::bootstrap::{bootstrap_entities, bootstrap_partition_map, bootstrap_schema};
+pub use crate::db::{read_attribute_map_from, MentatStoring, ReducedEntity, SearchType};
+pub use crate::metadata::{AttributeAlteration, MetadataReport};
+
 pub static TIMELINE_MAIN: i64 = 0;
 
-pub use crate::schema::{AttributeBuilder, AttributeValidation};
+pub use crate::schema::{AttributeBuilder, AttributeValidation, SchemaBuilding};
 
 pub use crate::bootstrap::CORE_SCHEMA_VERSION;
 
@@ -70,7 +77,7 @@ pub use crate::db::{new_connection, TypedSQLValue};
 #[cfg(feature = "sqlcipher")]
 pub use db::{change_encryption_key, new_connection_with_key};
 
-pub use crate::watcher::TransactWatcher;
+pub use crate::watcher::{NullWatcher, TransactWatcher};
 
 pub use crate::tx::{transact, transact_terms};
 

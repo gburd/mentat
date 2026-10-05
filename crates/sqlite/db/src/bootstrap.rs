@@ -333,7 +333,7 @@ fn symbolic_schema_to_assertions(symbolic_schema: &Value) -> Result<Vec<Value>> 
     Ok(assertions)
 }
 
-pub(crate) fn bootstrap_partition_map() -> PartitionMap {
+pub fn bootstrap_partition_map() -> PartitionMap {
     V1_PARTS
         .iter()
         .map(|&(ref part, start, end, index, allow_excision)| {
@@ -352,14 +352,14 @@ pub(crate) fn bootstrap_ident_map() -> IdentMap {
         .collect()
 }
 
-pub(crate) fn bootstrap_schema() -> Schema {
+pub fn bootstrap_schema() -> Schema {
     let ident_map = bootstrap_ident_map();
     let bootstrap_triples =
         symbolic_schema_to_triples(&ident_map, &V1_SYMBOLIC_SCHEMA).expect("symbolic schema");
     Schema::from_ident_map_and_triples(ident_map, bootstrap_triples).unwrap()
 }
 
-pub(crate) fn bootstrap_entities() -> Vec<Entity<edn::ValueAndSpan>> {
+pub fn bootstrap_entities() -> Vec<Entity<edn::ValueAndSpan>> {
     let bootstrap_assertions: Value = Value::Vector(
         [
             symbolic_schema_to_assertions(&V1_SYMBOLIC_SCHEMA).expect("symbolic schema"),
