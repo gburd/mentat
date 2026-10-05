@@ -120,6 +120,12 @@ impl From<std::io::Error> for MentatError {
     }
 }
 
+impl From<sql_traits::conn::SqlError> for MentatError {
+    fn from(error: sql_traits::conn::SqlError) -> Self {
+        MentatError::RusqliteError(error.message, String::new())
+    }
+}
+
 impl From<rusqlite::Error> for MentatError {
     fn from(error: rusqlite::Error) -> Self {
         let cause = match error.source() {

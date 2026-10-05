@@ -12,8 +12,12 @@ Status: in progress (target release 1.11.0). Supersedes the storage decision in
 | DuckDB extension (`crates/duckdb`) | **DuckDB**: datoms live in tables of the DuckDB database the extension is loaded into |
 
 Today the DuckDB extension embeds mentat's SQLite engine and `edn_t('/x.mentat',
-…)` writes a separate SQLite file. After this change no SQLite is linked into
-the DuckDB extension at all.
+…)` writes a separate SQLite file. After this change every datom, transaction
+and schema row lives in DuckDB tables, and every query runs as DuckDB SQL. No
+SQLite connection or file is ever opened by the DuckDB extension. The SQLite
+library is still *linked* (unused), because the shared engine crates depend on
+rusqlite. Feature-gating rusqlite out of them is a follow-up, not part of this
+release.
 
 ## What the spike proved (2026-10-05, DuckDB v1.5.6)
 
@@ -36,10 +40,14 @@ SQL from inside a scalar function:
 4. **Parallel scalar evaluation is safe** with the connection behind a Mutex
    (200k-row `SELECT probe(i)` with `threads=8`: no deadlock, no error).
 5. **DuckDB SQL differences that matter**: backtick identifiers are rejected
-   (use `"…"`), partial indexes are not supported, `rowid` exists, `TEMP` tables
-   exist. A `UNION(…)` column compares by tag and then by value, like SQLite's
-   storage classes; `VARIANT` errors when comparing different types and is
-   unusable for `v`.
+   (use `"…"`), partial indexes are not supported, and a `UNION` column
+   cannot be an index key. `rowid` exists and `DELETE … WHERE rowid IN
+   (subquery)` works. TEMP tables exist (`CREATE TEMP TABLE x`, referenced as
+   `temp.x`; `CREATE TABLE temp.x` is rejected). `IS NOT DISTINCT FROM` works,
+   SQLite's `IS 1` / `IS NOT v` don't. Prepared parameters bind into a `UNION`
+   column by member type (`$1` BIGINT -> `i`, VARCHAR -> `s`). A `UNION`
+   column compares by tag and then by value; `VARIANT` errors when comparing
+   different types and is unusable for `v`.
 
 ## Design
 
@@ -120,10 +128,41 @@ The DuckDB side:
   (subqueries, `UNION ALL`, `NOT EXISTS`, `LIMIT`, `DISTINCT`, aggregates) is
   standard SQL that DuckDB accepts.
 - **Transactor**: `BEGIN` / `COMMIT` on the extension's connection; the
-  `temp.*` search tables become DuckDB `TEMP` tables. Partial indexes don't
-  exist, so the `WHERE index_avet` indexes become full indexes or are dropped.
-  DuckDB's ART indexes mostly matter for uniqueness, and its scans are
-  vectorised.
+  `temp.*` search tables become DuckDB `TEMP` tables. Partial indexes and
+  indexes on `v` don't exist in DuckDB, so the DuckDB schema indexes only
+  BIGINT columns and relies on hash joins and zone maps for value lookups.
+  Point lookups by value will be slower than SQLite's; measured in M4.
+- **The seam is a dyn trait, not generics**, at two levels:
+  - `mentat_db::MentatStoring` (already a trait, documented as "we might
+    consider other SQL engines") becomes the transactor's whole storage
+    interface: the transactor holds `&dyn MentatStoring`. SQLite keeps its
+    existing implementation, SQL text unchanged. DuckDB gets its own
+    implementation with its own SQL in one module.
+  - `mentat_sql::SqlConn` (execute, query with a per-row callback, named
+    parameters, dialect) and `SqlValue` (Null / Integer / Real / Text / Blob)
+    for the query runner, projector and pull. `rusqlite::Connection`
+    implements it (keeping `prepare_cached`), so `&conn` coerces to
+    `&dyn SqlConn` unchanged.
+  - The public `mentat` crate API (`Store`, `Conn`, `InProgress`) stays on
+    rusqlite.
+- **The DuckDB extension uses the engine crates (`mentat_db`,
+  `mentat_transaction` query functions) directly**, not the rusqlite-based
+  `mentat` crate.
+- **The DuckDB storage crate has no duckdb dependency.**
+  `crates/duckdb/store` (`mentat_duckdb_store`) implements `MentatStoring` and
+  bootstrap over `&dyn SqlConn` with DuckDB SQL. The `SqlConn` impl for
+  `duckdb::Connection` is one small file compiled into both the cdylib
+  (`loadable-extension`) and the test harness (`bundled`).
+- **DuckDB SQL differences found by testing** (each handled in the DuckDB
+  module): `end` is a reserved word (`known_parts.end` -> `"end"`), as are the
+  `left`/`right` aliases; named and positional parameters can't be mixed in
+  one statement; `sum(BIGINT)` returns HUGEINT; there's no `PRAGMA
+  user_version` (a `meta` table instead) and no `sqlite_master`
+  (`duckdb_tables()`).
+- **Testing outside the extension**: the cdylib's duckdb is built with
+  `loadable-extension` (C API through function pointers); a test crate needs a
+  normal `bundled` duckdb. Cargo unifies features per build, so the test crate
+  is a separate (non-member) workspace under `crates/duckdb/store-tests`.
 
 ### 3. SQL surface
 
@@ -173,10 +212,9 @@ the CLI and transact them. A follow-up if anyone asks.
   DuckDB impl of the trait, the DuckDB schema, and `DuckDbQueryBuilder`, tested
   against a regular (non-extension) DuckDB connection. Gate: the engine's
   transact/query/pull/history/as-of test suites run against DuckDB.
-- **M3** extension: `crates/duckdb` switches to the DuckDB backend; the SQLite
-  dependency is dropped from the cdylib (check: no `sqlite3_` symbols, no
-  `SQLite format 3` file written). Gate: `test/sql/mentat.test` and `smoke.sh`
-  updated to assert the data lands in DuckDB tables, plus a persistence test
+- **M3** extension: `crates/duckdb` switches to the DuckDB backend. Gate:
+  `test/sql/mentat.test` and `smoke.sh` updated to assert the data lands in
+  DuckDB tables and that no SQLite file is created, plus a persistence test
   (restart DuckDB without the extension, `SELECT` from `mentat.datoms`).
 - **M4** qualify: workspace + pg16 gates, registry build on the fork (all 5
   platforms, tests on osx_arm64 and windows), benchmarks against 1.10.3

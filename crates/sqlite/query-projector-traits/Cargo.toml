@@ -14,6 +14,9 @@ sqlcipher = ["rusqlite/sqlcipher"]
 [dependencies]
 thiserror = "~2.0"
 
+[dependencies.sql_traits]
+path = "../sql-traits"
+
 [dependencies.rusqlite]
 version = "~0.40"
 features = ["limits", "bundled"]

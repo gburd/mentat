@@ -28,6 +28,7 @@ use rusqlite::TransactionBehavior;
 
 use crate::bootstrap;
 use crate::{repeat_values, to_namespaced_keyword};
+use mentat_sql::SqlValue;
 
 use edn::{DateTime, Utc, Uuid, Value};
 
@@ -45,7 +46,6 @@ use crate::tx::transact;
 use crate::types::{AVMap, AVPair, Partition, PartitionMap, DB};
 
 use crate::watcher::NullWatcher;
-use std::convert::TryInto;
 
 // In PRAGMA foo='bar', `'bar'` must be a constant string (it cannot be a
 // bound parameter), so we need to escape manually. According to
@@ -705,7 +705,12 @@ pub trait TypedSQLValue {
         value: rusqlite::types::Value,
         value_type_tag: i32,
     ) -> Result<TypedValue>;
+    /// Engine-neutral decode: the one (tag, storage class) table both the
+    /// SQLite and the DuckDB backends use.
+    fn from_sql(value: SqlValue, value_type_tag: i32) -> Result<TypedValue>;
     fn to_sql_value_pair(&self) -> (ToSqlOutput<'_>, i32);
+    /// Engine-neutral encode, the inverse of `from_sql`.
+    fn to_sql(&self) -> (SqlValue, i32);
     fn from_edn_value(value: &Value) -> Option<TypedValue>;
     fn to_edn_value_pair(&self) -> (Value, ValueType);
 }
@@ -716,33 +721,41 @@ impl TypedSQLValue for TypedValue {
         value: rusqlite::types::Value,
         value_type_tag: i32,
     ) -> Result<TypedValue> {
+        Self::from_sql(mentat_sql::from_rusqlite(value), value_type_tag)
+    }
+
+    fn from_sql(value: SqlValue, value_type_tag: i32) -> Result<TypedValue> {
         match (value_type_tag, value) {
-            (0, rusqlite::types::Value::Integer(x)) => Ok(TypedValue::Ref(x)),
-            (1, rusqlite::types::Value::Integer(x)) => Ok(TypedValue::Boolean(0 != x)),
+            (0, SqlValue::Integer(x)) => Ok(TypedValue::Ref(x)),
+            (1, SqlValue::Integer(x)) => Ok(TypedValue::Boolean(0 != x)),
 
             // Negative integers are simply times before 1970.
-            (4, rusqlite::types::Value::Integer(x)) => {
-                Ok(TypedValue::Instant(DateTime::<Utc>::from_micros(x)))
-            }
+            (4, SqlValue::Integer(x)) => Ok(TypedValue::Instant(DateTime::<Utc>::from_micros(x))),
 
             // SQLite distinguishes integral from decimal types, allowing long and double to
             // share a tag.
-            (5, rusqlite::types::Value::Integer(x)) => Ok(TypedValue::Long(x)),
-            (5, rusqlite::types::Value::Real(x)) => Ok(TypedValue::Double(x.into())),
-            (10, rusqlite::types::Value::Text(x)) => Ok(x.into()),
-            (11, rusqlite::types::Value::Blob(x)) => {
-                let u = Uuid::from_bytes(x.as_slice().try_into().unwrap());
+            (5, SqlValue::Integer(x)) => Ok(TypedValue::Long(x)),
+            (5, SqlValue::Real(x)) => Ok(TypedValue::Double(x.into())),
+            (10, SqlValue::Text(x)) => Ok(x.into()),
+            (11, SqlValue::Blob(x)) => {
+                let u = match <[u8; 16]>::try_from(x.as_slice()) {
+                    Ok(bytes) => Uuid::from_bytes(bytes),
+                    Err(_) => bail!(DbErrorKind::BadSQLValuePair(
+                        SqlValue::Blob(x),
+                        value_type_tag
+                    )),
+                };
                 if u.is_nil() {
                     // Rather than exposing Uuid's ParseError…
                     bail!(DbErrorKind::BadSQLValuePair(
-                        rusqlite::types::Value::Blob(x),
+                        SqlValue::Blob(x),
                         value_type_tag
                     ));
                 }
                 Ok(TypedValue::Uuid(u))
             }
-            (13, rusqlite::types::Value::Text(x)) => to_namespaced_keyword(&x).map(|k| k.into()),
-            (15, rusqlite::types::Value::Blob(x)) => Ok(TypedValue::Bytes(x.into())),
+            (13, SqlValue::Text(x)) => to_namespaced_keyword(&x).map(|k| k.into()),
+            (15, SqlValue::Blob(x)) => Ok(TypedValue::Bytes(x.into())),
             (_, value) => bail!(DbErrorKind::BadSQLValuePair(value, value_type_tag)),
         }
     }
@@ -781,6 +794,20 @@ impl TypedSQLValue for TypedValue {
             TypedValue::Uuid(ref u) => (u.as_bytes().to_vec().into(), 11),
             TypedValue::Keyword(ref x) => (x.to_string().into(), 13),
             TypedValue::Bytes(b) => (b.to_vec().into(), 15),
+        }
+    }
+
+    fn to_sql(&self) -> (SqlValue, i32) {
+        match self {
+            TypedValue::Ref(x) => (SqlValue::Integer(*x), 0),
+            TypedValue::Boolean(x) => (SqlValue::Integer(i64::from(*x)), 1),
+            TypedValue::Instant(x) => (SqlValue::Integer(x.to_micros()), 4),
+            TypedValue::Long(x) => (SqlValue::Integer(*x), 5),
+            TypedValue::Double(x) => (SqlValue::Real(x.into_inner()), 5),
+            TypedValue::String(ref x) => (SqlValue::Text(x.as_str().to_string()), 10),
+            TypedValue::Uuid(ref u) => (SqlValue::Blob(u.as_bytes().to_vec()), 11),
+            TypedValue::Keyword(ref x) => (SqlValue::Text(x.to_string()), 13),
+            TypedValue::Bytes(b) => (SqlValue::Blob(b.to_vec()), 15),
         }
     }
 

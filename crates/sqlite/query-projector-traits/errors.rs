@@ -66,6 +66,12 @@ pub enum ProjectorError {
     PullError(PullError),
 }
 
+impl From<sql_traits::conn::SqlError> for ProjectorError {
+    fn from(error: sql_traits::conn::SqlError) -> ProjectorError {
+        ProjectorError::RusqliteError(error.message)
+    }
+}
+
 impl From<rusqlite::Error> for ProjectorError {
     fn from(error: rusqlite::Error) -> ProjectorError {
         ProjectorError::RusqliteError(error.to_string())

@@ -166,6 +166,14 @@ impl From<DbErrorKind> for DbError {
     }
 }
 
+impl From<sql_traits::conn::SqlError> for DbError {
+    fn from(error: sql_traits::conn::SqlError) -> Self {
+        DbError {
+            inner: DbErrorKind::RusqliteError(error.message),
+        }
+    }
+}
+
 impl From<rusqlite::Error> for DbError {
     fn from(error: rusqlite::Error) -> Self {
         DbError {
@@ -187,7 +195,7 @@ pub enum DbErrorKind {
     /// We've got corrupt data in the SQL store: a value and value_type_tag don't line up.
     /// TODO _1.data_type()
     #[error("bad SQL (value_type_tag, value) pair: ({0:?}, {1:?})")]
-    BadSQLValuePair(rusqlite::types::Value, i32),
+    BadSQLValuePair(sql_traits::conn::SqlValue, i32),
 
     /// The SQLite store user_version isn't recognized.  This could be an old version of Mentat
     /// trying to open a newer version SQLite store; or it could be a corrupt file; or ...

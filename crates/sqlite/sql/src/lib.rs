@@ -27,6 +27,10 @@ use sql_traits::errors::{BuildQueryResult, SQLError};
 
 use mentat_core::{ToMicros, ValueRc};
 
+mod conn;
+pub use conn::{from_rusqlite, sql_error, sqlite, to_rusqlite, Param, RusqliteRow, SqliteConn};
+pub use sql_traits::conn::{Dialect, SqlConn, SqlConnExt, SqlError, SqlRow, SqlValue};
+
 /// We want to accumulate values that will later be substituted into a SQL statement execution.
 /// This struct encapsulates the generated string and the _initial_ argument list.
 /// Additional user-supplied argument bindings, with their placeholders accumulated via
