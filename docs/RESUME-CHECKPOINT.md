@@ -151,3 +151,14 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - EC2 dev box (account 170848442262 = hotdog profile now): /tmp/mentat_duck.env
   (DEV_ID i-0d9deacbbbb1b24bd, DEV_IP 3.21.158.53, key mentat-duck-20261005-135857-key, SG sg-03e8945a1022cb82d).
   Sync with /tmp/sync.sh (never --delete, excludes submodule/target/.cargo registry).
+- M4 (2026-10-05, in progress): differential test vs SQLite (60 queries x now/asOf/since)
+  PASSES and is proven to catch regressions; model suite 12/12 on DuckDB. Perf A/B at xs
+  (1.10.3 SQLite-in-ext vs new DuckDB storage, single client, median ms): point 0.58 vs 2.95,
+  ref_traversal 2.54 vs 12.1, aggregate 2.97 vs 3.67, predicate 3.41 vs 11.4, pull 0.55 vs 3.0,
+  as_of 8.7 vs 25.4, since 1.23 vs 2.33, inputs 0.90 vs 4.9; small tx 185 vs 69 tx/s;
+  load 2.3 s vs 5.6 s. ROOT CAUSE: the UNION v column (q2 on typed columns 3.3 ms vs 16.4 ms
+  on UNION; q1 1.5 vs 2.4). NEXT: add typed shadow columns v_i BIGINT/v_d DOUBLE/v_s VARCHAR
+  next to UNION v (written on insert), render typed-constant equality, e=v joins, numeric
+  compares, aggregates and known-type projections on them in the DuckDB dialect; re-run A/B
+  at xs and s; then registry fork build, CHANGELOG, 1.11.0.
+  Box scripts: ~/ab.sh (SC=xs|s), ~/abtab.py, /tmp/plan4.py (q2 layout probe).
