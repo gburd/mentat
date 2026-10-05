@@ -9,10 +9,10 @@
 
 require mentat
 
-# A fresh store per run: the runner's __TEST_DIR__ can be the (persistent)
-# test/sql dir, so a fixed filename would accumulate rows across runs.
+# A fresh store per run (a store is a DuckDB schema in this database; a
+# unique name keeps runs independent).
 statement ok
-SET VARIABLE db = '__TEST_DIR__/mentat_' || uuid() || '.sqlite';
+SET VARIABLE db = 'test_' || replace(uuid()::VARCHAR, '-', '');
 
 # Old names are gone (no compatibility shim).
 statement error
@@ -142,3 +142,14 @@ statement error
 SELECT edn_eval(getvariable('db'), '(slurp "/etc/passwd")');
 ----
 unbound symbol: slurp
+
+# The datoms are DuckDB rows in the store's schema, readable with plain SQL.
+query I
+SELECT count(*) FROM duckdb_tables() WHERE schema_name LIKE 'mentat_test_%' AND table_name = 'datoms';
+----
+1
+
+query I
+SELECT count(*) > 0 FROM duckdb_tables() WHERE schema_name LIKE 'mentat_test_%' AND table_name = 'timelined_transactions';
+----
+true

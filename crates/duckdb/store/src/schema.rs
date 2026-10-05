@@ -11,9 +11,13 @@
 //! The DuckDB schema of one store, mirroring the SQLite store's tables so the
 //! engine's SQL resolves unchanged.
 //!
-//! - `v` is `mentat_value`, a `UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)`:
+//! - `v` is a `UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)` ([`VALUE_TYPE`]):
 //!   SQLite's storage classes, with the same mapping (ref/bool/long/instant ->
-//!   `i`, double -> `d`, string/keyword -> `s`, uuid/bytes -> `b`).
+//!   `i`, double -> `d`, string/keyword -> `s`, uuid/bytes -> `b`). It is
+//!   written out inline, not as a named `CREATE TYPE`: on DuckDB 1.5.6 a type
+//!   created in a non-`main` schema makes WAL replay fail ("Schema with name
+//!   ... does not exist"), so a store whose database closed without a
+//!   checkpoint wouldn't reopen.
 //! - No indexes on `v` (DuckDB can't index a UNION) and no partial indexes
 //!   (unsupported): DuckDB filters and joins `datoms` by scanning, with zone
 //!   maps on the BIGINT columns.
@@ -26,13 +30,13 @@
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
 
+/// The type of every `v` column.
+pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
+
 /// DDL for a new store in DuckDB schema `s`.
 pub fn create_statements(s: &str) -> Vec<String> {
     vec![
         format!("CREATE SCHEMA IF NOT EXISTS {s}"),
-        format!(
-            "CREATE TYPE {s}.mentat_value AS UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)"
-        ),
         // A numeric view of a value, for comparisons that SQLite makes across
         // INTEGER and REAL (5 = 5.0, 9.5 < 10). NULL for non-numbers.
         format!(
@@ -45,7 +49,7 @@ pub fn create_statements(s: &str) -> Vec<String> {
         ),
         format!(
             "CREATE TABLE {s}.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
-             v {s}.mentat_value NOT NULL, tx BIGINT NOT NULL, value_type_tag SMALLINT NOT NULL, \
+             v {VALUE_TYPE} NOT NULL, tx BIGINT NOT NULL, value_type_tag SMALLINT NOT NULL, \
              index_avet BOOLEAN NOT NULL DEFAULT false, index_vaet BOOLEAN NOT NULL DEFAULT false, \
              index_fulltext BOOLEAN NOT NULL DEFAULT false, unique_value BOOLEAN NOT NULL DEFAULT false)"
         ),
@@ -55,7 +59,7 @@ pub fn create_statements(s: &str) -> Vec<String> {
         format!("CREATE INDEX idx_datoms_a ON {s}.datoms (a)"),
         format!(
             "CREATE TABLE {s}.timelined_transactions (e BIGINT NOT NULL, a BIGINT NOT NULL, \
-             v {s}.mentat_value NOT NULL, tx BIGINT NOT NULL, added BOOLEAN NOT NULL DEFAULT true, \
+             v {VALUE_TYPE} NOT NULL, tx BIGINT NOT NULL, added BOOLEAN NOT NULL DEFAULT true, \
              value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0)"
         ),
         format!("CREATE INDEX idx_tt_tx ON {s}.timelined_transactions (tx)"),
@@ -78,11 +82,11 @@ pub fn create_statements(s: &str) -> Vec<String> {
         ),
         format!(
             "CREATE TABLE {s}.idents (e BIGINT NOT NULL, a BIGINT NOT NULL, \
-             v {s}.mentat_value NOT NULL, value_type_tag SMALLINT NOT NULL)"
+             v {VALUE_TYPE} NOT NULL, value_type_tag SMALLINT NOT NULL)"
         ),
         format!(
             "CREATE TABLE {s}.schema (e BIGINT NOT NULL, a BIGINT NOT NULL, \
-             v {s}.mentat_value NOT NULL, value_type_tag SMALLINT NOT NULL)"
+             v {VALUE_TYPE} NOT NULL, value_type_tag SMALLINT NOT NULL)"
         ),
         format!(
             "CREATE TABLE {s}.known_parts (part VARCHAR NOT NULL PRIMARY KEY, start BIGINT NOT NULL, \
@@ -95,11 +99,10 @@ pub fn create_statements(s: &str) -> Vec<String> {
 }
 
 /// The per-transaction scratch tables (SQLite's `temp.*_searches` /
-/// `temp.search_results`), as DuckDB TEMP tables. `v0`/`v` use the store's
-/// value type. Recreated per transaction.
-pub fn begin_tx_statements(s: &str) -> Vec<String> {
+/// `temp.search_results`), as DuckDB TEMP tables. Recreated per transaction.
+pub fn begin_tx_statements() -> Vec<String> {
     let cols = format!(
-        "e0 BIGINT NOT NULL, a0 BIGINT NOT NULL, v0 {s}.mentat_value NOT NULL, \
+        "e0 BIGINT NOT NULL, a0 BIGINT NOT NULL, v0 {VALUE_TYPE} NOT NULL, \
          value_type_tag0 SMALLINT NOT NULL, added0 BOOLEAN NOT NULL, flags0 SMALLINT NOT NULL"
     );
     vec![
@@ -110,7 +113,7 @@ pub fn begin_tx_statements(s: &str) -> Vec<String> {
         "DROP TABLE IF EXISTS temp.search_results".to_string(),
         format!(
             "CREATE TEMP TABLE search_results ({cols}, search_type VARCHAR NOT NULL, \
-             rid BIGINT, v {s}.mentat_value)"
+             rid BIGINT, v {VALUE_TYPE})"
         ),
     ]
 }

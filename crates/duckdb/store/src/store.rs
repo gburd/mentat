@@ -83,10 +83,7 @@ impl<'c> DuckStore<'c> {
     }
 
     fn storing(&self) -> DuckStoring<'_> {
-        DuckStoring {
-            conn: self.conn,
-            schema: self.schema.clone(),
-        }
+        DuckStoring { conn: self.conn }
     }
 
     /// Point the connection's search path at this store, so the engine's

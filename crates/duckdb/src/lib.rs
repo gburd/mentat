@@ -1,19 +1,23 @@
-//! `mentat` as a DuckDB loadable extension.
+//! `mentat` as a DuckDB loadable extension, storing its datoms in DuckDB.
 //!
-//! Exposes the embedded `mentat` SQLite store (plan §3.1 option (a)) through
-//! DuckDB:
-//!   - `edn_t(db_path, edn)`                  scalar -> VARCHAR (JSON tx-report).
-//!   - `edn_q(db_path, query, options)`       table fn -> rows, all VARCHAR.
-//!   - `edn_pull(db_path, pattern, entity)`   scalar -> VARCHAR (JSON map).
-//!   - `edn_eval(db_path, script)`            scalar -> VARCHAR (EDN), feature `script`.
+//!   - `edn_t(store, edn)`                  scalar -> VARCHAR (JSON tx-report).
+//!   - `edn_q(store, query, options)`       table fn -> rows, all VARCHAR.
+//!   - `edn_pull(store, pattern, entity)`   scalar -> VARCHAR (JSON map).
+//!   - `edn_eval(store, script)`            scalar -> VARCHAR (EDN), feature `script`.
 //!
-//! Stores come from `store_cache` (shared with the SQLite extension): reused
-//! per path and checked for staleness before every call. A `Store` is checked
-//! out by one call at a time, never shared across DuckDB threads.
+//! `store` names a mentat store in the DuckDB database the extension was
+//! loaded into: a DuckDB schema holding its tables (`mentat` for `'default'`,
+//! `mentat_<name>_<hash>` otherwise; see `mentat_duckdb_store`). Until 1.11 the
+//! argument was a SQLite file path; such a value still works, as a name.
+//! See docs/duckdb-native-storage-plan.md.
+//!
+//! SQL runs on a connection cloned from the one DuckDB hands the entrypoint,
+//! one per DuckDB thread. Each `edn_t` commits its own DuckDB transaction (it
+//! is not part of the caller's).
 //!
 //! This crate is EXTENSION-ONLY. The `loadable-extension` feature replaces the
-//! DuckDB C API functions; opening a normal `Connection` here panics with
-//! "API not initialized" (plan §9 risk 5). Do not add client `Connection` use.
+//! DuckDB C API functions; opening a normal client `Connection` here panics
+//! with "API not initialized". Connections come only from the entrypoint's.
 
 use duckdb::{
     core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
@@ -25,17 +29,52 @@ use duckdb::{
     Connection, Result,
 };
 use serde_json::{json, Value as Json};
-use std::{error::Error, sync::Mutex};
+use std::{error::Error, sync::Mutex, sync::OnceLock};
 
-use mentat::{
-    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TemporalBound, TxReport,
-    TypedValue, Variable,
-};
+use core_traits::{Binding, StructuredMap, TypedValue};
+use mentat_core::TxReport;
+use mentat_duckdb_store::{DuckStore, SqlConn};
+use mentat_query_projector::QueryResults;
 
 type BoxErr = Box<dyn Error>;
 
-#[path = "../../sqlite/ext/src/store_cache.rs"]
-mod store_cache;
+#[path = "../store/src/duck_conn.rs"]
+mod duck_conn;
+#[cfg(feature = "script")]
+mod script;
+
+/// The extension's connection to the host database, made in the entrypoint.
+/// It has to be made there: the database handle DuckDB passes the entrypoint
+/// is only valid during that call (a later `duckdb_connect` on it fails), so
+/// one connection is opened up front and every call shares it.
+struct Shared(duck_conn::DuckConn<'static>);
+
+// SAFETY: a `duckdb::Connection` is `Send` but not `Sync` (statement-cache
+// RefCell). Every use goes through `conn()`, which holds `CALL` for the whole
+// call, so the connection is never touched by two threads at once.
+unsafe impl Sync for Shared {}
+unsafe impl Send for Shared {}
+
+static SHARED: OnceLock<Shared> = OnceLock::new();
+
+/// Serializes mentat calls on the shared connection.
+// ponytail: one connection, so mentat calls run one at a time (DuckDB's own
+// work inside each call is still parallel). Upgrade: a pool of connections
+// opened in the entrypoint.
+static CALL: Mutex<()> = Mutex::new(());
+
+/// The shared connection, locked for the caller's scope.
+fn conn() -> Result<(&'static dyn SqlConn, std::sync::MutexGuard<'static, ()>), BoxErr> {
+    let guard = CALL.lock().unwrap_or_else(|e| e.into_inner());
+    let shared = SHARED.get().ok_or("mentat: extension not initialized")?;
+    Ok((&shared.0 as &'static dyn SqlConn, guard))
+}
+
+/// A store on the shared connection, plus the lock that guards it.
+fn store(name: &str) -> Result<(DuckStore<'static>, std::sync::MutexGuard<'static, ()>), BoxErr> {
+    let (c, guard) = conn()?;
+    Ok((DuckStore::new(c, name), guard))
+}
 
 // ---------------------------------------------------------------------------
 // Value rendering (plan §2.4 v1: all-VARCHAR).
@@ -158,7 +197,8 @@ impl VScalar for EdnTransact {
             let (Some(db), Some(edn)) = (str_arg(input, 0, i), str_arg(input, 1, i)) else {
                 return Ok(None);
             };
-            let report = store_cache::transact(&db, &edn)?;
+            let (store, _lock) = store(&db)?;
+            let report = store.transact(&edn)?;
             Ok(Some(tx_report_json(&report)))
         })
     }
@@ -220,8 +260,8 @@ fn pull_json(db: &str, pattern: &str, eid: i64) -> Result<String, BoxErr> {
     // grammar), so require it to be exactly one EDN vector: it cannot close the
     // form early and inject clauses.
     if !matches!(
-        mentat::edn::parse::value(pattern).map(|v| v.without_spans()),
-        Ok(mentat::edn::Value::Vector(_))
+        edn::parse::value(pattern).map(|v| v.without_spans()),
+        Ok(edn::Value::Vector(_))
     ) {
         return Err(format!(
             "edn_pull: pattern must be an EDN vector like [*] or [:person/name], got {pattern}"
@@ -229,11 +269,12 @@ fn pull_json(db: &str, pattern: &str, eid: i64) -> Result<String, BoxErr> {
         .into());
     }
     let query = format!("[:find (pull ?e {pattern}) . :in ?e :where [?e _ _]]");
-    let inputs = QueryInputs::with_value_sequence(vec![(
-        Variable::from_valid_name("?e"),
+    let inputs = mentat_query_algebrizer::QueryInputs::with_value_sequence(vec![(
+        edn::query::Variable::from_valid_name("?e"),
         TypedValue::Ref(eid),
     )]);
-    let mut m = match store_cache::read(db, |store| store.q_once(&query, inputs))?.results {
+    let (store, _lock) = store(db)?;
+    let mut m = match store.q(&query, Some(inputs), None)?.results {
         QueryResults::Scalar(Some(Binding::Map(sm))) => map_json(&sm),
         _ => serde_json::Map::new(),
     };
@@ -298,11 +339,9 @@ impl VScalar for EdnEval {
                 return Ok(None);
             };
             // Sandboxed (no host fs prims) + step/heap/depth limits; a no-arg
-            // `(mentat.store/open)` opens `db`.
-            let mut it = mentat::script::Interpreter::with_default_path(&db);
-            let out = it
-                .eval_to_string(&src)
-                .map_err(|e| format!("edn_eval: {e}"))?;
+            // `(mentat.store/open)` opens store `db`.
+            let (c, _lock) = conn()?;
+            let out = script::eval(c, &db, &src).map_err(|e| format!("edn_eval: {e}"))?;
             Ok(Some(out))
         })
     }
@@ -322,7 +361,7 @@ impl VScalar for EdnEval {
 
 // ---------------------------------------------------------------------------
 // edn_q options: {"inputs": [...], "asOf": T, "since": T} (pg_mentat's shape).
-// Parsed by mentat::options_from_json, shared with the SQLite extension and CLI.
+// Parsed by mentat_transaction::options::options_from_json, shared with the SQLite extension and CLI.
 // ---------------------------------------------------------------------------
 
 fn parse_opts(text: Option<&str>) -> Result<Json, String> {
@@ -383,16 +422,11 @@ impl VTab for EdnQuery {
 
         // Run the query once to learn the FindSpec columns AND materialize
         // the results (smallest correct diff).
-        let output = store_cache::read(&db_path, |store| -> Result<_, BoxErr> {
-            let (inputs, temporal) =
-                mentat::options_from_json(&store.conn().current_schema(), &query, &opts)
-                    .map_err(|e| format!("edn_q: {e}"))?;
-            Ok(match temporal {
-                Some(TemporalBound::AsOf(t)) => store.q_once_as_of(&query, inputs, t)?,
-                Some(TemporalBound::Since(t)) => store.q_once_since(&query, inputs, t)?,
-                None => store.q_once(&query, inputs)?,
-            })
-        })?;
+        let (store, _lock) = store(&db_path)?;
+        let (inputs, temporal) =
+            mentat_transaction::options::options_from_json(&store.current_schema()?, &query, &opts)
+                .map_err(|e| format!("edn_q: {e}"))?;
+        let output = store.q(&query, Some(inputs), temporal)?;
 
         // Declare one VARCHAR column per FindSpec element, named like the CLI.
         let mut ncols = 0;
@@ -447,6 +481,10 @@ impl VTab for EdnQuery {
 
 #[duckdb_entrypoint_c_api]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
+    // Keep a clone of the host connection: the functions run SQL against the
+    // database the extension was loaded into.
+    let mine: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
+    let _ = SHARED.set(Shared(duck_conn::DuckConn(mine)));
     con.register_scalar_function::<EdnTransact>("edn_t")?;
     con.register_table_function::<EdnQuery>("edn_q")?;
     con.register_scalar_function::<EdnPull>("edn_pull")?;

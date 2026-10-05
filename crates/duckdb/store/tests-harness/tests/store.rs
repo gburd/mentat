@@ -303,3 +303,31 @@ fn persists_in_a_duckdb_file() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A store reopens from its WAL: the database closed without a checkpoint
+/// (as when the DuckDB process exits after `edn_t`). A named `CREATE TYPE`
+/// in the store's schema broke WAL replay on DuckDB 1.5.6.
+#[test]
+fn reopens_from_wal_without_checkpoint() {
+    let dir = std::env::temp_dir().join(format!("mentat-duck-wal-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("w.duckdb");
+    {
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("PRAGMA disable_checkpoint_on_shutdown")
+            .unwrap();
+        let _s = seeded(&c);
+    }
+    assert!(
+        dir.join("w.duckdb.wal").exists(),
+        "expected an un-checkpointed WAL"
+    );
+    let c = Connection::open(&path).expect("WAL replays");
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn(&c)));
+    let s = DuckStore::new(conn, "default");
+    assert_eq!(
+        q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
+        vec![vec!["2".to_string()]]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

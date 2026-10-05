@@ -33,11 +33,10 @@ use mentat_sql::{SqlConn, SqlConnExt, SqlRow, SqlValue};
 
 use crate::schema;
 
-/// One store's tables, on one DuckDB connection.
+/// One store's tables, on one DuckDB connection (the connection's search
+/// path already points at the store's schema).
 pub struct DuckStoring<'c> {
     pub conn: &'c dyn SqlConn,
-    /// The store's DuckDB schema (`mentat`, `mentat_<name>`).
-    pub schema: String,
 }
 
 fn values_tuple(n: usize) -> String {
@@ -197,9 +196,9 @@ impl MentatStoring for DuckStoring<'_> {
                 "WITH t(search_id, a, v, value_type_tag) AS (VALUES {}) \
                  SELECT t.search_id, d.e FROM t, all_datoms AS d \
                  WHERE d.index_avet AND d.a = t.a AND d.value_type_tag = t.value_type_tag \
-                   AND d.v = t.v::{}.mentat_value",
+                   AND d.v = t.v::{}",
                 values(per, chunk.len()),
-                self.schema
+                schema::VALUE_TYPE
             );
             let rows = self
                 .conn
@@ -212,7 +211,7 @@ impl MentatStoring for DuckStoring<'_> {
     }
 
     fn begin_tx_application(&self) -> Result<()> {
-        for s in schema::begin_tx_statements(&self.schema) {
+        for s in schema::begin_tx_statements() {
             self.exec(&s, &[], DbErrorKind::FailedToCreateTempTables)?;
         }
         Ok(())

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke test for the mentat DuckDB extension (edn_t / edn_q / edn_pull /
-# edn_eval), using a standalone DuckDB v1.5.6 CLI (matches the extension
-# target). Use this when the SQLLogicTest venv duckdb doesn't match v1.5.6
+# edn_eval), storing in DuckDB tables, using a standalone DuckDB v1.5.6 CLI
+# (matches the extension target). Use this when the SQLLogicTest venv duckdb doesn't match v1.5.6
 # (e.g. host Python 3.9 caps at duckdb 1.4.5). Asserts on output so it fails
 # loudly if the logic breaks.
 #
@@ -13,35 +13,28 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT="${EXT:-$HERE/build/debug/mentat.duckdb_extension}"
 DUCKDB="${DUCKDB:-duckdb}"
-DB="$(mktemp -u /tmp/mentat_smoke.XXXXXX.sqlite)"
+# The datoms live in DuckDB: a persistent DuckDB database file, and a store
+# NAME (the old file-path argument still works as a name; see the second store).
+DUCK="$(mktemp -u /tmp/mentat_smoke.XXXXXX.duckdb)"
+DB="default"
+OLD="$(mktemp -u /tmp/mentat_smoke_old.XXXXXX.mentat)"
 OTHER="$(mktemp /tmp/mentat_duck_other.XXXXXX)"
-trap 'rm -f "$DB" "$DB"-wal "$DB"-shm "$OTHER" "$OTHER".sql' EXIT
+trap 'rm -f "$DUCK" "$DUCK".wal "$OLD" "$OTHER" "$OTHER".sql' EXIT
 
 [ -f "$EXT" ] || { echo "FAIL: $EXT not found (run 'make debug' first)"; exit 1; }
 
-run() { "$DUCKDB" -unsigned -noheader -list -c "LOAD '$EXT';" -c "$1" 2>&1; }
+run() { "$DUCKDB" -unsigned -noheader -list "$DUCK" -c "LOAD '$EXT';" -c "$1" 2>&1; }
 
-# Store cache: a SECOND process adds an attribute and an entity while the
-# session below holds a cached store; `fds` counts the session's open handles
-# on the store file (1 = one reused connection).
+# A SECOND connection on the same database (another DuckDB connection in a
+# separate session after this one closes): adds an attribute and an entity,
+# which this session must then see.
 cat > "$OTHER.sql" <<SQL
 LOAD '$EXT';
 SELECT 'other=' || (edn_t('$DB', '[{:db/ident :person/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
 SELECT 'other_e=' || (edn_t('$DB', '[{:db/id "o" :person/name "Olga" :person/email "o@x"}]')::JSON->>'\$.tempids.o');
 SQL
-cat > "$OTHER" <<SH
-#!/bin/sh
-case "\$1" in
-  # .system runs us via /bin/sh -c: bash execs us (parent = the session), dash
-  # (Ubuntu) forks (parent = that sh). Step past the shell to the session.
-  fds) p=\$PPID; case "\$(cat /proc/\$p/comm)" in sh|dash|bash) p=\$(cut -d' ' -f4 /proc/\$p/stat) ;; esac
-       echo "fds=\$(ls -l /proc/\$p/fd | grep -c -- '-> $DB\$')" ;;
-  *) "$DUCKDB" -unsigned -noheader -list < "$OTHER.sql" ;;
-esac
-SH
-chmod +x "$OTHER"
 
-out="$("$DUCKDB" -unsigned -noheader -list <<SQL
+out="$("$DUCKDB" -unsigned -noheader -list "$DUCK" <<SQL
 LOAD '$EXT';
 SELECT 'schema=' || (edn_t('$DB', '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                                    {:db/ident :person/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
@@ -95,13 +88,15 @@ SELECT 'eval=' || edn_eval('$DB', '(def c (mentat.store/open))
 SELECT 'after_eval=' || string_agg(n, ',' ORDER BY n)
   FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '') AS t(n);
 
--- Store cache: another process commits a new attribute + entity; this
--- session's cached store is now stale and must see the attribute and
--- allocate a DIFFERENT entid.
-.system $OTHER
-SELECT 'mine_e=' || (edn_t('$DB', '[{:db/id "m" :person/name "Mona" :person/email "m@x"}]')::JSON->>'\$.tempids.m');
-SELECT 'emails=' || string_agg(m, ',' ORDER BY m)
-  FROM edn_q('$DB', '[:find ?m :where [_ :person/email ?m]]', '') AS t(m);
+-- The datoms are DuckDB rows: native SQL sees them, in the store's schema.
+SELECT 'native=' || count(*) FROM mentat.datoms d JOIN mentat.idents i ON i.e = d.a
+ WHERE union_extract(i.v, 's') = ':person/name';
+-- ...and nothing was written outside DuckDB.
+SELECT 'tables=' || count(*) FROM duckdb_tables() WHERE schema_name = 'mentat'
+   AND table_name IN ('datoms', 'timelined_transactions', 'idents', 'schema', 'known_parts');
+-- A path-like name is a separate store (a DuckDB schema), not a file.
+SELECT 'old_name=' || (edn_t('$OLD', '[{:db/ident :x/y :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
+SELECT 'old_schema=' || count(*) FROM duckdb_schemas() WHERE schema_name LIKE 'mentat_tmp_mentat_smoke_old_%';
 SQL
 )"
 
@@ -123,18 +118,27 @@ expect "pull_id=true"
 expect "pull_attrs=31"
 expect "eval=3"
 expect "after_eval=Alice,Bob,Carol"
-expect "other=true"
-expect "emails=m@x,o@x"
-oe="$(sed -n 's/^other_e=//p' <<<"$out")"; me="$(sed -n 's/^mine_e=//p' <<<"$out")"
-[ -n "$oe" ] && [ -n "$me" ] && [ "$oe" != "$me" ] || { echo "FAIL: entids other=$oe mine=$me"; exit 1; }
+expect "native=3"
+expect "tables=5"
+expect "old_name=true"
+expect "old_schema=1"
+[ ! -e "$OLD" ] || { echo "FAIL: a file was written at $OLD"; exit 1; }
 
-# Store reuse, in a fresh session: after 20 calls the store stays open (one
-# handle on the file; per-call open would leave none).
-reuse="$("$DUCKDB" -unsigned -noheader -list -c "LOAD '$EXT';" \
-  -c "SELECT 'many=' || count(edn_pull('$DB', '[*]', i::BIGINT)) FROM range(20) t(i);" \
-  -c ".system $OTHER fds" 2>&1)"
-echo "$reuse"
-grep -qxF "many=20" <<<"$reuse" && grep -qxF "fds=1" <<<"$reuse" || { echo "FAIL: store not reused"; exit 1; }
+# Persistence + a second connection: a new session on the same database file
+# sees the store, writes to it, and a third session without the extension
+# reads the rows with plain SQL.
+other="$("$DUCKDB" -unsigned -noheader -list "$DUCK" < "$OTHER.sql" 2>&1)"
+echo "$other"
+grep -qx "other=true" <<<"$other" || { echo "FAIL: second session"; exit 1; }
+again="$(run "SELECT 'mine_e=' || (edn_t('$DB', '[{:db/id \"m\" :person/name \"Mona\" :person/email \"m@x\"}]')::JSON->>'\$.tempids.m');
+SELECT 'emails=' || string_agg(m, ',' ORDER BY m) FROM edn_q('$DB', '[:find ?m :where [_ :person/email ?m]]', '') AS t(m);")"
+echo "$again"
+grep -qx "emails=m@x,o@x" <<<"$again" || { echo "FAIL: emails"; exit 1; }
+oe="$(sed -n 's/^other_e=//p' <<<"$other")"; me="$(sed -n 's/^mine_e=//p' <<<"$again")"
+[ -n "$oe" ] && [ -n "$me" ] && [ "$oe" != "$me" ] || { echo "FAIL: entids other=$oe mine=$me"; exit 1; }
+plain="$("$DUCKDB" -noheader -list "$DUCK" -c "SELECT 'plain=' || count(DISTINCT e) FROM mentat.datoms WHERE a = (SELECT e FROM mentat.idents WHERE union_extract(v, 's') = ':person/name');" 2>&1)"
+echo "$plain"
+grep -qx "plain=5" <<<"$plain" || { echo "FAIL: plain SQL read"; exit 1; }
 
 # Error paths: each must fail with a recognisable message.
 expect_err() {

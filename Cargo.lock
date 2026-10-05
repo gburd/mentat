@@ -2499,8 +2499,16 @@ dependencies = [
 name = "mentat_duckdb"
 version = "1.10.3"
 dependencies = [
+ "core_traits",
  "duckdb",
- "mentat",
+ "edn",
+ "mentat_core",
+ "mentat_duckdb_store",
+ "mentat_query_algebrizer",
+ "mentat_query_projector",
+ "mentat_script",
+ "mentat_transaction",
+ "mino-rs",
  "serde_json",
 ]
 
