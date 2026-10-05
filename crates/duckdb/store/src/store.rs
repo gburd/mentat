@@ -11,6 +11,9 @@
 //! A mentat store in DuckDB tables: open (creating it on first use), transact,
 //! query, pull.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use core_traits::{Entid, TypedValue};
 use mentat_core::{IdentMap, Schema, TxReport};
 use mentat_db::db::TypedSQLValue;
@@ -24,9 +27,16 @@ use crate::schema;
 use crate::storing::DuckStoring;
 
 /// A store's metadata, as read from (or created in) its DuckDB schema.
+#[derive(Clone)]
 pub struct Opened {
     pub schema: Schema,
     pub partition_map: PartitionMap,
+}
+
+thread_local! {
+    /// Per thread (DuckDB calls a function on its worker threads): store
+    /// schema name -> (generation, opened metadata).
+    static OPENED: RefCell<HashMap<String, (i64, Opened)>> = RefCell::new(HashMap::new());
 }
 
 /// One store (a DuckDB schema) on one connection. Cheap to construct; holds
@@ -106,14 +116,53 @@ impl<'c> DuckStore<'c> {
             .is_some())
     }
 
-    /// Open the store, creating and bootstrapping it on first use. Runs in its
-    /// own DuckDB transaction.
+    /// The store's generation: a random value, replaced by every transaction
+    /// that changes the schema or idents (in that same DuckDB transaction), so a
+    /// cached schema is current iff the generation matches. Random rather than
+    /// a counter so two databases' stores of the same name never share one.
+    /// One primary-key read.
+    fn generation(&self) -> Result<Option<i64>> {
+        Ok(self.conn.query_opt(
+            &format!(
+                "SELECT value::BIGINT FROM {}.meta WHERE key = 'generation'",
+                self.schema
+            ),
+            &[],
+            |r| r.get_i64(0),
+        )?)
+    }
+
+    /// Open the store, creating and bootstrapping it on first use. Cheap when
+    /// this thread has opened it before: a cached schema, revalidated by one
+    /// generation read. (Another connection that changes the schema bumps the
+    /// generation, so it is seen here.)
     pub fn open(&self) -> Result<Opened> {
-        if !self.exists()? {
-            self.in_tx(|s| s.create())?;
-        }
+        // A missing store reads as a missing meta table: create it.
+        let gen = match self.generation() {
+            Ok(Some(g)) => g,
+            _ => {
+                if !self.exists()? {
+                    self.in_tx(|s| s.create())?;
+                }
+                self.generation()?.unwrap_or(0)
+            }
+        };
         self.use_schema()?;
-        self.read()
+        let cached = OPENED.with(|c| {
+            c.borrow()
+                .get(&self.schema)
+                .filter(|(g, _)| *g == gen)
+                .map(|(_, o)| o.clone())
+        });
+        if let Some(opened) = cached {
+            return Ok(opened);
+        }
+        let opened = self.read()?;
+        OPENED.with(|c| {
+            c.borrow_mut()
+                .insert(self.schema.clone(), (gen, opened.clone()))
+        });
+        Ok(opened)
     }
 
     fn create(&self) -> Result<()> {
@@ -125,6 +174,13 @@ impl<'c> DuckStore<'c> {
             self.conn.execute_batch(&stmt)?;
         }
         self.use_schema()?;
+        self.conn.execute(
+            &format!(
+                "INSERT INTO {}.meta VALUES ('generation', ((hash(uuid()) >> 1)::BIGINT)::VARCHAR)",
+                self.schema
+            ),
+            &[],
+        )?;
         let partition_map = mentat_db::bootstrap_partition_map();
         for (part, p) in partition_map.iter() {
             self.conn.execute(
@@ -162,8 +218,8 @@ impl<'c> DuckStore<'c> {
         Ok(())
     }
 
-    /// Read the partition map and schema (the `idents`/`schema` views).
-    fn read(&self) -> Result<Opened> {
+    /// Read the partition map (3 rows).
+    fn read_partition_map(&self) -> Result<PartitionMap> {
         let parts = self.conn.query_rows(
             "SELECT part, start, \"end\", idx, allow_excision FROM known_parts",
             &[],
@@ -179,7 +235,12 @@ impl<'c> DuckStore<'c> {
                 ))
             },
         )?;
-        let partition_map: PartitionMap = parts.into_iter().collect();
+        Ok(parts.into_iter().collect())
+    }
+
+    /// Read the partition map and schema (the `idents`/`schema` views).
+    fn read(&self) -> Result<Opened> {
+        let partition_map = self.read_partition_map()?;
         let triples = |table: &str| {
             self.conn.query_rows(
                 &format!("SELECT e, a, v, value_type_tag FROM {table}"),
@@ -236,14 +297,19 @@ impl<'c> DuckStore<'c> {
     /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction.
     pub fn transact(&self, edn: &str) -> Result<TxReport> {
         let entities = edn::parse::entities(edn)?;
-        self.open()?;
+        let opened = self.open()?;
+        let gen = self.generation()?;
         self.in_tx(|s| {
-            let Opened {
-                schema,
-                partition_map,
-            } = s.read()?;
+            // The partition map is read inside the writing transaction; the
+            // schema is reused unless another writer changed it since `open`.
+            let partition_map = s.read_partition_map()?;
+            let schema = if s.generation()? == gen {
+                opened.schema
+            } else {
+                s.read()?.schema
+            };
             let storing = s.storing();
-            let (report, _next_partition_map, _next_schema, _w) = mentat_db::transact(
+            let (report, _next_partition_map, next_schema, _w) = mentat_db::transact(
                 &storing,
                 partition_map,
                 &schema,
@@ -251,8 +317,47 @@ impl<'c> DuckStore<'c> {
                 NullWatcher(),
                 entities,
             )?;
+            if next_schema.is_some() {
+                s.conn.execute(
+                    "UPDATE meta SET value = ((hash(uuid()) >> 1)::BIGINT)::VARCHAR WHERE key = 'generation'",
+                    &[],
+                )?;
+            }
             Ok(report)
         })
+    }
+
+    /// Run a Datalog query with the shared JSON options
+    /// (`{"inputs": [...], "asOf": T, "since": T}`), opening the store once.
+    pub fn q_json(&self, query: &str, options: &serde_json::Value) -> Result<QueryOutput> {
+        let Opened { schema, .. } = self.open()?;
+        let (inputs, temporal) =
+            mentat_transaction::options::options_from_json(&schema, query, options)?;
+        q_once_on(
+            self.conn,
+            Known::for_schema(&schema),
+            query,
+            Some(inputs),
+            temporal,
+        )
+    }
+
+    /// Run a Datalog query with inputs, optionally against a historical basis,
+    /// on an already-opened store.
+    pub fn q_opened(
+        &self,
+        opened: &Opened,
+        query: &str,
+        inputs: Option<QueryInputs>,
+        temporal: Option<TemporalBound>,
+    ) -> Result<QueryOutput> {
+        q_once_on(
+            self.conn,
+            Known::for_schema(&opened.schema),
+            query,
+            inputs,
+            temporal,
+        )
     }
 
     /// Run a Datalog query, optionally against a historical basis.

@@ -64,6 +64,9 @@ def email(u):
 # Backends: one query -> list of rows (python values). Same argument meaning
 # for every backend: users/issues are the generator's 0-based indexes.
 # --------------------------------------------------------------------------
+_DUCK = {}  # DuckDB database file -> this process's connection to it
+
+
 class Ext:
     """sqlite-ext / duckdb / duckdb-quack: all take the store path first."""
 
@@ -83,8 +86,17 @@ class Ext:
             self.uri, self.token = os.environ["QUACK_URI"], os.environ["MENTAT_QUACK_TOKEN"]
         else:
             import duckdb
-            self.db = duckdb.connect(config={"allow_unsigned_extensions": "true"})
-            self.db.load_extension(os.environ["DUCKDB_EXT"])
+            # Since 1.11 the duckdb backend stores datoms IN the DuckDB database:
+            # open a persistent one (`DUCKDB_DB`, default <store>.duckdb) and use
+            # the store path as the store's name. Before 1.11 (or with
+            # DUCKDB_DB=:memory:) the path was a SQLite file the extension opened.
+            # One connection per database file per process: DuckDB locks the
+            # file, so a second connect() in this process would fail.
+            dbf = os.environ.get("DUCKDB_DB", store + ".duckdb")
+            if dbf not in _DUCK:
+                _DUCK[dbf] = duckdb.connect(dbf, config={"allow_unsigned_extensions": "true"})
+                _DUCK[dbf].load_extension(os.environ["DUCKDB_EXT"])
+            self.db = _DUCK[dbf].cursor()
 
     def sql(self, sql, args):
         """Run `sql` (? placeholders) here, or on the Quack server with the
@@ -302,7 +314,7 @@ def ext_load(backend, data, store, max_s=float("inf")):
     Exits 3 after max_s seconds, leaving a ceiling record in STORE.load.json."""
     meta = jload(f"{data}/meta.json")
     per_tx = meta["batch"] * meta["n_datoms_initial"] / meta["n_issues"]
-    for suf in ("", "-wal", "-shm", ".entids", ".load.json"):
+    for suf in ("", "-wal", "-shm", ".entids", ".load.json", ".duckdb", ".duckdb.wal"):
         if os.path.exists(store + suf):
             os.remove(store + suf)
     b = Ext(backend, store, meta)
@@ -344,7 +356,9 @@ def ext_load(backend, data, store, max_s=float("inf")):
     with open(store + ".entids", "wb") as f:
         entids.tofile(f)
     info = {"t_mid": t_mid, "t_since": t_since, "load_s": load_s, "initial_load_s": t_initial,
-            "txs": txs, "store_bytes": os.path.getsize(store), "n_datoms": meta["n_datoms"]}
+            "txs": txs, "n_datoms": meta["n_datoms"],
+            "store_bytes": sum(os.path.getsize(store + s) for s in ("", ".duckdb", ".duckdb.wal")
+                               if os.path.exists(store + s))}
     json.dump(info, open(store + ".load.json", "w"))
     print(json.dumps(info))
 

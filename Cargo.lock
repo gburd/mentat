@@ -2507,6 +2507,7 @@ dependencies = [
  "mentat_query_algebrizer",
  "mentat_query_projector",
  "mentat_transaction",
+ "public_traits",
  "serde_json",
 ]
 

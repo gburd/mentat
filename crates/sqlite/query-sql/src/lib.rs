@@ -370,13 +370,31 @@ impl QueryFragment for Constraint {
                 // only. SQLite orders INTEGER and REAL together (5 < 9.5 < 10),
                 // and mentat's numeric predicates rely on it, so on DuckDB an
                 // ordering comparison against `v` goes through `mentat_num`.
-                let numeric =
-                    out.dialect() == Dialect::DuckDb && matches!(op.0, "<" | "<=" | ">" | ">=");
-                push_comparand(out, left, numeric)?;
+                //
+                // And a join of an entity/tx column (BIGINT) with `v` (a ref
+                // value) would cast `e` to the UNION, which DuckDB can't use as
+                // a join key early: it builds every other side first (q2 at
+                // 100k datoms: 12 ms). Compare against `v`'s integer member
+                // instead -- NULL for a non-integer value, so no match, as on
+                // SQLite.
+                let duck = out.dialect() == Dialect::DuckDb;
+                let numeric = duck && matches!(op.0, "<" | "<=" | ">" | ">=");
+                let int_join = duck
+                    && matches!(op.0, "=" | "<>")
+                    && (is_value_column(left) != is_value_column(right))
+                    && (is_integer_column(left) || is_integer_column(right));
+                let mode = if numeric {
+                    Comparand::Numeric
+                } else if int_join {
+                    Comparand::Integer
+                } else {
+                    Comparand::AsIs
+                };
+                push_comparand(out, left, mode)?;
                 out.push_sql(" ");
                 op.push_sql(out)?;
                 out.push_sql(" ");
-                push_comparand(out, right, numeric)
+                push_comparand(out, right, mode)
             }
 
             IsNull { ref value } => {
@@ -461,16 +479,52 @@ fn is_value_column(c: &ColumnOrExpression) -> bool {
     }
 }
 
+/// True if `c` is one of the BIGINT columns: entity, attribute or tx.
+fn is_integer_column(c: &ColumnOrExpression) -> bool {
+    match c {
+        ColumnOrExpression::Column(QualifiedAlias(_, col)) => matches!(
+            col,
+            Column::Fixed(DatomsColumn::Entity | DatomsColumn::Attribute | DatomsColumn::Tx)
+                | Column::Transactions(
+                    TransactionsColumn::Entity
+                        | TransactionsColumn::Attribute
+                        | TransactionsColumn::Tx
+                )
+        ),
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Comparand {
+    AsIs,
+    /// `v` as a number (DuckDB ordering comparisons).
+    Numeric,
+    /// `v`'s integer member (DuckDB joins with an entity/tx column).
+    Integer,
+}
+
 fn push_comparand(
     out: &mut dyn QueryBuilder,
     c: &ColumnOrExpression,
-    numeric: bool,
+    mode: Comparand,
 ) -> BuildQueryResult {
-    if numeric && is_value_column(c) {
-        out.push_sql("mentat_num(");
-        c.push_sql(out)?;
-        out.push_sql(")");
-        return Ok(());
+    if is_value_column(c) {
+        match mode {
+            Comparand::Numeric => {
+                out.push_sql("mentat_num(");
+                c.push_sql(out)?;
+                out.push_sql(")");
+                return Ok(());
+            }
+            Comparand::Integer => {
+                out.push_sql("union_extract(");
+                c.push_sql(out)?;
+                out.push_sql(", 'i')");
+                return Ok(());
+            }
+            Comparand::AsIs => {}
+        }
     }
     c.push_sql(out)
 }

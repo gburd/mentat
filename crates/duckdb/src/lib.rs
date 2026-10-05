@@ -422,10 +422,10 @@ impl VTab for EdnQuery {
         // Run the query once to learn the FindSpec columns AND materialize
         // the results (smallest correct diff).
         let (store, _lock) = store(&db_path)?;
-        let (inputs, temporal) =
-            mentat_transaction::options::options_from_json(&store.current_schema()?, &query, &opts)
-                .map_err(|e| format!("edn_q: {e}"))?;
-        let output = store.q(&query, Some(inputs), temporal)?;
+        let output = store.q_json(&query, &opts).map_err(|e| match e {
+            public_traits::errors::MentatError::BadQueryOptions(m) => format!("edn_q: {m}"),
+            other => other.to_string(),
+        })?;
 
         // Declare one VARCHAR column per FindSpec element, named like the CLI.
         let mut ncols = 0;

@@ -68,16 +68,14 @@ impl DuckBackend {
         query: &str,
         inputs: &[serde_json::Value],
     ) -> Result<QueryOutput, String> {
-        let store = self.store(db.conn)?;
-        let schema = store.current_schema().map_err(|e| e.to_string())?;
-        let (inputs, _) = mentat_transaction::options::options_from_json(
-            &schema,
-            query,
-            &serde_json::json!({ "inputs": inputs }),
-        )
-        .map_err(|e| e.to_string())?;
-        store
-            .q(query, Some(inputs), Self::temporal(db))
+        let mut opts = serde_json::json!({ "inputs": inputs });
+        match Self::temporal(db) {
+            Some(TemporalBound::AsOf(t)) => opts["asOf"] = t.into(),
+            Some(TemporalBound::Since(t)) => opts["since"] = t.into(),
+            None => {}
+        }
+        self.store(db.conn)?
+            .q_json(query, &opts)
             .map_err(|e| e.to_string())
     }
 }
