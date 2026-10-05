@@ -162,3 +162,12 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   compares, aggregates and known-type projections on them in the DuckDB dialect; re-run A/B
   at xs and s; then registry fork build, CHANGELOG, 1.11.0.
   Box scripts: ~/ab.sh (SC=xs|s), ~/abtab.py, /tmp/plan4.py (q2 layout probe).
+- 2026-10-05 21:15Z: 1.11.0 prepared and pushed (master 89288a08, NOT tagged). EC2 release gate
+  ALL GREEN (fmt, clippy ws+exts, 89 test bins, features, deny, both ext smokes, SQLLogicTest
+  on ubuntu+duckdb 1.5.6, harness 21, pg16+script 1916/0/1, pg16 1871/0). Perf A/B committed
+  (95bf16b4, benchmarks/results/duckdb-native-*/findings.md). BLOCKED on GitHub Actions major
+  outage: mentat CI (run 37371816400) and the fork registry build (gburd/community-extensions
+  branch mentat-test-1.11.0, run 37371906132) were cancelled unrun. NEXT when GitHub recovers:
+  re-run both; if green tag v1.11.0 at 89288a08, watch release.yml + PGXN, open a NEW registry PR
+  (version 1.11.0, ref = tag commit; #2812 already merged), delete fork test branch, terminate
+  EC2 i-0d9deacbbbb1b24bd (+ key mentat-duck-20261005-135857-key, SG sg-03e8945a1022cb82d).
