@@ -8,16 +8,16 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use super::{rusqlite, Element, QueryOutput, Rows, Schema};
+use super::{Element, QueryOutput, RowSource, Schema, SqlConn};
 
 use query_projector_traits::errors::Result;
 
 pub trait Projector {
-    fn project<'stmt, 's>(
+    fn project(
         &self,
         schema: &Schema,
-        sqlite: &'s rusqlite::Connection,
-        rows: Rows<'stmt>,
+        sqlite: &dyn SqlConn,
+        rows: &mut dyn RowSource,
     ) -> Result<QueryOutput>;
     fn columns<'s>(&'s self) -> Box<dyn Iterator<Item = &'s Element> + 's>;
 }

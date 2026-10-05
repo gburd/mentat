@@ -75,6 +75,10 @@ impl SqlRow for RusqliteRow<'_, '_> {
         let v: rusqlite::types::Value = self.0.get(idx).map_err(sql_error)?;
         Ok(from_rusqlite(v))
     }
+
+    fn column_count(&self) -> usize {
+        self.0.as_ref().column_count()
+    }
 }
 
 /// Run a prepared statement, calling `f` per row.

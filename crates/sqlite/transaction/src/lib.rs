@@ -538,16 +538,26 @@ impl<'a, 'c> Pullable for InProgress<'a, 'c> {
         E: IntoIterator<Item = Entid>,
         A: IntoIterator<Item = Entid>,
     {
-        pull_attributes_for_entities(&self.schema, &(self.transaction), entities, attributes)
-            .map_err(|e| e.into())
+        pull_attributes_for_entities(
+            &self.schema,
+            &mentat_sql::sqlite(&self.transaction),
+            entities,
+            attributes,
+        )
+        .map_err(|e| e.into())
     }
 
     fn pull_attributes_for_entity<A>(&self, entity: Entid, attributes: A) -> Result<StructuredMap>
     where
         A: IntoIterator<Item = Entid>,
     {
-        pull_attributes_for_entity(&self.schema, &(self.transaction), entity, attributes)
-            .map_err(|e| e.into())
+        pull_attributes_for_entity(
+            &self.schema,
+            &mentat_sql::sqlite(&self.transaction),
+            entity,
+            attributes,
+        )
+        .map_err(|e| e.into())
     }
 }
 

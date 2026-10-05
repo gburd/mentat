@@ -17,8 +17,8 @@ use mentat_query_pull::Puller;
 use core_traits::Entid;
 
 use crate::{
-    rusqlite, Binding, CombinedProjection, Element, FindSpec, ProjectedElements, QueryOutput,
-    QueryResults, RelResult, Row, Rows, Schema, TypedIndex,
+    Binding, CombinedProjection, Element, FindSpec, ProjectedElements, QueryOutput, QueryResults,
+    RelResult, RowSource, Schema, SqlConn, SqlRow, TypedIndex,
 };
 
 use crate::pull::{PullConsumer, PullOperation, PullTemplate};
@@ -62,16 +62,16 @@ impl ScalarTwoStagePullProjector {
 }
 
 impl Projector for ScalarTwoStagePullProjector {
-    fn project<'stmt, 's>(
+    fn project(
         &self,
         schema: &Schema,
-        sqlite: &'s rusqlite::Connection,
-        mut rows: Rows<'stmt>,
+        sqlite: &dyn SqlConn,
+        rows: &mut dyn RowSource,
     ) -> Result<QueryOutput> {
         // Scalar is pretty straightforward -- zero or one entity, do the pull directly.
-        let results = if let Some(r) = rows.next()? {
+        let results = if let Some(r) = rows.next_row()? {
             let row = r;
-            let entity: Entid = row.get(0)?; // This will always be 0 and a ref.
+            let entity: Entid = row.get_i64(0)?; // This will always be 0 and a ref.
             let bindings = self.puller.pull(schema, sqlite, once(entity))?;
             let m = Binding::Map(
                 bindings
@@ -119,11 +119,11 @@ impl TupleTwoStagePullProjector {
     }
 
     // This is exactly the same as for rel.
-    fn collect_bindings<'a>(&self, row: &Row<'a>) -> Result<Vec<Binding>> {
+    fn collect_bindings(&self, row: &dyn SqlRow) -> Result<Vec<Binding>> {
         // There will be at least as many SQL columns as Datalog columns.
         // gte 'cos we might be querying extra columns for ordering.
         // The templates will take care of ignoring columns.
-        assert!(row.as_ref().column_count() >= self.len);
+        assert!(row.column_count() >= self.len);
         self.templates
             .iter()
             .map(|ti| ti.lookup(row))
@@ -147,13 +147,13 @@ impl TupleTwoStagePullProjector {
 }
 
 impl Projector for TupleTwoStagePullProjector {
-    fn project<'stmt, 's>(
+    fn project(
         &self,
         schema: &Schema,
-        sqlite: &'s rusqlite::Connection,
-        mut rows: Rows<'stmt>,
+        sqlite: &dyn SqlConn,
+        rows: &mut dyn RowSource,
     ) -> Result<QueryOutput> {
-        let results = if let Some(r) = rows.next()? {
+        let results = if let Some(r) = rows.next_row()? {
             let row = r;
 
             // Keeping the compiler happy.
@@ -166,7 +166,7 @@ impl Projector for TupleTwoStagePullProjector {
 
             // Collect the usual bindings and accumulate entity IDs for pull.
             for p in pull_consumers.iter_mut() {
-                p.collect_entity(&row)?;
+                p.collect_entity(row)?;
             }
 
             let mut bindings = self.collect_bindings(row)?;
@@ -222,13 +222,13 @@ impl RelTwoStagePullProjector {
         }
     }
 
-    fn collect_bindings_into<'a>(&self, row: &Row<'a>, out: &mut Vec<Binding>) -> Result<()> {
+    fn collect_bindings_into(&self, row: &dyn SqlRow, out: &mut Vec<Binding>) -> Result<()> {
         // There will be at least as many SQL columns as Datalog columns.
         // gte 'cos we might be querying extra columns for ordering.
         // The templates will take care of ignoring columns.
-        assert!(row.as_ref().column_count() >= self.len);
+        assert!(row.column_count() >= self.len);
         let mut count = 0;
-        for binding in self.templates.iter().map(|ti| ti.lookup(&row)) {
+        for binding in self.templates.iter().map(|ti| ti.lookup(row)) {
             out.push(binding?);
             count += 1;
         }
@@ -260,11 +260,11 @@ impl RelTwoStagePullProjector {
 }
 
 impl Projector for RelTwoStagePullProjector {
-    fn project<'stmt, 's>(
+    fn project(
         &self,
         schema: &Schema,
-        sqlite: &'s rusqlite::Connection,
-        mut rows: Rows<'stmt>,
+        sqlite: &dyn SqlConn,
+        rows: &mut dyn RowSource,
     ) -> Result<QueryOutput> {
         // Allocate space for five rows to start.
         // This is better than starting off by doubling the buffer a couple of times, and will
@@ -280,10 +280,10 @@ impl Projector for RelTwoStagePullProjector {
         let mut pull_consumers = pull_consumers?;
 
         // Collect the usual bindings and accumulate entity IDs for pull.
-        while let Some(r) = rows.next()? {
+        while let Some(r) = rows.next_row()? {
             let row = r;
             for p in pull_consumers.iter_mut() {
-                p.collect_entity(&row)?;
+                p.collect_entity(row)?;
             }
             self.collect_bindings_into(row, &mut values)?;
         }
@@ -339,17 +339,17 @@ impl CollTwoStagePullProjector {
 }
 
 impl Projector for CollTwoStagePullProjector {
-    fn project<'stmt, 's>(
+    fn project(
         &self,
         schema: &Schema,
-        sqlite: &'s rusqlite::Connection,
-        mut rows: Rows<'stmt>,
+        sqlite: &dyn SqlConn,
+        rows: &mut dyn RowSource,
     ) -> Result<QueryOutput> {
         let mut pull_consumer = PullConsumer::for_operation(schema, &self.pull)?;
 
-        while let Some(r) = rows.next()? {
+        while let Some(r) = rows.next_row()? {
             let row = r;
-            pull_consumer.collect_entity(&row)?;
+            pull_consumer.collect_entity(row)?;
         }
 
         // Run the pull expressions for the collected IDs.

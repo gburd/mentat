@@ -20,7 +20,7 @@ use mentat_query_pull::Puller;
 
 use query_projector_traits::errors::Result;
 
-use super::{rusqlite, Index};
+use super::{Index, SqlConn, SqlRow};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PullOperation(pub(crate) Vec<PullAttributeSpec>);
@@ -89,13 +89,13 @@ impl<'schema> PullConsumer<'schema> {
         ))
     }
 
-    pub(crate) fn collect_entity<'a>(&mut self, row: &rusqlite::Row<'a>) -> Result<Entid> {
-        let entity = row.get(self.indices.sql_index)?;
+    pub(crate) fn collect_entity(&mut self, row: &dyn SqlRow) -> Result<Entid> {
+        let entity = row.get_i64(self.indices.sql_index)?;
         self.entities.insert(entity);
         Ok(entity)
     }
 
-    pub(crate) fn pull(&mut self, sqlite: &rusqlite::Connection) -> Result<()> {
+    pub(crate) fn pull(&mut self, sqlite: &dyn SqlConn) -> Result<()> {
         let entities: Vec<Entid> = self.entities.iter().cloned().collect();
         self.results = self.puller.pull(self.schema, sqlite, entities)?;
         Ok(())

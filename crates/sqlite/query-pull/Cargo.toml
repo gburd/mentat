@@ -31,5 +31,8 @@ path = "../db"
 [dependencies.db_traits]
 path = "../db-traits"
 
+[dependencies.mentat_sql]
+path = "../sql"
+
 [lints]
 workspace = true

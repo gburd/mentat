@@ -35,7 +35,9 @@ use mentat_query_projector::{ConstantProjector, Projector};
 
 use mentat_query_projector::translate::{query_to_select, ProjectedSelect};
 
-use mentat_sql::SQLQuery;
+use mentat_sql::{SQLQuery, SqlConn, SqlValue};
+
+use mentat_query_projector::{RusqliteRows, VecRows};
 
 pub use mentat_query_algebrizer::Known;
 
@@ -83,9 +85,9 @@ impl<'sqlite> PreparedQuery<'sqlite> {
                 ref args,
                 ref projector,
             } => {
-                let rows = run_statement(statement, args)?;
+                let mut rows = RusqliteRows::new(run_statement(statement, args)?);
                 projector
-                    .project(schema, connection, rows)
+                    .project(schema, &mentat_sql::sqlite(connection), &mut rows)
                     .map_err(|e| e.into())
             }
         }
@@ -349,13 +351,83 @@ fn run_algebrized_query(
             let SQLQuery { sql, args } = query.to_sql_query()?;
 
             let mut statement = sqlite.prepare(sql.as_str())?;
-            let rows = run_statement(&mut statement, &args)?;
+            let mut rows = RusqliteRows::new(run_statement(&mut statement, &args)?);
 
             projector
-                .project(known.schema, sqlite, rows)
+                .project(known.schema, &mentat_sql::sqlite(sqlite), &mut rows)
                 .map_err(|e| e.into())
         }
     }
+}
+
+/// `run_algebrized_query` for any engine behind the storage seam: the SQL is
+/// built for `conn.dialect()`, run with named parameters, and the rows are
+/// projected exactly as on SQLite. The DuckDB extension queries through this.
+pub fn run_algebrized_query_on(
+    known: Known,
+    conn: &dyn SqlConn,
+    algebrized: AlgebraicQuery,
+) -> QueryExecutionResult {
+    if !algebrized.unbound_variables().is_empty() {
+        bail!(MentatError::UnboundVariables(
+            algebrized
+                .unbound_variables()
+                .into_iter()
+                .map(|v| v.to_string())
+                .collect()
+        ));
+    }
+    if algebrized.is_known_empty() {
+        return Ok(QueryOutput::empty(&algebrized.find_spec));
+    }
+    match query_to_select(known.schema, algebrized)? {
+        ProjectedSelect::Constant(constant) => {
+            constant.project_without_rows().map_err(|e| e.into())
+        }
+        ProjectedSelect::Query { query, projector } => {
+            let SQLQuery { sql, args } = query.to_sql_query_for(conn.dialect())?;
+            let params: Vec<(&str, SqlValue)> = args
+                .iter()
+                .map(|(name, v)| (name.as_str(), mentat_sql::from_rusqlite(v.as_ref().clone())))
+                .collect();
+            let mut rows: Vec<Vec<SqlValue>> = Vec::new();
+            conn.query_named(&sql, &params, &mut |row| {
+                let n = row.column_count();
+                let mut vals = Vec::with_capacity(n);
+                for i in 0..n {
+                    vals.push(row.get_value(i)?);
+                }
+                rows.push(vals);
+                Ok(())
+            })?;
+            projector
+                .project(known.schema, conn, &mut VecRows::new(rows))
+                .map_err(|e| e.into())
+        }
+    }
+}
+
+/// `q_once` for any engine behind the storage seam, with an optional
+/// historical basis (`as-of` / `since`).
+pub fn q_once_on<T>(
+    conn: &dyn SqlConn,
+    known: Known,
+    query: &str,
+    inputs: T,
+    temporal: Option<TemporalBound>,
+) -> QueryExecutionResult
+where
+    T: Into<Option<QueryInputs>>,
+{
+    let parsed = parse_find_string(query)?;
+    let algebrized = algebrize_with_inputs_and_temporal(
+        known,
+        parsed,
+        0,
+        inputs.into().unwrap_or_default(),
+        temporal,
+    )?;
+    run_algebrized_query_on(known, conn, algebrized)
 }
 
 /// Take an EDN query string, a reference to an open SQLite connection, a Mentat schema, and an

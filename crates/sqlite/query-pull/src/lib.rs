@@ -56,7 +56,6 @@
 //!     (pull ?person [:person/friend])
 //!      [*]))
 //! ```
-extern crate rusqlite;
 
 extern crate core_traits;
 extern crate edn;
@@ -74,6 +73,7 @@ use mentat_core::{Cloned, HasSchema, Keyword, Schema, ValueRc};
 
 use db_traits::errors::DbError;
 use mentat_db::cache;
+use mentat_sql::{SqlConn, SqlConnExt, SqlValue};
 
 use edn::query::{NamedPullAttribute, PullAttributeSpec, PullConcreteAttribute};
 
@@ -83,7 +83,7 @@ type PullResults = BTreeMap<Entid, ValueRc<StructuredMap>>;
 
 pub fn pull_attributes_for_entity<A>(
     schema: &Schema,
-    db: &rusqlite::Connection,
+    db: &dyn SqlConn,
     entity: Entid,
     attributes: A,
 ) -> Result<StructuredMap>
@@ -109,7 +109,7 @@ where
 
 pub fn pull_attributes_for_entities<E, A>(
     schema: &Schema,
-    db: &rusqlite::Connection,
+    db: &dyn SqlConn,
     entities: E,
     attributes: A,
 ) -> Result<PullResults>
@@ -241,12 +241,7 @@ impl Puller {
         })
     }
 
-    pub fn pull<E>(
-        &self,
-        schema: &Schema,
-        db: &rusqlite::Connection,
-        entities: E,
-    ) -> Result<PullResults>
+    pub fn pull<E>(&self, schema: &Schema, db: &dyn SqlConn, entities: E) -> Result<PullResults>
     where
         E: IntoIterator<Item = Entid>,
     {
@@ -309,22 +304,17 @@ impl Puller {
         // pulled entities via that attribute. Refs are stored as plain integers
         // with value_type_tag = 0 (ValueType::Ref).
         if !self.reverse_attributes.is_empty() && !entities.is_empty() {
+            // `<> 0`, not SQLite's `IS NOT 0`: the same on non-NULL flags, and DuckDB has it.
             for (attr_entid, name) in self.reverse_attributes.iter() {
-                let mut stmt = db
-                    .prepare(
-                        "SELECT DISTINCT e FROM datoms \
-                         WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet IS NOT 0 \
-                         ORDER BY e ASC",
-                    )
-                    .map_err(DbError::from)?;
                 for e in entities.iter() {
-                    let referrers: Vec<Binding> = stmt
-                        .query_map(rusqlite::params![attr_entid, e], |row| {
-                            let referrer: Entid = row.get(0)?;
-                            Ok(Binding::Scalar(TypedValue::Ref(referrer)))
-                        })
-                        .map_err(DbError::from)?
-                        .collect::<std::result::Result<Vec<_>, _>>()
+                    let referrers: Vec<Binding> = db
+                        .query_rows(
+                            "SELECT DISTINCT e FROM datoms \
+                             WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet <> 0 \
+                             ORDER BY e ASC",
+                            &[SqlValue::Integer(*attr_entid), SqlValue::Integer(*e)],
+                            |row| Ok(Binding::Scalar(TypedValue::Ref(row.get_i64(0)?))),
+                        )
                         .map_err(DbError::from)?;
 
                     if !referrers.is_empty() {

@@ -45,6 +45,11 @@ pub struct SQLQuery {
 /// Gratefully based on Diesel's QueryBuilder trait:
 /// https://github.com/diesel-rs/diesel/blob/4885f61b8205f7f3c2cfa03837ed6714831abe6b/diesel/src/query_builder/mod.rs#L56
 pub trait QueryBuilder {
+    /// The SQL dialect being generated. SQLite unless the builder was told
+    /// otherwise; fragments branch on it only where DuckDB differs.
+    fn dialect(&self) -> Dialect {
+        Dialect::Sqlite
+    }
     fn push_sql(&mut self, sql: &str);
     fn push_identifier(&mut self, identifier: &str) -> BuildQueryResult;
     fn push_typed_value(&mut self, value: &TypedValue) -> BuildQueryResult;
@@ -89,6 +94,8 @@ pub struct SQLiteQueryBuilder {
     byte_args: HashMap<Vec<u8>, String>, // From value to argument name.
     string_args: HashMap<ValueRc<String>, String>, // From value to argument name.
     args: Vec<(String, Rc<rusqlite::types::Value>)>, // (arg, value).
+
+    dialect: Option<Dialect>,
 }
 
 impl SQLiteQueryBuilder {
@@ -105,7 +112,14 @@ impl SQLiteQueryBuilder {
             byte_args: HashMap::default(),
             string_args: HashMap::default(),
             args: vec![],
+            dialect: None,
         }
+    }
+
+    /// Generate SQL for `dialect` (identifiers, and the few fragments that
+    /// differ). The default is SQLite.
+    pub fn set_dialect(&mut self, dialect: Dialect) {
+        self.dialect = Some(dialect);
     }
 
     fn next_argument_name(&mut self) -> String {
@@ -127,11 +141,22 @@ impl SQLiteQueryBuilder {
 }
 
 impl QueryBuilder for SQLiteQueryBuilder {
+    fn dialect(&self) -> Dialect {
+        self.dialect.unwrap_or(Dialect::Sqlite)
+    }
+
     fn push_sql(&mut self, sql: &str) {
         self.sql.push_str(sql);
     }
 
     fn push_identifier(&mut self, identifier: &str) -> BuildQueryResult {
+        if self.dialect() == Dialect::DuckDb {
+            // DuckDB rejects backticks; standard double quotes.
+            self.push_sql("\"");
+            self.push_sql(&identifier.replace('"', "\"\""));
+            self.push_sql("\"");
+            return Ok(());
+        }
         self.push_sql("`");
         self.push_sql(&identifier.replace("`", "``"));
         self.push_sql("`");

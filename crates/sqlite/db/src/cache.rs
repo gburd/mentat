@@ -60,8 +60,8 @@ use std::iter::Peekable;
 
 use db_traits::errors::ResultExt;
 
+use mentat_sql::{SqlConn, SqlError, SqlRow, SqlValue};
 use rusqlite;
-use rusqlite::params_from_iter;
 
 use core_traits::{Binding, Entid, TypedValue};
 
@@ -195,36 +195,13 @@ impl AevFactory {
         }
     }
 
-    fn row_to_aev(&mut self, row: &rusqlite::Row) -> rusqlite::Result<Aev> {
-        let a: Entid = row.get(0)?;
-        let e: Entid = row.get(1)?;
-        let value_type_tag: i32 = row.get(3)?;
-        let v = TypedValue::from_sql_value_pair(row.get(2)?, value_type_tag)
-            .expect("All database contents should be representable");
+    fn row_to_aev(&mut self, row: &dyn SqlRow) -> std::result::Result<Aev, SqlError> {
+        let a: Entid = row.get_i64(0)?;
+        let e: Entid = row.get_i64(1)?;
+        let value_type_tag = row.get_i64(3)? as i32;
+        let v = TypedValue::from_sql(row.get_value(2)?, value_type_tag)
+            .map_err(|err| SqlError::new(err.to_string()))?;
         Ok((a, e, self.intern(v)))
-    }
-}
-
-/// Yields rows until the first SQL error (e.g. an interrupt), which it parks in
-/// `err` for the caller to return, instead of panicking mid-iteration.
-pub struct AevRows<'conn, 'e, F> {
-    rows: rusqlite::MappedRows<'conn, F>,
-    err: &'e mut Option<rusqlite::Error>,
-}
-
-impl<F> Iterator for AevRows<'_, '_, F>
-where
-    F: FnMut(&rusqlite::Row) -> rusqlite::Result<Aev>,
-{
-    type Item = Aev;
-    fn next(&mut self) -> Option<Aev> {
-        match self.rows.next()? {
-            Ok(aev) => Some(aev),
-            Err(e) => {
-                *self.err = Some(e);
-                None
-            }
-        }
     }
 }
 
@@ -1062,6 +1039,15 @@ impl AttributeCaches {
         sqlite: &rusqlite::Connection,
         attribute: Entid,
     ) -> Result<()> {
+        self.repopulate_via(schema, &mentat_sql::sqlite(sqlite), attribute)
+    }
+
+    fn repopulate_via(
+        &mut self,
+        schema: &Schema,
+        conn: &dyn SqlConn,
+        attribute: Entid,
+    ) -> Result<()> {
         let is_fulltext = schema
             .attribute_for_entid(attribute)
             .map_or(false, |s| s.fulltext);
@@ -1074,39 +1060,40 @@ impl AttributeCaches {
             "SELECT a, e, v, value_type_tag FROM {} WHERE a = ? ORDER BY a ASC, e ASC",
             table
         );
-        let args: Vec<&dyn rusqlite::types::ToSql> = vec![&attribute];
-        let mut stmt = sqlite
-            .prepare(&sql)
-            .context(DbErrorKind::CacheUpdateFailed)?;
         let replacing = true;
-        self.repopulate_from_aevt(schema, &mut stmt, args, replacing)
+        self.repopulate_from_aevt(
+            schema,
+            conn,
+            &sql,
+            &[SqlValue::Integer(attribute)],
+            replacing,
+        )
+        .context(DbErrorKind::CacheUpdateFailed)
     }
 
+    /// Run `sql` (rows of `a, e, v, value_type_tag`, ordered by a then e) and
+    /// accumulate them. Rows are collected first: the accumulator wants a
+    /// peekable iterator, and the seam's query is callback-driven.
     fn repopulate_from_aevt(
         &mut self,
         schema: &Schema,
-        statement: &mut rusqlite::Statement,
-        args: Vec<&dyn rusqlite::types::ToSql>,
+        conn: &dyn SqlConn,
+        sql: &str,
+        params: &[SqlValue],
         replacing: bool,
     ) -> Result<()> {
         let mut aev_factory = AevFactory::new();
-        let rows =
-            statement.query_map(params_from_iter(&args), |row| aev_factory.row_to_aev(row))?;
-        let mut err = None;
-        let aevs = AevRows {
-            rows,
-            err: &mut err,
-        };
+        let mut aevs: Vec<Aev> = Vec::new();
+        conn.query(sql, params, &mut |row| {
+            aevs.push(aev_factory.row_to_aev(row)?);
+            Ok(())
+        })?;
         self.accumulate_into_cache(
             None,
             schema,
-            aevs.peekable(),
+            aevs.into_iter().peekable(),
             AccumulationBehavior::Add { replacing },
-        )?;
-        match err {
-            Some(e) => Err(e.into()),
-            None => Ok(()),
-        }
+        )
     }
 }
 
@@ -1153,7 +1140,7 @@ impl AttributeCaches {
     fn populate_cache_for_entities_and_attributes(
         &mut self,
         schema: &Schema,
-        sqlite: &rusqlite::Connection,
+        sqlite: &dyn SqlConn,
         attrs: AttributeSpec,
         entities: &[Entid],
     ) -> Result<()> {
@@ -1219,9 +1206,8 @@ impl AttributeCaches {
 
         let SQLQuery { sql, args } = qb.finish();
         assert!(args.is_empty()); // TODO: we know there are never args, but we'd like to run this query 'properly'.
-        let mut stmt = sqlite.prepare(sql.as_str())?;
         let replacing = false;
-        self.repopulate_from_aevt(schema, &mut stmt, vec![], replacing)
+        self.repopulate_from_aevt(schema, sqlite, &sql, &[], replacing)
     }
 
     /// Return a reference to the cache for the provided `a`, if `a` names an attribute that is
@@ -1299,14 +1285,19 @@ impl AttributeCaches {
             }
         }
 
-        self.populate_cache_for_entities_and_attributes(schema, sqlite, attrs, entities)
+        self.populate_cache_for_entities_and_attributes(
+            schema,
+            &mentat_sql::sqlite(sqlite),
+            attrs,
+            entities,
+        )
     }
 
     /// Fetch the requested entities and attributes and put them in a new cache.
     /// The caller is responsible for ensuring that `entities` is unique.
     pub fn make_cache_for_entities_and_attributes(
         schema: &Schema,
-        sqlite: &rusqlite::Connection,
+        sqlite: &dyn SqlConn,
         attrs: AttributeSpec,
         entities: &[Entid],
     ) -> Result<AttributeCaches> {

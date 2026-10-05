@@ -30,7 +30,7 @@ use mentat_query_algebrizer::{
 
 use sql_traits::errors::{BuildQueryResult, SQLError};
 
-use mentat_sql::{QueryBuilder, QueryFragment, SQLQuery, SQLiteQueryBuilder};
+use mentat_sql::{Dialect, QueryBuilder, QueryFragment, SQLQuery, SQLiteQueryBuilder};
 
 //---------------------------------------------------------
 // A Mentat-focused representation of a SQL query.
@@ -636,6 +636,13 @@ impl QueryFragment for SelectQuery {
 impl SelectQuery {
     pub fn to_sql_query(&self) -> Result<SQLQuery, SQLError> {
         let mut builder = SQLiteQueryBuilder::new();
+        self.push_sql(&mut builder).map(|_| builder.finish())
+    }
+
+    /// The SQL for `dialect`: SQLite's, or DuckDB's (`"..."` identifiers).
+    pub fn to_sql_query_for(&self, dialect: Dialect) -> Result<SQLQuery, SQLError> {
+        let mut builder = SQLiteQueryBuilder::new();
+        builder.set_dialect(dialect);
         self.push_sql(&mut builder).map(|_| builder.finish())
     }
 }

@@ -10,6 +10,9 @@ sqlcipher = ["rusqlite/sqlcipher"]
 [dependencies]
 indexmap = "~2.14"
 
+[dependencies.mentat_sql]
+path = "../sql"
+
 [dependencies.rusqlite]
 version = "~0.40"
 features = ["limits", "bundled"]
@@ -44,8 +47,6 @@ path = "../query-projector-traits"
 [dependencies.mentat_query_sql]
 path = "../query-sql"
 
-[dev-dependencies.mentat_sql]
-path = "../sql"
 
 [lints]
 workspace = true

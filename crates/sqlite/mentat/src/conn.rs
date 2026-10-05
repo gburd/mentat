@@ -279,7 +279,8 @@ impl Conn {
         A: IntoIterator<Item = Entid>,
     {
         let (schema, _) = self.snapshot();
-        pull_attributes_for_entities(&schema, sqlite, entities, attributes).map_err(|e| e.into())
+        pull_attributes_for_entities(&schema, &mentat_sql::sqlite(sqlite), entities, attributes)
+            .map_err(|e| e.into())
     }
 
     pub fn pull_attributes_for_entity<A>(
@@ -292,7 +293,8 @@ impl Conn {
         A: IntoIterator<Item = Entid>,
     {
         let (schema, _) = self.snapshot();
-        pull_attributes_for_entity(&schema, sqlite, entity, attributes).map_err(|e| e.into())
+        pull_attributes_for_entity(&schema, &mentat_sql::sqlite(sqlite), entity, attributes)
+            .map_err(|e| e.into())
     }
 
     pub fn lookup_values_for_attribute(

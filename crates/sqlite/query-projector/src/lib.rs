@@ -16,6 +16,7 @@ macro_rules! bail {
 }
 
 extern crate indexmap;
+extern crate mentat_sql;
 extern crate rusqlite;
 
 extern crate core_traits;
@@ -35,7 +36,76 @@ use std::iter;
 
 use std::rc::Rc;
 
-use rusqlite::{Row, Rows};
+pub use mentat_sql::{SqlConn, SqlRow, SqlValue};
+
+/// One result row, from any engine.
+pub type Row<'a> = dyn SqlRow + 'a;
+
+/// A forward-only stream of result rows from any engine (the projectors only
+/// ever walk rows once, in order).
+pub trait RowSource {
+    /// The next row, or `None` at the end.
+    fn next_row(&mut self) -> Result<Option<&dyn SqlRow>>;
+}
+
+/// The rows of an already-run query, held in memory (DuckDB, and anything
+/// else that hands rows back in bulk).
+pub struct VecRows {
+    rows: std::vec::IntoIter<Vec<SqlValue>>,
+    current: Option<Vec<SqlValue>>,
+}
+
+impl VecRows {
+    pub fn new(rows: Vec<Vec<SqlValue>>) -> Self {
+        VecRows {
+            rows: rows.into_iter(),
+            current: None,
+        }
+    }
+}
+
+impl RowSource for VecRows {
+    fn next_row(&mut self) -> Result<Option<&dyn SqlRow>> {
+        self.current = self.rows.next();
+        Ok(self.current.as_ref().map(|r| r as &dyn SqlRow))
+    }
+}
+
+/// Streaming rows straight off a rusqlite statement (the SQLite path).
+pub struct RusqliteRows<'stmt> {
+    rows: rusqlite::Rows<'stmt>,
+    current: Option<Vec<SqlValue>>,
+}
+
+impl<'stmt> RusqliteRows<'stmt> {
+    pub fn new(rows: rusqlite::Rows<'stmt>) -> Self {
+        RusqliteRows {
+            rows,
+            current: None,
+        }
+    }
+}
+
+impl RowSource for RusqliteRows<'_> {
+    fn next_row(&mut self) -> Result<Option<&dyn SqlRow>> {
+        // Copy the row's values out: a rusqlite Row borrows the cursor, which
+        // can't outlive this call. Columns are few; the copy is cheap next to
+        // decoding them into TypedValues.
+        match self.rows.next()? {
+            Some(row) => {
+                let n = row.as_ref().column_count();
+                let mut vals = Vec::with_capacity(n);
+                for i in 0..n {
+                    let v: rusqlite::types::Value = row.get(i)?;
+                    vals.push(mentat_sql::from_rusqlite(v));
+                }
+                self.current = Some(vals);
+            }
+            None => self.current = None,
+        }
+        Ok(self.current.as_ref().map(|r| r as &dyn SqlRow))
+    }
+}
 
 use core_traits::{Binding, TypedValue};
 
@@ -319,7 +389,7 @@ impl QueryResults {
     }
 }
 
-type Index = usize; // See rusqlite::RowIndex.
+type Index = usize; // A 0-based result column.
 enum TypedIndex {
     Known(Index, ValueTypeTag),
     Unknown(Index, Index),
@@ -340,20 +410,20 @@ impl TypedIndex {
     ///
     /// This function will return a runtime error if the type tag is unknown, or the value is
     /// otherwise not convertible by the DB layer.
-    fn lookup<'a>(&self, row: &Row<'a>) -> Result<Binding> {
+    fn lookup(&self, row: &dyn SqlRow) -> Result<Binding> {
         use crate::TypedIndex::*;
 
         match *self {
             Known(value_index, value_type) => {
-                let v: rusqlite::types::Value = row.get(value_index)?;
-                TypedValue::from_sql_value_pair(v, value_type)
+                let v = row.get_value(value_index)?;
+                TypedValue::from_sql(v, value_type)
                     .map(|v| v.into())
                     .map_err(|e| e.into())
             }
             Unknown(value_index, type_index) => {
-                let v: rusqlite::types::Value = row.get(value_index)?;
-                let value_type_tag: i32 = row.get(type_index)?;
-                TypedValue::from_sql_value_pair(v, value_type_tag)
+                let v = row.get_value(value_index)?;
+                let value_type_tag = row.get_i64(type_index)? as i32;
+                TypedValue::from_sql(v, value_type_tag)
                     .map(|v| v.into())
                     .map_err(|e| e.into())
             }

@@ -107,6 +107,8 @@ impl SqlError {
 pub trait SqlRow {
     fn get_value(&self, idx: usize) -> Result<SqlValue, SqlError>;
 
+    fn column_count(&self) -> usize;
+
     fn get_i64(&self, idx: usize) -> Result<i64, SqlError> {
         match self.get_value(idx)? {
             SqlValue::Integer(i) => Ok(i),
@@ -140,11 +142,15 @@ pub trait SqlRow {
     }
 }
 
-impl SqlRow for [SqlValue] {
+impl SqlRow for Vec<SqlValue> {
     fn get_value(&self, idx: usize) -> Result<SqlValue, SqlError> {
         self.get(idx)
             .cloned()
             .ok_or_else(|| SqlError::new(format!("column {idx} out of range")))
+    }
+
+    fn column_count(&self) -> usize {
+        self.len()
     }
 }
 

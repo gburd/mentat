@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use crate::{rusqlite, Element, FindSpec, QueryOutput, QueryResults, Rows, Schema};
+use crate::{Element, FindSpec, QueryOutput, QueryResults, RowSource, Schema, SqlConn};
 
 use query_projector_traits::errors::Result;
 
@@ -44,11 +44,11 @@ impl ConstantProjector {
 // TODO: a ConstantProjector with non-constant pull expressions.
 
 impl Projector for ConstantProjector {
-    fn project<'stmt, 's>(
+    fn project(
         &self,
         _schema: &Schema,
-        _sqlite: &'s rusqlite::Connection,
-        _rows: Rows<'stmt>,
+        _sqlite: &dyn SqlConn,
+        _rows: &mut dyn RowSource,
     ) -> Result<QueryOutput> {
         self.project_without_rows()
     }
