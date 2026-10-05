@@ -132,3 +132,17 @@ one call; sparsemap v5.7.0 evaluation (TODO above).
   maintainer approval for fork workflows).
 - Treadmill: every DuckDB patch release (registry stable bump) needs a mentat
   release while on the unstable C API. See docs/registry-publishing.md.
+
+## IN PROGRESS: native DuckDB storage for the DuckDB extension (2026-10-05)
+Design: docs/duckdb-native-storage-plan.md. User: "fix the DuckDB extension so that it uses
+DuckDB storage, test, qualify and re-release it. Don't change the README and registry description."
+- M0 spike done. M1 (storage seam) DONE, all on master, unpushed:
+  8692a552 SqlConn/SqlValue seam + SqlValue codec; 01b8bc91 transactor via &dyn MentatStoring;
+  780b0820 projector/pull/cache via the seam + run_algebrized_query_on/q_once_on + DuckDB identifier quoting.
+  Gate: workspace 87/87, mino/CLI/sqlite-ext features, clippy clean.
+- NEXT M2: crates/duckdb/store (mentat_duckdb_store, no duckdb dep): MentatStoring + bootstrap over
+  &dyn SqlConn with DuckDB SQL; v column = UNION(i BIGINT,d DOUBLE,s VARCHAR,b BLOB); numeric
+  compare via union rewrite; test harness = non-member crate with bundled duckdb.
+- EC2 dev box (account 170848442262 = hotdog profile now): /tmp/mentat_duck.env
+  (DEV_ID i-0d9deacbbbb1b24bd, DEV_IP 3.21.158.53, key mentat-duck-20261005-135857-key, SG sg-03e8945a1022cb82d).
+  Sync with /tmp/sync.sh (never --delete, excludes submodule/target/.cargo registry).
