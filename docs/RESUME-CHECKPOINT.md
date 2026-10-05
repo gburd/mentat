@@ -140,9 +140,14 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   8692a552 SqlConn/SqlValue seam + SqlValue codec; 01b8bc91 transactor via &dyn MentatStoring;
   780b0820 projector/pull/cache via the seam + run_algebrized_query_on/q_once_on + DuckDB identifier quoting.
   Gate: workspace 87/87, mino/CLI/sqlite-ext features, clippy clean.
-- NEXT M2: crates/duckdb/store (mentat_duckdb_store, no duckdb dep): MentatStoring + bootstrap over
-  &dyn SqlConn with DuckDB SQL; v column = UNION(i BIGINT,d DOUBLE,s VARCHAR,b BLOB); numeric
-  compare via union rewrite; test harness = non-member crate with bundled duckdb.
+- M2 DONE b2bc60a1/76266cf5: crates/duckdb/store (mentat_duckdb_store) + tests-harness (separate
+  workspace, bundled duckdb): 7/7. M3 DONE 5a6b850b/7258fca3: extension stores in DuckDB schemas;
+  SQLLogicTest SUCCESS (duckdb 1.5.6 in ubuntu docker), smoke PASS.
+  Gotchas: entrypoint db handle only valid during init -> one connection made there, calls
+  serialized; CREATE TYPE in non-main schema breaks WAL replay on 1.5.6 -> inline UNION type;
+  `end` reserved; no partial indexes / no index on UNION; named+positional params can't mix.
+- NEXT M4 qualify: mino model suite on DuckDB backend, broader Datalog cases, perf vs 1.10.3,
+  registry build on fork (5 platforms). M5: release 1.11.0 + registry PR (new PR; #2812 merged).
 - EC2 dev box (account 170848442262 = hotdog profile now): /tmp/mentat_duck.env
   (DEV_ID i-0d9deacbbbb1b24bd, DEV_IP 3.21.158.53, key mentat-duck-20261005-135857-key, SG sg-03e8945a1022cb82d).
   Sync with /tmp/sync.sh (never --delete, excludes submodule/target/.cargo registry).
