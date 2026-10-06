@@ -8,6 +8,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Docs
+
+- The README, `crates/duckdb/README.md` and the DuckDB registry description
+  (`crates/duckdb/community-extensions/description.yml`) now describe the
+  DuckDB extension's storage as DuckDB tables, with examples that run against
+  1.11.0. They still described the pre-1.11 SQLite file.
+
 ## [1.11.0] — the DuckDB extension stores its datoms in DuckDB
 
 ### Changed (breaking for the DuckDB extension)
@@ -78,8 +85,6 @@ Versus 1.10.3 on the same data, one client
 - **One connection:** concurrent calls in one DuckDB process run one at a time.
 - **Stores live in the loading database:** a store can't yet be placed in a
   different `ATTACH`ed database.
-- **Docs not updated:** the README and the registry description still describe
-  the old SQLite-file storage.
 
 ### Upgrade
 

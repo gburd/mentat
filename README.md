@@ -14,24 +14,27 @@ builds three backends that share the same Datalog/EDN front-end:
   reached through SQL functions. Plus **`mentatd`**, an HTTP/WebSocket server
   that fronts a `pg_mentat` database.
 - **DuckDB extension (`mentat_duckdb`)** — loads into DuckDB (`LOAD mentat;`)
-  and exposes the embedded store as SQL functions, so Datalog results join
-  against native DuckDB tables.
+  and stores its datoms in DuckDB tables of the database it is loaded into,
+  so Datalog results join against native DuckDB tables and plain SQL can read
+  the datoms.
 
 All three expose the same four SQL functions:
 
 | Function | Does | PostgreSQL | SQLite ext | DuckDB |
 |---|---|---|---|---|
-| `edn_t` | transact EDN, return a JSON tx-report | `edn_t(edn)` | `edn_t(db_path, edn)` | `edn_t(db_path, edn)` |
-| `edn_q` | run a Datalog query | `edn_q(query, inputs jsonb)` → JSONB | `edn_q(db_path, query, inputs)` → JSON text | `edn_q(db_path, query, inputs)` → rows (table function) |
-| `edn_pull` | pull a pattern for one entity, as JSON | `edn_pull(pattern, entity)` | `edn_pull(db_path, pattern, entity)` | `edn_pull(db_path, pattern, entity)` |
-| `edn_eval` | run a sandboxed mino script | `edn_eval(script)` (`script` feature) | `edn_eval(db_path, script)` | `edn_eval(db_path, script)` |
+| `edn_t` | transact EDN, return a JSON tx-report | `edn_t(edn)` | `edn_t(db_path, edn)` | `edn_t(store, edn)` |
+| `edn_q` | run a Datalog query | `edn_q(query, inputs jsonb)` → JSONB | `edn_q(db_path, query, inputs)` → JSON text | `edn_q(store, query, inputs)` → rows (table function) |
+| `edn_pull` | pull a pattern for one entity, as JSON | `edn_pull(pattern, entity)` | `edn_pull(db_path, pattern, entity)` | `edn_pull(store, pattern, entity)` |
+| `edn_eval` | run a sandboxed mino script | `edn_eval(script)` (`script` feature) | `edn_eval(db_path, script)` | `edn_eval(store, script)` |
 
 `inputs` is the same JSON everywhere: `{"inputs": [...]}` binds the query's `:in`
 forms positionally (scalars, `[?x ...]` collections, `[?a ?b]` tuples, `[[?a ?b]]`
 relations, in any mix), `{"asOf": tx}` / `{"since": tx}` query the database as of
-or since a transaction, and `{}` means none. The SQLite and DuckDB functions take
-the mentat store's file path first; that store is separate from whatever database
-the host has open.
+or since a transaction, and `{}` means none. Where the data lives differs:
+PostgreSQL keeps it in the database's own tables; the SQLite extension takes a
+mentat store file path first (a separate file from whatever database the host
+has open); the DuckDB extension takes a store name first and keeps that store in
+the DuckDB database it is loaded into.
 
 All backends parse queries, transactions, and schema with one copy of the
 `edn`, `core-traits`, and `core` crates, so a query means the same thing on
@@ -196,12 +199,19 @@ needed). See [the mentatd chapter](docs/src/mentatd.md).
 
 ## DuckDB extension (`mentat_duckdb`)
 
-`mentat_duckdb` (`crates/duckdb`) is a loadable DuckDB extension that embeds the
-mentat SQLite store and exposes it to DuckDB as SQL functions, so Datalog
-results can be joined against native DuckDB tables. It is built with
-[duckdb-rs](https://github.com/duckdb/duckdb-rs) and pinned to **DuckDB v1.5.5**
-(via the DuckDB unstable C API); the extension loads only into that DuckDB
-version, and bumping DuckDB means bumping the pin and rebuilding.
+`mentat_duckdb` (`crates/duckdb`) is a loadable DuckDB extension that stores
+mentat's datoms **in DuckDB**: each mentat store is a schema in the database the
+extension is loaded into, holding ordinary DuckDB tables (`datoms`,
+`timelined_transactions` and its `transactions` view, `idents`, `schema`,
+`known_parts`). The data persists, checkpoints and backs up with the DuckDB
+database, and plain SQL can read it. Datalog runs on mentat's engine (the same
+transactor, query planner and pull as the embedded store), compiled to DuckDB
+SQL, so the results join against native DuckDB tables. Install it from the
+[DuckDB Community Extensions](https://duckdb.org/community_extensions/)
+registry (`INSTALL mentat FROM community; LOAD mentat;`) or build it yourself.
+It is built with [duckdb-rs](https://github.com/duckdb/duckdb-rs) and pinned to
+**DuckDB v1.5.6** (via the DuckDB unstable C API); the extension loads only into
+that DuckDB version, and bumping DuckDB means bumping the pin and rebuilding.
 
 ### Build
 
@@ -222,56 +232,74 @@ make debug              # -> build/debug/mentat.duckdb_extension
 
 ### Use it
 
-DuckDB refuses unsigned extensions unless started with `-unsigned`
-(or opened with `allow_unsigned_extensions=true`). With a DuckDB v1.5.5 CLI:
+From the registry, `INSTALL mentat FROM community; LOAD mentat;`. A local build
+is unsigned, so start DuckDB with `-unsigned` (or open it with
+`allow_unsigned_extensions=true`). With a DuckDB v1.5.6 CLI:
 
 ```sql
--- duckdb -unsigned
+-- duckdb -unsigned my.duckdb
 LOAD './build/debug/mentat.duckdb_extension';
 
--- Define a schema attribute and assert facts into an embedded mentat store.
--- Every function takes the store's file path as its first argument.
-SELECT edn_t('/tmp/demo.mentat', '[
+-- The first argument names a mentat store: 'default' is the DuckDB schema
+-- `mentat`; any other name gets its own schema (mentat_<name>_<hash>).
+SELECT edn_t('default', '[
   {:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+  {:db/ident :person/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
 ]');
-SELECT edn_t('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
+SELECT edn_t('default', '[{:person/name "Alice" :person/age 30} {:person/name "Bob" :person/age 25}]');
 
 -- edn_q is a table function: run Datalog and get rows back.
-SELECT * FROM edn_q('/tmp/demo.mentat',
+SELECT * FROM edn_q('default',
   '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
 
 -- ...so it joins against native DuckDB tables.
-CREATE TABLE ages(name VARCHAR, age INT);
-INSERT INTO ages VALUES ('Alice', 30), ('Bob', 25);
-SELECT m.name, a.age
-FROM edn_q('/tmp/demo.mentat',
+CREATE TABLE teams(name VARCHAR, team VARCHAR);
+INSERT INTO teams VALUES ('Alice', 'core'), ('Bob', 'web');
+SELECT m.name, t.team
+FROM edn_q('default',
        '[:find ?e ?name :where [?e :person/name ?name]]', '{}') AS m(e, name)
-JOIN ages a ON a.name = m.name;
+JOIN teams t ON t.name = m.name;
 
 -- :in inputs and time travel use the same options JSON as PostgreSQL.
-SELECT * FROM edn_q('/tmp/demo.mentat',
-  '[:find ?e :in [?name ...] :where [?e :person/name ?name]]',
-  '{"inputs": [["Alice", "Bob"]]}');
-SELECT * FROM edn_q('/tmp/demo.mentat',
+SELECT * FROM edn_q('default',
+  '[:find ?name . :in ?age :where [?e :person/age ?age] [?e :person/name ?name]]',
+  '{"inputs": [25]}');
+SELECT * FROM edn_q('default',
   '[:find ?name :where [?e :person/name ?name]]', '{"asOf": 268435458}');
 
 -- Pull an entity as JSON, or run a sandboxed mino script against the store.
-SELECT edn_pull('/tmp/demo.mentat', '[*]', 65537);
-SELECT edn_eval('/tmp/demo.mentat',
+SET VARIABLE alice = (SELECT e FROM edn_q('default',
+  '[:find ?e . :where [?e :person/name "Alice"]]', '{}') AS t(e));
+SELECT edn_pull('default', '[*]', getvariable('alice')::BIGINT);
+SELECT edn_eval('default',
   '(mentat.store/q (mentat.store/db (mentat.store/open))
                    (quote [:find (count ?e) . :where [?e :person/name]]))');
+
+-- The datoms are DuckDB rows: read them with plain SQL, no extension needed.
+SELECT d.e, i.v AS attribute, d.v AS value
+FROM mentat.datoms d JOIN mentat.idents i ON i.e = d.a
+WHERE d.a > 65535;
 ```
 
-`edn_t` returns a JSON tx-report. `edn_q` returns rows with every column as
-`VARCHAR` (cast for arithmetic, e.g. `e::BIGINT`); strings come back as plain
-text, keywords keep their leading colon. `edn_pull` returns JSON keyed by
+`edn_t` returns a JSON tx-report, and commits its own DuckDB transaction (it is
+not part of a caller's `BEGIN … ROLLBACK`). `edn_q` returns rows with every
+column as `VARCHAR` (cast for arithmetic, e.g. `e::BIGINT`); strings come back as
+plain text, keywords keep their leading colon. `edn_pull` returns JSON keyed by
 attribute (`":person/name"`, plus `":db/id"`). `edn_eval` runs in the same sandbox
 as PostgreSQL's (no filesystem access, step/heap/depth limits) and is on by
-default (`--no-default-features` drops it). A DuckDB-native storage backend and
-typed result columns are planned; see
-[`docs/duckdb-extension-plan.md`](docs/duckdb-extension-plan.md). Publishing to
-the DuckDB Community Extensions registry is documented in
-[`docs/registry-publishing.md`](docs/registry-publishing.md).
+default (`--no-default-features` drops it).
+
+Compared with the embedded SQLite store, DuckDB storage is faster for queries
+that touch many datoms (at 1M datoms: aggregates 5.5x, as-of 3.5x, ref
+traversal 2.2x, bulk load 2.8x) and slower for point lookups and single-datom
+transactions; see
+[`benchmarks/results/duckdb-native-*/findings.md`](benchmarks/results/). The
+design is in
+[`docs/duckdb-native-storage-plan.md`](docs/duckdb-native-storage-plan.md), and
+publishing to the DuckDB Community Extensions registry is documented in
+[`docs/registry-publishing.md`](docs/registry-publishing.md). Before 1.11 this
+extension kept its datoms in a separate SQLite file; those files are not
+migrated automatically.
 
 ---
 
@@ -359,7 +387,8 @@ interpreter (`crates/mino`), which exposes a `mentat.store/*` primitive surface
 for scripting transactions and queries. It is the SQL function `edn_eval` on all
 three: in `pg_mentat` behind the optional `script` cargo feature, and on by
 default in the SQLite and DuckDB extensions, where `(mentat.store/open)` with no
-argument opens the `db_path` you passed.
+argument opens the store you passed (a file path for SQLite, a store name in
+the current database for DuckDB).
 
 ```sql
 -- pg_mentat, built with --features script (off by default).
@@ -398,8 +427,9 @@ because the interpreter is **sandboxed** and **resource-limited**:
 
 The SQLite and DuckDB extensions build the same sandboxed interpreter with fixed
 limits (10M steps, 64 MiB heap, depth 1000). They run inside your own process, so the sandbox mainly stops a script
-from reaching the host filesystem; the script can read and write only the store
-at `db_path`.
+from reaching the host filesystem; the script can read and write only mentat
+stores (the SQLite extension's store file, or the DuckDB extension's stores in
+the current database).
 
 ---
 

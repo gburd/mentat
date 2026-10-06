@@ -1,9 +1,18 @@
 # `mentat_duckdb` — mentat as a DuckDB loadable extension
 
-Exposes the embedded `mentat` Datalog engine (the workspace SQLite store) as a
-DuckDB loadable extension, mirroring the SQLite CLI and `pg_mentat`. DuckDB is
-the query/exec surface; datoms live in mentat's own SQLite file (plan §3.1
-option (a)). See `docs/duckdb-extension-plan.md`.
+A DuckDB loadable extension that stores mentat's datoms **in DuckDB** and runs
+Datalog over them, mirroring the SQLite CLI and `pg_mentat`. Each mentat store
+is a schema in the database the extension is loaded into (`mentat` for the
+`'default'` store, `mentat_<name>_<hash>` for any other name), holding ordinary
+DuckDB tables: `datoms`, `timelined_transactions` (+ the `transactions` view),
+`idents`, `schema`, `known_parts`, `meta`. The data persists and checkpoints
+with the DuckDB database, and plain SQL can read it.
+
+The engine is mentat's own (transactor, algebrizer, projector, pull), reached
+through a storage seam; `store/` (`mentat_duckdb_store`) holds the DuckDB
+schema and the DuckDB SQL. Design: `docs/duckdb-native-storage-plan.md`.
+
+Install from the registry: `INSTALL mentat FROM community; LOAD mentat;`.
 
 ## Pinned versions (IMPORTANT — version-lock caveat)
 
@@ -21,8 +30,9 @@ bumping the crate pin **and** `TARGET_DUCKDB_VERSION` together, then rebuilding
 
 This crate is **extension-only**. The `loadable-extension` feature replaces the
 DuckDB C API functions; opening a normal DuckDB `Connection` from this crate
-panics with "API not initialized" (plan §9 risk 5). Do not add client
-`Connection` use here.
+panics with "API not initialized". The extension's one connection is cloned
+from the entrypoint's (the database handle DuckDB passes the entrypoint is
+valid only during that call), and every mentat call runs on it, one at a time.
 
 ## Workspace wiring
 
@@ -31,9 +41,9 @@ like `crates/pg/pg_mentat`), so a plain `cargo build` / `cargo test` at the repo
 root never pulls the DuckDB toolchain. Build it explicitly with
 `-p mentat_duckdb` or via the `Makefile`.
 
-## Build (exact commands that worked, on the EC2 CI host)
+## Build
 
-Rust 1.90, Python 3.9, gcc 11.5. The `extension-ci-tools` submodule provides the
+Rust 1.90 (see `rust-toolchain.toml`). The `extension-ci-tools` submodule provides the
 metadata-footer + test harness.
 
 ```bash
@@ -48,16 +58,16 @@ make debug        # cargo build (cdylib) -> append metadata footer
 # or: make release
 ```
 
-Notes on this host:
+Notes:
 - The crate is a workspace member, so the `Makefile` exports
   `CARGO_TARGET_DIR=crates/duckdb/target` so the ci-tools rust.Makefile finds the
-  artifact where it expects (`./target/debug/`).
-- The cdylib is `libmentat_duckdb.so` (crate name), not `libmentat.so`; the
-  `Makefile` overrides `EXTENSION_LIB_FILENAME`/`RUST_LIBNAME` accordingly. The
+  artifact where it expects (`./target/debug/`, or `./target/<triple>/` for the
+  macOS cross builds).
+- The cdylib is `libmentat_duckdb.{so,dylib}` / `mentat_duckdb.dll` (crate
+  name), not `libmentat.*`; the `Makefile` sets `RUST_LIBNAME` per platform. The
   footer output is still `mentat.duckdb_extension`.
-- EC2 `~/mentat` is not a git checkout (rsync excludes `.git`), so
-  `EXTENSION_VERSION=v1.7.0` is pinned in the `Makefile` (auto git-describe
-  fails there).
+- `EXTENSION_VERSION` comes from the workspace version in the root
+  `Cargo.toml` (so it works without `.git`); the registry's CI sets its own.
 
 ### Compile-check only (no loadable footer)
 
@@ -84,40 +94,55 @@ extension — hence the standalone v1.5.6 CLI for load/smoke tests. On Python
 3.10+ the venv wheel is 1.5.6 and `make test_debug` works.)
 
 ```sql
--- duckdb -unsigned
+-- duckdb -unsigned my.duckdb
 LOAD './build/debug/mentat.duckdb_extension';
 
-SELECT edn_t('/tmp/demo.mentat',
+SELECT edn_t('default',
   '[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
-SELECT edn_t('/tmp/demo.mentat', '[{:person/name "Alice"} {:person/name "Bob"}]');
-SELECT * FROM edn_q('/tmp/demo.mentat', '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
+SELECT edn_t('default', '[{:person/name "Alice"} {:person/name "Bob"}]');
+SELECT * FROM edn_q('default', '[:find ?e ?name :where [?e :person/name ?name]]', '{}');
+-- The datoms are rows in the `mentat` schema of my.duckdb.
+SELECT count(*) FROM mentat.datoms;
 ```
 
 ## Function surface
 
-| DuckDB call | Kind | Returns | mentat call |
+| DuckDB call | Kind | Returns | engine call |
 |---|---|---|---|
-| `edn_t(db_path VARCHAR, edn VARCHAR)` | scalar, volatile | VARCHAR (JSON tx-report) | `Store::transact` |
-| `edn_q(db_path VARCHAR, query VARCHAR, options VARCHAR)` | table fn | rows, all VARCHAR columns | `Store::q_once` / `q_once_as_of` / `q_once_since` |
-| `edn_pull(db_path VARCHAR, pattern VARCHAR, entity BIGINT)` | scalar, volatile | VARCHAR (JSON map) | `(pull ?e pattern)` via `Store::q_once` |
-| `edn_eval(db_path VARCHAR, script VARCHAR)` | scalar, volatile | VARCHAR (EDN) | `mentat::script::Interpreter` (feature `script`) |
+| `edn_t(store VARCHAR, edn VARCHAR)` | scalar, volatile | VARCHAR (JSON tx-report) | `DuckStore::transact` |
+| `edn_q(store VARCHAR, query VARCHAR, options VARCHAR)` | table fn | rows, all VARCHAR columns | `DuckStore::q_json` |
+| `edn_pull(store VARCHAR, pattern VARCHAR, entity BIGINT)` | scalar, volatile | VARCHAR (JSON map) | `(pull ?e pattern)` via `DuckStore::q` |
+| `edn_eval(store VARCHAR, script VARCHAR)` | scalar, volatile | VARCHAR (EDN) | `mentat_duckdb_store::script` (feature `script`) |
 
-Any NULL argument to a scalar yields NULL. `db_path` is an explicit first
-parameter (plan §6 option 1). `""` opens an in-memory store (not useful across
-calls); pass a path to persist.
+Any NULL argument to a scalar yields NULL. `store` names a mentat store in the
+current DuckDB database; it is created (schema, tables, bootstrap transaction)
+on first use. `'default'` (or `''`) is the schema `mentat`. Any other name maps
+to `mentat_<name>_<hash>`: letters, digits and `_` are kept, the rest become `_`,
+and a hash of the full name keeps distinct names apart, so a path-like name
+such as `'/tmp/demo.mentat'` (the pre-1.11 file argument) is just a name and
+writes no file.
 
-### Store cache
+### Transactions and connections
 
-`edn_t`, `edn_q` and `edn_pull` reuse an open store per `db_path` (canonical
-path + inode), one per DuckDB worker thread, instead of opening the store on
-every call. Before each call the cached store compares its last tx with the tx
-high-water mark persisted in the file (one primary-key read); if another
-connection or process has committed since, the store is reopened, so it never
-sees a stale schema or hands out an entid that is already taken. Writes make
-that check inside their `BEGIN IMMEDIATE`. A call that fails drops its store.
-`MENTAT_STORE_CACHE=N` sets the stores kept per thread (default 16, least
-recently used evicted); `0` opens per call. `edn_eval` is not cached. The
-same code (`crates/sqlite/ext/src/store_cache.rs`) backs the SQLite extension.
+Each `edn_t` runs in its own DuckDB transaction and commits it, so it is
+atomic (a failed `:db.fn/cas` leaves nothing behind) but is not part of a
+caller's `BEGIN … ROLLBACK`. Another DuckDB connection or session sees the
+change once it commits. Each store's schema is cached per thread and
+revalidated by one primary-key read of a generation that every
+schema-changing transaction replaces, so a schema change made elsewhere is
+picked up on the next call.
+
+### Storage layout
+
+The tables mirror the embedded SQLite store's, column for column, so the
+engine's SQL resolves unchanged. A value `v` is a
+`UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)` with SQLite's storage-class
+mapping (refs, booleans, longs, instants -> `i`; doubles -> `d`; strings,
+keywords -> `s`; uuids, bytes -> `b`), plus plain copies `v_i`, `v_d`, `v_s` that
+the DuckDB query dialect uses for filters, joins and numeric comparisons
+(DuckDB scans and joins a UNION much more slowly than plain columns). DuckDB
+can't index a UNION and has no partial indexes, so value lookups scan the
+attribute's rows.
 
 ### `edn_q` options (JSON, same shape pg_mentat accepts)
 
@@ -151,7 +176,7 @@ JSON -> value (mirrors pg_mentat's `bind_input_value`):
 
 ### Output rendering (`edn_q`)
 
-All columns are VARCHAR (typed columns are a follow-up). A string value is
+All columns are VARCHAR. A string value is
 returned **raw** (`Alice`, not `"Alice"`), so it joins against native DuckDB
 VARCHAR columns. Keywords keep their colon (`:person/name`); refs and longs are
 decimal; instants RFC 3339; uuids hyphenated; booleans `true`/`false`. Nested
@@ -171,16 +196,18 @@ mentat's pull grammar yet.
 ### `edn_eval` (feature `script`, default ON)
 
 Runs a mino script with the `mentat.store/*` prims and returns the last value
-as EDN text. A no-arg `(mentat.store/open)` opens `db_path` (via
-`mentat::script::Interpreter::with_default_path`); `(mentat.store/open "other")`
-still opens an explicit path. The interpreter is `sandboxed()` (no `slurp`,
+as EDN text. A no-arg `(mentat.store/open)` opens the `store` argument;
+`(mentat.store/open "other")` opens another store in the same database.
+`(mentat.store/q ...)` on an as-of / since db value runs temporal Datalog.
+`mentat.store/with` (speculative transact) is not supported on DuckDB stores
+and returns an error. The interpreter is `sandboxed()` (no `slurp`,
 `spit`, or other host filesystem prims) and bounded per call to 10M eval steps,
 64 MiB heap, and depth 1000. Each call gets a fresh interpreter (no state
 carries between calls). mino is pure Rust, so the feature adds no toolchain;
 build with `--no-default-features` to leave `edn_eval` out.
 
 ```sql
-SELECT edn_eval('/tmp/demo.mentat', '
+SELECT edn_eval('default', '
   (def c (mentat.store/open))
   (mentat.store/transact c [{:person/name "Carol"}])
   (mentat.store/q (mentat.store/db c) (quote [:find ?n :where [_ :person/name ?n]]))');
@@ -191,8 +218,8 @@ SELECT edn_eval('/tmp/demo.mentat', '
 DuckDB v1.5.6 ships the core `quack` extension: a DuckDB process serves SQL
 over HTTP to other DuckDB clients. With mentat loaded in that server, every
 client gets `edn_t`/`edn_q`/`edn_pull`/`edn_eval` without loading (or even
-having) the mentat extension, and all of them share one long-lived process, so
-the store cache (above) stays warm across clients and connections.
+having) the mentat extension, and all of them share one long-lived process and
+its DuckDB database, which holds the stores.
 
 ### Start and stop
 
@@ -225,10 +252,10 @@ returns its rows. The client needs only `LOAD quack`, not mentat:
 ```sql
 LOAD quack;
 SELECT * FROM quack_query('quack:127.0.0.1:9494',
-  $$SELECT edn_t('/srv/people.mentat', '[{:person/name "Alice"}]')$$,
+  $$SELECT edn_t('people', '[{:person/name "Alice"}]')$$,
   token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
 SELECT * FROM quack_query('quack:127.0.0.1:9494',
-  $$SELECT * FROM edn_q('/srv/people.mentat', '[:find ?e ?n :where [?e :person/name ?n]]', '{}')$$,
+  $$SELECT * FROM edn_q('people', '[:find ?e ?n :where [?e :person/name ?n]]', '{}')$$,
   token => getenv('MENTAT_QUACK_TOKEN'), disable_ssl => true);
 ```
 
@@ -245,7 +272,7 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
 ### Security
 
 - **The token is the only gate, and it grants everything.** A client with the
-  token runs arbitrary SQL in the server process: any mentat store path, and
+  token runs arbitrary SQL in the server process: any mentat store, and
   DuckDB's own file functions (`read_text('/etc/…')`, `COPY … TO`) as the
   server's OS user. Run the server as a dedicated user confined to the store
   directory (the systemd unit does). DuckDB's in-process lockdowns do not help
@@ -280,34 +307,41 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
 
 - **Per-call cost.** Each `quack_query` opens three new TCP connections (no
   keep-alive), about 2.2 ms per call on localhost, plus ~35-110 ns per result row.
-  In-process DuckDB with the store cache is always faster; the server's value is
+  In-process DuckDB is always faster; the server's value is
   that clients don't need mentat loaded and can join results with their own tables.
 - **`ATTACH 'quack:...'`** exposes the server's tables, but not its table
   functions: `r.edn_q(...)` fails with "Table Function with name edn_q does not
   exist". Use `quack_query`.
-- **One cached store per server thread.** The store cache is per thread, so a
-  server can hold one connection per HTTP worker (up to ~128) per store, and each
-  write makes all of them reopen.
+- **Calls are serialized.** The extension runs every mentat call on one
+  connection, so concurrent clients' mentat calls take turns (their other SQL
+  doesn't).
 
 Quack is pre-2.0 at DuckDB v1.5.6 (`quack` build `c154811`): its wire protocol
 and function signatures may change in any DuckDB release, and the mentat
 extension is version-locked to v1.5.6 anyway (see "Pinned versions"). Server
-and clients must run the same DuckDB version. A server holds its stores open,
-so stop it before moving or deleting store files.
+and clients must run the same DuckDB version. The stores live in the server's
+DuckDB database, so start the server on a database file (not `:memory:`) to
+keep them.
 
 ## Tests
 
-- `test/smoke.sh` — standalone DuckDB v1.5.6 CLI; asserts on every output line
-  and on the error paths. `DUCKDB=/path/to/duckdb bash test/smoke.sh`.
-- `test/sql/mentat.test` — SQLLogicTest, same coverage. Needs a Python 3.10+
-  venv with `duckdb==1.5.6` and `duckdb-sqllogictest-python`, e.g.
+- `test/smoke.sh` — standalone DuckDB v1.5.6 CLI; asserts on every output line,
+  that the datoms are DuckDB rows readable without the extension, that no file
+  is written, and on the error paths. `DUCKDB=/path/to/duckdb bash test/smoke.sh`.
+- `test/sql/mentat.test` — SQLLogicTest (the registry's runner). Needs a Python
+  3.10+ venv with `duckdb==1.5.6` and `duckdb-sqllogictest-python`, e.g.
   `python -m duckdb_sqllogictest --test-dir test/sql --external-extension build/debug/mentat.duckdb_extension`.
+- `store/tests-harness` — the storage backend outside the extension, on a
+  bundled DuckDB (a separate workspace): a differential test running the same
+  transactions and 60 queries (now, as-of and since every transaction) on the
+  SQLite engine and on DuckDB, the shared scripting model suite, persistence and
+  WAL-replay tests. `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
 
-## Milestones
+## Known gaps
 
-- **M0** — scaffold + loadable extension. **Done.**
-- **M1** — transact + query over the embedded store, all VARCHAR. **Done.**
-- **M2 (partial)** — `edn_pull`, `edn_q` inputs/asOf/since, raw string cells.
-  **Done.** Typed columns, List/Struct: follow-up.
-- **M3 (partial)** — `edn_eval` (`script` feature). **Done.** Session default DB
-  path, thread-local store cache: follow-up.
+- `:db/fulltext` values are stored as plain strings, not tokenized;
+  `(fulltext ...)` queries aren't supported.
+- Stores live in the database the extension was loaded into, not in another
+  `ATTACH`ed database.
+- Mentat calls run one at a time (one connection).
+- Stores written by mentat 1.10.x (SQLite files) are not migrated.
