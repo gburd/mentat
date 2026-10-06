@@ -21,8 +21,8 @@ extension:
   maintainers:
     - gburd
   requires_toolchains: "rust;python3"
-  # rusqlite (bundled sqlite) + openssl make musl/mingw/wasm impractical for the
-  # first release; relax these once cross-builds are proven.
+  # Not yet built or tested for musl/mingw/wasm; relax these once cross-builds
+  # are proven.
   excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl"
 repo:
   # Their CI clones from GitHub, so this points at the mirror, not Codeberg.
