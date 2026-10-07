@@ -184,3 +184,20 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - EC2 (account 170848442262) terminated; key + SG deleted.
 - Follow-ups: connection pool (calls serialized), batch per-call statements (point lookups
   ~3 ms), fulltext on DuckDB, ATTACHed-database stores, migration from 1.10.x SQLite files.
+- 2026-10-05 later: README / extension README / registry description DID get updated (c3010c5c,
+  user request); registry PR #2935 MERGED 2026-10-06.
+
+## v1.11.1 RELEASED (2026-10-07) — Nix derivations named after the real version
+- Report from solnix.io: `nix build github:gburd/mentat/<tag>#pg_mentat-pg18` named the
+  derivation pg_mentat-pg18-1.6.2 on every tag since v1.9.1 (flake.nix hardcoded extVersion
+  1.6.2 / cargoVersion 1.6.1). Fixed: 20cbe2b9 (flake reads pg_mentat.control default_version
+  + Cargo.toml [workspace.package].version; checks.<sys>.version-sync), d70100f7 (CI nix-build
+  builds version-sync and asserts pg16/pg18 .version == control; release.yml gate requires
+  Cargo.toml, pg_mentat.control, pg_mentat/Cargo.toml, META.json == tag; README sandbox note).
+- Tag v1.11.1 = 065bf94b (no-op pg_mentat--1.11.0--1.11.1.sql). EC2 gate green (same set as
+  1.11.0 + 1.11.0->1.11.1 in-place upgrade + pg_dump/restore). Local `nix build
+  --option sandbox relaxed` of pg_mentat-pg18-1.11.1 loads in nixpkgs PG 18.3.
+  `nix eval github:gburd/mentat/v1.11.1#packages.x86_64-linux.pg_mentat-pg18.name` =
+  pg_mentat-pg18-1.11.1. Release run green: 6 assets, PGXN 1.11.1.
+- DuckDB extension code unchanged since 1.11.0, so no registry bump (registry stays 1.11.0).
+- EC2 i-02fa4111dc910ed11 + SG + key deleted.
