@@ -1,0 +1,5 @@
+-- pg_mentat 1.11.0 -> 1.11.1 upgrade.
+--
+-- No schema or data change: 1.11.1 fixes the Nix flake's derivation version
+-- (it was frozen at 1.6.2) and adds release/CI version checks. The edge keeps
+-- the versions in step.

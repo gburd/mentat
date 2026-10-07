@@ -8,6 +8,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.11.1] — Nix derivations named after the real version
+
+Packaging and docs only; no engine, storage or SQL change.
+
 ### Fixed
 
 - **Nix: `pg_mentat-pg<N>` derivations were named after version 1.6.2**
@@ -20,6 +24,8 @@ and the project follows [Semantic Versioning](https://semver.org/).
   `Cargo.toml`. A `version-sync` flake check and a CI step fail if the two
   disagree or a derivation's version doesn't match the control file. Reported
   by the solnix.io infra team.
+- **Release gate:** a tag is refused unless `Cargo.toml`, `pg_mentat.control`,
+  `pg_mentat/Cargo.toml` and `META.json` all carry the tag's version.
 
 ### Docs
 
@@ -30,6 +36,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - README: building pg_mentat with Nix needs `--option sandbox relaxed` (the
   derivation fetches crates at build time, so it sets `__noChroot`), and the
   flake has no `pg13` output (nixpkgs dropped PostgreSQL 13).
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.11.1';` is a no-op (from 1.11.0).
 
 ## [1.11.0] — the DuckDB extension stores its datoms in DuckDB
 
