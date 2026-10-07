@@ -193,12 +193,23 @@
             };
           };
 
-        # Extension version, kept in sync with
-        # crates/pg/pg_mentat/pg_mentat.control (default_version).
-        extVersion = "1.6.2";
+        # Extension version, read from crates/pg/pg_mentat/pg_mentat.control's
+        # default_version so it can never drift from the extension it builds
+        # (the derivation .name/.version then always matches CREATE EXTENSION).
+        extVersion =
+          let
+            m = builtins.match ".*default_version = '([0-9][0-9.]*)'.*"
+              (builtins.readFile ./crates/pg/pg_mentat/pg_mentat.control);
+          in
+          if m == null then
+            throw "flake.nix: could not read default_version from crates/pg/pg_mentat/pg_mentat.control"
+          else
+            builtins.elemAt m 0;
 
-        # Cargo package version, from [workspace.package] in Cargo.toml.
-        cargoVersion = "1.6.1";
+        # Cargo package version, read from [workspace.package] in Cargo.toml
+        # (single source of truth; never a hardcoded literal that can drift).
+        cargoVersion =
+          (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
         # Rust binaries built with cargo from the workspace. Both are the
         # SQLite/HTTP side (no pgrx), so they only need the rust toolchain and
@@ -378,6 +389,25 @@
           pg16 = self.packages.${system}.pg_mentat-pg16;
           pg17 = self.packages.${system}.pg_mentat-pg17;
           pg18 = self.packages.${system}.pg_mentat-pg18;
+
+          # Guard the version single-source-of-truth: the pg_mentat control
+          # file's default_version (which drives extVersion) and the Cargo
+          # workspace version (cargoVersion) must agree. Catches a release that
+          # bumps one but not the other, and a malformed control file
+          # (extVersion would otherwise throw at eval). Trivial build-only derivation.
+          version-sync =
+            pkgs.runCommand "mentat-version-sync"
+              {
+                inherit extVersion cargoVersion;
+              } ''
+              if [ "$extVersion" != "$cargoVersion" ]; then
+                echo "version drift: pg_mentat.control default_version ($extVersion)" >&2
+                echo "does not match Cargo workspace version ($cargoVersion)." >&2
+                echo "Bump both together." >&2
+                exit 1
+              fi
+              echo "version-sync ok: $extVersion" > $out
+            '';
         };
       }
     );
