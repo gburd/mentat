@@ -46,6 +46,27 @@ jobs:
             exit 1
           fi
           echo "${TAG} >= ${MIN}: proceeding."
+      - uses: actions/checkout@v4
+      # Every place a release version lives must say the tag's version: the
+      # Cargo workspace (which the Nix flake's cargoVersion reads), the
+      # pg_mentat control file (the flake's extVersion and CREATE EXTENSION),
+      # pg_mentat's Cargo.toml and META.json (PGXN). A half-bumped release
+      # fails here, before anything is built or published.
+      - name: Check every version matches the tag
+        run: |
+          set -eu
+          VER="${GITHUB_REF_NAME#v}"
+          ws=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          ctl=$(sed -n "s/^default_version = '\(.*\)'/\1/p" crates/pg/pg_mentat/pg_mentat.control)
+          pgc=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/pg/pg_mentat/Cargo.toml | head -1)
+          meta=$(python3 -c "import json; print(json.load(open('META.json'))['version'])")
+          bad=0
+          for pair in "Cargo.toml:$ws" "pg_mentat.control:$ctl" "pg_mentat/Cargo.toml:$pgc" "META.json:$meta"; do
+            v="${pair#*:}"
+            echo "${pair%%:*} = $v"
+            [ "$v" = "$VER" ] || { echo "::error::${pair%%:*} is $v, tag is $VER"; bad=1; }
+          done
+          exit $bad
 
   build:
     name: Build pg${{ matrix.pg_version }}

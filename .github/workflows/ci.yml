@@ -325,3 +325,17 @@ jobs:
       - name: Build mentat-cli + mentatd + one extension
         run: |
           nix build --option sandbox relaxed .#mentat-cli .#mentatd .#pg_mentat-pg16
+      # The flake reads pg_mentat's version from pg_mentat.control and
+      # Cargo.toml (it was once a hardcoded literal that drifted to 1.6.2 across
+      # four releases). Fail if the control file and the Cargo workspace
+      # disagree, or if the built derivation is not named after that version.
+      - name: Flake version matches pg_mentat.control
+        run: |
+          set -eu
+          nix build --no-link .#checks.x86_64-linux.version-sync
+          want=$(sed -n "s/^default_version = '\(.*\)'/\1/p" crates/pg/pg_mentat/pg_mentat.control)
+          for p in pg_mentat-pg16 pg_mentat-pg18; do
+            got=$(nix eval --raw ".#packages.x86_64-linux.$p.version")
+            echo "$p: derivation version $got, control default_version $want"
+            [ "$got" = "$want" ] || { echo "::error::$p derivation version $got != pg_mentat.control $want"; exit 1; }
+          done

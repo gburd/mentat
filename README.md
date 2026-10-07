@@ -145,8 +145,17 @@ cargo pgrx install --release --no-default-features --features pg16
 Or with Nix (no pgrx toolchain to set up by hand):
 
 ```bash
-nix build .#pg_mentat-pg16     # or .#pg_mentat-pg13 … .#pg_mentat-pg18
+nix build --option sandbox relaxed .#pg_mentat-pg16   # or .#pg_mentat-pg14 … .#pg_mentat-pg18
+# from another flake: github:gburd/mentat/v1.11.0#pg_mentat-pg18
 ```
+
+The build fetches crates and `cargo-pgrx` from the network, so the derivation
+sets `__noChroot` and needs `--option sandbox relaxed` (or `false`); a strictly
+sandboxed build fails with "has '__noChroot' set, but that's not allowed".
+nixpkgs no longer ships PostgreSQL 13, so the flake has no `pg13` output (CI
+still builds and tests 13 through pgrx). The derivation is named
+`pg_mentat-pg<N>-<version>`, with the version read from
+`crates/pg/pg_mentat/pg_mentat.control`.
 
 ### Use it
 

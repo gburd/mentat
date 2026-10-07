@@ -8,12 +8,28 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Nix: `pg_mentat-pg<N>` derivations were named after version 1.6.2**
+  (`mentat-cli` / `mentatd` after 1.6.1) on every release since at least
+  1.9.1. `flake.nix` hardcoded both versions and they were never bumped. The
+  extension itself was correct (the control file drives `CREATE EXTENSION`),
+  but store-path names, `nix path-info` and provenance/SBOM tooling reported
+  the wrong version. The flake now reads the extension version from
+  `pg_mentat.control`'s `default_version` and the cargo version from
+  `Cargo.toml`. A `version-sync` flake check and a CI step fail if the two
+  disagree or a derivation's version doesn't match the control file. Reported
+  by the solnix.io infra team.
+
 ### Docs
 
 - The README, `crates/duckdb/README.md` and the DuckDB registry description
   (`crates/duckdb/community-extensions/description.yml`) now describe the
   DuckDB extension's storage as DuckDB tables, with examples that run against
   1.11.0. They still described the pre-1.11 SQLite file.
+- README: building pg_mentat with Nix needs `--option sandbox relaxed` (the
+  derivation fetches crates at build time, so it sets `__noChroot`), and the
+  flake has no `pg13` output (nixpkgs dropped PostgreSQL 13).
 
 ## [1.11.0] — the DuckDB extension stores its datoms in DuckDB
 
