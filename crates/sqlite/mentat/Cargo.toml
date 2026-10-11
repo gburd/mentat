@@ -1,6 +1,7 @@
 [package]
 edition.workspace = true
 name = "mentatdb"
+description = "A Datomic-compatible Datalog triple store on SQLite (the embedded Mentat engine; the library is `mentat`)"
 version.workspace = true
 rust-version.workspace = true
 license.workspace = true
