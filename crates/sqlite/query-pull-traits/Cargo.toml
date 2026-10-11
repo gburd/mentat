@@ -4,6 +4,7 @@ description = "Traits for Mentat's pull expressions"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [lib]
 name = "query_pull_traits"

@@ -4,6 +4,7 @@ description = "Turns Mentat's algebrized queries into SQL"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [dependencies.rusqlite]
 version = "~0.40"

@@ -4,6 +4,7 @@ description = "Interactive command-line REPL for the embedded Mentat store"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 # Forward mentat's features.
 [features]

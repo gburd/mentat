@@ -4,6 +4,7 @@ description = "Database-layer error and context traits for Mentat"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [lib]
 name = "db_traits"

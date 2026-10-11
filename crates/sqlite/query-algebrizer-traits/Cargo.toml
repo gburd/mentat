@@ -4,6 +4,7 @@ description = "Algebrizer error/type traits for Mentat's query engine"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [lib]
 name = "query_algebrizer_traits"

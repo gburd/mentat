@@ -4,6 +4,7 @@ description = "SQL dialect/connection traits shared by Mentat's SQL backends"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [lib]
 name = "sql_traits"

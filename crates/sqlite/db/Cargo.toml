@@ -4,6 +4,7 @@ description = "Mentat's SQLite schema, transactor storage, and bootstrap"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [features]
 default = []

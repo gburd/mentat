@@ -4,6 +4,7 @@ description = "Traits for projecting Mentat query results"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [lib]
 name = "query_projector_traits"

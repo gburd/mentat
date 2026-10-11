@@ -4,6 +4,7 @@ description = "Transaction, query, and cache API over Mentat's store"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [features]
 sqlcipher = ["rusqlite/sqlcipher"]

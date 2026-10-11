@@ -4,6 +4,7 @@ description = "Public error and result types for the Mentat API"
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [lib]
 name = "public_traits"

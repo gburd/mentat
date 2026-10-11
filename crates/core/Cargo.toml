@@ -4,6 +4,7 @@ description = "Core types and helpers for Mentat (the embedded Datomic-compatibl
 version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://codeberg.org/gregburd/mentat"
 
 [dependencies]
 chrono = { version = "~0.4", features = ["serde"] }
