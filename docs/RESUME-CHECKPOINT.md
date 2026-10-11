@@ -201,3 +201,30 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   pg_mentat-pg18-1.11.1. Release run green: 6 assets, PGXN 1.11.1.
 - DuckDB extension code unchanged since 1.11.0, so no registry bump (registry stays 1.11.0).
 - EC2 i-02fa4111dc910ed11 + SG + key deleted.
+
+## v1.12.0 RELEASED (2026-10-11) — embedded engine published to crates.io
+- Tag v1.12.0 = b8b72e74. 22 SQLite-engine crates published to crates.io for
+  the first time, under free package names (library names unchanged, so
+  `use mentat::`/`use edn::`/`use gc::` still compile):
+  mentat->mentatdb(lib mentat), edn->mentat_edn(lib edn),
+  vendored gc/gc_derive->mino_gc/mino_gc_derive(libs gc/gc_derive),
+  core_traits/db_traits/sql_traits/public_traits/query_*_traits->mentat_*.
+  All at 1.12.0 except mino_gc 0.5.1 / mino_gc_derive 0.5.0 (upstream).
+  publish=false: pg_mentat, mentatd, SQLite+DuckDB extensions, mentat_ffi,
+  benchmark runner.
+- GitHub Release v1.12.0: 6 assets. PGXN pg_mentat 1.12.0. Registry PR opened
+  by release.yml (DuckDB ext code unchanged since 1.11.0). pg upgrade edge
+  pg_mentat--1.11.1--1.12.0.sql is a no-op.
+- Qualified in a clean ubuntu:24.04 Docker container (AWS hotdog creds were
+  gone again, so no EC2): cargo metadata (22@1.12.0), fmt, clippy -D warnings
+  (ws+sqlite ext), cargo test 89 ok/0 fail, features (mino/script/mino-rs/ffi),
+  cargo deny, cargo publish --dry-run, SQLite ext smoke. Verified a clean
+  external consumer builds with just `mentatdb = "1.12"` and runs a query.
+- Follow-up commits after the tag (included in the published crates, not the
+  tag): bd84c46a add repository to 16 crates; 2bec3f0d version the mino->gc
+  dep; 24b5fed9 drop version on the circular projector_traits dev-dep;
+  ea242e58 add mentatdb description. See docs/crates-io-publishing.md for the
+  runbook + the 5 gotchas (rate limit, dep versions, circular versioned
+  dev-deps, required description, cargo-deny self-dev-dep panic).
+- NO EC2 used (hotdog creds absent). Publish token: ~/.cargo/credentials.toml;
+  CARGO_HOME must be unset (repo .cargo/ has no creds).
