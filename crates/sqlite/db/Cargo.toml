@@ -1,6 +1,7 @@
 [package]
 name = "mentat_db"
-version = "0.0.2"
+description = "Mentat's SQLite schema, transactor storage, and bootstrap"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -25,19 +26,27 @@ version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
+package = "mentat_edn"
 path = "../../edn"
+version = "=1.12.0"
 
 [dependencies.mentat_core]
 path = "../../core"
+version = "=1.12.0"
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../../core-traits"
+version = "=1.12.0"
 
 [dependencies.db_traits]
+package = "mentat_db_traits"
 path = "../db-traits"
+version = "=1.12.0"
 
 [dependencies.mentat_sql]
 path = "../sql"
+version = "=1.12.0"
 
 # TODO: This should be in dev-dependencies.
 [dependencies.tabwriter]

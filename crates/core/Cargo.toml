@@ -1,6 +1,7 @@
 [package]
 name = "mentat_core"
-version = "0.0.2"
+description = "Core types and helpers for Mentat (the embedded Datomic-compatible store)"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -12,10 +13,14 @@ ordered-float = { version = "5.3", features = ["serde"] }
 uuid = { version = "~1.25", features = ["v4", "serde"] }
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../core-traits"
+version = "=1.12.0"
 
 [dependencies.edn]
+package = "mentat_edn"
 path = "../edn"
+version = "=1.12.0"
 features = ["serde_support"]
 
 [lints]

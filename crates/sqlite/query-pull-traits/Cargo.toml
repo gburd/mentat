@@ -1,6 +1,7 @@
 [package]
-name = "query_pull_traits"
-version = "0.0.2"
+name = "mentat_query_pull_traits"
+description = "Traits for Mentat's pull expressions"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -12,10 +13,14 @@ path = "lib.rs"
 thiserror = "~2.0"
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../../core-traits"
+version = "=1.12.0"
 
 [dependencies.db_traits]
+package = "mentat_db_traits"
 path = "../db-traits"
+version = "=1.12.0"
 
 [lints]
 workspace = true

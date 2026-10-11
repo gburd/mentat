@@ -1,5 +1,5 @@
 [package]
-name = "gc_derive"
+name = "mino_gc_derive"
 version = "0.5.0"
 authors = ["Manish Goregaokar <manishsmail@gmail.com>", "Nika Layzell <nika@thelayzells.com>"]
 

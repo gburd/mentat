@@ -1,5 +1,6 @@
 [package]
 name = "mentat_ffi"
+publish = false
 version = "0.0.2"
 authors = ["Emily Toop <etoop@mozilla.com>"]
 edition = "2021"
@@ -18,5 +19,7 @@ bundled_sqlite3 = ["mentat/bundled_sqlite3"]
 libc = "~0.2"
 
 [dependencies.mentat]
+package = "mentatdb"
 path = "../mentat"
+version = "=1.12.0"
 default-features = false

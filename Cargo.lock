@@ -848,22 +848,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
-name = "core_traits"
-version = "0.0.2"
-dependencies = [
- "bytes",
- "chrono",
- "edn",
- "enumset",
- "indexmap",
- "lazy_static",
- "ordered-float",
- "serde",
- "serde_derive",
- "uuid",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1083,17 +1067,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
-name = "db_traits"
-version = "0.0.2"
-dependencies = [
- "core_traits",
- "edn",
- "rusqlite",
- "sql_traits",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "deadpool"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1288,25 +1261,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "edn"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "chrono",
- "hex",
- "itertools 0.15.0",
- "num",
- "ordered-float",
- "peg",
- "pretty",
- "serde",
- "serde_derive",
- "serde_json",
- "serde_test",
- "uuid",
 ]
 
 [[package]]
@@ -1593,25 +1547,6 @@ dependencies = [
  "futures-task",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "gc"
-version = "0.5.1"
-dependencies = [
- "gc",
- "gc_derive",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "gc_derive"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "synstructure 0.13.2",
 ]
 
 [[package]]
@@ -2399,56 +2334,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "mentat"
-version = "1.11.1"
-dependencies = [
- "assert_approx_eq",
- "chrono",
- "core_traits",
- "db_traits",
- "edn",
- "lazy_static",
- "log",
- "mentat_core",
- "mentat_db",
- "mentat_query_algebrizer",
- "mentat_query_projector",
- "mentat_query_pull",
- "mentat_query_sql",
- "mentat_script",
- "mentat_sql",
- "mentat_transaction",
- "mino-rs",
- "public_traits",
- "query_algebrizer_traits",
- "query_projector_traits",
- "query_pull_traits",
- "rusqlite",
- "rustc_version",
- "serde_json",
- "sql_traits",
- "time",
- "uuid",
-]
-
-[[package]]
 name = "mentat_cli"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "bytes",
  "combine",
- "core_traits",
  "dirs 6.0.0",
- "edn",
  "env_logger",
  "getopts",
  "hex",
  "lazy_static",
  "linefeed",
  "log",
- "mentat",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_edn",
+ "mentatdb",
  "rusqlite",
  "serde_json",
  "tabwriter",
@@ -2460,30 +2362,46 @@ dependencies = [
 
 [[package]]
 name = "mentat_core"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
  "chrono",
- "core_traits",
- "edn",
  "enumset",
  "indexmap",
+ "mentat_core_traits",
+ "mentat_edn",
  "ordered-float",
  "uuid",
 ]
 
 [[package]]
-name = "mentat_db"
-version = "0.0.2"
+name = "mentat_core_traits"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
+ "bytes",
+ "chrono",
+ "enumset",
+ "indexmap",
+ "lazy_static",
+ "mentat_edn",
+ "ordered-float",
+ "serde",
+ "serde_derive",
+ "uuid",
+]
+
+[[package]]
+name = "mentat_db"
+version = "1.12.0"
+dependencies = [
  "env_logger",
  "indexmap",
  "itertools 0.15.0",
  "lazy_static",
  "log",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "mentat_edn",
  "mentat_sql",
  "ordered-float",
  "petgraph 0.6.5",
@@ -2496,30 +2414,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "mentat_duckdb"
-version = "1.11.1"
+name = "mentat_db_traits"
+version = "1.12.0"
 dependencies = [
- "core_traits",
+ "mentat_core_traits",
+ "mentat_edn",
+ "mentat_sql_traits",
+ "rusqlite",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mentat_duckdb"
+version = "1.12.0"
+dependencies = [
  "duckdb",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_duckdb_store",
+ "mentat_edn",
+ "mentat_public_traits",
  "mentat_query_algebrizer",
  "mentat_query_projector",
  "mentat_transaction",
- "public_traits",
  "serde_json",
 ]
 
 [[package]]
 name = "mentat_duckdb_store"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_public_traits",
  "mentat_query_algebrizer",
  "mentat_query_projector",
  "mentat_query_pull",
@@ -2527,8 +2457,26 @@ dependencies = [
  "mentat_sql",
  "mentat_transaction",
  "mino-rs",
- "public_traits",
  "serde_json",
+]
+
+[[package]]
+name = "mentat_edn"
+version = "1.12.0"
+dependencies = [
+ "bytes",
+ "chrono",
+ "hex",
+ "itertools 0.15.0",
+ "num",
+ "ordered-float",
+ "peg",
+ "pretty",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_test",
+ "uuid",
 ]
 
 [[package]]
@@ -2536,125 +2484,187 @@ name = "mentat_ffi"
 version = "0.0.2"
 dependencies = [
  "libc",
- "mentat",
+ "mentatdb",
+]
+
+[[package]]
+name = "mentat_public_traits"
+version = "1.12.0"
+dependencies = [
+ "http",
+ "hyper",
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_query_algebrizer_traits",
+ "mentat_query_projector_traits",
+ "mentat_query_pull_traits",
+ "mentat_sql_traits",
+ "rusqlite",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
 name = "mentat_query_algebrizer"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "edn",
  "itertools 0.15.0",
  "mentat_core",
- "query_algebrizer_traits",
+ "mentat_core_traits",
+ "mentat_edn",
+ "mentat_query_algebrizer_traits",
+]
+
+[[package]]
+name = "mentat_query_algebrizer_traits"
+version = "1.12.0"
+dependencies = [
+ "mentat_core_traits",
+ "mentat_edn",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_query_projector"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "indexmap",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
  "mentat_query_algebrizer",
+ "mentat_query_projector_traits",
  "mentat_query_pull",
+ "mentat_query_pull_traits",
  "mentat_query_sql",
  "mentat_sql",
- "query_projector_traits",
- "query_pull_traits",
  "rusqlite",
+]
+
+[[package]]
+name = "mentat_query_projector_traits"
+version = "1.12.0"
+dependencies = [
+ "mentat_core",
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_query_algebrizer",
+ "mentat_query_projector",
+ "mentat_query_pull_traits",
+ "mentat_query_sql",
+ "mentat_sql_traits",
+ "rusqlite",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_query_pull"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_query_pull_traits",
  "mentat_sql",
- "query_pull_traits",
  "rusqlite",
+]
+
+[[package]]
+name = "mentat_query_pull_traits"
+version = "1.12.0"
+dependencies = [
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_query_sql"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_edn",
  "mentat_query_algebrizer",
  "mentat_sql",
+ "mentat_sql_traits",
  "rusqlite",
- "sql_traits",
 ]
 
 [[package]]
 name = "mentat_scale_runner"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
- "mentat",
+ "mentatdb",
  "serde_json",
 ]
 
 [[package]]
 name = "mentat_script"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "edn",
+ "mentat_core_traits",
+ "mentat_edn",
  "mino-rs",
  "serde_json",
 ]
 
 [[package]]
 name = "mentat_sql"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
- "core_traits",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_sql_traits",
  "ordered-float",
  "rusqlite",
- "sql_traits",
+]
+
+[[package]]
+name = "mentat_sql_traits"
+version = "1.12.0"
+dependencies = [
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_sqlite_ext"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
- "mentat",
+ "mentatdb",
  "serde_json",
 ]
 
 [[package]]
 name = "mentat_transaction"
-version = "0.0.2"
+version = "1.12.0"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_public_traits",
  "mentat_query_algebrizer",
  "mentat_query_projector",
  "mentat_query_pull",
  "mentat_query_sql",
  "mentat_sql",
- "public_traits",
  "rusqlite",
  "serde_json",
 ]
 
 [[package]]
 name = "mentatd"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2662,12 +2672,12 @@ dependencies = [
  "chrono",
  "criterion",
  "deadpool-postgres",
- "edn",
  "futures-util",
  "hex",
  "hyper",
  "lazy_static",
  "lru",
+ "mentat_edn",
  "prometheus",
  "reqwest",
  "serde",
@@ -2683,6 +2693,39 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "mentatdb"
+version = "1.12.0"
+dependencies = [
+ "assert_approx_eq",
+ "chrono",
+ "lazy_static",
+ "log",
+ "mentat_core",
+ "mentat_core_traits",
+ "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_public_traits",
+ "mentat_query_algebrizer",
+ "mentat_query_algebrizer_traits",
+ "mentat_query_projector",
+ "mentat_query_projector_traits",
+ "mentat_query_pull",
+ "mentat_query_pull_traits",
+ "mentat_query_sql",
+ "mentat_script",
+ "mentat_sql",
+ "mentat_sql_traits",
+ "mentat_transaction",
+ "mino-rs",
+ "rusqlite",
+ "rustc_version",
+ "serde_json",
+ "time",
  "uuid",
 ]
 
@@ -2710,15 +2753,34 @@ dependencies = [
 
 [[package]]
 name = "mino-rs"
-version = "0.14.0"
+version = "1.12.0"
 dependencies = [
  "fancy-regex",
- "gc",
+ "mino_gc",
  "num-bigint",
  "num-integer",
  "num-rational",
  "num-traits",
  "uuid",
+]
+
+[[package]]
+name = "mino_gc"
+version = "0.5.1"
+dependencies = [
+ "mino_gc",
+ "mino_gc_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mino_gc_derive"
+version = "0.5.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "synstructure 0.13.2",
 ]
 
 [[package]]
@@ -3096,15 +3158,15 @@ dependencies = [
 
 [[package]]
 name = "pg_mentat"
-version = "1.11.1"
+version = "1.12.0"
 dependencies = [
  "chrono",
  "ciborium",
- "core_traits",
- "edn",
  "hex",
  "lru",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_edn",
  "mentat_script",
  "mino-rs",
  "ordered-float",
@@ -3509,61 +3571,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "public_traits"
-version = "0.0.2"
-dependencies = [
- "core_traits",
- "db_traits",
- "edn",
- "http",
- "hyper",
- "query_algebrizer_traits",
- "query_projector_traits",
- "query_pull_traits",
- "rusqlite",
- "serde_json",
- "sql_traits",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "query_algebrizer_traits"
-version = "0.0.2"
-dependencies = [
- "core_traits",
- "edn",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "query_projector_traits"
-version = "0.0.2"
-dependencies = [
- "core_traits",
- "db_traits",
- "edn",
- "mentat_core",
- "mentat_query_algebrizer",
- "mentat_query_projector",
- "mentat_query_sql",
- "query_pull_traits",
- "rusqlite",
- "sql_traits",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "query_pull_traits"
-version = "0.0.2"
-dependencies = [
- "core_traits",
- "db_traits",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4226,13 +4233,6 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "sql_traits"
-version = "0.0.2"
-dependencies = [
- "thiserror 2.0.21",
 ]
 
 [[package]]

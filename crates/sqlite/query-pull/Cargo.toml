@@ -1,6 +1,7 @@
 [package]
 name = "mentat_query_pull"
-version = "0.0.2"
+description = "Datomic-style pull expressions for Mentat"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -10,29 +11,40 @@ sqlcipher = ["rusqlite/sqlcipher"]
 [dependencies]
 
 [dependencies.query_pull_traits]
+package = "mentat_query_pull_traits"
 path = "../query-pull-traits"
+version = "=1.12.0"
 
 [dependencies.rusqlite]
 version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
+package = "mentat_edn"
 path = "../../edn"
+version = "=1.12.0"
 
 [dependencies.mentat_core]
 path = "../../core"
+version = "=1.12.0"
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../../core-traits"
+version = "=1.12.0"
 
 [dependencies.mentat_db]
 path = "../db"
+version = "=1.12.0"
 
 [dependencies.db_traits]
+package = "mentat_db_traits"
 path = "../db-traits"
+version = "=1.12.0"
 
 [dependencies.mentat_sql]
 path = "../sql"
+version = "=1.12.0"
 
 [lints]
 workspace = true

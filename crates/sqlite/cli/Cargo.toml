@@ -1,6 +1,7 @@
 [package]
 name = "mentat_cli"
-version = "0.0.2"
+description = "Interactive command-line REPL for the embedded Mentat store"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -44,14 +45,21 @@ version = "~0.40"
 features = ["limits", "bundled"]
 
 [dependencies.mentat]
+package = "mentatdb"
 path = "../mentat"
+version = "=1.12.0"
 default-features = false
 
 [dependencies.edn]
+package = "mentat_edn"
 path = "../../edn"
+version = "=1.12.0"
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../../core-traits"
+version = "=1.12.0"
 
 [dependencies.mentat_db]
 path = "../db"
+version = "=1.12.0"

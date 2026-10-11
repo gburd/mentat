@@ -1,6 +1,6 @@
 [package]
 name = "mino-rs"
-version = "0.14.0"
+version.workspace = true
 edition = "2021"
 description = "Pure-Rust implementation of the mino Clojure dialect (reader, evaluator, persistent collections, core.clj stdlib, EAVT store), maintained as part of Mentat."
 repository = "https://codeberg.org/gregburd/mentat"
@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 # Vendored rust-gc v0.5.1 with iterative marking; see vendor/VENDORED.md.
-gc = { path = "vendor/gc", features = ["derive"] }
+gc = { package = "mino_gc", path = "vendor/gc", features = ["derive"] }
 # fancy-regex: pure-Rust regex WITH backreferences, which mino's engine
 # supports (`(a+)\1`) and the `regex` crate cannot. See src/prim/regex.rs.
 fancy-regex = "0.14"

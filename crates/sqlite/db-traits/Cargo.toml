@@ -1,6 +1,7 @@
 [package]
-name = "db_traits"
-version = "0.0.2"
+name = "mentat_db_traits"
+description = "Database-layer error and context traits for Mentat"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -15,13 +16,19 @@ sqlcipher = ["rusqlite/sqlcipher"]
 thiserror = "~2.0"
 
 [dependencies.edn]
+package = "mentat_edn"
 path = "../../edn"
+version = "=1.12.0"
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../../core-traits"
+version = "=1.12.0"
 
 [dependencies.sql_traits]
+package = "mentat_sql_traits"
 path = "../sql-traits"
+version = "=1.12.0"
 
 [dependencies.rusqlite]
 version = "~0.40"

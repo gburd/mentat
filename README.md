@@ -86,8 +86,28 @@ Add it to a Rust project:
 
 ```toml
 [dependencies]
-mentat = { git = "https://codeberg.org/gregburd/mentat" }
+# From crates.io (the package is `mentatdb`; the crate is still `mentat`):
+mentatdb = "1.12"
+# or track the repo:
+# mentat = { package = "mentatdb", git = "https://codeberg.org/gregburd/mentat" }
 ```
+
+If several threads read the store at once, also add this to your project's
+`.cargo/config.toml`:
+
+```toml
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"
+```
+
+rusqlite compiles its bundled SQLite with `SQLITE_ENABLE_MEMORY_MANAGEMENT`,
+which puts every connection in the process behind one page-cache lock, so
+concurrent readers run one at a time (8 readers on a 1M-datom store: 20 ops/s
+with it, 542 without). This repo sets the flags in its own
+`.cargo/config.toml`, but Cargo reads that file only from the project being
+built, so it doesn't reach yours. Without the flags, each connection's
+memory-mapped reads (`MENTAT_MMAP_SIZE`, default 1 GiB) avoid most of the
+contention.
 
 Open a store, define an attribute, transact a fact, and query it:
 

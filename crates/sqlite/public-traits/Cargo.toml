@@ -1,6 +1,7 @@
 [package]
-name = "public_traits"
-version = "0.0.2"
+name = "mentat_public_traits"
+description = "Public error and result types for the Mentat API"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -30,22 +31,36 @@ version = "~1.0"
 optional = true
 
 [dependencies.edn]
+package = "mentat_edn"
 path = "../../edn"
+version = "=1.12.0"
 
 [dependencies.core_traits]
+package = "mentat_core_traits"
 path = "../../core-traits"
+version = "=1.12.0"
 
 [dependencies.db_traits]
+package = "mentat_db_traits"
 path = "../db-traits"
+version = "=1.12.0"
 
 [dependencies.query_algebrizer_traits]
+package = "mentat_query_algebrizer_traits"
 path = "../query-algebrizer-traits"
+version = "=1.12.0"
 
 [dependencies.query_projector_traits]
+package = "mentat_query_projector_traits"
 path = "../query-projector-traits"
+version = "=1.12.0"
 
 [dependencies.query_pull_traits]
+package = "mentat_query_pull_traits"
 path = "../query-pull-traits"
+version = "=1.12.0"
 
 [dependencies.sql_traits]
+package = "mentat_sql_traits"
 path = "../sql-traits"
+version = "=1.12.0"

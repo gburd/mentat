@@ -1,0 +1,5 @@
+-- pg_mentat 1.11.1 -> 1.12.0 upgrade.
+--
+-- No schema or data change. 1.12.0 is the first release published to
+-- crates.io; the Rust crates were renamed to unused names (e.g. `mentat` ->
+-- `mentatdb`) and the pg_mentat extension is unaffected.

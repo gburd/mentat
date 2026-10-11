@@ -8,6 +8,53 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.12.0] — the embedded engine is published to crates.io
+
+The SQLite engine's crates are published to crates.io for the first time. No
+engine, storage, or SQL behaviour changed; this is a packaging release.
+
+### Changed
+
+- **The workspace crates were renamed to unused crates.io names.** The
+  *library* names are unchanged, so `use mentat::…`, `use edn::…`, `use
+  gc::…`, `use core_traits::…` and the rest keep compiling untouched. Only the
+  package name (what you put in `[dependencies]`) changed:
+
+  | Was | Now on crates.io | Library (unchanged) |
+  |---|---|---|
+  | `mentat` | `mentatdb` | `mentat` |
+  | `edn` | `mentat_edn` | `edn` |
+  | `gc` / `gc_derive` (vendored) | `mino_gc` / `mino_gc_derive` | `gc` / `gc_derive` |
+  | `core_traits`, `db_traits`, `sql_traits`, `public_traits` | `mentat_core_traits`, … | unchanged |
+  | `query_algebrizer_traits`, `query_pull_traits`, `query_projector_traits` | `mentat_query_algebrizer_traits`, … | unchanged |
+
+  `mentat`, `edn`, `gc`, `gc_derive` were already taken on crates.io by
+  unrelated crates; the four generic `*_traits` names were too generic to
+  claim. The 22 embedded crates all share this release's version (the vendored
+  `mino_gc` / `mino_gc_derive` keep their upstream `0.5.x`).
+
+- **Depending on mentat from crates.io:** add `mentatdb = "1.12"`. The crate is
+  still imported as `mentat`. A git dependency now needs
+  `mentat = { package = "mentatdb", git = … }`.
+
+### Not published
+
+- `pg_mentat`, `mentatd`, the SQLite and DuckDB loadable extensions, the FFI
+  library, and the benchmark runner stay unpublished (`publish = false`).
+  pg_mentat continues to ship on PGXN and the DuckDB extension on the DuckDB
+  Community registry.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.12.0';` is a no-op (from 1.11.1).
+
+### Docs
+
+- README: projects that embed mentat should set `LIBSQLITE3_FLAGS` (drop
+  `SQLITE_ENABLE_MEMORY_MANAGEMENT`) in their own `.cargo/config.toml`. This
+  repo's setting doesn't apply to downstream builds, and without it concurrent
+  readers share one page-cache lock.
+
 ## [1.11.1] — Nix derivations named after the real version
 
 Packaging and docs only; no engine, storage or SQL change.

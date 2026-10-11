@@ -1,13 +1,18 @@
 [package]
-name = "edn"
-version = "0.1.0"
+name = "mentat_edn"
+version.workspace = true
 authors = ["Joe Walker <jwalker@mozilla.com>"]
 edition = "2021"
 
 license = "Apache-2.0"
-repository = "https://github.com/mozilla/mentat"
+repository = "https://codeberg.org/gregburd/mentat"
 description = "EDN parser for Project Mentat"
 readme = "./README.md"
+
+# Package renamed to `mentat_edn` for crates.io; keep the library name `edn`
+# so `use edn::` keeps working across the workspace and in this crate's tests.
+[lib]
+name = "edn"
 
 [dependencies]
 chrono = "~0.4"
