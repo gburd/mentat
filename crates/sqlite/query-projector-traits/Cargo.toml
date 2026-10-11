@@ -59,7 +59,10 @@ version = "=1.12.0"
 
 [dev-dependencies.mentat_query_projector]
 path = "../query-projector"
-version = "=1.12.0"
+# No version: this is a circular dev-dependency (projector depends on this
+# crate at build time; this crate uses projector only in its own tests).
+# cargo publish strips path-only dev-deps without checking the index, which
+# breaks the publish cycle. See the publish runbook.
 
 [lints]
 workspace = true
