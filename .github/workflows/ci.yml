@@ -121,8 +121,8 @@ jobs:
           restore-keys: ci-sqlite-${{ runner.os }}-
       - name: cargo test (default members)
         run: cargo test
-      - name: cargo test -p mentat --features mino
-        run: cargo test -p mentat --features mino
+      - name: cargo test -p mentatdb --features mino
+        run: cargo test -p mentatdb --features mino
 
   test-mino:
     name: test-mino
