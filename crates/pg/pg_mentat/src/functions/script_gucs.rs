@@ -26,6 +26,11 @@ pub static SCRIPT_MAX_HEAP_BYTES: GucSetting<i32> = GucSetting::<i32>::new(67_10
 /// recovery). Default 2000.
 pub static SCRIPT_MAX_DEPTH: GucSetting<i32> = GucSetting::<i32>::new(2000);
 
+/// Max nesting of user-defined transaction functions (issue #325): a tx-fn
+/// may return tx-data that calls further tx-fns; this bounds that chain so a
+/// self-calling fn can't recurse forever. Default 16.
+pub static TXFN_MAX_DEPTH: GucSetting<i32> = GucSetting::<i32>::new(16);
+
 /// Register the three `edn_eval` limit GUCs. Called from `_PG_init`.
 pub fn register_script_gucs() {
     GucRegistry::define_int_guc(
@@ -57,6 +62,17 @@ pub fn register_script_gucs() {
         &SCRIPT_MAX_DEPTH,
         1,
         100_000,
+        GucContext::Suset,
+        GucFlags::default(),
+    );
+
+    GucRegistry::define_int_guc(
+        c"mentat.txfn_max_depth",
+        c"Max nesting of user-defined transaction functions in one transaction.",
+        c"A transaction function (an ident with a :db/fn) may return tx-data that invokes further transaction functions. This bounds that chain, so a function that calls itself fails with :db.error/txfn-depth instead of looping. Each call also runs under the mentat.script_max_* limits. Default 16. PGC_SUSET.",
+        &TXFN_MAX_DEPTH,
+        1,
+        1_000,
         GucContext::Suset,
         GucFlags::default(),
     );

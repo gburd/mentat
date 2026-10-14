@@ -882,6 +882,8 @@ mod transaction_lifecycle_tests;
 mod transaction_report_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod transaction_safety_tests;
+#[cfg(all(feature = "script", any(test, feature = "pg_test")))]
+mod txfn_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod typed_value_tests;
 mod types;

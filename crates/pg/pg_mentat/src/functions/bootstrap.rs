@@ -6,7 +6,7 @@ use pgrx::prelude::*;
 /// and should be called automatically when the extension is created.
 ///
 /// Entid numbering MUST match pg_mentat/sql/06_bootstrap_data.sql:
-///   10-19: Core schema attributes (:db/ident, :db/valueType, etc.)
+///   10-20: Core schema attributes (:db/ident, :db/valueType, etc.; 20 = :db/fn)
 ///   50:    :db/txInstant
 ///   60-61: :db.install/partition, :db.install/attribute
 ///   70-78: :db.type/* value type enum entities
@@ -29,6 +29,8 @@ pub fn bootstrap_schema() -> Result<(), Box<dyn std::error::Error + Send + Sync>
             (17, ':db/noHistory', 'boolean', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
             (18, ':db/isComponent', 'boolean', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
             (19, ':db/doc', 'string', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
+            -- :db/fn holds the mino source of a user transaction function (#325)
+            (20, ':db/fn', 'string', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
             -- Transaction attributes
             (50, ':db/txInstant', 'instant', 'one', NULL, TRUE, FALSE, FALSE, FALSE),
             -- Partition attributes
@@ -96,6 +98,7 @@ pub fn bootstrap_schema() -> Result<(), Box<dyn std::error::Error + Send + Sync>
             (17, 10, 8, 'db/noHistory',            1000000, true),
             (18, 10, 8, 'db/isComponent',          1000000, true),
             (19, 10, 8, 'db/doc',                  1000000, true),
+            (20, 10, 8, 'db/fn',                   1000000, true),
             (50, 10, 8, 'db/txInstant',            1000000, true),
             (60, 10, 8, 'db.install/partition',    1000000, true),
             (61, 10, 8, 'db.install/attribute',    1000000, true),
@@ -139,6 +142,7 @@ pub fn bootstrap_schema() -> Result<(), Box<dyn std::error::Error + Send + Sync>
             (18, 11, 0, 75, 1000000, true),
             -- Entity 19 (:db/doc) -> :db.type/string (entity 74)
             (19, 11, 0, 74, 1000000, true),
+            (20, 11, 0, 74, 1000000, true),
             -- Entity 50 (:db/txInstant) -> :db.type/instant (entity 76)
             (50, 11, 0, 76, 1000000, true),
             -- Entity 60 (:db.install/partition) -> :db.type/ref (entity 70)
@@ -160,6 +164,7 @@ pub fn bootstrap_schema() -> Result<(), Box<dyn std::error::Error + Send + Sync>
             (17, 12, 0, 80, 1000000, true),
             (18, 12, 0, 80, 1000000, true),
             (19, 12, 0, 80, 1000000, true),
+            (20, 12, 0, 80, 1000000, true),
             (50, 12, 0, 80, 1000000, true),
             -- install attrs: cardinality many (entity 81)
             (60, 12, 0, 81, 1000000, true),

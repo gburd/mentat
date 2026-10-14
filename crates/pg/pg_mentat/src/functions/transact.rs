@@ -857,6 +857,14 @@ fn execute_transaction_inner(
     let value_and_span = parse::value(edn_tx)?;
     let value = value_and_span.without_spans();
 
+    // User-defined transaction functions (issue #325): expand every
+    // `[:my/fn & args]` whose head ident carries a `:db/fn` into the tx-data
+    // it returns, BEFORE the two-pass pipeline below. The expansion is plain
+    // tx-data, so the rest of the transactor (tempids, upserts, built-ins,
+    // cardinality) handles it unchanged.
+    #[cfg(feature = "script")]
+    let value = super::txfn::expand_user_tx_fns(value, &qs)?;
+
     // Validate it's a vector
     let entities = match value {
         edn::Value::Vector(ref vec) => vec,
@@ -2593,7 +2601,9 @@ fn format_typed_value(v: &TypedValue) -> String {
 ///
 /// **Slow path** (first call, or any call outside a transaction): derives the
 /// store name from the schema string and queries `mentat.stores`.
-fn get_store_id_from_schema(schema: &str) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn get_store_id_from_schema(
+    schema: &str,
+) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
     // Fast path: use the cached store_id for this transaction.
     if let Some(id) = TX_STORE_ID.with(|f| f.get()) {
         return Ok(id);

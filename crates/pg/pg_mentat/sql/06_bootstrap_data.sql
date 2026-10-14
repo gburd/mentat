@@ -24,6 +24,8 @@ INSERT INTO mentat.schema (entid, ident, value_type, cardinality, unique_constra
     (17, ':db/noHistory', 'boolean', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
     (18, ':db/isComponent', 'boolean', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
     (19, ':db/doc', 'string', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
+    -- :db/fn holds the mino source of a user transaction function (#325)
+    (20, ':db/fn', 'string', 'one', NULL, FALSE, FALSE, FALSE, FALSE),
 
     -- Transaction attributes
     (50, ':db/txInstant', 'instant', 'one', NULL, TRUE, FALSE, FALSE, FALSE),

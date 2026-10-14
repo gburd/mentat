@@ -18,4 +18,6 @@ pub mod store_management;
 pub mod subscriptions;
 pub mod time_travel;
 pub mod transact;
+#[cfg(feature = "script")]
+pub mod txfn;
 pub mod virtual_tables;
