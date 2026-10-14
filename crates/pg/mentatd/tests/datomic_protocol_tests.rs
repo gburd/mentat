@@ -383,16 +383,19 @@ mod protocol_unit_tests {
 
     #[tokio::test]
     async fn test_session_touch_resets_expiry() {
-        let store = SessionStore::new(Duration::from_millis(50));
+        // 500ms TTL with 150ms steps: a 10x margin over scheduler jitter on a
+        // loaded host (same fix as websocket_tests::test_touch_resets_expiry;
+        // SessionStore uses std Instant, which tokio's time-pause can't drive).
+        let store = SessionStore::new(Duration::from_millis(500));
 
         let session = store.create("db".to_string()).await;
 
         // Touch before expiry
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(store.touch(&session.id).await);
 
         // Still alive after touch
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(store.get(&session.id).await.is_some());
     }
 
