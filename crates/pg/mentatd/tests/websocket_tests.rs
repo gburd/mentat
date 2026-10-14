@@ -589,14 +589,20 @@ mod session_unit_tests {
     /// touch() resets expiry, keeping the session alive.
     #[tokio::test]
     async fn test_touch_resets_expiry() {
-        let store = SessionStore::new(Duration::from_millis(50));
+        // A generous TTL (500ms) with 150ms steps: touch() lands well inside
+        // the first window and the final get() well inside the reset window,
+        // so scheduler jitter (tens of ms, e.g. under a loaded CI/EC2 host)
+        // can't expire the session mid-test. SessionStore uses std Instant,
+        // which tokio's time-pause can't drive, so the margin is the fix.
+        let store = SessionStore::new(Duration::from_millis(500));
         let session = store.create("db".to_string()).await;
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(store.touch(&session.id).await);
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        // Should still be alive because we touched it
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Should still be alive because we touched it (300ms elapsed, but the
+        // touch reset the 500ms TTL at the 150ms mark).
         assert!(store.get(&session.id).await.is_some());
     }
 
