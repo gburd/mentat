@@ -14,8 +14,8 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 |---------|---------|-----------|--------|
 | `:db/add` | Yes | Yes | **Complete** |
 | `:db/retract` | Yes | Yes | **Complete** |
-| `:db/retractEntity` | Yes | Yes | **Complete** -- cascade via `:db/isComponent` |
-| `:db.fn/cas` | Yes | Yes | **Complete** -- compare-and-swap |
+| `:db/retractEntity` | Yes | Yes | **Complete** -- cascades `:db/isComponent` children and retracts inbound refs (1.14.0); accepts a lookup ref |
+| `:db.fn/cas` | Yes | Yes | **Complete** -- compare-and-swap; accepts a lookup ref |
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
 | Tempids | Yes | Yes | **Complete** |
@@ -23,7 +23,32 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
 | Negative tempids | Yes | No | N/A -- use string tempids |
-| `:db/fn` (database functions) | Yes | No | **Not Planned** -- security risk |
+| `:db/fn` (database functions) | Yes (Clojure) | Yes (mino, `script` builds) | **1.14.0** -- sandboxed mino `(fn [db & args] ...)` returning tx-data; see [Transaction functions](#transaction-functions) |
+
+### Transaction functions
+
+In builds with the `script` feature, an ident carrying `:db/fn` is a
+transaction function. Its value is mino (a Clojure dialect) source for
+`(fn [db & args] ...)` returning tx-data, which is spliced into the calling
+transaction (and may itself invoke tx-functions, built-ins, or lookup refs):
+
+```sql
+SELECT edn_t($$[{:db/ident :acct/deposit
+                 :db/fn "(fn [db id amt]
+                           (let [bal (ffirst (mentat.store/q db
+                                       '[:find ?b :in $ ?id :where [?e :acct/id ?id] [?e :acct/balance ?b]]
+                                       id))]
+                             [[:db/cas [:acct/id id] :acct/balance bal (+ bal amt)]]))"}]$$);
+
+SELECT edn_t('[[:acct/deposit "A-1" 50]]');
+```
+
+The function sees the database as of the start of the transaction (as in
+Datomic) and runs in the same sandbox as `edn_eval`: no filesystem or network,
+bounded by `mentat.script_max_steps` / `_heap_bytes` / `_depth`, and
+`mentat.txfn_max_depth` (default 16) bounds tx-functions calling tx-functions.
+It runs as the calling role. Use `:db.fn/cas` in the returned tx-data for an
+atomic read-modify-write, as above.
 
 ---
 
@@ -217,7 +242,7 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 
 | Feature | Reason | Workaround |
 |---------|--------|------------|
-| `:db/fn` | Security risk -- arbitrary code execution | Application logic |
+| `:db/fn` body language | Datomic fns are JVM Clojure; pg_mentat runs sandboxed mino | Port the body (same contract: `db` + args -> tx-data) |
 | Peer mode | Architecture incompatible (embedded JVM) | Use mentatd HTTP API |
 | Datomic Analytics | Proprietary | PostgreSQL analytics tools |
 | Negative tempids | Not supported | Use string tempids |
