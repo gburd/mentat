@@ -258,3 +258,26 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   DuckDB registry: skipped (no PAT; ext unchanged since 1.11.0).
 - Announcement: GitHub Release v1.13.0 body (edited to a human-facing summary).
 - EC2 i-058dc2f42a620ade0 + SG + key deleted.
+
+## v1.14.0 RELEASED (2026-10-14) — rest of the Datomic-team review
+- Tag v1.14.0 = caa7a0cc. Commits: ec68db6e (#332 bm25-match / turbovec-near
+  where-fns + fix attach_turbovec_attribute; #330 EXPLAIN/query_sql/query_view
+  honour collection :in), feaca8b9 (#326 retractEntity retracts inbound refs on
+  all 3 backends + pg reads current_datoms not the log; #327 lookup refs in tx
+  fns on SQLite/DuckDB; #328 scripting q on as-of/since), 9112c8fc (#325 user
+  tx-functions :db/fn, pg script builds, functions/txfn.rs pre-pass,
+  mentat.txfn_max_depth, bootstrap entid 20), e1cd344f (2nd flaky mentatd
+  session test), af978018 (docs/design/*.md), caa7a0cc (release bump +
+  pg_mentat--1.13.0--1.14.0.sql).
+- Issues #325-#332 all closed on Codeberg; follow-up #333 = tx-functions on
+  the embedded SQLite/DuckDB backends.
+- Qualified on EC2 Debian 12 (kiwi 830118047484): pgrx PG16+PG17 1880/0,
+  +script 1933/0/1 (PG17 with pg_fts 1.12.0 + pg_turbovec 2.12.1 built and
+  installed), DuckDB ext build+smoke+SQLLogicTest+harness, upgrade 1.13.0->1.14.0
+  == fresh (204 fns prosrc md5 + bootstrap rows), tx-fn on upgraded db,
+  pg_dump/restore; local SQLite 89 bins, fmt, clippy, deny. Each intermediate
+  commit compiles (no-script and script). CI + installcheck green on caa7a0cc.
+- Released: GitHub Release (6 assets, trusted control, notes edited),
+  PGXN 1.14.0, crates.io 1.14.0 (20 crates; gc stays 0.5.x). A clean consumer
+  on mentatdb =1.14.0 verified cas-via-lookup-ref + inbound-ref retraction.
+- EC2 i-02397aec9cd81a2ef + SG + key deleted.
