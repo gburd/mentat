@@ -1655,16 +1655,21 @@ fn mentat_explain_internal(
 
     let temporal = parse_temporal_options(&inputs.0);
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
+    // Collection / tuple / relation :in bindings (issue #330). Built exactly as
+    // the executing path (prepare_query) builds them, so EXPLAIN shows the plan
+    // edn_q actually runs instead of one with those inputs silently dropped.
+    let enriched = parse_input_bindings_v2(&parsed_query.in_bindings, &inputs.0);
     let find_vars = extract_find_variables(&parsed_query.find_spec);
     let pagination = parse_pagination_options(&inputs.0);
 
     let mut builder = SqlBuilder::new();
-    let (mut sql_query, _complexity, datalog_plan) = build_sql_from_datalog(
+    let (mut sql_query, _complexity, datalog_plan) = build_sql_from_datalog_enriched(
         &parsed_query,
         &find_vars,
         &mut builder,
         &temporal,
         &input_bindings,
+        &enriched,
         schema_prefix,
     )?;
 
@@ -1843,15 +1848,19 @@ fn mentat_query_sql_internal(
 
     let temporal = parse_temporal_options(&inputs.0);
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
+    // Collection / tuple / relation :in bindings (issue #330), same as the
+    // executing path, so the returned SQL is the SQL edn_q runs.
+    let enriched = parse_input_bindings_v2(&parsed_query.in_bindings, &inputs.0);
     let find_vars = extract_find_variables(&parsed_query.find_spec);
 
     let mut builder = SqlBuilder::new();
-    let (sql_query, _complexity, _datalog_plan) = build_sql_from_datalog(
+    let (sql_query, _complexity, _datalog_plan) = build_sql_from_datalog_enriched(
         &parsed_query,
         &find_vars,
         &mut builder,
         &temporal,
         &input_bindings,
+        &enriched,
         schema_prefix,
     )?;
 
@@ -1940,6 +1949,9 @@ fn mentat_query_view_internal(
 
     let temporal = parse_temporal_options(&inputs.0);
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
+    // Collection / tuple / relation :in bindings (issue #330): without them a
+    // collection-:in query_view returned rows as if the input were absent.
+    let enriched = parse_input_bindings_v2(&parsed_query.in_bindings, &inputs.0);
     let find_vars = extract_find_variables(&parsed_query.find_spec);
     let pagination = parse_pagination_options(&inputs.0);
 
@@ -1955,12 +1967,13 @@ fn mentat_query_view_internal(
     }
 
     let mut builder = SqlBuilder::new();
-    let (mut sql_query, complexity, _datalog_plan) = build_sql_from_datalog(
+    let (mut sql_query, complexity, _datalog_plan) = build_sql_from_datalog_enriched(
         &parsed_query,
         &find_vars,
         &mut builder,
         &temporal,
         &input_bindings,
+        &enriched,
         schema_prefix,
     )?;
 
@@ -2361,35 +2374,6 @@ fn bind_constant_value(
 // SQL Generation: Main entry point
 // ============================================================================
 
-/// Build SQL query from Datalog clauses.
-///
-/// Supports: patterns, OR, NOT, predicates, where-functions (fulltext,
-/// arithmetic), aggregates, ORDER BY, LIMIT, and temporal options.
-///
-/// Returns the generated SQL string and a `QueryComplexity` descriptor
-/// so the caller can apply appropriate optimizer hints.
-fn build_sql_from_datalog(
-    parsed: &ParsedQuery,
-    find_vars: &[String],
-    builder: &mut SqlBuilder<'_>,
-    temporal: &TemporalOption,
-    input_bindings: &HashMap<String, serde_json::Value>,
-    schema_prefix: &str,
-) -> Result<(String, QueryComplexity, DatalogPlan), Box<dyn std::error::Error + Send + Sync>> {
-    // Wrapper that passes empty enriched bindings for backward compat.
-    // Callers that need collection/tuple/relation bindings should call
-    // build_sql_from_datalog_enriched directly.
-    build_sql_from_datalog_enriched(
-        parsed,
-        find_vars,
-        builder,
-        temporal,
-        input_bindings,
-        &[],
-        schema_prefix,
-    )
-}
-
 fn build_sql_from_datalog_enriched(
     parsed: &ParsedQuery,
     find_vars: &[String],
@@ -2493,6 +2477,27 @@ fn build_sql_from_datalog_enriched(
             // mentat.set_vector(...). See build_vector_near_join and
             // docs/src/pgvector.md.
             let fj = build_vector_near_join(
+                wf,
+                fts_idx,
+                builder,
+                &mut extra_var_bindings,
+                schema_prefix,
+                &store_id_param,
+            )?;
+            fts_joins.push(fj);
+        } else if op_name == "turbovec-near" {
+            // (turbovec-near $ :attr "[v1,v2,...]" k [distance-op])  — K-nearest
+            // search backed by the optional pg_turbovec extension (issue #332).
+            // Vectors live in the per-attribute aux table created by
+            // mentat.attach_turbovec_attribute(...). See build_turbovec_near_join.
+            let fj = build_turbovec_near_join(wf, fts_idx, builder, &mut extra_var_bindings)?;
+            fts_joins.push(fj);
+        } else if op_name == "bm25-match" {
+            // (bm25-match $ :attr "query" k)  — BM25-ranked full-text search
+            // backed by the optional pg_fts extension (issue #332), using the
+            // index created by mentat.create_fts_index(...). See
+            // build_bm25_match_join.
+            let fj = build_bm25_match_join(
                 wf,
                 fts_idx,
                 builder,
@@ -3073,6 +3078,26 @@ fn build_sql_from_datalog_enriched(
                         &arm_store_id_param,
                     )?;
                     arm_fts_joins.push(fts_join);
+                } else if op_name == "turbovec-near" {
+                    let fts_idx = fts_joins.len() + idx;
+                    let fts_join = build_turbovec_near_join(
+                        wf,
+                        fts_idx,
+                        &mut arm_builder,
+                        &mut arm_extra_var_bindings,
+                    )?;
+                    arm_fts_joins.push(fts_join);
+                } else if op_name == "bm25-match" {
+                    let fts_idx = fts_joins.len() + idx;
+                    let fts_join = build_bm25_match_join(
+                        wf,
+                        fts_idx,
+                        &mut arm_builder,
+                        &mut arm_extra_var_bindings,
+                        schema_prefix,
+                        &arm_store_id_param,
+                    )?;
+                    arm_fts_joins.push(fts_join);
                 } else if op_name == "infer-near" {
                     let fts_idx = fts_joins.len() + idx;
                     let fts_join = build_infer_near_join(
@@ -3128,7 +3153,7 @@ fn build_sql_from_datalog_enriched(
                 } else {
                     return Err(format!(
                         ":db.error/unsupported-query Function '{}' is not supported inside OR branches. \
-                         Supported: fulltext, fuzzy-match, similar-to, rum-fulltext, vector-near, infer-near, infer-walk, infer-describe, infer-predict, geom-near, geom-within, geom-contains, geom-intersects, levenshtein, soundex, metaphone, \
+                         Supported: fulltext, fuzzy-match, similar-to, rum-fulltext, vector-near, turbovec-near, bm25-match, infer-near, infer-walk, infer-describe, infer-predict, geom-near, geom-within, geom-contains, geom-intersects, levenshtein, soundex, metaphone, \
                          daitch-mokotoff, *, +, -, /.",
                         op_name
                     ).into());
@@ -4236,6 +4261,268 @@ fn build_vector_near_join(
         where_parts,
         score_expr: Some(format!("{dt_alias}.vec_dist")),
         entity_alias: vn_entity_var.map(|n| (n, dt_alias.clone())),
+    })
+}
+
+/// Look up an attribute's entid by ident for a where-fn whose generated SQL
+/// must embed a table name derived from it (identifiers can't be bind
+/// parameters). Errors clearly when the attribute is not registered.
+fn where_fn_attr_entid(
+    fn_name: &str,
+    attr_ident: &str,
+) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
+    let lookup = attr_ident.to_string();
+    let entid_opt: Option<i64> = pgrx::Spi::connect(|client| {
+        let mut tt = client.select(
+            "SELECT entid FROM mentat.schema WHERE ident = $1",
+            Some(1),
+            &[lookup.clone().into()],
+        )?;
+        if let Some(row) = tt.next() {
+            Ok::<_, pgrx::spi::SpiError>(row["entid"].value::<i64>()?)
+        } else {
+            Ok(None)
+        }
+    })
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+        format!(":db.error/schema-lookup {fn_name} could not look up attribute {attr_ident}: {e}")
+            .into()
+    })?;
+    entid_opt.ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+        format!(
+            ":db.error/unknown-attribute {fn_name} attribute {attr_ident} is not registered. \
+             Transact the schema first."
+        )
+        .into()
+    })
+}
+
+/// Bind the `[[?e ?score]]` relation of a ranked where-fn (vector distance or
+/// BM25 score) to columns of its derived table. Returns the entity variable
+/// name (for the join back to the rest of the clause graph), if bound.
+fn bind_entity_score_rel(
+    binding: &Binding,
+    dt_alias: &str,
+    score_col: &str,
+    var_bindings: &mut HashMap<String, String>,
+) -> Option<String> {
+    let mut entity_var = None;
+    if let Binding::BindRel(ref vars) = binding {
+        for (i, vop) in vars.iter().enumerate() {
+            if let VariableOrPlaceholder::Variable(ref v) = vop {
+                let var_name = format!("{}", v);
+                match i {
+                    0 => {
+                        entity_var = Some(var_name.clone());
+                        var_bindings.insert(var_name, format!("{dt_alias}.e::TEXT"));
+                    }
+                    1 => {
+                        var_bindings.insert(var_name, format!("{dt_alias}.{score_col}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    entity_var
+}
+
+/// Build the JOIN for `(turbovec-near $ :attr "[v1,...]" k [distance-op])`
+/// (issue #332): top-K nearest neighbours from the optional pg_turbovec
+/// extension. Vectors live in `mentat.attr_<entid>_tvec(e, v turbovec.vector)`,
+/// created by `mentat.attach_turbovec_attribute`; the index by
+/// `mentat.create_turbovec_index`. Binds `[[?e ?dist]]`.
+///
+/// Mirrors `build_vector_near_join` (pgvector). pg_turbovec installs into the
+/// `turbovec` schema, so the type and operators are schema-qualified.
+fn build_turbovec_near_join(
+    wf: &WhereFn,
+    fts_idx: usize,
+    builder: &mut SqlBuilder<'_>,
+    var_bindings: &mut HashMap<String, String>,
+) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    if wf.args.len() < 4 || wf.args.len() > 5 {
+        return Err(format!(
+            ":db.error/fn-arity turbovec-near requires 4 or 5 arguments \
+             ($ attr-keyword vector-text-literal k-int [distance-op]), got {}. \
+             Example: [(turbovec-near $ :doc/embedding \"[0.1,0.2,0.3]\" 5) [[?e ?dist]]]",
+            wf.args.len()
+        )
+        .into());
+    }
+    let attr_ident = match &wf.args[1] {
+        FnArg::IdentOrKeyword(kw) => keyword_to_ident(kw),
+        _ => {
+            return Err(
+                ":db.error/fn-arg turbovec-near second argument must be a keyword \
+                        attribute (e.g. :doc/embedding)."
+                    .into(),
+            )
+        }
+    };
+    let vec_literal = match &wf.args[2] {
+        FnArg::Constant(NonIntegerConstant::Text(s)) => s.as_ref().clone(),
+        _ => {
+            return Err(
+                ":db.error/fn-arg turbovec-near third argument must be a string \
+                        of the form \"[v1,v2,...]\"."
+                    .into(),
+            )
+        }
+    };
+    let k: i64 = match &wf.args[3] {
+        FnArg::EntidOrInteger(i) => *i,
+        _ => {
+            return Err(
+                ":db.error/fn-arg turbovec-near fourth argument must be a positive \
+                        integer K (top-K)."
+                    .into(),
+            )
+        }
+    };
+    if k <= 0 {
+        return Err(format!(":db.error/fn-arg turbovec-near k must be > 0, got {}.", k).into());
+    }
+    // pg_turbovec operators: <=> cosine, <-> L2, <#> inner product, <+> L1.
+    let dist_op: &'static str = if wf.args.len() == 5 {
+        match &wf.args[4] {
+            FnArg::IdentOrKeyword(kw) => match keyword_to_ident(kw).as_str() {
+                ":cosine" => "<=>",
+                ":l2" => "<->",
+                ":inner" => "<#>",
+                ":l1" => "<+>",
+                other => {
+                    return Err(format!(
+                        ":db.error/fn-arg turbovec-near distance op must be one of \
+                         :cosine, :l2, :inner, :l1, got {}.",
+                        other
+                    )
+                    .into())
+                }
+            },
+            _ => {
+                return Err(
+                    ":db.error/fn-arg turbovec-near distance op must be a keyword \
+                            (:cosine, :l2, :inner, :l1)."
+                        .into(),
+                )
+            }
+        }
+    } else {
+        "<=>"
+    };
+
+    let entid = where_fn_attr_entid("turbovec-near", &attr_ident)?;
+    let aux_table = format!("mentat.attr_{}_tvec", entid);
+    let vec_param = builder.bind_text(vec_literal);
+    let k_param = builder.bind_bigint(k);
+    let dt_alias = format!("tv_d{}", fts_idx);
+    // OPERATOR(turbovec.<op>) so the turbovec kernel is used regardless of the
+    // caller's search_path; the literal is cast to the schema-qualified type.
+    let op = format!("OPERATOR(turbovec.{dist_op})");
+    let from_fragment = format!(
+        "(SELECT e, (v {op} ({vec_param})::turbovec.vector) AS vec_dist \
+         FROM {aux_table} \
+         ORDER BY v {op} ({vec_param})::turbovec.vector \
+         LIMIT {k_param}) AS {dt_alias}"
+    );
+    let entity_var = bind_entity_score_rel(&wf.binding, &dt_alias, "vec_dist", var_bindings);
+    Ok(FtsJoin {
+        from_fragment,
+        where_parts: Vec::new(),
+        score_expr: Some(format!("{dt_alias}.vec_dist")),
+        entity_alias: entity_var.map(|n| (n, dt_alias.clone())),
+    })
+}
+
+/// Build the JOIN for `(bm25-match $ :attr "query" k)` (issue #332):
+/// BM25-ranked top-K full-text search from the optional pg_fts extension,
+/// over the live text values of a `:db.type/string` attribute. Uses the
+/// `fts` index created by `mentat.create_fts_index(attr, regconfig)` on
+/// `mentat.datoms_text_new (to_ftsdoc(regconfig, v))`. Binds `[[?e ?score]]`,
+/// where a *smaller* `<=>` value is a better match (pg_fts orders ascending).
+fn build_bm25_match_join(
+    wf: &WhereFn,
+    fts_idx: usize,
+    builder: &mut SqlBuilder<'_>,
+    var_bindings: &mut HashMap<String, String>,
+    schema_prefix: &str,
+    store_id_param: &str,
+) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    if wf.args.len() != 4 {
+        return Err(format!(
+            ":db.error/fn-arity bm25-match requires exactly 4 arguments \
+             ($ attr-keyword query-string k-int), got {}. \
+             Example: [(bm25-match $ :doc/body \"quick fox\" 10) [[?e ?score]]]",
+            wf.args.len()
+        )
+        .into());
+    }
+    let attr_ident = match &wf.args[1] {
+        FnArg::IdentOrKeyword(kw) => keyword_to_ident(kw),
+        _ => {
+            return Err(
+                ":db.error/fn-arg bm25-match second argument must be a keyword \
+                        attribute (e.g. :doc/body)."
+                    .into(),
+            )
+        }
+    };
+    let query = match &wf.args[2] {
+        FnArg::Constant(NonIntegerConstant::Text(s)) => s.as_ref().clone(),
+        _ => {
+            return Err(":db.error/fn-arg bm25-match third argument must be a string query.".into())
+        }
+    };
+    let k: i64 = match &wf.args[3] {
+        FnArg::EntidOrInteger(i) => *i,
+        _ => {
+            return Err(
+                ":db.error/fn-arg bm25-match fourth argument must be a positive \
+                        integer K (top-K)."
+                    .into(),
+            )
+        }
+    };
+    if k <= 0 {
+        return Err(format!(":db.error/fn-arg bm25-match k must be > 0, got {}.", k).into());
+    }
+
+    // Use the same text-search configuration the index was built with
+    // ([fts:lang=...] in :db/doc, defaulting to 'english'; validated against a
+    // whitelist in resolve_fts_language, so it is safe to inline), so the
+    // planner can match the expression to the index.
+    let lang = resolve_fts_language(&attr_ident, schema_prefix);
+    // create_fts_index builds a PARTIAL index `WHERE a = <entid> AND
+    // store_id = 0 AND added`. The planner can only use a partial index when
+    // the query's predicate provably implies it, which a subquery or a bind
+    // parameter does not. Inline the entid and store_id literals so it can.
+    // (Both are integers we resolved ourselves, never user text.)
+    let entid = where_fn_attr_entid("bm25-match", &attr_ident)?;
+    let _ = store_id_param; // inlined below as a literal instead
+    let store_id = resolve_store_id(schema_prefix)?;
+    let q_param = builder.bind_text(query);
+    let k_param = builder.bind_bigint(k);
+    let dt_alias = format!("bm_d{}", fts_idx);
+    // The @@@ predicate is required for pg_fts to use the index; ordering by
+    // <=> gives the BM25 ranking, served from the index.
+    let doc = format!("to_ftsdoc('{lang}', t.v)");
+    let ftsq = format!("to_ftsquery('{lang}', {q_param})");
+    let from_fragment = format!(
+        "(SELECT t.e, ({doc} <=> {ftsq}) AS bm25_score \
+         FROM {schema_prefix}datoms_text_new t \
+         WHERE t.a = {entid} \
+           AND t.store_id = {store_id} AND t.added \
+           AND {doc} @@@ {ftsq} \
+         ORDER BY {doc} <=> {ftsq} \
+         LIMIT {k_param}) AS {dt_alias}"
+    );
+    let entity_var = bind_entity_score_rel(&wf.binding, &dt_alias, "bm25_score", var_bindings);
+    Ok(FtsJoin {
+        from_fragment,
+        where_parts: Vec::new(),
+        score_expr: Some(format!("{dt_alias}.bm25_score")),
+        entity_alias: entity_var.map(|n| (n, dt_alias.clone())),
     })
 }
 

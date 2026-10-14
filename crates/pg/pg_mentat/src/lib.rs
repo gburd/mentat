@@ -766,6 +766,8 @@ mod find_spec_exhaustive_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod find_spec_tests;
 #[cfg(any(test, feature = "pg_test"))]
+pub mod fts_turbovec_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod fulltext_bm25_tests;
 pub mod functions;
 #[cfg(any(test, feature = "pg_test"))]
