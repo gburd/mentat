@@ -243,10 +243,10 @@ fn test_retract_entity_recurses_into_component() {
 }
 
 #[test]
-fn test_retract_entity_leaves_incoming_refs() {
-    // pg_mentat retracts datoms with `e` as subject + component children only,
-    // NOT datoms where `e` is a ref *value*. We match pg: an incoming ref
-    // survives (the referrer keeps its dangling ref datom).
+fn test_retract_entity_retracts_incoming_refs() {
+    // Issue #326: like Datomic (and pg_mentat), retractEntity also retracts
+    // datoms where `e` is a ref *value*, so no dangling ref survives. The
+    // referrer itself stays.
     let mut store = setup();
     let report = store
         .transact(
@@ -263,7 +263,7 @@ fn test_retract_entity_leaves_incoming_refs() {
         .transact(&format!("[[:db/retractEntity {}]]", target))
         .expect("retractEntity target");
 
-    // target's own datoms gone; referrer's [:t/ref target] datom remains.
+    // target's own datoms gone, and so is referrer's [:t/ref target].
     assert_eq!(datom_count(&store, target), 0);
     let refs: Vec<i64> = store
         .q_once(
@@ -278,5 +278,6 @@ fn test_retract_entity_leaves_incoming_refs() {
         .into_iter()
         .filter_map(|b| b.into_entid())
         .collect();
-    assert_eq!(refs, vec![target]);
+    assert_eq!(refs, Vec::<i64>::new(), "inbound ref retracted");
+    assert_eq!(name(&store, referrer), Some("referrer".to_string()));
 }

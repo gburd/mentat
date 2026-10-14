@@ -403,8 +403,10 @@ fn tx_report_has_the_datomic_shape() {
 fn q_takes_in_inputs() {
     m::q_takes_in_inputs(&mut faked());
 }
-// q_mixed_inputs, history_patterns_see_added, cas_and_retract_entity need a
-// real engine (Datalog joins, the log, tx fns): run on SQLite and pg only.
+// q_mixed_inputs, history_patterns_see_added, cas_and_retract_entity and
+// q_runs_against_as_of_and_since need a
+// real engine (Datalog joins, the log, tx fns, temporal Datalog): run on the
+// SQLite, DuckDB and pg backends only.
 #[test]
 fn inst_and_uuid_builders_round_trip_through_the_reader() {
     m::inst_and_uuid_builders_round_trip_through_the_reader();

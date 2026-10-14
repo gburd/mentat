@@ -189,20 +189,7 @@ impl ScriptBackend for MentatBackend {
     }
 
     fn q(&self, db: &DbRef, query_edn: &str) -> Result<Value, String> {
-        if db.as_of.is_some() || db.since.is_some() {
-            return Err(
-                "arbitrary Datalog against an as-of/since basis is not supported (Mentat has no \
-                 as-of query rewriting). Use the current-basis q, or datoms/entity/read/pull on \
-                 this db."
-                    .into(),
-            );
-        }
-        let map = self.stores.borrow();
-        let store = map
-            .get(&db.conn)
-            .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
-        let out = store.q_once(query_edn, None).map_err(|e| e.to_string())?;
-        Ok(query_output_value(out))
+        self.q_with_inputs(db, query_edn, &[])
     }
 
     fn q_with_inputs(
@@ -211,21 +198,29 @@ impl ScriptBackend for MentatBackend {
         query_edn: &str,
         inputs: &[serde_json::Value],
     ) -> Result<Value, String> {
-        if inputs.is_empty() {
-            return self.q(db, query_edn);
-        }
-        if db.as_of.is_some() || db.since.is_some() {
-            return self.q(db, query_edn); // the same honest error
-        }
         let map = self.stores.borrow();
         let store = map
             .get(&db.conn)
             .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
-        let opts = serde_json::json!({ "inputs": inputs });
-        let (inputs, _) =
-            crate::options_from_json(&store.conn().current_schema(), query_edn, &opts)
-                .map_err(|e| e.to_string())?;
-        let out = store.q_once(query_edn, inputs).map_err(|e| e.to_string())?;
+        let query_inputs: Option<crate::QueryInputs> = if inputs.is_empty() {
+            None
+        } else {
+            let opts = serde_json::json!({ "inputs": inputs });
+            Some(
+                crate::options_from_json(&store.conn().current_schema(), query_edn, &opts)
+                    .map_err(|e| e.to_string())?
+                    .0,
+            )
+        };
+        // Issue #328: an as-of/since db runs the query as temporal Datalog.
+        // The embedded engine has had a historical query rewrite since 1.8.0
+        // (Store::q_once_as_of / q_once_since); the old refusal predated it.
+        let out = match (db.as_of, db.since) {
+            (Some(t), _) => store.q_once_as_of(query_edn, query_inputs, t),
+            (None, Some(t)) => store.q_once_since(query_edn, query_inputs, t),
+            (None, None) => store.q_once(query_edn, query_inputs),
+        }
+        .map_err(|e| e.to_string())?;
         Ok(query_output_value(out))
     }
 

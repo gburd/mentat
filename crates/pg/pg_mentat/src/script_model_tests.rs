@@ -37,6 +37,7 @@ mod tests {
     model_pg_test!(datoms_returns_tuples);
     model_pg_test!(with_is_speculative_and_does_not_commit);
     model_pg_test!(as_of_and_since_reflect_the_basis);
+    model_pg_test!(q_runs_against_as_of_and_since);
     model_pg_test!(tx_report_has_the_datomic_shape);
     model_pg_test!(q_takes_in_inputs);
     model_pg_test!(q_mixed_inputs);

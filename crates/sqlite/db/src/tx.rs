@@ -230,32 +230,97 @@ where
     }
 
     /// Resolve a transaction-function argument in the entity position to a
-    /// concrete, already-allocated entid. Accepts a plain integer entid or a
-    /// namespaced `:db/ident` keyword; tempids and lookup-refs are rejected
-    /// (matching pg_mentat, which only supports concrete entids here).
+    /// concrete, already-allocated entid. Accepts a plain integer entid, a
+    /// namespaced `:db/ident` keyword, or a lookup ref `[:unique/attr value]`
+    /// naming an existing entity (as pg_mentat does); tempids are rejected.
     fn resolve_tx_fn_entid<V: TransactableValue>(&self, v: ValuePlace<V>) -> Result<Entid> {
         let e = match v {
             ValuePlace::Entid(entmod::EntidOrIdent::Entid(x)) => x,
             ValuePlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
                 self.schema.require_entid(k)?.into()
             }
+            // Issue #327: a lookup ref `[:unique/attr value]` names an existing
+            // entity by a unique attribute, as Datomic allows anywhere an
+            // entity id is expected (and as pg_mentat already does). The EDN
+            // parser reads it as a 2-vector here (`(lookup-ref a v)` is the
+            // other spelling).
+            ValuePlace::LookupRef(ref lr) => self.resolve_tx_fn_lookup_ref(lr)?,
+            ValuePlace::Vector(mut pair) if pair.len() == 2 => {
+                let v = pair.pop().unwrap();
+                let a = pair.pop().unwrap();
+                let a = match a {
+                    ValuePlace::Entid(a) => AttributePlace::Entid(a),
+                    ValuePlace::Atom(atom) => match atom.into_entity_place()? {
+                        entmod::EntityPlace::Entid(a) => AttributePlace::Entid(a),
+                        _ => bail!(DbErrorKind::NotYetImplemented(
+                            "lookup ref attribute must be an ident or entid".to_string()
+                        )),
+                    },
+                    _ => bail!(DbErrorKind::NotYetImplemented(
+                        "lookup ref attribute must be an ident or entid".to_string()
+                    )),
+                };
+                let v = match v {
+                    ValuePlace::Atom(v) => v,
+                    _ => bail!(DbErrorKind::NotYetImplemented(
+                        "lookup ref value must be a plain value".to_string()
+                    )),
+                };
+                self.resolve_tx_fn_lookup_ref(&entmod::LookupRef { a, v })?
+            }
             ValuePlace::Atom(atom) => match atom.into_entity_place()? {
                 entmod::EntityPlace::Entid(entmod::EntidOrIdent::Entid(x)) => x,
                 entmod::EntityPlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
                     self.schema.require_entid(k)?.into()
                 }
+                entmod::EntityPlace::LookupRef(ref lr) => self.resolve_tx_fn_lookup_ref(lr)?,
                 _ => bail!(DbErrorKind::NotYetImplemented(
-                    "transaction function entity must be a concrete entid or ident".to_string()
+                    "transaction function entity must be an entid, ident, or lookup ref"
+                        .to_string()
                 )),
             },
             _ => bail!(DbErrorKind::NotYetImplemented(
-                "transaction function entity must be a concrete entid or ident".to_string()
+                "transaction function entity must be an entid, ident, or lookup ref".to_string()
             )),
         };
         if !self.partition_map.contains_entid(e) {
             bail!(DbErrorKind::UnallocatedEntid(e));
         }
         Ok(e)
+    }
+
+    /// Resolve a lookup ref in a transaction function's entity position to the
+    /// existing entity it names. The attribute must be `:db/unique`, and the
+    /// entity must already exist (a transaction function can't upsert).
+    fn resolve_tx_fn_lookup_ref<V: TransactableValue>(
+        &self,
+        lr: &entmod::LookupRef<V>,
+    ) -> Result<Entid> {
+        let a: Entid = match lr.a {
+            AttributePlace::Entid(entmod::EntidOrIdent::Entid(a)) => a,
+            AttributePlace::Entid(entmod::EntidOrIdent::Ident(ref k)) => {
+                self.schema.require_entid(k)?.into()
+            }
+        };
+        let attribute = self.schema.require_attribute_for_entid(a)?;
+        if attribute.unique.is_none() {
+            bail!(DbErrorKind::NotYetImplemented(format!(
+                "Cannot resolve (lookup-ref {a} ...) with attribute that is not :db/unique"
+            )));
+        }
+        let v =
+            lr.v.clone()
+                .into_typed_value(self.schema, attribute.value_type)?;
+        let av: AVPair = (a, v);
+        let avs = [&av];
+        let found = self.store.resolve_avs(&avs[..])?;
+        found.get(&av).copied().ok_or_else(|| {
+            DbErrorKind::UnrecognizedIdent(format!(
+                "lookup ref [{} {:?}] in a transaction function matches no entity",
+                a, av.1
+            ))
+            .into()
+        })
     }
 
     /// Resolve a transaction-function argument in the attribute position to an
@@ -292,8 +357,9 @@ where
 
     /// Expand `:db/retractEntity e` into retractions of every live datom with
     /// `e` in the entity (subject) position, recursing into `:db/isComponent`
-    /// ref children. Matches pg_mentat: as-subject datoms plus component
-    /// recursion; datoms where `e` is a ref *value* are NOT retracted.
+    /// ref children, plus every live datom whose *value* is a ref to `e`
+    /// (inbound references, issue #326) -- as Datomic does, and as pg_mentat
+    /// does. Only the referring datom is retracted; the referrer survives.
     fn expand_retract_entity(
         &self,
         e: Entid,
@@ -319,6 +385,20 @@ where
                 Either::Left(KnownEntid(e)),
                 a,
                 Either::Left(v),
+            ));
+        }
+
+        // Inbound refs: [?referrer ?a e]. A self-reference was already
+        // retracted above as one of e's own datoms.
+        for (referrer, a) in self.store.referrers(e)? {
+            if referrer == e {
+                continue;
+            }
+            terms.push(Term::AddOrRetract(
+                OpType::Retract,
+                Either::Left(KnownEntid(referrer)),
+                a,
+                Either::Left(TypedValue::Ref(e)),
             ));
         }
 

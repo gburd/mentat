@@ -29,6 +29,7 @@ model_test!(entity_returns_an_entity_map);
 model_test!(read_returns_the_scalar);
 model_test!(datoms_returns_tuples);
 model_test!(as_of_and_since_reflect_the_basis);
+model_test!(q_runs_against_as_of_and_since);
 model_test!(tx_report_has_the_datomic_shape);
 model_test!(q_takes_in_inputs);
 model_test!(q_mixed_inputs);

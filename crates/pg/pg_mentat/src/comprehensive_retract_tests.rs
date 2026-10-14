@@ -620,4 +620,79 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(v["result"].as_array().expect("arr").len(), 1);
     }
+
+    // Issue #326: :db/retractEntity retracts INBOUND refs (datoms whose value
+    // is a ref to the retracted entity), as Datomic does, so no dangling ref
+    // survives. The referring entity itself is left intact.
+    #[pg_test]
+    fn test_retract_entity_retracts_inbound_refs() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[
+                {:db/ident :ib/name :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                {:db/ident :ib/friend :db/valueType :db.type/ref
+                 :db/cardinality :db.cardinality/many}
+             ]'::TEXT)",
+        )
+        .expect("schema");
+        // alice -> friend -> bob ; carol -> friend -> bob
+        Spi::run(
+            "SELECT edn_t('[
+                {:db/id \"b\" :ib/name \"bob\"}
+                {:ib/name \"alice\" :ib/friend \"b\"}
+                {:ib/name \"carol\" :ib/friend \"b\"}
+             ]'::TEXT)",
+        )
+        .expect("data");
+
+        let friends_of_bob = || -> i64 {
+            let q = Spi::get_one::<String>(
+                "SELECT edn_q('[:find (count ?p) . :where [?b :ib/name \"bob\"] [?p :ib/friend ?b]]'::TEXT, '{}'::jsonb)::TEXT",
+            )
+            .expect("q")
+            .expect("NULL");
+            let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
+            v["result"].as_i64().unwrap_or(0)
+        };
+        assert_eq!(friends_of_bob(), 2, "two inbound refs before retract");
+
+        Spi::run("SELECT edn_t('[[:db/retractEntity [:ib/name \"bob\"]]]'::TEXT)")
+            .expect("retractEntity bob");
+
+        // No live :ib/friend datom points at bob any more. Check the
+        // current-state projection: the datom log is append-only (the old
+        // assertion row stays, with a later retraction datom beside it), so
+        // `mentat.datoms WHERE added` would still count it.
+        let dangling = Spi::get_one::<i64>(
+            "SELECT count(*) FROM mentat.current_ref c \
+             JOIN mentat.schema s ON s.entid = c.a \
+             WHERE s.ident = ':ib/friend' AND c.store_id = 0",
+        )
+        .expect("count")
+        .unwrap_or(-1);
+        assert_eq!(dangling, 0, "inbound :ib/friend refs must be retracted");
+        // And the query engine agrees.
+        let via_q = Spi::get_one::<String>(
+            "SELECT edn_q('[:find (count ?p) . :where [?p :ib/friend _]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
+        let vq: serde_json::Value = serde_json::from_str(&via_q).expect("parse");
+        assert!(
+            vq["result"].is_null() || vq["result"].as_i64() == Some(0),
+            "no :ib/friend refs should remain, got {vq}"
+        );
+
+        // The referrers themselves survive (only their ref datom went away):
+        // after retracting bob, the remaining :ib/name entities are alice and
+        // carol.
+        let alive = Spi::get_one::<String>(
+            "SELECT edn_q('[:find (count ?p) . :where [?p :ib/name _]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
+        let a: serde_json::Value = serde_json::from_str(&alive).expect("parse");
+        assert_eq!(a["result"].as_i64(), Some(2), "alice and carol remain");
+    }
 }

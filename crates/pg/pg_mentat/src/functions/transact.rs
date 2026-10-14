@@ -491,9 +491,13 @@ fn execute_retract_entity_recursive(
     let retract_query = format!(
         "SELECT a, value_type_tag, v_ref, v_bool, v_long, v_double, \
                 v_text, v_keyword, v_instant, v_uuid, v_bytes \
-         FROM {}.datoms WHERE e = $1 AND added = true",
+         FROM {}.current_datoms WHERE e = $1",
         qs
     );
+    // Read the current-state projection, not the append-only log: the log
+    // keeps a replaced value's old assertion (added = true) beside its later
+    // retraction, so an `added = true` scan of `datoms` would re-retract
+    // superseded values (the same reason :db.fn/cas reads current_datoms).
 
     // Collect datoms and identify component refs to cascade
     let mut component_targets: Vec<i64> = Vec::new();
@@ -525,6 +529,43 @@ fn execute_retract_entity_recursive(
             });
         }
 
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })?;
+
+    // Retract INBOUND references (issue #326): every live datom whose value is
+    // a ref to `e` -- `[?referrer ?ref-attr e]`. Datomic's retractEntity does
+    // this so no dangling ref to the retracted entity survives. It retracts
+    // only the ref datom; the referring entity itself is left intact. (Outbound
+    // :db/isComponent children are cascaded separately below.)
+    let inbound_query = format!(
+        "SELECT e, a FROM {}.current_datoms \
+         WHERE value_type_tag = $1 AND v_ref = $2",
+        qs
+    );
+    Spi::connect(|client| {
+        let rows = client.select(
+            &inbound_query,
+            None,
+            &[
+                DatumWithOid::from(crate::types::constants::type_tag::REF),
+                DatumWithOid::from(e),
+            ],
+        )?;
+        for row in rows {
+            let referrer: i64 = row.get(1)?.ok_or("Missing referrer e")?;
+            let a: i64 = row.get(2)?.ok_or("Missing attribute")?;
+            // A self-reference (e -> e) was already collected as an outbound
+            // datom of `e`; skip it here so it isn't queued twice.
+            if referrer == e {
+                continue;
+            }
+            pending_datoms.push(PendingDatom {
+                e: referrer,
+                a,
+                v: TypedValue::Ref(e),
+                added: false,
+            });
+        }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })?;
 

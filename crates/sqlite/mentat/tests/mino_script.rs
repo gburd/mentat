@@ -40,23 +40,26 @@ fn datoms_render_the_attribute_as_a_keyword() {
 }
 
 #[test]
-fn q_against_non_current_basis_errors_honestly() {
+fn q_against_as_of_basis_runs_temporal_datalog() {
     let mut it = seeded();
     let basis: i64 = it
         .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
         .unwrap()
         .parse()
         .unwrap();
-    // Arbitrary Datalog against an as-of basis is not supported on SQLite; it
-    // must error, not silently run against the current basis.
-    let err = match it.eval(&format!(
-        "(mentat.store/q (mentat.store/as-of (mentat.store/db c) {basis}) \
-           '[:find ?n :where [?e :person/name ?n]])"
-    )) {
-        Err(e) => e,
-        Ok(_) => panic!("q against as-of basis should error"),
-    };
-    assert!(err.contains("not supported"), "got: {err}");
+    it.eval_to_string("(mentat.store/transact c [{:person/name \"Zed\"}])")
+        .unwrap();
+    // Issue #328: Datalog against an as-of basis runs on that basis (it used to
+    // error). It must not silently run against the current basis either: Zed,
+    // added after `basis`, is invisible.
+    let then = it
+        .eval_to_string(&format!(
+            "(mentat.store/q (mentat.store/as-of (mentat.store/db c) {basis}) \
+               '[:find ?n :where [?e :person/name ?n]])"
+        ))
+        .expect("q against an as-of basis");
+    assert!(then.contains("Alice"), "got: {then}");
+    assert!(!then.contains("Zed"), "as-of must hide later facts: {then}");
 }
 
 /// The inst/uuid representation the layer emits round-trips through the mino

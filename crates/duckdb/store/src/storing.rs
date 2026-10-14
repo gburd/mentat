@@ -414,6 +414,16 @@ impl MentatStoring for DuckStoring<'_> {
             },
         )?)
     }
+
+    fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
+        // Refs are value_type_tag 0; their entid is mirrored in the plain v_i
+        // column, so the predicate needs no UNION unwrap.
+        Ok(self.conn.query_rows(
+            "SELECT e, a FROM datoms WHERE value_type_tag = 0 AND v_i = ?",
+            &[SqlValue::Integer(e)],
+            |r| Ok((r.get_i64(0)?, r.get_i64(1)?)),
+        )?)
+    }
 }
 
 fn bail_db(kind: DbErrorKind) -> Result<()> {

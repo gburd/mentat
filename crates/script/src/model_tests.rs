@@ -221,6 +221,44 @@ pub fn as_of_and_since_reflect_the_basis(it: &mut Interpreter) {
     );
 }
 
+/// Issue #328: `q` against an as-of / since db value runs the query on that
+/// basis (temporal Datalog), on every backend, instead of erroring.
+pub fn q_runs_against_as_of_and_since(it: &mut Interpreter) {
+    seed(it);
+    let basis_alice: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    it.eval_to_string("(mentat.store/transact c [{:person/name \"Bob\"}])")
+        .unwrap();
+
+    let names = "'[:find ?n :where [?e :person/name ?n]]";
+    let now = it
+        .eval_to_string(&format!("(mentat.store/q (mentat.store/db c) {names})"))
+        .unwrap();
+    assert!(now.contains("Alice") && now.contains("Bob"), "{now}");
+
+    let then = it
+        .eval_to_string(&format!(
+            "(mentat.store/q (mentat.store/as-of (mentat.store/db c) {basis_alice}) {names})"
+        ))
+        .unwrap();
+    assert_eq!(then, "#{[\"Alice\"]}", "as-of must hide later facts");
+
+    // q with :in inputs works on a historical basis too.
+    let with_in = it
+        .eval_to_string(&format!(
+            "(mentat.store/q (mentat.store/as-of (mentat.store/db c) {basis_alice}) \
+             '[:find ?e :in $ ?n :where [?e :person/name ?n]] \"Bob\")"
+        ))
+        .unwrap();
+    assert_eq!(
+        with_in, "#{}",
+        "Bob did not exist as of Alice's basis: {with_in}"
+    );
+}
+
 pub fn tx_report_has_the_datomic_shape(it: &mut Interpreter) {
     seed(it);
     let report = it
@@ -366,8 +404,9 @@ pub fn history_patterns_see_added(it: &mut Interpreter) {
 }
 
 /// `:db/cas` swaps only from the expected old value; `:db/retractEntity`
-/// removes every datom of the entity. Both take an entid: unlike Datomic,
-/// neither backend resolves a lookup ref in a tx fn.
+/// removes every datom of the entity AND every ref pointing at it (Datomic's
+/// semantics; issue #326). Both accept a lookup ref `[:unique/attr v]` in the
+/// entity place (issue #327).
 pub fn cas_and_retract_entity(it: &mut Interpreter) {
     seed_people(it);
     let (alice, bob) = (person(it, "Alice"), person(it, "Bob"));
@@ -387,13 +426,23 @@ pub fn cas_and_retract_entity(it: &mut Interpreter) {
     );
     assert_eq!(it.eval_to_string(age).unwrap(), "31");
 
-    it.eval_to_string(&format!(
-        "(mentat.store/transact c [[:db/retractEntity {bob}]])"
-    ))
-    .expect("retractEntity");
+    // A lookup ref names Alice in the entity place of cas.
+    it.eval_to_string(
+        "(mentat.store/transact c [[:db/cas [:person/name \"Alice\"] :person/age 31 32]])",
+    )
+    .expect("cas via a lookup ref");
+    assert_eq!(it.eval_to_string(age).unwrap(), "32");
+
+    // Alice -> :person/friend -> Bob is an inbound ref to Bob.
+    let friends = "(mentat.store/q (mentat.store/db c) \
+                   '[:find ?f . :where [?e :person/name \"Alice\"] [?e :person/friend ?f]])";
+    assert_eq!(it.eval_to_string(friends).unwrap(), bob);
+
+    // retractEntity via a lookup ref.
+    it.eval_to_string("(mentat.store/transact c [[:db/retractEntity [:person/name \"Bob\"]]])")
+        .expect("retractEntity via a lookup ref");
     assert_eq!(person(it, "Bob"), "nil");
-    // Datomic also retracts refs TO the entity; neither backend does yet (the
-    // shared suite pins only what both do). Bob's own datoms are all gone:
+    // Bob's own datoms are all gone:
     assert_eq!(
         it.eval_to_string(&format!(
             "(mentat.store/q (mentat.store/db c) '[:find ?a . :where [{bob} :person/age ?a]])"
@@ -401,4 +450,11 @@ pub fn cas_and_retract_entity(it: &mut Interpreter) {
         .unwrap(),
         "nil"
     );
+    // ...and so is the ref TO him, while Alice herself remains.
+    assert_eq!(
+        it.eval_to_string(friends).unwrap(),
+        "nil",
+        "inbound ref retracted"
+    );
+    assert_eq!(person(it, "Alice"), alice);
 }

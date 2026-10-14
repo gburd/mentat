@@ -1036,6 +1036,10 @@ pub trait MentatStoring {
 
     /// Every live `[a v]` with `e` in the entity position (for `:db/retractEntity`).
     fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>>;
+
+    /// Every live `[referrer a]` whose value is a ref to `e` (for
+    /// `:db/retractEntity`, which retracts inbound references; issue #326).
+    fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>>;
 }
 
 /// A SQLite transaction is a store too (it derefs to its connection).
@@ -1091,6 +1095,9 @@ impl MentatStoring for rusqlite::Transaction<'_> {
     }
     fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
         (**self).entity_datoms(e)
+    }
+    fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
+        (**self).referrers(e)
     }
 }
 
@@ -1626,6 +1633,18 @@ impl MentatStoring for rusqlite::Connection {
                 let v = TypedValue::from_sql_value_pair(row.get(1)?, row.get(2)?)?;
                 Ok((a, v))
             })?
+            .collect();
+        rows
+    }
+
+    fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
+        // Ref values are stored with value_type_tag 0 (and index_vaet set, so
+        // idx_datoms_vaet (v, a, e) serves this).
+        let mut stmt = self.prepare(
+            "SELECT e, a FROM datoms WHERE v = ? AND value_type_tag = 0 AND index_vaet IS NOT 0",
+        )?;
+        let rows: Result<Vec<(Entid, Entid)>> = stmt
+            .query_and_then(rusqlite::params![e], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect();
         rows
     }
