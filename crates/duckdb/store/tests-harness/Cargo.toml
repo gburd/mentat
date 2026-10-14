@@ -12,14 +12,14 @@ publish = false
 
 [dependencies]
 duckdb = { version = "~1.10506.0", features = ["bundled"] }
-mentat_duckdb_store = { path = "..", features = ["script"], version = "=1.13.0" }
-mentat_script = { path = "../../../script", version = "=1.13.0" }
-mino-rs = { path = "../../../mino", version = "=1.13.0" }
-mentat_query_algebrizer = { path = "../../../sqlite/query-algebrizer", version = "=1.13.0" }
-mentat_query_projector = { path = "../../../sqlite/query-projector", version = "=1.13.0" }
-core_traits = { package = "mentat_core_traits", path = "../../../core-traits", version = "=1.13.0" }
-edn = { package = "mentat_edn", path = "../../../edn", version = "=1.13.0" }
+mentat_duckdb_store = { path = "..", features = ["script"], version = "=1.14.0" }
+mentat_script = { path = "../../../script", version = "=1.14.0" }
+mino-rs = { path = "../../../mino", version = "=1.14.0" }
+mentat_query_algebrizer = { path = "../../../sqlite/query-algebrizer", version = "=1.14.0" }
+mentat_query_projector = { path = "../../../sqlite/query-projector", version = "=1.14.0" }
+core_traits = { package = "mentat_core_traits", path = "../../../core-traits", version = "=1.14.0" }
+edn = { package = "mentat_edn", path = "../../../edn", version = "=1.14.0" }
 
 [dev-dependencies]
 # The SQLite engine, for the differential test (its own bundled SQLite).
-mentat = { package = "mentatdb", path = "../../../sqlite/mentat", version = "=1.13.0" }
+mentat = { package = "mentatdb", path = "../../../sqlite/mentat", version = "=1.14.0" }

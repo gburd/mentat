@@ -19,47 +19,47 @@ features = ["limits", "bundled"]
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.public_traits]
 package = "mentat_public_traits"
 path = "../public-traits"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_db]
 path = "../db"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_sql]
 path = "../sql"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_query_algebrizer]
 path = "../query-algebrizer"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_query_projector]
 path = "../query-projector"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_query_pull]
 path = "../query-pull"
-version = "=1.13.0"
+version = "=1.14.0"
 
 [dependencies.mentat_query_sql]
 path = "../query-sql"
-version = "=1.13.0"
+version = "=1.14.0"

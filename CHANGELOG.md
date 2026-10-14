@@ -8,6 +8,56 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.14.0] — Datomic transaction functions, retractEntity semantics, honest EXPLAIN
+
+The rest of the Datomic-team review (Codeberg #325–#332). Design notes and
+trade-offs: `docs/design/datomic-review-issues.md`.
+
+### Added
+
+- **User-defined transaction functions (#325, PostgreSQL, `script` builds).**
+  An ident carrying `:db/fn` — mino source for `(fn [db & args] ...)` that
+  returns tx-data — is invoked as `[:my/fn arg ...]` inside `edn_t`. The
+  returned tx-data (which may call other tx-functions, `:db.fn/cas`, or use
+  lookup refs) is spliced into the same transaction. The function sees the
+  database as of the start of the transaction, runs in the `edn_eval` sandbox
+  under the `mentat.script_max_*` limits, and `mentat.txfn_max_depth`
+  (default 16) bounds recursion. New bootstrap attribute `:db/fn` (entid 20).
+- **`(bm25-match $ :attr "query" k)` and `(turbovec-near $ :attr "[...]" k
+  [op])` Datalog where-fns (#332 follow-up)**, so queries rank with the pg_fts
+  BM25 index and the pg_turbovec vector index directly, binding
+  `[[?e ?score]]` / `[[?e ?dist]]` and joining back to the rest of the query.
+
+### Changed (behavior)
+
+- **`:db/retractEntity` retracts inbound references (#326), on all three
+  backends**, as Datomic does: every live datom whose value is a ref to the
+  retracted entity is retracted in the same transaction. The referring entity
+  itself stays. (The `:db/isComponent` cascade is unchanged.)
+
+### Fixed
+
+- **Lookup refs in `:db.fn/cas` / `:db/retractEntity` on the embedded SQLite
+  and DuckDB backends (#327)** — PostgreSQL already accepted them.
+- **Scripting `q` against an as-of / since db (#328)** works on the embedded
+  backend (with or without `:in` inputs); it errored, although the engine has
+  had temporal Datalog since 1.8.0.
+- **`mentat_explain`, `mentat_query_sql` and `query_view` honour collection,
+  tuple and relation `:in` inputs (#330).** They silently dropped them, so the
+  returned SQL and plan weren't what `edn_q` runs; a declared but missing input
+  is now the same error `edn_q` gives.
+- **PostgreSQL `:db/retractEntity` read the append-only log**, so after a
+  value was replaced it also re-retracted the superseded value. It now reads
+  the current-state projection (as `:db.fn/cas` does).
+- **`mentat.attach_turbovec_attribute` (1.13.0) always failed**: it declared
+  `turbovec.vector(N)`, but pg_turbovec's type takes no typmod. The dimension
+  is now a `CHECK` constraint. Note pg_turbovec indexes need `dim % 8 == 0`.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.14.0';` adds the `:db/fn` attribute
+and replaces `attach_turbovec_attribute`. No data migration.
+
 ## [1.13.0] — PostgreSQL ergonomics: deprecation warnings, trusted install, pg_fts & pg_turbovec
 
 PostgreSQL-side improvements from a Datomic-team evaluation (Codeberg issues
