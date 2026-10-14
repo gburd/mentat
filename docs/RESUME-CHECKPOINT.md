@@ -228,3 +228,33 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   dev-deps, required description, cargo-deny self-dev-dep panic).
 - NO EC2 used (hotdog creds absent). Publish token: ~/.cargo/credentials.toml;
   CARGO_HOME must be unset (repo .cargo/ has no creds).
+
+## v1.13.0 RELEASED (2026-10-14) — PostgreSQL ergonomics from a Datomic-team review
+- Tag v1.13.0 = 87564a17. Came out of a Datomic/Clojure/Postgres-expert review
+  of pg_mentat (report at /tmp/pg_mentat-review-2026-10-14.md). Filed 8 Codeberg
+  issues #325-332 (GitHub has issues DISABLED; it's a mirror). This release
+  closed #329, #331, #332; verified #327 on PG. Deferred (open, need design):
+  #325 user-defined txfns, #326 retractEntity ref-cascade, #328 scripting-q over
+  history, #330 explain collection :in.
+- Changes (no engine/storage/semantics change):
+  - #329 deprecation WARNING (one/session) on mentat_transact/query/pull/eval;
+    README says edn_* is canonical.
+  - #331 trusted=true injected into the PACKAGED control file by release.yml +
+    flake.nix (pgrx 0.17 rejects it in source; PG accepts it). Verified in the
+    shipped pg16 tarball.
+  - #332 optional pg_fts (BM25) + pg_turbovec (vector) helpers sql/28,29, soft
+    has_<ext>() pattern. Follow-up (open): wire (bm25-match)/(turbovec-near)
+    where-fns in functions/query.rs.
+  - #327 cas/retractEntity lookup refs already work on PG (resolve_entity_place);
+    added test; retitled #327 to SQLite-only scope.
+  - deps: rustls 0.23.45->0.23.46 (RUSTSEC-2026-0346..0349); fixed flaky
+    mentatd test_touch_resets_expiry (50ms TTL race -> 500ms).
+- Qualified on EC2 Debian 12 (KIWI account 830118047484, hotdog creds still
+  absent): pgrx pg16 1872/0, pg16+script 1917/0/1; local SQLite 89 bins, fmt,
+  clippy, deny clean; EC2 DuckDB ext build+smoke+harness 21; CI green pg13-18 +
+  nix-build; release.yml green (6 assets, PGXN 1.13.0). crates.io: all 20
+  changed crates published at 1.13.0 (gc crates stay 0.5.x) — NO rate limiting
+  on version bumps of existing crates (unlike the 1.12.0 new-crate burst).
+  DuckDB registry: skipped (no PAT; ext unchanged since 1.11.0).
+- Announcement: GitHub Release v1.13.0 body (edited to a human-facing summary).
+- EC2 i-058dc2f42a620ade0 + SG + key deleted.
