@@ -419,4 +419,52 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert!(v["result"].as_str().expect("s").contains("published"));
     }
+
+    // Issue #327: :db.fn/cas and :db.fn/retractEntity accept a lookup ref
+    // [:unique/attr value] in the entity place (pg_mentat resolves it via
+    // resolve_entity_place). The embedded SQLite backend still requires a
+    // resolved entid; this test pins the PG behavior.
+    #[pg_test]
+    fn test_cas_and_retract_accept_lookup_ref() {
+        setup();
+        // A :db.unique/identity string attribute so [:lr/email "..."] resolves.
+        Spi::run(
+            "SELECT edn_t('[
+                {:db/ident :lr/email :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                {:db/ident :lr/role :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one}
+             ]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run("SELECT edn_t('[{:lr/email \"a@x.io\" :lr/role \"old\"}]'::TEXT)")
+            .expect("insert");
+
+        // cas via a lookup ref in the entity place.
+        Spi::run(
+            "SELECT edn_t('[[:db/cas [:lr/email \"a@x.io\"] :lr/role \"old\" \"new\"]]'::TEXT)",
+        )
+        .expect("cas via lookup ref");
+        let role = Spi::get_one::<String>(
+            "SELECT edn_q('[:find ?r . :where [?e :lr/email \"a@x.io\"] [?e :lr/role ?r]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
+        let v: serde_json::Value = serde_json::from_str(&role).expect("parse");
+        assert_eq!(v["result"].as_str().expect("s"), "new");
+
+        // retractEntity via a lookup ref.
+        Spi::run("SELECT edn_t('[[:db/retractEntity [:lr/email \"a@x.io\"]]]'::TEXT)")
+            .expect("retractEntity via lookup ref");
+        let gone = Spi::get_one::<String>(
+            "SELECT edn_q('[:find ?r . :where [?e :lr/email \"a@x.io\"] [?e :lr/role ?r]]'::TEXT, '{}'::jsonb)::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
+        let g: serde_json::Value = serde_json::from_str(&gone).expect("parse");
+        assert!(
+            g["result"].is_null(),
+            "entity should be retracted, got {g:?}"
+        );
+    }
 }

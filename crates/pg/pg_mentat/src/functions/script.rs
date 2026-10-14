@@ -84,14 +84,22 @@ pub fn mentat_eval(script: &str) -> Result<String, Box<dyn std::error::Error + S
 }
 
 // Deprecated pre-1.9.0 name, emitted only in `script` builds (this module is
-// cfg-gated). Same VOLATILE STRICT as the C function it wraps. The other three
-// deprecated wrappers are in sql/26_deprecated_names.sql.
+// cfg-gated). Matches the plpgsql wrappers in sql/26_deprecated_names.sql:
+// a one-time-per-session WARNING, then delegate to edn_eval.
 pgrx::extension_sql!(
     r"
 CREATE FUNCTION public.mentat_eval(script TEXT)
 RETURNS TEXT
-LANGUAGE SQL VOLATILE STRICT
-AS $$ SELECT public.edn_eval(script); $$;
+LANGUAGE plpgsql VOLATILE STRICT
+AS $$
+BEGIN
+    IF current_setting('mentat.warned_eval', true) IS DISTINCT FROM 'on' THEN
+        RAISE WARNING 'mentat_eval is deprecated since 1.9.0; use edn_eval instead';
+        PERFORM set_config('mentat.warned_eval', 'on', false);
+    END IF;
+    RETURN public.edn_eval(script);
+END;
+$$;
 COMMENT ON FUNCTION public.mentat_eval(TEXT) IS 'Deprecated since 1.9.0: use edn_eval';
 ",
     name = "deprecated_mentat_eval",

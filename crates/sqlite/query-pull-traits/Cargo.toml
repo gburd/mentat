@@ -16,12 +16,12 @@ thiserror = "~2.0"
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.12.0"
+version = "=1.13.0"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.12.0"
+version = "=1.13.0"
 
 [lints]
 workspace = true

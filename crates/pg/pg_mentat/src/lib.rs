@@ -1136,6 +1136,26 @@ extension_sql_file!(
     requires = ["narrow_storage"],
 );
 
+// Optional pg_fts (codeberg.org/gregburd/pg_fts, PostgreSQL license)
+// integration: declares mentat.has_pg_fts() + create_fts_index() for a BM25
+// index on a :db.type/string attribute (PG17+). Built-in :db/fulltext still
+// works when pg_fts is absent. See issue #332.
+extension_sql_file!(
+    "../sql/28_pg_fts_helpers.sql",
+    name = "pg_fts_helpers",
+    requires = ["narrow_storage"],
+);
+
+// Optional pg_turbovec (codeberg.org/gregburd/pg_turbovec, Apache-2.0)
+// integration: declares mentat.has_pg_turbovec() plus per-attribute aux-table
+// helpers (attach/create index), mirroring the pgvector helpers. See issue
+// #332.
+extension_sql_file!(
+    "../sql/29_pg_turbovec_helpers.sql",
+    name = "pg_turbovec_helpers",
+    requires = ["narrow_storage"],
+);
+
 // Operational + read-path accessors: mentat.attr_id, mentat.current,
 // mentat.attribute_health. Added in response to production feedback to
 // give an index-backed current-value accessor (avoids DISTINCT ON /

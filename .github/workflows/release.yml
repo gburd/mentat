@@ -150,6 +150,15 @@ jobs:
             cp crates/pg/pg_mentat/pg_mentat.control "${STAGING}/"
           fi
 
+          # Make the shipped control file a TRUSTED extension so a non-superuser
+          # can CREATE EXTENSION pg_mentat (issue #331). pgrx 0.17's build-time
+          # control parser rejects `trusted = true` as a RedundantField, so the
+          # source control file can't carry it; PostgreSQL itself accepts it, so
+          # we inject it into the packaged artifact. Idempotent.
+          if ! grep -q '^trusted' "${STAGING}/pg_mentat.control"; then
+            printf '\ntrusted = true\n' >> "${STAGING}/pg_mentat.control"
+          fi
+
           # Fail loud if the shared library is missing (empty tarball is useless).
           if [ ! -f "${STAGING}/pg_mentat.so" ]; then
             echo "ERROR: pg_mentat.so not found under target/ after packaging" >&2

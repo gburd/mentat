@@ -16,12 +16,12 @@ thiserror = "~2.0"
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.12.0"
+version = "=1.13.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.12.0"
+version = "=1.13.0"
 
 [lints]
 workspace = true

@@ -5,10 +5,12 @@
 # here — it collides with the generated CREATE SCHEMA and produces
 # `ERROR: schema mentat is not a member of extension "pg_mentat"`.
 comment = 'Datomic-compatible Datalog query engine for PostgreSQL'
-default_version = '1.12.0'
+default_version = '1.13.0'
 module_pathname = '$libdir/pg_mentat'
 relocatable = false
 superuser = false
-# Note: `trusted = true` is desired for PG13+ (allows non-superuser install)
-# but pgrx 0.17's control-file parser rejects it as a RedundantField.
-# Re-add once pgrx supports it, or ship a separate .control for production.
+# Note: `trusted = true` makes CREATE EXTENSION available to non-superusers,
+# but pgrx 0.17's control-file parser rejects it as a RedundantField, so it
+# can't live here. The release workflow and the Nix install phase inject
+# `trusted = true` into the PACKAGED control file (PostgreSQL accepts it even
+# though pgrx's build-time parser does not). See issue #331.

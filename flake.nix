@@ -181,6 +181,12 @@
               if [ ! -f $out/share/postgresql/extension/pg_mentat.control ]; then
                 cp crates/pg/pg_mentat/pg_mentat.control $out/share/postgresql/extension/
               fi
+              # Ship a TRUSTED extension so a non-superuser can CREATE EXTENSION
+              # (issue #331). pgrx 0.17 rejects `trusted = true` in the source
+              # control file, so inject it into the installed artifact.
+              if ! grep -q '^trusted' $out/share/postgresql/extension/pg_mentat.control; then
+                printf '\ntrusted = true\n' >> $out/share/postgresql/extension/pg_mentat.control
+              fi
               test -f $out/lib/pg_mentat.so || (echo "ERROR: pg_mentat.so not produced" >&2; exit 1)
               runHook postInstall
             '';

@@ -215,8 +215,17 @@ names to an existing 1.8.0 install. As of 1.8.0 the embedded
 SQLite backend also does historical (`as-of`/`since`) Datalog queries, `?added`
 history patterns, and collection/tuple/relation `:in` bindings. The PostgreSQL
 backend adds features unique to it: LISTEN/NOTIFY reactive subscriptions and
-integrations with `pgvector`, `pg_trgm`, PostGIS, `rum`, and more. See
+optional, soft integrations with first-party and third-party extensions —
+`pg_fts` (BM25 full-text), `pg_turbovec` and `pgvector` (vector similarity),
+`pg_tre` (fuzzy regex), `pg_trgm`, PostGIS, `rum`, and more. Each is detected at
+runtime via `mentat.has_<ext>()` and never required. See
 [Architecture](docs/src/architecture.md) for the full feature-by-backend table.
+
+> **One canonical API.** Use `edn_t` / `edn_q` / `edn_pull` / `edn_eval` — the
+> cross-backend names. The older `mentat_transact` / `mentat_query` /
+> `mentat_pull` / `mentat_eval` are deprecated aliases that still work but emit a
+> one-time-per-session deprecation `WARNING`. (Other `mentat_*` functions such as
+> `mentat_explain` have no `edn_*` equivalent and are not deprecated.)
 
 ### mentatd
 

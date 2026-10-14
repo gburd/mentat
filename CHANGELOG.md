@@ -8,6 +8,52 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.13.0] — PostgreSQL ergonomics: deprecation warnings, trusted install, pg_fts & pg_turbovec
+
+PostgreSQL-side improvements from a Datomic-team evaluation (Codeberg issues
+#327, #329, #331, #332). No engine, storage, or query-semantics change.
+
+### Added
+
+- **Optional pg_fts integration** (issue #332): `mentat.has_pg_fts()` and
+  `mentat.create_fts_index(attr, regconfig)` build a BM25 index
+  (`USING fts (to_ftsdoc(…))`) on a `:db.type/string` attribute when the
+  first-party [pg_fts](https://codeberg.org/gregburd/pg_fts) extension
+  (PostgreSQL 17+) is installed. A soft dependency: `:db/fulltext` still works
+  via the built-in `tsvector`/GIN path when pg_fts is absent.
+- **Optional pg_turbovec integration** (issue #332):
+  `mentat.has_pg_turbovec()`, `mentat.attach_turbovec_attribute(attr, dim)`,
+  and `mentat.create_turbovec_index(attr, ops)` manage a per-attribute
+  `turbovec.vector` aux table and TurboQuant index, mirroring the existing
+  pgvector helpers, when [pg_turbovec](https://codeberg.org/gregburd/pg_turbovec)
+  is installed.
+
+### Changed
+
+- **Deprecation warnings** (issue #329): `mentat_transact`, `mentat_query`,
+  `mentat_pull`, and (in `script` builds) `mentat_eval` now raise a
+  one-time-per-session `WARNING` pointing at their canonical `edn_*`
+  replacement, then delegate as before. Only these four names are deprecated;
+  the other `mentat_*` functions have no `edn_*` equivalent and are unchanged.
+- **Trusted install** (issue #331): the packaged `pg_mentat.control` now sets
+  `trusted = true`, so a non-superuser can `CREATE EXTENSION pg_mentat`. pgrx
+  0.17 rejects `trusted` in the source control file, so the release workflow
+  and the Nix install phase inject it into the shipped artifact (PostgreSQL
+  accepts it).
+
+### Clarified
+
+- Lookup refs in `:db.fn/cas` / `:db.fn/retractEntity` (issue #327) already
+  work on the **PostgreSQL** backend (`resolve_entity_place` resolves
+  `[:unique/attr value]`); a regression test now pins this. The gap remains
+  only on the embedded SQLite backend.
+
+### Upgrade
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.13.0';` replaces the three deprecated
+wrappers with warning-emitting versions and adds the pg_fts / pg_turbovec
+helpers. No data migration.
+
 ## [1.12.0] — the embedded engine is published to crates.io
 
 The SQLite engine's crates are published to crates.io for the first time. No
