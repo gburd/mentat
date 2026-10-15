@@ -1,0 +1,7 @@
+-- pg_mentat 1.14.0 -> 1.15.0 upgrade.
+--
+-- No schema or data change for PostgreSQL. 1.15.0 moves the :db/fn
+-- transaction-function expander into the shared mentat_script crate (the
+-- SQL-visible behavior is unchanged) and brings transaction functions to the
+-- embedded SQLite and DuckDB backends; the rest of the release is DuckDB-only.
+-- The edge keeps the versions in step.

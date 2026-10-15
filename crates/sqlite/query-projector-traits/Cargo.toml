@@ -19,7 +19,7 @@ thiserror = "~2.0"
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.rusqlite]
 version = "~0.40"
@@ -28,34 +28,34 @@ features = ["limits", "bundled"]
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.query_pull_traits]
 package = "mentat_query_pull_traits"
 path = "../query-pull-traits"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.mentat_query_algebrizer]
 path = "../query-algebrizer"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.mentat_query_sql]
 path = "../query-sql"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dev-dependencies.mentat_core]
 path = "../../core"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dev-dependencies.mentat_query_projector]
 path = "../query-projector"

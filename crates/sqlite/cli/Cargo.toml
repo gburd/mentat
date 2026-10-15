@@ -48,19 +48,19 @@ features = ["limits", "bundled"]
 [dependencies.mentat]
 package = "mentatdb"
 path = "../mentat"
-version = "=1.14.0"
+version = "=1.15.0"
 default-features = false
 
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.14.0"
+version = "=1.15.0"
 
 [dependencies.mentat_db]
 path = "../db"
-version = "=1.14.0"
+version = "=1.15.0"

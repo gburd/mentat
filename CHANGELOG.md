@@ -8,6 +8,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.15.0] — transaction functions everywhere; DuckDB correctness fix and connection pool
+
+**DuckDB users should upgrade.** In 1.11.0-1.14.0, queries could silently
+return no rows after the database was opened by a plain `duckdb` CLI (see
+Fixed). Opening a store with 1.15.0 repairs it. PostgreSQL: `ALTER EXTENSION
+pg_mentat UPDATE` is a no-op edge (no schema change).
+
 ### Added
 
 - **Transaction functions on the embedded SQLite store and the DuckDB
