@@ -305,6 +305,19 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   - The Quack backlog issue is duckdb/duckdb-quack#318.
 - EC2 (kiwi): every mentat-* instance, SG and key is deleted. The hotdog
   profile is gone; use kiwi.
-- Next: cut 1.15.0. Pending that release:
-  - the pg upgrade script, a no-op for these changes;
-  - a bump of the registry descriptor so DuckDB users get the #26828 fix.
+- (superseded: 1.15.0 is released, see below)
+
+## v1.15.0 RELEASED (2026-10-15) — tag 88ee547f
+- Gate (EC2 c6i.4xlarge, kiwi):
+  - pgrx PG16/17 1880/0, +script 1934/0/1.
+  - 1.14.0->1.15.0 upgrade == fresh (202 functions, 327 objects, idents and
+    schema rows).
+  - DuckDB: harness, smoke, SQLLogicTest, concurrency, the #26828 repro, and
+    repair of a 1.14.0-corrupted store.
+- GitHub Release has 6 assets (shipped control file has `trusted = true`).
+  PGXN and crates.io are at 1.15.0; a clean consumer ran a tx-fn on
+  mentatdb =1.15.0.
+- DuckDB registry PR duckdb/community-extensions#3072 is retitled "Update
+  mentat to 1.15.0" (ref 88ee547f, 1.11.0 -> 1.15.0). The fork build passed
+  on all 5 platforms. It waits on the DuckDB maintainers.
+- EC2: all mentat-* instances, SGs and keys are deleted.
