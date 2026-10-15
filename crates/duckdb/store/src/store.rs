@@ -124,14 +124,21 @@ impl<'c> DuckStore<'c> {
     /// a counter so two databases' stores of the same name never share one.
     /// One primary-key read.
     fn generation(&self) -> Result<Option<i64>> {
-        Ok(self.conn.query_opt(
+        // Cached: one table, the key bound, and every store has the row from
+        // creation on.
+        let mut gen = None;
+        self.conn.query_cached(
             &format!(
-                "SELECT value::BIGINT FROM {}.meta WHERE key = 'generation'",
+                "SELECT value::BIGINT FROM {}.meta WHERE key = ?",
                 self.schema
             ),
-            &[],
-            |r| r.get_i64(0),
-        )?)
+            &[SqlValue::Text("generation".into())],
+            &mut |r| {
+                gen = Some(r.get_i64(0)?);
+                Ok(())
+            },
+        )?;
+        Ok(gen)
     }
 
     /// Open the store, creating and bootstrapping it on first use. Cheap when
@@ -248,24 +255,24 @@ impl<'c> DuckStore<'c> {
         Ok(())
     }
 
-    /// Read the partition map (3 rows).
+    /// Read the partition map (3 rows; cached: no filter, one table).
     fn read_partition_map(&self) -> Result<PartitionMap> {
-        let parts = self.conn.query_rows(
+        let mut parts = PartitionMap::default();
+        self.conn.query_cached(
             "SELECT part, start, \"end\", idx, allow_excision FROM known_parts",
             &[],
-            |r| {
-                Ok((
-                    r.get_text(0)?,
-                    Partition::new(
-                        r.get_i64(1)?,
-                        r.get_i64(2)?,
-                        r.get_i64(3)?,
-                        r.get_i64(4)? != 0,
-                    ),
-                ))
+            &mut |r| {
+                let p = Partition::new(
+                    r.get_i64(1)?,
+                    r.get_i64(2)?,
+                    r.get_i64(3)?,
+                    r.get_i64(4)? != 0,
+                );
+                parts.insert(r.get_text(0)?, p);
+                Ok(())
             },
         )?;
-        Ok(parts.into_iter().collect())
+        Ok(parts)
     }
 
     /// Read the partition map and schema (the `idents`/`schema` views).

@@ -281,7 +281,8 @@ impl MentatStoring for DuckStoring<'_> {
             if before.is_some_and(|p| p.next_entid() == partition.next_entid()) {
                 continue;
             }
-            self.conn.execute(
+            // Cached: one table, every value bound.
+            self.conn.execute_cached(
                 "UPDATE known_parts SET idx = ? WHERE part = ?",
                 &[
                     SqlValue::Integer(partition.next_entid()),

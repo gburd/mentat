@@ -96,38 +96,27 @@ impl SqlRow for DuckRow<'_, '_> {
     }
 }
 
-/// Rows past which a query's statement leaves the cache: a cached statement
-/// keeps its last (materialized) result until it next runs.
-const CACHE_MAX_ROWS: usize = 1024;
-
-/// Run a cached statement, feeding `f` every row; a big result's statement is
-/// dropped instead of cached, freeing the result.
 fn each_row(
-    mut stmt: duckdb::CachedStatement<'_>,
+    stmt: &mut duckdb::Statement<'_>,
     params: impl duckdb::Params,
     f: &mut dyn FnMut(&dyn SqlRow) -> Result<(), SqlError>,
 ) -> Result<(), SqlError> {
     let mut rows = stmt.query(params).map_err(err)?;
     let n = rows.as_ref().map(|s| s.column_count()).unwrap_or(0);
-    let mut count = 0;
     while let Some(row) = rows.next().map_err(err)? {
         f(&DuckRow(row, n))?;
-        count += 1;
-    }
-    drop(rows);
-    if count > CACHE_MAX_ROWS {
-        stmt.discard();
     }
     Ok(())
 }
 
 /// `SqlConn` over a borrowed DuckDB connection.
 ///
-/// Statements go through the connection's prepared-statement cache (a fresh
-/// prepare is 0.1-0.2 ms; a primary-key read runs in 0.04). A prepared
-/// statement keeps the tables it resolved, so the cache key carries the
-/// store schema that `use_schema` set: the same SQL text for two stores is two
-/// statements.
+/// `query_cached` / `execute_cached` statements stay prepared in the
+/// connection's statement cache (a fresh prepare is 0.1-0.2 ms; the
+/// generation read itself runs in 0.05). Everything else, including every
+/// engine query, is prepared fresh; see `SqlConn::query_cached` for why. A
+/// cached statement keeps the tables it resolved, so its key carries the store
+/// schema that `use_schema` set.
 pub struct DuckConn<'c> {
     conn: &'c duckdb::Connection,
     schema: RefCell<String>,
@@ -135,28 +124,22 @@ pub struct DuckConn<'c> {
 
 impl<'c> DuckConn<'c> {
     pub fn new(conn: &'c duckdb::Connection) -> Self {
-        // A query call runs 2-3 statements, a transaction about 15.
-        conn.set_prepared_statement_cache_capacity(64);
+        // A few fixed statements per store.
+        conn.set_prepared_statement_cache_capacity(32);
         DuckConn {
             conn,
             schema: RefCell::new(String::new()),
         }
     }
 
-    fn prepare(&self, sql: &str) -> Result<duckdb::CachedStatement<'c>, SqlError> {
+    fn cached(&self, sql: &str) -> Result<duckdb::CachedStatement<'c>, SqlError> {
         let key = format!("/* {} */ {sql}", self.schema.borrow());
         self.conn.prepare_cached(&key).map_err(err)
     }
+}
 
-    /// DDL runs unprepared: on DuckDB 1.5.6 re-executing a prepared
-    /// `CREATE TEMP TABLE` creates the table with no columns. (Cached DML
-    /// rebinds to a table that was dropped and recreated.)
-    fn uncacheable(sql: &str) -> bool {
-        let head = sql.trim_start().get(..6).unwrap_or("");
-        ["CREATE", "DROP T", "DROP I", "ALTER "]
-            .iter()
-            .any(|k| head.eq_ignore_ascii_case(k))
-    }
+fn params<'p>(ps: &'p [Param<'p>]) -> Vec<&'p dyn duckdb::ToSql> {
+    ps.iter().map(|p| p as &dyn duckdb::ToSql).collect()
 }
 
 impl SqlConn for DuckConn<'_> {
@@ -168,25 +151,38 @@ impl SqlConn for DuckConn<'_> {
         self.conn.execute_batch(sql).map_err(err)
     }
 
-    fn execute(&self, sql: &str, params: &[SqlValue]) -> Result<usize, SqlError> {
-        let ps: Vec<Param> = params.iter().map(Param).collect();
-        let refs: Vec<&dyn duckdb::ToSql> = ps.iter().map(|p| p as &dyn duckdb::ToSql).collect();
-        if Self::uncacheable(sql) {
-            return self.conn.execute(sql, refs.as_slice()).map_err(err);
-        }
-        let mut stmt = self.prepare(sql)?;
-        stmt.execute(refs.as_slice()).map_err(err)
+    fn execute(&self, sql: &str, ps: &[SqlValue]) -> Result<usize, SqlError> {
+        let ps: Vec<Param> = ps.iter().map(Param).collect();
+        self.conn.execute(sql, params(&ps).as_slice()).map_err(err)
     }
 
     fn query(
         &self,
         sql: &str,
-        params: &[SqlValue],
+        ps: &[SqlValue],
         f: &mut dyn FnMut(&dyn SqlRow) -> Result<(), SqlError>,
     ) -> Result<(), SqlError> {
-        let ps: Vec<Param> = params.iter().map(Param).collect();
-        let refs: Vec<&dyn duckdb::ToSql> = ps.iter().map(|p| p as &dyn duckdb::ToSql).collect();
-        each_row(self.prepare(sql)?, refs.as_slice(), f)
+        let ps: Vec<Param> = ps.iter().map(Param).collect();
+        let mut stmt = self.conn.prepare(sql).map_err(err)?;
+        each_row(&mut stmt, params(&ps).as_slice(), f)
+    }
+
+    fn query_cached(
+        &self,
+        sql: &str,
+        ps: &[SqlValue],
+        f: &mut dyn FnMut(&dyn SqlRow) -> Result<(), SqlError>,
+    ) -> Result<(), SqlError> {
+        let ps: Vec<Param> = ps.iter().map(Param).collect();
+        let mut stmt = self.cached(sql)?;
+        each_row(&mut stmt, params(&ps).as_slice(), f)
+    }
+
+    fn execute_cached(&self, sql: &str, ps: &[SqlValue]) -> Result<usize, SqlError> {
+        let ps: Vec<Param> = ps.iter().map(Param).collect();
+        self.cached(sql)?
+            .execute(params(&ps).as_slice())
+            .map_err(err)
     }
 
     fn query_named(
@@ -195,9 +191,9 @@ impl SqlConn for DuckConn<'_> {
         params: &[(&str, SqlValue)],
         f: &mut dyn FnMut(&dyn SqlRow) -> Result<(), SqlError>,
     ) -> Result<(), SqlError> {
-        let stmt = self.prepare(sql)?;
+        let mut stmt = self.conn.prepare(sql).map_err(err)?;
         if params.is_empty() {
-            return each_row(stmt, [], f);
+            return each_row(&mut stmt, [], f);
         }
         // duckdb-rs binds named parameters by name without the `$`.
         let ps: Vec<(String, Param)> = params
@@ -208,7 +204,7 @@ impl SqlConn for DuckConn<'_> {
             .iter()
             .map(|(k, p)| (k.as_str(), p as &dyn duckdb::ToSql))
             .collect();
-        each_row(stmt, named.as_slice(), f)
+        each_row(&mut stmt, named.as_slice(), f)
     }
 
     fn max_variables(&self) -> usize {

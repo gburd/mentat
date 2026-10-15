@@ -364,3 +364,68 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     assert_eq!(names.len(), 2, "the store still answers: {names:?}");
     assert_eq!(index_count(&c), 0, "legacy indexes dropped on open");
 }
+
+/// The same query, run before and after each write, on two stores sharing
+/// one connection, sees every write. On DuckDB 1.5.x a reused prepared plan
+/// keeps the statistics it was planned with (duckdb/duckdb#24696): one
+/// planned while an attribute had no datoms kept returning nothing.
+#[test]
+fn repeated_queries_see_new_datoms() {
+    let c = Connection::open_in_memory().unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let (one, two) = (DuckStore::new(conn, "one"), DuckStore::new(conn, "two"));
+    let count = "[:find (count ?e) . :where [?e :person/age _]]";
+    let pull = "[:find (pull ?e [:person/age]) . :where [?e :person/name \"P\"]]";
+    for s in [&one, &two] {
+        s.transact(SCHEMA).unwrap();
+        assert_eq!(q(s, count), vec![vec!["0".to_string()]]);
+    }
+    for (i, w) in ["one", "one", "two", "one", "two"].iter().enumerate() {
+        let s = if *w == "one" { &one } else { &two };
+        s.transact(&format!("[{{:person/name \"p{i}\" :person/age {i}}}]"))
+            .unwrap();
+        let (n1, n2) = (q(&one, count), q(&two, count));
+        let want = |store: &str| {
+            let n = ["one", "one", "two", "one", "two"][..=i]
+                .iter()
+                .filter(|x| **x == store)
+                .count();
+            vec![vec![n.to_string()]]
+        };
+        assert_eq!((n1, n2), (want("one"), want("two")), "after write {i}");
+    }
+    // A pull before and after its entity gains an attribute.
+    one.transact("[{:person/name \"P\"}]").unwrap();
+    let before = format!("{:?}", one.q(pull, None, None).unwrap().results);
+    one.transact("[{:person/name \"P\" :person/age 77}]")
+        .unwrap();
+    let after = format!("{:?}", one.q(pull, None, None).unwrap().results);
+    assert!(
+        !before.contains("77") && after.contains("77"),
+        "{before} / {after}"
+    );
+}
+
+/// A query run before an attribute (and its entid) exists sees it after.
+#[test]
+fn query_before_a_new_attribute_sees_it_after() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    let ids = "[:find (count ?e) . :where [?e :person/email _]]";
+    let by_value = "[:find ?e . :where [?e :person/email \"z@x\"]]";
+    // Before the attribute exists: no rows (not an error).
+    let before = format!("{:?}", s.q(ids, None, None).unwrap().results);
+    assert!(!before.contains("Long(1)"), "{before}");
+    s.transact(
+        "[{:db/ident :person/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+    )
+    .unwrap();
+    assert_eq!(q(&s, ids), vec![vec!["0".to_string()]]);
+    assert_eq!(q(&s, by_value), Vec::<Vec<String>>::new());
+    let e = s
+        .transact("[{:db/id \"z\" :person/email \"z@x\"}]")
+        .unwrap()
+        .tempids["z"];
+    assert_eq!(q(&s, ids), vec![vec!["1".to_string()]]);
+    assert_eq!(q(&s, by_value), vec![vec![e.to_string()]]);
+}

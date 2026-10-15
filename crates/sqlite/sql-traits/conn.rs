@@ -190,10 +190,30 @@ pub trait SqlConn {
     fn column_count(&self, sql: &str) -> Result<usize, SqlError>;
 
     /// Resolve unqualified table names in `schema` (DuckDB's search path;
-    /// SQLite has no schemas and never calls this). A connection that
-    /// remembers its search path may skip a repeat.
+    /// SQLite has no schemas and never calls this).
     fn use_schema(&self, schema: &str) -> Result<(), SqlError> {
         self.execute_batch(&format!("SET search_path = '{schema}'"))
+    }
+
+    /// As [`SqlConn::query`], but the connection may keep the statement
+    /// prepared for reuse. Only for a single-table statement on the store's
+    /// own bookkeeping tables in which every value that varies is a bound
+    /// parameter: on DuckDB 1.5.x a reused plan keeps the statistics it was
+    /// planned with (duckdb/duckdb#24696; joins: #24182), so a literal, or a
+    /// join, can keep matching nothing after rows arrive.
+    fn query_cached(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+        f: &mut dyn FnMut(&dyn SqlRow) -> Result<(), SqlError>,
+    ) -> Result<(), SqlError> {
+        self.query(sql, params, f)
+    }
+
+    /// As [`SqlConn::execute`], cached under the rules of
+    /// [`SqlConn::query_cached`].
+    fn execute_cached(&self, sql: &str, params: &[SqlValue]) -> Result<usize, SqlError> {
+        self.execute(sql, params)
     }
 }
 
