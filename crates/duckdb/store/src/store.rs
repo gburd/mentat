@@ -157,12 +157,35 @@ impl<'c> DuckStore<'c> {
         if let Some(opened) = cached {
             return Ok(opened);
         }
+        self.drop_legacy_indexes()?;
         let opened = self.read()?;
         OPENED.with(|c| {
             c.borrow_mut()
                 .insert(self.schema.clone(), (gen, opened.clone()))
         });
         Ok(opened)
+    }
+
+    /// Drop the secondary indexes that 1.11.0-1.14.0 created (see
+    /// `schema::LEGACY_INDEXES`). Runs on a schema-cache miss, so once per
+    /// thread and generation; a no-op once they are gone. This also repairs a
+    /// store whose index #26828 already corrupted.
+    fn drop_legacy_indexes(&self) -> Result<()> {
+        let present = self.conn.query_opt(
+            &format!(
+                "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = ? AND index_name IN ({})",
+                schema::LEGACY_INDEXES.map(|i| format!("'{i}'")).join(", ")
+            ),
+            &[SqlValue::Text(self.schema.clone())],
+            |r| r.get_i64(0),
+        )?;
+        if present.unwrap_or(0) > 0 {
+            for i in schema::LEGACY_INDEXES {
+                self.conn
+                    .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
+            }
+        }
+        Ok(())
     }
 
     fn create(&self) -> Result<()> {

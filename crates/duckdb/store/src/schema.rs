@@ -18,9 +18,15 @@
 //!   created in a non-`main` schema makes WAL replay fail ("Schema with name
 //!   ... does not exist"), so a store whose database closed without a
 //!   checkpoint wouldn't reopen.
-//! - No indexes on `v` (DuckDB can't index a UNION) and no partial indexes
-//!   (unsupported): DuckDB filters and joins `datoms` by scanning, with zone
-//!   maps on the BIGINT columns.
+//! - No secondary indexes: DuckDB filters and joins `datoms` by scanning,
+//!   with zone maps on the BIGINT columns. (It can't index the `v` UNION or
+//!   build partial indexes.) Stores from 1.11.0-1.14.0 had ART indexes on
+//!   `datoms (e, a)`, `datoms (a)` and `timelined_transactions (tx)`. DuckDB
+//!   1.5.6 planned sequential scans anyway: lookups timed the same at 12M rows,
+//!   and inserts were 8.5x slower with them. The indexes also tripped
+//!   duckdb/duckdb#26828: after a WAL replay is checkpointed, `a = X` returns no
+//!   rows and DELETEs fail FATAL. `LEGACY_INDEXES` lists them so `open` can
+//!   drop them.
 //! - `known_parts."end"`: `end` is reserved in DuckDB.
 //! - Fulltext (`:db/fulltext`): `fulltext_values` / `fulltext_datoms` exist so
 //!   the engine's SQL resolves, and a fulltext value is stored as a plain
@@ -29,6 +35,9 @@
 
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
+
+/// Secondary indexes created by 1.11.0-1.14.0; dropped on open (see above).
+pub const LEGACY_INDEXES: [&str; 3] = ["idx_datoms_ea", "idx_datoms_a", "idx_tt_tx"];
 
 /// The type of every `v` column.
 pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
@@ -67,17 +76,12 @@ pub fn create_statements(s: &str) -> Vec<String> {
              index_fulltext BOOLEAN NOT NULL DEFAULT false, unique_value BOOLEAN NOT NULL DEFAULT false, \
              {TYPED_COLUMNS})"
         ),
-        // The SQLite store's (e, a, ...) indexes, minus `v`. Point lookups by
-        // entity (pull, retractEntity, cardinality checks) stay index scans.
-        format!("CREATE INDEX idx_datoms_ea ON {s}.datoms (e, a)"),
-        format!("CREATE INDEX idx_datoms_a ON {s}.datoms (a)"),
         format!(
             "CREATE TABLE {s}.timelined_transactions (e BIGINT NOT NULL, a BIGINT NOT NULL, \
              v {VALUE_TYPE} NOT NULL, tx BIGINT NOT NULL, added BOOLEAN NOT NULL DEFAULT true, \
              value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0, \
              {TYPED_COLUMNS})"
         ),
-        format!("CREATE INDEX idx_tt_tx ON {s}.timelined_transactions (tx)"),
         format!(
             "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
              v_i, v_d, v_s FROM {s}.timelined_transactions WHERE timeline = 0"

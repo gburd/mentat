@@ -331,3 +331,36 @@ fn reopens_from_wal_without_checkpoint() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Stores from 1.11.0-1.14.0 carry ART indexes that duckdb/duckdb#26828
+/// corrupts on WAL replay; opening such a store drops them, and a store
+/// created now has none.
+#[test]
+fn legacy_secondary_indexes_are_dropped_on_open() {
+    let index_count = |c: &Connection| -> i64 {
+        c.query_row(
+            "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = 'mentat'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let c = Connection::open_in_memory().unwrap();
+    let _s = seeded(&c);
+    assert_eq!(index_count(&c), 0, "new stores have no secondary indexes");
+
+    // Recreate the 1.14.0 layout's indexes, as an old store has them.
+    c.execute_batch(
+        "CREATE INDEX idx_datoms_ea ON mentat.datoms (e, a); \
+         CREATE INDEX idx_datoms_a ON mentat.datoms (a); \
+         CREATE INDEX idx_tt_tx ON mentat.timelined_transactions (tx); \
+         UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
+    )
+    .unwrap();
+    assert_eq!(index_count(&c), 3);
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn(&c)));
+    let s = DuckStore::new(conn, "default");
+    let names = q(&s, "[:find ?n :where [_ :person/name ?n]]");
+    assert_eq!(names.len(), 2, "the store still answers: {names:?}");
+    assert_eq!(index_count(&c), 0, "legacy indexes dropped on open");
+}

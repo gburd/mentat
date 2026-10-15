@@ -8,6 +8,46 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Transaction functions on the embedded SQLite store and the DuckDB
+  extension (#333).** The `:db/fn` expander from 1.14.0 now lives in the shared
+  `mentat_script::txfn` and runs on every backend that has the scripting
+  interpreter:
+  - pg_mentat (`script` builds);
+  - the embedded store (`mino` feature): `Store::transact`, `with_speculative`,
+    the SQLite extension's `edn_t`, and the CLI;
+  - the DuckDB extension (`script`, on by default).
+
+  Same semantics everywhere: `(fn [db & args] ...)` sees the database as of
+  the start of the transaction and runs in the `edn_eval` sandbox. Its tx-data
+  is spliced into the transaction. Recursion is bounded by
+  `mentat.txfn_max_depth` on PostgreSQL and `MENTAT_TXFN_MAX_DEPTH` (default
+  16) elsewhere. The embedded and DuckDB stores define `:db/fn` when a
+  transaction first installs a function, so stores need no migration. New
+  `MentatError::TransactionFunction`.
+
+### Fixed
+
+- **DuckDB: queries silently returned no rows after a WAL replay
+  ([duckdb/duckdb#26828](https://github.com/duckdb/duckdb/issues/26828)).** The
+  extension's connection keeps DuckDB from checkpointing, so a session leaves
+  its writes in the WAL. In DuckDB 1.4.0-1.5.6, the checkpoint that follows a
+  WAL replay drops rows from secondary ART indexes. After that, `WHERE a = X`
+  found nothing, so every `[?e :attr _]` returned empty, and a DELETE failed
+  with `FATAL ... Failed to delete all rows from index`. Stores no longer have
+  secondary indexes (DuckDB 1.5.6 never planned an index scan on them, and they
+  made inserts 8.5x slower). Opening a 1.11.0-1.14.0 store drops them, which
+  also repairs a store that was already hit. The fix upstream is
+  duckdb/duckdb#26814, not yet released.
+
+### Changed
+
+- Quack's listen backlog of 5 is reported upstream as
+  [duckdb/duckdb-quack#318](https://github.com/duckdb/duckdb-quack/issues/318).
+- `docs/design/sparsemap-evaluation.md`: sparsemap 5.8.2 was measured against
+  mentat's entid sets and not adopted (no large in-memory set on a hot path).
+
 ## [1.14.0] — Datomic transaction functions, retractEntity semantics, honest EXPLAIN
 
 The rest of the Datomic-team review (Codeberg #325–#332). Design notes and

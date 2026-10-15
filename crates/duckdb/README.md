@@ -144,6 +144,16 @@ the DuckDB query dialect uses for filters, joins and numeric comparisons
 can't index a UNION and has no partial indexes, so value lookups scan the
 attribute's rows.
 
+The tables have no secondary indexes: lookups are zone-map-pruned scans.
+1.11.0-1.14.0 created ART indexes on `datoms (e, a)`, `datoms (a)` and
+`timelined_transactions (tx)`. DuckDB 1.5.6 never used them (lookups timed the
+same with and without them at 12M rows), they made inserts 8.5x slower, and
+[duckdb/duckdb#26828](https://github.com/duckdb/duckdb/issues/26828) corrupts
+them. After a session that never checkpointed, the first plain open replays and
+checkpoints the WAL; from then on every `[?e :attr _]` returns nothing, and
+DELETEs fail FATAL. Since 1.15.0, opening a store drops those indexes, which
+also repairs a store that was already hit.
+
 ### `edn_q` options (JSON, same shape pg_mentat accepts)
 
 `''`, `NULL`, `{}` or JSON `null` = no options. Otherwise a JSON object with:
@@ -295,13 +305,15 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
   mentat is not a signed community extension yet. That flag lets *the server*
   load any unsigned extension file, including one a token holder asks it to
   `LOAD`; treat that as part of "the token grants everything".
-- **Listen backlog** is 5 (`ss -ltn`), hard-coded in Quack, and `somaxconn`
-  can't raise it. From about 32 concurrent clients, or a single query returning
+- **Listen backlog** is 5 (`ss -ltn`): the httplib vendored by DuckDB 1.5.x
+  hard-codes `CPPHTTPLIB_LISTEN_BACKLOG 5`, and `somaxconn` can't raise it. From about 32 concurrent clients, or a single query returning
   100k+ rows (the client fetches large results over 30+ parallel connections),
   the queue overflows and clients retry after 1, 2 then 4 s: 1-5 s stalls. With
   the backlog raised to 4096 (an `LD_PRELOAD` shim around `listen()`, measured in
   `benchmarks/results/duckdb-quack-*`), throughput at 32 clients went up 22% and
-  worst-case latency fell from 3-4.6 s to under 0.5 s. The real fix is upstream.
+  worst-case latency fell from 3-4.6 s to under 0.5 s. The fix is upstream:
+  [duckdb/duckdb-quack#318](https://github.com/duckdb/duckdb-quack/issues/318)
+  (DuckDB main's httplib defaults to 128).
 
 ### Caveats
 
