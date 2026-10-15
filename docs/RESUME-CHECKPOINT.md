@@ -44,7 +44,8 @@ benchmark; fix all 5 benchmark issues; auto index create/drop; optimize count.
           EMBEDDED 9e024292 (5 engine bugs, auto-index, count, CLI, model tests, shared inputs helper)
           EXT ecb272fa (per-path Store cache in both exts, DuckDB Quack server + benchmark)
 
-## TODO — review sparsemap v5.7.0 and incorporate as needed (added 2026-09-27)
+## DONE 2026-10-15 — sparsemap evaluated, not adopted (docs/design/sparsemap-evaluation.md)
+(Original TODO, added 2026-09-27, kept for context:)
 sparsemap = the maintainer's compressed bitmap library in C (sm.c/sm.h, MIT;
 ~/ws/sparsemap, codeberg.org/gregburd/sparsemap). Other projects vendor sm.c/sm.h
 via contrib/*_sync.sh (e.g. pg_tre). ~/ws/sparsemap/rust/ has only packaged
