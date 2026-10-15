@@ -58,10 +58,6 @@ impl SqlConn for Trace<'_> {
         p: &[(&str, SqlValue)],
         f: &mut dyn FnMut(&dyn SqlRow) -> Result<(), SqlError>,
     ) -> Result<(), SqlError> {
-        self.rec(&format!("[prepare only] {sql}"), || {
-            self.inner.0.prepare(sql).map(|_| ())
-        })
-        .unwrap();
         self.rec(sql, || self.inner.query_named(sql, p, f))
     }
     fn max_variables(&self) -> usize {
@@ -69,6 +65,11 @@ impl SqlConn for Trace<'_> {
     }
     fn column_count(&self, sql: &str) -> Result<usize, SqlError> {
         self.inner.column_count(sql)
+    }
+    fn use_schema(&self, schema: &str) -> Result<(), SqlError> {
+        self.rec("SET search_path (use_schema)", || {
+            self.inner.use_schema(schema)
+        })
     }
 }
 
@@ -92,12 +93,7 @@ fn profile(name: &str, n: usize, tr: &Trace, f: &dyn Fn()) {
         e.0 += 1;
         e.1 += ms;
     }
-    let sql: f64 = by
-        .iter()
-        .filter(|(k, _)| !k.starts_with("[prepare only]"))
-        .map(|(_, (_, ms))| ms)
-        .sum::<f64>()
-        / n as f64;
+    let sql: f64 = by.iter().map(|(_, (_, ms))| ms).sum::<f64>() / n as f64;
     println!(
         "\n== {name}: {total:.3} ms/call, of which SQL {sql:.3} ms, other {:.3} ms",
         total - sql
@@ -115,7 +111,7 @@ fn call_breakdown() {
     let store = std::env::var("MENTAT_PROFILE_STORE").expect("MENTAT_PROFILE_STORE");
     let c = Connection::open(db).unwrap();
     let tr = Trace {
-        inner: DuckConn(&c),
+        inner: DuckConn::new(&c),
         log: RefCell::new(vec![]),
     };
     let s = DuckStore::new(&tr as &dyn SqlConn, &store);
@@ -167,7 +163,7 @@ fn statement_costs() {
     let db = std::env::var("MENTAT_PROFILE_DB").expect("MENTAT_PROFILE_DB");
     let store = std::env::var("MENTAT_PROFILE_STORE").expect("MENTAT_PROFILE_STORE");
     let c = Connection::open(db).unwrap();
-    let s = mentat_duckdb_store::DuckStore::new(&DuckConn(&c) as &dyn SqlConn, &store)
+    let s = mentat_duckdb_store::DuckStore::new(&DuckConn::new(&c) as &dyn SqlConn, &store)
         .schema_name()
         .to_string();
     let n = 500;

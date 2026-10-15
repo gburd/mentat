@@ -1,0 +1,6 @@
+{"workload": "point", "threads": 1, "ops": 2229, "ops_s": 278.5, "p50_ms": 3.56, "p95_ms": 3.774, "errors": 0}
+{"workload": "point", "threads": 8, "ops": 2620, "ops_s": 326.6, "p50_ms": 24.456, "p95_ms": 25.172, "errors": 0}
+{"workload": "point", "threads": 32, "ops": 2585, "ops_s": 319.2, "p50_ms": 100.102, "p95_ms": 101.749, "errors": 0}
+{"workload": "mix", "threads": 1, "ops": 1009, "ops_s": 126.1, "p50_ms": 4.369, "p95_ms": 16.731, "errors": 0}
+{"workload": "mix", "threads": 8, "ops": 1077, "ops_s": 133.6, "p50_ms": 52.311, "p95_ms": 114.785, "errors": 0}
+{"workload": "mix", "threads": 32, "ops": 1089, "ops_s": 133.9, "p50_ms": 207.394, "p95_ms": 449.402, "errors": 0}

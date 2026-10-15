@@ -188,6 +188,13 @@ pub trait SqlConn {
 
     /// Number of result columns of `sql` (prepared, not run).
     fn column_count(&self, sql: &str) -> Result<usize, SqlError>;
+
+    /// Resolve unqualified table names in `schema` (DuckDB's search path;
+    /// SQLite has no schemas and never calls this). A connection that
+    /// remembers its search path may skip a repeat.
+    fn use_schema(&self, schema: &str) -> Result<(), SqlError> {
+        self.execute_batch(&format!("SET search_path = '{schema}'"))
+    }
 }
 
 /// Convenience helpers over any [`SqlConn`].

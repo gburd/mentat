@@ -37,6 +37,9 @@ use crate::schema;
 /// path already points at the store's schema).
 pub struct DuckStoring<'c> {
     pub conn: &'c dyn SqlConn,
+    /// The partition map as read when the transaction began, if known:
+    /// `write_partition_map` then updates only the partitions that moved.
+    pub read: Option<PartitionMap>,
 }
 
 fn values_tuple(n: usize) -> String {
@@ -274,6 +277,10 @@ impl MentatStoring for DuckStoring<'_> {
 
     fn write_partition_map(&self, partition_map: &PartitionMap) -> Result<()> {
         for (part, partition) in partition_map.iter() {
+            let before = self.read.as_ref().and_then(|m| m.get(part));
+            if before.is_some_and(|p| p.next_entid() == partition.next_entid()) {
+                continue;
+            }
             self.conn.execute(
                 "UPDATE known_parts SET idx = ? WHERE part = ?",
                 &[

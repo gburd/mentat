@@ -9,7 +9,7 @@ use mentat_script::model_tests as m;
 
 fn interp() -> mino_rs::Interpreter {
     let c: &'static Connection = Box::leak(Box::new(Connection::open_in_memory().unwrap()));
-    let conn: &'static dyn SqlConn = Box::leak(Box::new(DuckConn(c)));
+    let conn: &'static dyn SqlConn = Box::leak(Box::new(DuckConn::new(c)));
     script::interpreter(conn, "default")
 }
 

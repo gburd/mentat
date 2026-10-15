@@ -153,7 +153,7 @@ const ORDERED: &[&str] = &[
 fn duckdb_matches_sqlite() {
     let mut sqlite = mentat::Store::open("").unwrap();
     let c = Connection::open_in_memory().unwrap();
-    let dc = DuckConn(&c);
+    let dc = DuckConn::new(&c);
     let duck = DuckStore::new(&dc as &dyn SqlConn, "default");
 
     let mut tx_ids = Vec::new();

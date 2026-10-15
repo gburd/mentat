@@ -45,7 +45,7 @@ const SCHEMA: &str = r#"[
 ]"#;
 
 fn seeded(c: &Connection) -> DuckStore<'_> {
-    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn(c)));
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(c)));
     let s = DuckStore::new(conn, "default");
     s.transact(SCHEMA).expect("schema");
     s.transact(
@@ -262,7 +262,7 @@ fn pull_and_named_stores() {
     assert_eq!(m.0.len(), 2, "{m:?}");
 
     // A second, path-named store is a separate DuckDB schema.
-    let conn2: &dyn SqlConn = Box::leak(Box::new(DuckConn(&c)));
+    let conn2: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
     let other = DuckStore::new(conn2, "/tmp/demo.mentat");
     other.transact(SCHEMA).unwrap();
     other.transact(r#"[{:person/name "Zed"}]"#).unwrap();
@@ -295,7 +295,7 @@ fn persists_in_a_duckdb_file() {
         .query_row("SELECT count(*) FROM mentat.transactions", [], |r| r.get(0))
         .unwrap();
     assert!(n > 0);
-    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn(&c)));
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
     let s = DuckStore::new(conn, "default");
     assert_eq!(
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
@@ -323,7 +323,7 @@ fn reopens_from_wal_without_checkpoint() {
         "expected an un-checkpointed WAL"
     );
     let c = Connection::open(&path).expect("WAL replays");
-    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn(&c)));
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
     let s = DuckStore::new(conn, "default");
     assert_eq!(
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
@@ -358,7 +358,7 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     )
     .unwrap();
     assert_eq!(index_count(&c), 3);
-    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn(&c)));
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
     let s = DuckStore::new(conn, "default");
     let names = q(&s, "[:find ?n :where [_ :person/name ?n]]");
     assert_eq!(names.len(), 2, "the store still answers: {names:?}");

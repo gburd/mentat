@@ -493,7 +493,7 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     // Keep a clone of the host connection: the functions run SQL against the
     // database the extension was loaded into.
     let mine: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
-    let _ = SHARED.set(Shared(duck_conn::DuckConn(mine)));
+    let _ = SHARED.set(Shared(duck_conn::DuckConn::new(mine)));
     con.register_scalar_function::<EdnTransact>("edn_t")?;
     con.register_table_function::<EdnQuery>("edn_q")?;
     con.register_scalar_function::<EdnPull>("edn_pull")?;

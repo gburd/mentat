@@ -93,14 +93,16 @@ impl<'c> DuckStore<'c> {
     }
 
     fn storing(&self) -> DuckStoring<'_> {
-        DuckStoring { conn: self.conn }
+        DuckStoring {
+            conn: self.conn,
+            read: None,
+        }
     }
 
     /// Point the connection's search path at this store, so the engine's
     /// unqualified table names resolve to its tables.
     fn use_schema(&self) -> Result<()> {
-        self.conn
-            .execute_batch(&format!("SET search_path = '{}'", self.schema))?;
+        self.conn.use_schema(&self.schema)?;
         Ok(())
     }
 
@@ -137,6 +139,11 @@ impl<'c> DuckStore<'c> {
     /// generation read. (Another connection that changes the schema bumps the
     /// generation, so it is seen here.)
     pub fn open(&self) -> Result<Opened> {
+        Ok(self.open_gen()?.1)
+    }
+
+    /// `open`, also returning the generation it validated against.
+    fn open_gen(&self) -> Result<(i64, Opened)> {
         // A missing store reads as a missing meta table: create it.
         let gen = match self.generation() {
             Ok(Some(g)) => g,
@@ -155,7 +162,7 @@ impl<'c> DuckStore<'c> {
                 .map(|(_, o)| o.clone())
         });
         if let Some(opened) = cached {
-            return Ok(opened);
+            return Ok((gen, opened));
         }
         self.drop_legacy_indexes()?;
         let opened = self.read()?;
@@ -163,7 +170,7 @@ impl<'c> DuckStore<'c> {
             c.borrow_mut()
                 .insert(self.schema.clone(), (gen, opened.clone()))
         });
-        Ok(opened)
+        Ok((gen, opened))
     }
 
     /// Drop the secondary indexes that 1.11.0-1.14.0 created (see
@@ -320,18 +327,20 @@ impl<'c> DuckStore<'c> {
     /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction.
     pub fn transact(&self, edn: &str) -> Result<TxReport> {
         let entities = edn::parse::entities(edn)?;
-        let opened = self.open()?;
-        let gen = self.generation()?;
+        let (gen, opened) = self.open_gen()?;
         self.in_tx(|s| {
             // The partition map is read inside the writing transaction; the
             // schema is reused unless another writer changed it since `open`.
             let partition_map = s.read_partition_map()?;
-            let schema = if s.generation()? == gen {
+            let schema = if s.generation()? == Some(gen) {
                 opened.schema
             } else {
                 s.read()?.schema
             };
-            let storing = s.storing();
+            let storing = DuckStoring {
+                conn: s.conn,
+                read: Some(partition_map.clone()),
+            };
             let (report, _next_partition_map, next_schema, _w) = mentat_db::transact(
                 &storing,
                 partition_map,
