@@ -11,9 +11,10 @@
 //! argument was a SQLite file path; such a value still works, as a name.
 //! See docs/duckdb-native-storage-plan.md.
 //!
-//! SQL runs on a connection cloned from the one DuckDB hands the entrypoint,
-//! one per DuckDB thread. Each `edn_t` commits its own DuckDB transaction (it
-//! is not part of the caller's).
+//! SQL runs on a pool of connections cloned from the one DuckDB hands the
+//! entrypoint (`MENTAT_DUCKDB_POOL`, default one per core up to 8); each call
+//! leases one. Each `edn_t` commits its own DuckDB transaction (it is not part
+//! of the caller's), and writes to one store take turns.
 //!
 //! This crate is EXTENSION-ONLY. The `loadable-extension` feature replaces the
 //! DuckDB C API functions; opening a normal client `Connection` here panics
@@ -29,7 +30,10 @@ use duckdb::{
     Connection, Result,
 };
 use serde_json::{json, Value as Json};
-use std::{error::Error, sync::Mutex, sync::OnceLock};
+use std::{
+    error::Error,
+    sync::{Condvar, Mutex, OnceLock},
+};
 
 use core_traits::{Binding, StructuredMap, TypedValue};
 use mentat_core::TxReport;
@@ -41,37 +45,68 @@ type BoxErr = Box<dyn Error>;
 #[path = "../store/src/duck_conn.rs"]
 mod duck_conn;
 
-/// The extension's connection to the host database, made in the entrypoint.
-/// It has to be made there: the database handle DuckDB passes the entrypoint
-/// is only valid during that call (a later `duckdb_connect` on it fails), so
-/// one connection is opened up front and every call shares it.
-struct Shared(duck_conn::DuckConn<'static>);
+/// One of the extension's connections to the host database.
+#[derive(Clone, Copy)]
+struct Conn(&'static duck_conn::DuckConn<'static>);
 
 // SAFETY: a `duckdb::Connection` is `Send` but not `Sync` (statement-cache
-// RefCell). Every use goes through `conn()`, which holds `CALL` for the whole
-// call, so the connection is never touched by two threads at once.
-unsafe impl Sync for Shared {}
-unsafe impl Send for Shared {}
+// RefCell), and so is `DuckConn`. A `Conn` is in the pool or leased to exactly
+// one call (`conn()`), so no two threads use one connection at once.
+unsafe impl Send for Conn {}
 
-static SHARED: OnceLock<Shared> = OnceLock::new();
-
-/// Serializes mentat calls on the shared connection.
-// ponytail: one connection, so mentat calls run one at a time (DuckDB's own
-// work inside each call is still parallel). Upgrade: a pool of connections
-// opened in the entrypoint.
-static CALL: Mutex<()> = Mutex::new(());
-
-/// The shared connection, locked for the caller's scope.
-fn conn() -> Result<(&'static dyn SqlConn, std::sync::MutexGuard<'static, ()>), BoxErr> {
-    let guard = CALL.lock().unwrap_or_else(|e| e.into_inner());
-    let shared = SHARED.get().ok_or("mentat: extension not initialized")?;
-    Ok((&shared.0 as &'static dyn SqlConn, guard))
+/// The extension's connections, made in the entrypoint. They have to be made
+/// there: the database handle DuckDB passes the entrypoint is only valid
+/// during that call (a later `duckdb_connect` on it fails). A mentat call
+/// leases one for its duration, so up to `MENTAT_DUCKDB_POOL` calls run at
+/// once. Writes to one store still take turns (`DuckStore::transact`).
+struct Pool {
+    free: Mutex<Vec<Conn>>,
+    returned: Condvar,
 }
 
-/// A store on the shared connection, plus the lock that guards it.
-fn store(name: &str) -> Result<(DuckStore<'static>, std::sync::MutexGuard<'static, ()>), BoxErr> {
-    let (c, guard) = conn()?;
-    Ok((DuckStore::new(c, name), guard))
+static POOL: OnceLock<Pool> = OnceLock::new();
+
+/// Connections to open: `MENTAT_DUCKDB_POOL`, else one per core up to 8.
+fn pool_size() -> usize {
+    std::env::var("MENTAT_DUCKDB_POOL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().min(8)))
+}
+
+/// A leased connection; dropping it returns the connection to the pool.
+struct Lease(Conn);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let Some(pool) = POOL.get() {
+            pool.free
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(self.0);
+            pool.returned.notify_one();
+        }
+    }
+}
+
+/// A free connection, waiting for one if all are leased. The reference is
+/// valid only while the `Lease` lives.
+fn conn() -> Result<(&'static dyn SqlConn, Lease), BoxErr> {
+    let pool = POOL.get().ok_or("mentat: extension not initialized")?;
+    let mut free = pool.free.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if let Some(c) = free.pop() {
+            return Ok((c.0 as &'static dyn SqlConn, Lease(c)));
+        }
+        free = pool.returned.wait(free).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+/// A store on a leased connection, plus the lease.
+fn store(name: &str) -> Result<(DuckStore<'static>, Lease), BoxErr> {
+    let (c, lease) = conn()?;
+    Ok((DuckStore::new(c, name), lease))
 }
 
 // ---------------------------------------------------------------------------
@@ -199,12 +234,12 @@ impl VScalar for EdnTransact {
             // expand first (issue #333).
             #[cfg(feature = "script")]
             let report = {
-                let (c, _lock) = conn()?;
+                let (c, _lease) = conn()?;
                 mentat_duckdb_store::script::transact(c, &db, &edn)?
             };
             #[cfg(not(feature = "script"))]
             let report = {
-                let (store, _lock) = store(&db)?;
+                let (store, _lease) = store(&db)?;
                 store.transact(&edn)?
             };
             Ok(Some(tx_report_json(&report)))
@@ -281,7 +316,7 @@ fn pull_json(db: &str, pattern: &str, eid: i64) -> Result<String, BoxErr> {
         edn::query::Variable::from_valid_name("?e"),
         TypedValue::Ref(eid),
     )]);
-    let (store, _lock) = store(db)?;
+    let (store, _lease) = store(db)?;
     let mut m = match store.q(&query, Some(inputs), None)?.results {
         QueryResults::Scalar(Some(Binding::Map(sm))) => map_json(&sm),
         _ => serde_json::Map::new(),
@@ -348,7 +383,7 @@ impl VScalar for EdnEval {
             };
             // Sandboxed (no host fs prims) + step/heap/depth limits; a no-arg
             // `(mentat.store/open)` opens store `db`.
-            let (c, _lock) = conn()?;
+            let (c, _lease) = conn()?;
             let out = mentat_duckdb_store::script::eval(c, &db, &src)
                 .map_err(|e| format!("edn_eval: {e}"))?;
             Ok(Some(out))
@@ -431,7 +466,7 @@ impl VTab for EdnQuery {
 
         // Run the query once to learn the FindSpec columns AND materialize
         // the results (smallest correct diff).
-        let (store, _lock) = store(&db_path)?;
+        let (store, _lease) = store(&db_path)?;
         let output = store.q_json(&query, &opts).map_err(|e| match e {
             public_traits::errors::MentatError::BadQueryOptions(m) => format!("edn_q: {m}"),
             other => other.to_string(),
@@ -490,10 +525,19 @@ impl VTab for EdnQuery {
 
 #[duckdb_entrypoint_c_api]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    // Keep a clone of the host connection: the functions run SQL against the
-    // database the extension was loaded into.
-    let mine: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
-    let _ = SHARED.set(Shared(duck_conn::DuckConn::new(mine)));
+    // The functions run SQL against the database the extension was loaded
+    // into, on clones of the host connection made now (see `Pool`).
+    if POOL.get().is_none() {
+        let mut free = Vec::new();
+        for _ in 0..pool_size() {
+            let c: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
+            free.push(Conn(Box::leak(Box::new(duck_conn::DuckConn::new(c)))));
+        }
+        let _ = POOL.set(Pool {
+            free: Mutex::new(free),
+            returned: Condvar::new(),
+        });
+    }
     con.register_scalar_function::<EdnTransact>("edn_t")?;
     con.register_table_function::<EdnQuery>("edn_q")?;
     con.register_scalar_function::<EdnPull>("edn_pull")?;

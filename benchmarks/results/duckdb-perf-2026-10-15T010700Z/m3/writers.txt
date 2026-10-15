@@ -1,0 +1,10 @@
+== ext-m2f
+{"layout": "one-store", "threads": 1, "tx_s": 70.6, "errors": 0}
+{"layout": "one-store", "threads": 8, "tx_s": 69.0, "errors": 0}
+{"layout": "store-per-thread", "threads": 1, "tx_s": 72.8, "errors": 0}
+{"layout": "store-per-thread", "threads": 8, "tx_s": 65.3, "errors": 0}
+== ext-m3
+{"layout": "one-store", "threads": 1, "tx_s": 71.7, "errors": 0}
+{"layout": "one-store", "threads": 8, "tx_s": 73.3, "errors": 0}
+{"layout": "store-per-thread", "threads": 1, "tx_s": 70.9, "errors": 0}
+{"layout": "store-per-thread", "threads": 8, "tx_s": 290.5, "errors": 0}

@@ -13,6 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use core_traits::{Entid, TypedValue};
 use mentat_core::{IdentMap, Schema, TxReport};
@@ -37,6 +38,21 @@ thread_local! {
     /// Per thread (DuckDB calls a function on its worker threads): store
     /// schema name -> (generation, opened metadata).
     static OPENED: RefCell<HashMap<String, (i64, Opened)>> = RefCell::new(HashMap::new());
+}
+
+/// One lock per store schema, held while a store is created and for a whole
+/// `transact`. Two DuckDB connections writing one store at once conflict
+/// ("Conflict on update" on `known_parts`, which every transaction updates),
+/// so writes to a store take turns; reads, and writes to other stores, don't
+/// wait. Per process: another process can't open the same database file
+/// for writing (DuckDB locks it).
+fn write_lock(schema: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    locks.entry(schema.to_string()).or_default().clone()
 }
 
 /// One store (a DuckDB schema) on one connection. Cheap to construct; holds
@@ -156,6 +172,8 @@ impl<'c> DuckStore<'c> {
             Ok(Some(g)) => g,
             _ => {
                 if !self.exists()? {
+                    let lock = write_lock(&self.schema);
+                    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.in_tx(|s| s.create())?;
                 }
                 self.generation()?.unwrap_or(0)
@@ -194,6 +212,8 @@ impl<'c> DuckStore<'c> {
             |r| r.get_i64(0),
         )?;
         if present.unwrap_or(0) > 0 {
+            let lock = write_lock(&self.schema);
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             for i in schema::LEGACY_INDEXES {
                 self.conn
                     .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
@@ -335,6 +355,8 @@ impl<'c> DuckStore<'c> {
     pub fn transact(&self, edn: &str) -> Result<TxReport> {
         let entities = edn::parse::entities(edn)?;
         let (gen, opened) = self.open_gen()?;
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         self.in_tx(|s| {
             // The partition map is read inside the writing transaction; the
             // schema is reused unless another writer changed it since `open`.
