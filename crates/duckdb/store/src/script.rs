@@ -102,7 +102,13 @@ impl ScriptBackend for DuckBackend {
     }
 
     fn transact(&mut self, conn: i64, edn: &str) -> Result<TxReport, String> {
-        let r = self.store(conn)?.transact(edn).map_err(|e| e.to_string())?;
+        let name = {
+            let map = self.stores.borrow();
+            map.get(&conn)
+                .cloned()
+                .ok_or_else(|| format!("no open store for handle {conn}"))?
+        };
+        let r = transact(self.conn, &name, edn).map_err(|e| e.to_string())?;
         Ok(TxReport {
             tx_id: r.tx_id,
             tempids: r.tempids.into_iter().collect(),
@@ -203,6 +209,66 @@ impl ScriptBackend for DuckBackend {
             )),
         }
     }
+}
+
+/// Transact `edn` into `store`, first expanding user-defined transaction
+/// functions (`[:my/fn arg ...]` on an ident carrying `:db/fn`; issue #333)
+/// and defining the `:db/fn` attribute the first time a function is installed.
+/// Functions run in a sandboxed interpreter over the same connection, before
+/// the store's transaction begins, so they see the database as of the start of
+/// the transaction. Nesting is bounded by `MENTAT_TXFN_MAX_DEPTH` (default 16).
+/// Every scripted and SQL-level `edn_t` goes through here.
+pub fn transact(
+    conn: &'static dyn SqlConn,
+    store: &str,
+    edn: &str,
+) -> public_traits::errors::Result<mentat_core::TxReport> {
+    let s = DuckStore::new(conn, store);
+    let has_db_fn = s
+        .current_schema()?
+        .get_entid(&Keyword::namespaced("db", "fn"))
+        .is_some();
+    if !has_db_fn && edn.contains(":db/fn") {
+        s.transact(
+            "[{:db/ident :db/fn :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        )?;
+    }
+    if !(has_db_fn || edn.contains(":db/fn")) {
+        return s.transact(edn);
+    }
+    let max_depth = std::env::var("MENTAT_TXFN_MAX_DEPTH")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(mentat_script::txfn::DEFAULT_MAX_DEPTH);
+    let mut it = interpreter(conn, store);
+    let expanded = mentat_script::txfn::expand_str(
+        edn,
+        max_depth,
+        |ident| db_fn_source(&s, ident),
+        |form| it.eval_to_string(form),
+    )
+    .map_err(public_traits::errors::MentatError::TransactionFunction)?;
+    s.transact(&expanded)
+}
+
+/// The live `:db/fn` source on the entity whose `:db/ident` is `ident`, if any.
+fn db_fn_source(s: &DuckStore<'_>, ident: &str) -> Result<Option<String>, String> {
+    let q = "[:find ?src . :in ?id :where [?e :db/ident ?id] [?e :db/fn ?src]]";
+    let kw = match edn::parse::value(ident).map(|v| v.without_spans()) {
+        Ok(edn::Value::Keyword(kw)) => kw,
+        _ => return Ok(None),
+    };
+    let inputs = mentat_query_algebrizer::QueryInputs::with_value_sequence(vec![(
+        edn::query::Variable::from_valid_name("?id"),
+        TypedValue::Keyword(kw.into()),
+    )]);
+    let out = s.q(q, Some(inputs), None).map_err(|e| e.to_string())?;
+    Ok(match out.results {
+        QueryResults::Scalar(Some(Binding::Scalar(TypedValue::String(src)))) => {
+            Some(src.as_ref().clone())
+        }
+        _ => None,
+    })
 }
 
 /// A sandboxed, limited interpreter with the `mentat.store/*` prims over

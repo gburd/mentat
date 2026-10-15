@@ -35,6 +35,7 @@ model_test!(q_takes_in_inputs);
 model_test!(q_mixed_inputs);
 model_test!(history_patterns_see_added);
 model_test!(cas_and_retract_entity);
+model_test!(transaction_functions);
 
 #[test]
 fn inst_and_uuid_builders_round_trip_through_the_reader() {

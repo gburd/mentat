@@ -43,6 +43,7 @@ mod tests {
     model_pg_test!(q_mixed_inputs);
     model_pg_test!(history_patterns_see_added);
     model_pg_test!(cas_and_retract_entity);
+    model_pg_test!(transaction_functions);
 
     #[pgrx::pg_test]
     fn inst_and_uuid_builders_round_trip_through_the_reader() {

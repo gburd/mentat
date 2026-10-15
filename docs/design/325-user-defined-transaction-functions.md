@@ -142,8 +142,22 @@ tx-fn calls amortizes one interpreter.
    a keyword head with no `:db/fn` left to the transactor; and the documented
    `:acct/deposit` example.
 
-PostgreSQL only. The embedded SQLite and DuckDB backends have the same
-`ScriptBackend` seam, so the same pre-pass can run there; a follow-up.
+PostgreSQL only in 1.14.0. **1.15.0 (issue #333)** moved the expander into
+the shared `mentat_script::txfn` crate and runs it on every backend:
+
+- pg_mentat: lookup over SPI (`current_text`), eval in `build_interpreter()`.
+- Embedded SQLite (`mino` feature): `Store::expand_tx_fns`, called by
+  `Store::transact`, `Store::with_speculative`, the SQLite extension's
+  `edn_t` and the CLI. The store is moved into a pinned scripting backend for
+  the expansion, so `(mentat.store/open)` inside the fn is the store being
+  transacted.
+- DuckDB (`script` feature, on by default): `mentat_duckdb_store::script::
+  transact`, used by `edn_t` and scripted transacts; the fn runs on the same
+  connection before the store's `BEGIN`.
+- The embedded/DuckDB core schema isn't changed: `:db/fn` is defined the first
+  time a transaction mentions it, so existing stores need no migration.
+- One shared model test (`transaction_functions` in
+  `crates/script/src/model_tests.rs`) pins the behavior on all three.
 
 ## Why this is safe to ship incrementally
 It reuses the exact sandbox and limits already reviewed for `edn_eval`, adds no

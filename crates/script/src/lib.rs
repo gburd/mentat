@@ -21,6 +21,7 @@
 
 pub mod model_tests;
 pub mod prims;
+pub mod txfn;
 pub mod values;
 
 pub use prims::install;

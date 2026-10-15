@@ -87,6 +87,12 @@ pub enum MentatError {
     #[error("not yet implemented: {0}")]
     NotYetImplemented(String),
 
+    /// A user-defined transaction function (`:db/fn`) failed, returned bad
+    /// tx-data, or recursed past the depth limit. The message carries the
+    /// `:db.error/txfn-*` code and the function's ident.
+    #[error("{0}")]
+    TransactionFunction(String),
+
     // It would be better to capture the underlying `rusqlite::Error`, but that type doesn't
     // implement many useful traits, including `Clone`, `Eq`, and `PartialEq`.
     #[error("SQL error: {0}, cause: {1}")]

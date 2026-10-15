@@ -458,3 +458,85 @@ pub fn cas_and_retract_entity(it: &mut Interpreter) {
     );
     assert_eq!(person(it, "Alice"), alice);
 }
+
+/// User-defined transaction functions (issues #325, #333): an ident carrying
+/// `:db/fn` (mino source of `(fn [db & args] ...)` returning tx-data) is
+/// invoked as `[:my/fn arg ...]` inside a transaction, on every backend.
+pub fn transaction_functions(it: &mut Interpreter) {
+    seed_people(it);
+    let age = |it: &mut Interpreter, who: &str| {
+        it.eval_to_string(&format!(
+            "(mentat.store/q (mentat.store/db c) \
+               '[:find ?a . :where [?e :person/name \"{who}\"] [?e :person/age ?a]])"
+        ))
+        .unwrap()
+    };
+
+    // Install: a fn that reads the db (as of the start of the tx) with q and
+    // returns a lookup-ref cas, so a stale call aborts.
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :person/birthday \
+             :db/fn \"(fn [db who] \
+                        (let [a (ffirst (mentat.store/q db \
+                                  '[:find ?a :in $ ?n :where [?e :person/name ?n] [?e :person/age ?a]] \
+                                  who))] \
+                          [[:db/cas [:person/name who] :person/age a (inc a)]]))\"}])",
+    )
+    .expect("install :person/birthday");
+
+    it.eval_to_string("(mentat.store/transact c [[:person/birthday \"Alice\"]])")
+        .expect("invoke");
+    assert_eq!(age(it, "Alice"), "31");
+
+    // Spliced with other tx-data in the same transaction, and nested: a fn
+    // that returns a call to another fn.
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :person/two-birthdays \
+             :db/fn \"(fn [db who] [[:person/birthday who]])\"}])",
+    )
+    .expect("install nested fn");
+    it.eval_to_string(
+        "(mentat.store/transact c [[:person/two-birthdays \"Bob\"] {:person/name \"Carol\" :person/age 7}])",
+    )
+    .expect("nested invoke");
+    assert_eq!(age(it, "Bob"), "41");
+    assert_eq!(age(it, "Carol"), "7");
+
+    // A fn that throws aborts the whole transaction, with the fn named.
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/ident :person/boom :db/fn \"(fn [db] (throw (ex-info \\\"nope\\\" {})))\"}])",
+    )
+    .expect("install :person/boom");
+    let err = it
+        .eval_to_string(
+            "(mentat.store/transact c [[:person/boom] {:person/name \"Dan\" :person/age 1}])",
+        )
+        .expect_err("a throwing tx-fn aborts the tx");
+    assert!(
+        err.contains("txfn-error") && err.contains(":person/boom"),
+        "{err}"
+    );
+    assert_eq!(age(it, "Dan"), "nil", "nothing from the aborted tx");
+
+    // Self-recursion is bounded.
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/ident :person/forever :db/fn \"(fn [db] [[:person/forever]])\"}])",
+    )
+    .expect("install :person/forever");
+    let err = it
+        .eval_to_string("(mentat.store/transact c [[:person/forever]])")
+        .expect_err("unbounded recursion");
+    assert!(err.contains("txfn-depth"), "{err}");
+
+    // Sandboxed: no host filesystem.
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/ident :person/escape :db/fn \"(fn [db] (slurp \\\"/etc/passwd\\\") [])\"}])",
+    )
+    .expect("install :person/escape");
+    let err = it
+        .eval_to_string("(mentat.store/transact c [[:person/escape]])")
+        .expect_err("slurp must be unavailable");
+    assert!(err.contains("txfn-error"), "{err}");
+}

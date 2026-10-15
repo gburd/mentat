@@ -195,8 +195,18 @@ impl VScalar for EdnTransact {
             let (Some(db), Some(edn)) = (str_arg(input, 0, i), str_arg(input, 1, i)) else {
                 return Ok(None);
             };
-            let (store, _lock) = store(&db)?;
-            let report = store.transact(&edn)?;
+            // With the `script` feature, user transaction functions (`:db/fn`)
+            // expand first (issue #333).
+            #[cfg(feature = "script")]
+            let report = {
+                let (c, _lock) = conn()?;
+                mentat_duckdb_store::script::transact(c, &db, &edn)?
+            };
+            #[cfg(not(feature = "script"))]
+            let report = {
+                let (store, _lock) = store(&db)?;
+                store.transact(&edn)?
+            };
             Ok(Some(tx_report_json(&report)))
         })
     }

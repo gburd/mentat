@@ -23,12 +23,14 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
 | Negative tempids | Yes | No | N/A -- use string tempids |
-| `:db/fn` (database functions) | Yes (Clojure) | Yes (mino, `script` builds) | **1.14.0** -- sandboxed mino `(fn [db & args] ...)` returning tx-data; see [Transaction functions](#transaction-functions) |
+| `:db/fn` (database functions) | Yes (Clojure) | Yes (mino) | pg_mentat 1.14.0 (`script` builds); embedded SQLite (`mino` feature) and the DuckDB extension in 1.15.0 -- sandboxed mino `(fn [db & args] ...)` returning tx-data; see [Transaction functions](#transaction-functions) |
 
 ### Transaction functions
 
-In builds with the `script` feature, an ident carrying `:db/fn` is a
-transaction function. Its value is mino (a Clojure dialect) source for
+On every backend with the scripting interpreter -- pg_mentat built with the
+`script` feature, the embedded store built with `mino`, the SQLite extension,
+and the DuckDB extension -- an ident carrying `:db/fn` is a transaction
+function. Its value is mino (a Clojure dialect) source for
 `(fn [db & args] ...)` returning tx-data, which is spliced into the calling
 transaction (and may itself invoke tx-functions, built-ins, or lookup refs):
 
@@ -46,8 +48,11 @@ SELECT edn_t('[[:acct/deposit "A-1" 50]]');
 The function sees the database as of the start of the transaction (as in
 Datomic) and runs in the same sandbox as `edn_eval`: no filesystem or network,
 bounded by `mentat.script_max_steps` / `_heap_bytes` / `_depth`, and
-`mentat.txfn_max_depth` (default 16) bounds tx-functions calling tx-functions.
-It runs as the calling role. Use `:db.fn/cas` in the returned tx-data for an
+`mentat.txfn_max_depth` (default 16; `MENTAT_TXFN_MAX_DEPTH` on the embedded
+and DuckDB backends) bounds tx-functions calling tx-functions. On PostgreSQL it
+runs as the calling role. The embedded and DuckDB stores define the `:db/fn`
+attribute the first time a transaction installs a function; pg_mentat
+bootstraps it. Use `:db.fn/cas` in the returned tx-data for an
 atomic read-modify-write, as above.
 
 ---

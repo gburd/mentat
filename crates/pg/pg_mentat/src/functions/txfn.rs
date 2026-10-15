@@ -30,140 +30,26 @@ use crate::functions::script_gucs::TXFN_MAX_DEPTH;
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-/// The `:db/fn` attribute's ident and entid (bootstrap; see
-/// `bootstrap.rs` / `sql/06_bootstrap_data.sql`).
-pub const DB_FN_IDENT: &str = ":db/fn";
+/// The `:db/fn` attribute's ident (bootstrap entid 20; see `bootstrap.rs` /
+/// `sql/06_bootstrap_data.sql`).
+pub use mentat_script::txfn::DB_FN_IDENT;
 
-/// Expand every user tx-fn invocation in the top-level tx vector `value`.
-/// Non-vector input is returned unchanged (the caller reports the error).
+/// Expand every user tx-fn invocation in the top-level tx vector `value`,
+/// using the shared expander (`mentat_script::txfn`, the same code the
+/// embedded SQLite and DuckDB backends run). One sandboxed interpreter per
+/// transaction, built only when an invocation is found.
 pub fn expand_user_tx_fns(value: edn::Value, qs: &str) -> Result<edn::Value, BoxErr> {
-    let edn::Value::Vector(items) = value else {
-        return Ok(value);
-    };
-    // Cheap pre-check: build no interpreter for the common case of no tx-fns.
-    if !items.iter().any(|it| invocation_head(it).is_some()) {
-        return Ok(edn::Value::Vector(items));
-    }
-    let mut cx = Expander {
-        qs,
-        it: None,
-        max_depth: TXFN_MAX_DEPTH.get().max(1) as usize,
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        cx.expand_into(item, 0, &mut out)?;
-    }
-    Ok(edn::Value::Vector(out))
-}
-
-/// `Some(keyword)` if `v` looks like `[:ns/name ...]` and the keyword is not
-/// one of the transactor's own list-form operations. Whether it actually names
-/// a tx-fn is decided by looking for a `:db/fn` on it.
-fn invocation_head(v: &edn::Value) -> Option<&edn::symbols::Keyword> {
-    let edn::Value::Vector(vec) = v else {
-        return None;
-    };
-    let edn::Value::Keyword(kw) = vec.first()? else {
-        return None;
-    };
-    let reserved = matches!(
-        (kw.namespace(), kw.name()),
-        (Some("db"), "add")
-            | (Some("db"), "retract")
-            | (Some("db"), "cas")
-            | (Some("db"), "retractEntity")
-            | (Some("db.fn"), _)
-            | (None, "retractEntity")
-    );
-    (!reserved && kw.namespace().is_some()).then_some(kw)
-}
-
-struct Expander<'a> {
-    qs: &'a str,
-    /// One sandboxed interpreter for the whole transaction, built lazily.
-    it: Option<mino_rs::Interpreter>,
-    max_depth: usize,
-}
-
-impl Expander<'_> {
-    fn expand_into(
-        &mut self,
-        item: edn::Value,
-        depth: usize,
-        out: &mut Vec<edn::Value>,
-    ) -> Result<(), BoxErr> {
-        let Some(kw) = invocation_head(&item) else {
-            out.push(item);
-            return Ok(());
-        };
-        let ident = format!("{kw}");
-        let Some(src) = lookup_db_fn(self.qs, &ident)? else {
-            // Not a tx-fn: leave it for the transactor to accept or reject.
-            out.push(item);
-            return Ok(());
-        };
-        if depth >= self.max_depth {
-            return Err(format!(
-                ":db.error/txfn-depth transaction function {ident} exceeded \
-                 mentat.txfn_max_depth ({}). A tx-fn that returns calls to \
-                 itself (directly or indirectly) must terminate.",
-                self.max_depth
-            )
-            .into());
-        }
-        let edn::Value::Vector(call) = item else {
-            unreachable!("invocation_head only matches vectors")
-        };
-        let args: Vec<String> = call[1..].iter().map(|a| format!("{a}")).collect();
-        let produced = self.call(&ident, &src, &args)?;
-        // The fn returns tx-data: a vector (or list) of entities.
-        let edn::Value::Vector(entities) = produced else {
-            return Err(format!(
-                ":db.error/txfn-result transaction function {ident} must return a vector \
-                 of tx-data (e.g. [[:db/add e a v]]), got {produced}"
-            )
-            .into());
-        };
-        for e in entities {
-            self.expand_into(e, depth + 1, out)?;
-        }
-        Ok(())
-    }
-
-    /// Evaluate `(src db arg...)` and parse its printed result back into EDN.
-    fn call(&mut self, ident: &str, src: &str, args: &[String]) -> Result<edn::Value, BoxErr> {
-        let it = self
-            .it
-            .get_or_insert_with(crate::functions::script::build_interpreter);
-        // Args are EDN-printed values; mino reads EDN, so they round-trip.
-        // Quote them so symbols/lists arrive as data, not code.
-        let quoted: Vec<String> = args.iter().map(|a| format!("(quote {a})")).collect();
-        let form = format!(
-            "(let [f {src} db (mentat.store/db (mentat.store/open))] (f db {}))",
-            quoted.join(" ")
-        );
-        let printed = it.eval_to_string(&form).map_err(|e| -> BoxErr {
-            format!(":db.error/txfn-error transaction function {ident} failed: {e}").into()
-        })?;
-        let v = edn::parse::value(&printed).map_err(|e| -> BoxErr {
-            format!(
-                ":db.error/txfn-result transaction function {ident} returned \
-                 non-EDN tx-data ({e}): {printed}"
-            )
-            .into()
-        })?;
-        Ok(normalize(v.without_spans()))
-    }
-}
-
-/// mino prints a list for `(list ...)`/seq results; accept a list of entities
-/// (and list-form entities) wherever a vector is expected.
-fn normalize(v: edn::Value) -> edn::Value {
-    match v {
-        edn::Value::List(l) => edn::Value::Vector(l.into_iter().map(normalize).collect()),
-        edn::Value::Vector(vs) => edn::Value::Vector(vs.into_iter().map(normalize).collect()),
-        other => other,
-    }
+    let mut it: Option<mino_rs::Interpreter> = None;
+    mentat_script::txfn::expand(
+        value,
+        TXFN_MAX_DEPTH.get().max(1) as usize,
+        |ident| lookup_db_fn(qs, ident).map_err(|e| e.to_string()),
+        |form| {
+            it.get_or_insert_with(crate::functions::script::build_interpreter)
+                .eval_to_string(form)
+        },
+    )
+    .map_err(|e| e.into())
 }
 
 /// The `:db/fn` source on the entity whose `:db/ident` is `ident`, if any.

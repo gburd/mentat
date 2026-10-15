@@ -71,6 +71,10 @@ struct MentatBackend {
     next_id: Cell<i64>,
     /// What a no-arg `(mentat.store/open)` opens; `None` = in-memory (`""`).
     default_path: Option<String>,
+    /// When set, a no-arg `(mentat.store/open)` returns this already-open
+    /// handle instead of opening a store: transaction functions read the store
+    /// that is being transacted (see `Store::expand_tx_fns`).
+    pinned: Option<i64>,
 }
 
 impl MentatBackend {
@@ -79,8 +83,54 @@ impl MentatBackend {
             stores: RefCell::new(HashMap::new()),
             next_id: Cell::new(1),
             default_path,
+            pinned: None,
         }
     }
+}
+
+/// Expand user-defined transaction functions (issue #333) in `edn_tx` against
+/// `store`, the store about to be transacted. `store` is moved into a private
+/// sandboxed interpreter for the expansion and always handed back, success or
+/// failure. Called only when the transaction contains a candidate invocation.
+pub(crate) fn expand_tx_fns(store: Store, edn_tx: &str) -> (Store, Result<String, String>) {
+    let mut inner = mino_rs::Interpreter::sandboxed();
+    inner.set_limits(SCRIPT_LIMITS);
+    let mut backend = MentatBackend::new(None);
+    backend.stores.borrow_mut().insert(1, store);
+    backend.next_id.set(2);
+    backend.pinned = Some(1);
+    let backend = Rc::new(RefCell::new(backend));
+    mentat_script::install(&mut inner, backend.clone());
+
+    let max_depth = std::env::var("MENTAT_TXFN_MAX_DEPTH")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(mentat_script::txfn::DEFAULT_MAX_DEPTH);
+    let lookup_backend = backend.clone();
+    let result = mentat_script::txfn::expand_str(
+        edn_tx,
+        max_depth,
+        |ident| {
+            let b = lookup_backend.borrow();
+            let map = b.stores.borrow();
+            let store = map.get(&1).expect("pinned store");
+            crate::store::db_fn_source(store, ident)
+        },
+        |form| inner.eval_to_string(form),
+    );
+
+    // Take the store back. The interpreter's prim closures are GC-managed and
+    // may keep their `Rc` clones of the backend alive past `drop`, so the
+    // store is removed from the shared table rather than by unwrapping the
+    // `Rc`; whatever lingers is an empty backend.
+    drop(inner);
+    let store = backend
+        .borrow()
+        .stores
+        .borrow_mut()
+        .remove(&1)
+        .expect("the pinned store is never closed");
+    (store, result)
 }
 
 /// A Mentat scripting interpreter: an embedded mino-rs interpreter whose
@@ -149,6 +199,9 @@ impl Default for Interpreter {
 
 impl ScriptBackend for MentatBackend {
     fn open(&mut self, path: Option<&str>) -> Result<i64, String> {
+        if let (None, Some(id)) = (path, self.pinned) {
+            return Ok(id);
+        }
         let path = path.or(self.default_path.as_deref()).unwrap_or("");
         let store = Store::open(path).map_err(|e| e.to_string())?;
         let id = self.next_id.get();
@@ -158,6 +211,9 @@ impl ScriptBackend for MentatBackend {
     }
 
     fn close(&mut self, conn: i64) -> Result<(), String> {
+        if self.pinned == Some(conn) {
+            return Ok(()); // the store being transacted isn't the script's to close
+        }
         self.stores.borrow_mut().remove(&conn);
         Ok(())
     }

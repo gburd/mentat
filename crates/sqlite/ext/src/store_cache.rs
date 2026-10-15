@@ -132,6 +132,10 @@ pub fn read<T, E: Display>(path: &str, f: impl FnOnce(&Store) -> Result<T, E>) -
 /// Transact `edn` against `path`, with the staleness check inside the write lock.
 pub fn transact(path: &str, edn: &str) -> Res<TxReport> {
     with_store(path, |store| {
+        // User transaction functions (`:db/fn`) expand against the store
+        // before the write lock is taken (issue #333).
+        let edn = store.expand_tx_fns(edn).map_err(|e| e.to_string())?;
+        let edn = edn.as_str();
         for _ in 0..RETRIES {
             let mut ip = store.begin_transaction().map_err(|e| e.to_string())?;
             let next: i64 = ip

@@ -651,6 +651,7 @@ impl Repl {
     }
 
     fn transact(&mut self, transaction: String) -> ::mentat::errors::Result<TxReport> {
+        let transaction = self.store.expand_tx_fns(&transaction)?;
         let mut tx = self.store.begin_transaction()?;
         let report = tx.transact(transaction)?;
         tx.commit()?;

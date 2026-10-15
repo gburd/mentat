@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use core_traits::{Entid, StructuredMap, TypedValue};
 
-use mentat_core::{Keyword, TxReport, ValueRc};
+use mentat_core::{HasSchema, Keyword, TxReport, ValueRc};
 use mentat_db::TxObserver;
 
 use mentat_transaction::{
@@ -31,6 +31,36 @@ use mentat_transaction::query::{PreparedResult, QueryExplanation, QueryInputs, Q
 
 /// A convenience wrapper around a single SQLite connection and a Conn. This is suitable
 /// for applications that don't require complex connection management.
+/// The `:db/fn` attribute: the mino source of a user transaction function.
+const DB_FN_ATTRIBUTE: &str =
+    "[{:db/ident :db/fn :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]";
+
+/// The live `:db/fn` source on the entity whose `:db/ident` is `ident`, if any.
+#[cfg(feature = "mino")]
+pub(crate) fn db_fn_source(
+    store: &Store,
+    ident: &str,
+) -> std::result::Result<Option<String>, String> {
+    let db_fn = Keyword::namespaced("db", "fn");
+    let schema = store.conn.current_schema();
+    if schema.get_entid(&db_fn).is_none() {
+        return Ok(None);
+    }
+    let Ok(edn::Value::Keyword(kw)) = edn::parse::value(ident).map(|v| v.without_spans()) else {
+        return Ok(None);
+    };
+    let Some(e) = schema.get_entid(&kw) else {
+        return Ok(None); // not an ident at all
+    };
+    match store
+        .lookup_value_for_attribute(e.0, &db_fn)
+        .map_err(|err| err.to_string())?
+    {
+        Some(TypedValue::String(s)) => Ok(Some(s.as_ref().clone())),
+        _ => Ok(None),
+    }
+}
+
 pub struct Store {
     conn: Conn,
     sqlite: rusqlite::Connection,
@@ -50,6 +80,54 @@ impl Store {
     }
 
     pub fn transact(&mut self, transaction: &str) -> Result<TxReport> {
+        let transaction = self.expand_tx_fns(transaction)?;
+        let mut ip = self.begin_transaction()?;
+        let report = ip.transact(transaction.as_str())?;
+        ip.commit()?;
+        Ok(report)
+    }
+
+    /// Prepare `transaction` for the transactor: replace every invocation of a
+    /// user-defined transaction function (`[:my/fn arg ...]` on an ident that
+    /// carries `:db/fn`) with the tx-data it returns, and define the `:db/fn`
+    /// attribute itself the first time a transaction installs a function.
+    /// [`Store::transact`] and [`Store::with_speculative`] call this; a host
+    /// that drives [`InProgress::transact`] directly calls it first.
+    ///
+    /// Functions run in the sandboxed mino interpreter (`mino` feature), see
+    /// the database as of the start of the transaction, and nest at most
+    /// `MENTAT_TXFN_MAX_DEPTH` (default 16) deep. Without the `mino` feature
+    /// only the `:db/fn` attribute bootstrap applies.
+    pub fn expand_tx_fns(&mut self, transaction: &str) -> Result<String> {
+        let has_db_fn_attr = self
+            .conn
+            .current_schema()
+            .get_entid(&Keyword::namespaced("db", "fn"))
+            .is_some();
+        if !has_db_fn_attr && transaction.contains(":db/fn") {
+            // The embedded core schema predates transaction functions; define
+            // `:db/fn` alongside the first function installed, rather than
+            // changing every store's bootstrap.
+            self.transact_raw(DB_FN_ATTRIBUTE)?;
+        }
+        // Only a store that has (or is about to have) `:db/fn` can hold a
+        // transaction function, so other stores skip the interpreter entirely.
+        #[cfg(feature = "mino")]
+        if has_db_fn_attr || transaction.contains(":db/fn") {
+            // ponytail: swaps in a throwaway in-memory Store (~ms) to move this
+            // one into the script backend; only paid by transactions that could
+            // invoke a function. Borrowing it instead needs a non-'static
+            // ScriptBackend.
+            let store = std::mem::replace(self, Store::open("")?);
+            let (store, expanded) = crate::script::expand_tx_fns(store, transaction);
+            *self = store;
+            return expanded.map_err(public_traits::errors::MentatError::TransactionFunction);
+        }
+        Ok(transaction.to_string())
+    }
+
+    /// Transact without transaction-function expansion.
+    fn transact_raw(&mut self, transaction: &str) -> Result<TxReport> {
         let mut ip = self.begin_transaction()?;
         let report = ip.transact(transaction)?;
         ip.commit()?;
@@ -63,8 +141,9 @@ impl Store {
     /// scripting layer needs, since `transact_speculative` lives on `Conn` and
     /// wants both the `Conn` and the `rusqlite::Connection` (both private here).
     pub fn with_speculative(&mut self, transaction: &str) -> Result<TxReport> {
+        let transaction = self.expand_tx_fns(transaction)?;
         self.conn
-            .transact_speculative(&mut self.sqlite, transaction)
+            .transact_speculative(&mut self.sqlite, transaction.as_str())
     }
 }
 
