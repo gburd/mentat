@@ -132,6 +132,14 @@ revalidated by one primary-key read of a generation that every
 schema-changing transaction replaces, so a schema change made elsewhere is
 picked up on the next call.
 
+The extension opens a pool of connections to the database when it is loaded
+(`MENTAT_DUCKDB_POOL`, read at `LOAD`; default one per core, at most 8). Each
+call borrows one, so that many mentat calls from concurrent clients run in
+parallel; past that, calls wait for a free connection. Writes to one store take
+turns: `edn_t` holds a per-store lock for its whole transaction, because two
+DuckDB transactions that both update the store's partition counters conflict.
+Reads never wait for it, and writes to different stores run in parallel.
+
 ### Storage layout
 
 The tables mirror the embedded SQLite store's, column for column, so the
@@ -324,9 +332,8 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
 - **`ATTACH 'quack:...'`** exposes the server's tables, but not its table
   functions: `r.edn_q(...)` fails with "Table Function with name edn_q does not
   exist". Use `quack_query`.
-- **Calls are serialized.** The extension runs every mentat call on one
-  connection, so concurrent clients' mentat calls take turns (their other SQL
-  doesn't).
+- **Concurrency.** Up to `MENTAT_DUCKDB_POOL` mentat calls run at once (see
+  "Transactions and connections"); `edn_t` calls on the same store take turns.
 
 Quack is pre-2.0 at DuckDB v1.5.6 (`quack` build `c154811`): its wire protocol
 and function signatures may change in any DuckDB release, and the mentat

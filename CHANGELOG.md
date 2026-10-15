@@ -43,10 +43,35 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **DuckDB: mentat calls run in parallel.** The extension opened one
+  connection and ran every call under a global lock, so concurrent clients
+  queued. It now opens a pool of connections when loaded
+  (`MENTAT_DUCKDB_POOL`, default one per core up to 8) and each call borrows
+  one. Writes to one store still take turns (a per-store lock held for the
+  whole `edn_t`). Two DuckDB transactions updating one store's partition
+  counters would conflict. Reads, and writes to other stores, don't wait.
 - Quack's listen backlog of 5 is reported upstream as
   [duckdb/duckdb-quack#318](https://github.com/duckdb/duckdb-quack/issues/318).
 - `docs/design/sparsemap-evaluation.md`: sparsemap 5.8.2 was measured against
   mentat's entid sets and not adopted (no large in-memory set on a hot path).
+
+### Performance
+
+- **DuckDB extension** (`benchmarks/results/duckdb-perf-2026-10-15T010700Z`,
+  32 vCPU, Python client threads with their own cursors on one database):
+  - Point lookups at 1/8/32 threads: 281/322/317 -> 285/1511/1574 ops/s
+    (0.1M datoms) and 259/299/293 -> 258/1310/1262 ops/s (1M datoms).
+  - A mixed read workload (point lookup, ref traversal, pull) went
+    154/171/171 -> 160/980/1039 ops/s at 0.1M datoms.
+  - Single-datom `edn_t` from 8 threads, one store per thread: 65 -> 291 tx/s.
+    On one shared store it stays ~70 tx/s, because writes to a store
+    serialize.
+  - Single-client: `edn_t` does one generation read fewer and updates only the
+    partitions that moved, 54 -> 58 tx/s. The store's few fixed bookkeeping
+    statements stay prepared. Engine queries don't: on DuckDB 1.5.x a reused
+    plan keeps stale statistics and can miss new rows
+    ([duckdb/duckdb#24696](https://github.com/duckdb/duckdb/pull/24696)).
+    Single-client read latency is unchanged (~3.5 ms point lookup).
 
 ## [1.14.0] — Datomic transaction functions, retractEntity semantics, honest EXPLAIN
 
