@@ -282,3 +282,29 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   PGXN 1.14.0, crates.io 1.14.0 (20 crates; gc stays 0.5.x). A clean consumer
   on mentatdb =1.14.0 verified cas-via-lookup-ref + inbound-ref retraction.
 - EC2 i-02397aec9cd81a2ef + SG + key deleted.
+
+## master after v1.14.0 (2026-10-15) — unreleased, CHANGELOG "Unreleased" is current
+- fa516c92 #333: tx-functions on embedded SQLite (mino) + DuckDB, shared
+  `mentat_script::txfn`; `:db/fn` defined lazily (no store migration). #333 closed.
+- 7db12005 sparsemap evaluated, not adopted (docs/design/sparsemap-evaluation.md).
+- a377c4d7 DuckDB: duckdb/duckdb#26828 (1.4.0-1.5.6: replayed WAL rows lost
+  from secondary ART indexes at the next checkpoint, so `a = X` returns 0 and
+  DELETE fails FATAL). Stores now have no secondary indexes, and `open` drops
+  the 1.11-1.14 ones, which also repairs a store that was already hit.
+  Verified on a store corrupted by the released 1.14.0 extension.
+- 29f136fb..9fabfaf2 DuckDB perf: `MENTAT_DUCKDB_POOL` connection pool plus a
+  per-store write lock. Point lookups at 8 threads went ~320 -> ~1500 ops/s.
+  Single-client latency is unchanged (DuckDB scan-bound; next lead: cluster
+  datoms by (a, e)). Only 3 parameterized bookkeeping statements are cached:
+  in DuckDB 1.5.x, a reused plan keeps stale statistics
+  (duckdb/duckdb#24696/#24182, fixed on main, not released).
+  Findings: benchmarks/results/duckdb-perf-2026-10-15T010700Z/findings.md.
+- External:
+  - DuckDB registry PR duckdb/community-extensions#3072 (1.14.0) is open.
+  - Codeberg PR #324 is closed.
+  - The Quack backlog issue is duckdb/duckdb-quack#318.
+- EC2 (kiwi): every mentat-* instance, SG and key is deleted. The hotdog
+  profile is gone; use kiwi.
+- Next: cut 1.15.0. Pending that release:
+  - the pg upgrade script, a no-op for these changes;
+  - a bump of the registry descriptor so DuckDB users get the #26828 fix.
