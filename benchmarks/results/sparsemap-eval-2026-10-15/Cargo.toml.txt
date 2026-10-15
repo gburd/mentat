@@ -1,0 +1,9 @@
+[package]
+name = "smbench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[dependencies]
+sparsemap = "=5.8.2"
+[profile.release]
+debug = false

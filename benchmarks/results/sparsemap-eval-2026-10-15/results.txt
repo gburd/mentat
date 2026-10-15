@@ -1,0 +1,10 @@
+shape          n |    bytes:bt    bytes:sm |  build bt  build sm |  probe bt  probe sm |    and bt    and sm
+tiny           8 |         192          80 |     143ns     234ns |       9ns      14ns |     256ns      97ns
+tiny          64 |        1536         352 |     534ns     1.5us |      16ns      21ns |     872ns     275ns
+dense     100000 |     2400000          88 |    1.90ms    3.38ms |      90ns      22ns |    1.92ms     4.9us
+dense    1000000 |    24000000          88 |   27.22ms   31.12ms |     112ns      11ns |   12.12ms   177.2us
+mixed     100000 |     2400000       10048 |    1.01ms    5.13ms |      51ns      34ns |   926.9us    46.8us
+mixed    1000000 |    24000000      101976 |   15.09ms   63.92ms |     116ns      46ns |   10.96ms    2.74ms
+sparse      9999 |      239976      210392 |   154.4us    2.79ms |      50ns     106ns |    98.5us   726.4us
+sparse     99910 |     2397840     1135520 |    1.03ms   19.26ms |     201ns     109ns |    1.41ms   12.49ms
+RC=0
