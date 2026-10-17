@@ -7,7 +7,7 @@
 #   clippy       -D warnings on the linted crates
 #   deny         cargo deny check
 #   test-sqlite  cargo test (default members) + cargo test -p mentatdb --features mino
-#   test-pg      matrix pg13..pg18, cargo pgrx test
+#   test-pg      matrix pg13..pg19, cargo pgrx test
 #   test-mino    cargo test -p mino-rs
 #   test-ffi     build + test crates/sqlite/ffi
 #   test-sqlite-ext  build the SQLite loadable extension + sqlite3 smoke test
@@ -29,8 +29,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  PGRX_VERSION: "0.17.0"
-  RUST_TOOLCHAIN: "1.90.0"
+  PGRX_VERSION: "0.19.3"
+  RUST_TOOLCHAIN: "1.96.0"
   DUCKDB_VERSION: "v1.5.6"
 
 jobs:
@@ -229,7 +229,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: [13, 14, 15, 16, 17, 18]
+        pg: [13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@v4
       - name: Install build deps
@@ -256,8 +256,16 @@ jobs:
         run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
       - name: pgrx init (download PG${{ matrix.pg }})
         # A pgrx-managed PG (user-owned ~/.pgrx) so `cargo pgrx test` can copy
-        # the .so into its lib dir without root.
-        run: cargo pgrx init --pg${{ matrix.pg }} download
+        # the .so into its lib dir without root. pgrx 0.19.3's `download` for
+        # pg19 fetches 19beta4, so pg19 builds the release candidate instead.
+        run: |
+          if [ "${{ matrix.pg }}" = 19 ]; then
+            curl -sSfL https://ftp.postgresql.org/pub/source/v19rc1/postgresql-19rc1.tar.bz2 | tar xj -C /tmp
+            (cd /tmp/postgresql-19rc1 && ./configure --prefix="$HOME/pg19" --without-icu >/dev/null && make -s -j"$(nproc)" >/dev/null && make -s install >/dev/null)
+            cargo pgrx init --pg19 "$HOME/pg19/bin/pg_config"
+          else
+            cargo pgrx init --pg${{ matrix.pg }} download
+          fi
       - name: cargo pgrx test
         working-directory: crates/pg/pg_mentat
         run: cargo pgrx test --no-default-features --features pg${{ matrix.pg }} pg${{ matrix.pg }}

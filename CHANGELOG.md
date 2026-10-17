@@ -8,6 +8,28 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **PostgreSQL 19 support (pg_mentat).** pg_mentat now builds on pgrx 0.19.3,
+  which adds PostgreSQL 19, and has a `pg19` feature. pgrx 0.17 has no
+  PostgreSQL 19 bindings, so pg_mentat could not build there. Tested on
+  19rc1: the full pgrx suite passes with and without `script`. CI adds `pg19`
+  to the `test-pg` matrix. pgrx 0.19.3's `download` still fetches 19beta4, so
+  CI builds 19rc1 from source.
+
+### Changed
+
+- **Build toolchain: Rust 1.96.0** (was 1.90.0), the minimum pgrx 0.19
+  requires. It is set in `rust-toolchain.toml`, the CI and release workflows,
+  `flake.nix` and the Dockerfiles. `pg_mentat` declares `rust-version =
+  "1.96"`. The crates.io library crates keep MSRV 1.88. Building pg_mentat
+  from source needs `cargo install cargo-pgrx --version 0.19.3`.
+- pg_mentat no longer has the `pgrx_embed` helper binary (pgrx 0.18 removed
+  the second schema build).
+- Dependencies: duckdb / libduckdb-sys 1.10506.1. Their build script's `zip`
+  moves 6.0 -> 9.0, fixing RUSTSEC-2026-0367/0368/0369. yoke-derive 0.8.3 was
+  yanked and is now 0.8.4.
+
 ## [1.15.0] — transaction functions everywhere; DuckDB correctness fix and connection pool
 
 **DuckDB users should upgrade.** In 1.11.0-1.14.0, queries could silently

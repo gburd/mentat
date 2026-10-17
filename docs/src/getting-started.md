@@ -37,7 +37,7 @@ git clone https://github.com/gburd/pg_mentat.git
 cd pg_mentat
 
 # Install cargo-pgrx (the PostgreSQL extension build tool)
-cargo install --locked cargo-pgrx --version 0.17.0
+cargo install --locked cargo-pgrx --version 0.19.3
 
 # Tell pgrx where your PostgreSQL is installed
 cargo pgrx init --pg16 $(which pg_config)

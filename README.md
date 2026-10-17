@@ -147,15 +147,15 @@ and a CLI (`crates/sqlite/cli`).
 ## PostgreSQL extension (`pg_mentat`)
 
 `pg_mentat` needs a PostgreSQL install with development headers plus LLVM/clang
-(pgrx uses bindgen). It supports PostgreSQL 13–18; `pg16` is the default
+(pgrx uses bindgen). It supports PostgreSQL 13–19 (19 tested on 19rc1); `pg16` is the default
 feature.
 
 ### Build and install
 
-With `cargo pgrx` (0.17):
+With `cargo pgrx` (0.19.3, Rust 1.96+):
 
 ```bash
-cargo install --locked cargo-pgrx --version 0.17.0
+cargo install --locked cargo-pgrx --version 0.19.3
 cargo pgrx init --pg16 $(which pg_config)     # one-time, points pgrx at your PG
 
 cd crates/pg/pg_mentat

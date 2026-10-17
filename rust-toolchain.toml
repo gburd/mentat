@@ -1,5 +1,5 @@
-# ponytail: plan §1.14 intends channel "1.98"; pinned to the CI host's 1.90
-# (EC2 rustup has no 1.98). Bump to 1.98 when the build host updates.
+# 1.96 is pgrx 0.19's minimum (rust-version), needed for PostgreSQL 19.
+# Bump together with RUST_TOOLCHAIN in the CI workflows and flake.nix.
 [toolchain]
-channel = "1.90.0"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]

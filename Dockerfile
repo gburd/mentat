@@ -21,10 +21,10 @@ ENV RUSTUP_HOME=/usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain 1.90.0
+    sh -s -- -y --default-toolchain 1.96.0
 
 # Install cargo-pgrx matching the version in pg_mentat/Cargo.toml
-RUN cargo install --locked cargo-pgrx --version '~0.17'
+RUN cargo install --locked cargo-pgrx --version '=0.19.3'
 
 # Initialize pgrx with the system PostgreSQL 16
 RUN cargo pgrx init --pg16 /usr/bin/pg_config

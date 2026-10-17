@@ -52,8 +52,8 @@ exclude = ["crates/sqlite/fixtures", "crates/duckdb/store/tests-harness"]
 [workspace.package]
 version = "1.15.0"
 edition = "2021"
-# ponytail: plan §1.14 intends pinned 1.98; MSRV floor stays 1.88 (plan). The
-# CI host (EC2) runs 1.90 via rustup, so rust-toolchain.toml pins 1.90.
+# MSRV of the published (crates.io) crates. pg_mentat overrides it with 1.96
+# (pgrx 0.19); rust-toolchain.toml pins the build toolchain.
 rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://codeberg.org/gregburd/mentat"

@@ -17,8 +17,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  PGRX_VERSION: "0.17.0"
-  RUST_TOOLCHAIN: "1.90.0"
+  PGRX_VERSION: "0.19.3"
+  RUST_TOOLCHAIN: "1.96.0"
 
 jobs:
   # The mirror will replay v0.14.0 and pg_mentat's old v1.2.1..v1.6.1 tags to
@@ -151,7 +151,7 @@ jobs:
           fi
 
           # Make the shipped control file a TRUSTED extension so a non-superuser
-          # can CREATE EXTENSION pg_mentat (issue #331). pgrx 0.17's build-time
+          # can CREATE EXTENSION pg_mentat (issue #331). pgrx's (0.17-0.19) build-time
           # control parser rejects `trusted = true` as a RedundantField, so the
           # source control file can't carry it; PostgreSQL itself accepts it, so
           # we inject it into the packaged artifact. Idempotent.

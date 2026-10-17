@@ -43,7 +43,7 @@ jobs:
             echo "LIBCLANG_PATH=$LIBCLANG_PATH"
 
             echo "=== Installing cargo-pgrx ==="
-            cargo install --locked cargo-pgrx --version "~0.17"
+            cargo install --locked cargo-pgrx --version "=0.19.3"
 
             # cargo pgrx test installs the extension into
             # \$(pg_config --sharedir)/extension. The nix-store PostgreSQL is

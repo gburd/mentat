@@ -6,7 +6,7 @@
 # deploy mentat:
 #   a) SQLite   — test-sqlite, test-mino, test-ffi, test-sqlite-ext
 #                 (the embedded library + CLI + C ABI + the loadable extension)
-#   b) Postgres — test-pg (the pg_mentat pgrx extension, pg13..pg18)
+#   b) Postgres — test-pg (the pg_mentat pgrx extension, pg13..pg19)
 #   c) DuckDB   — test-duckdb (the mentat_duckdb loadable extension)
 # plus fmt / clippy / cargo-deny / nix-build.
 #
@@ -26,8 +26,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  PGRX_VERSION: "0.17.0"
-  RUST_TOOLCHAIN: "1.90.0"
+  PGRX_VERSION: "0.19.3"
+  RUST_TOOLCHAIN: "1.96.0"
   DUCKDB_VERSION: "v1.5.6"
 
 jobs:
@@ -220,7 +220,7 @@ jobs:
         working-directory: crates/sqlite/ext
         run: bash test/smoke.sh
 
-  # --- b) Postgres: the pg_mentat pgrx extension, pg13..pg18 ------------
+  # --- b) Postgres: the pg_mentat pgrx extension, pg13..pg19 ------------
   test-pg:
     name: test-pg (pg${{ matrix.pg }})
     runs-on: ubuntu-latest
@@ -228,7 +228,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: [13, 14, 15, 16, 17, 18]
+        pg: [13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@v4
       - name: Install build deps
@@ -253,8 +253,17 @@ jobs:
           restore-keys: ci-pg${{ matrix.pg }}-${{ runner.os }}-
       - name: Install cargo-pgrx
         run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
+      # pgrx 0.19.3's `download` for pg19 fetches 19beta4; test the
+      # release candidate instead.
       - name: pgrx init (download PG${{ matrix.pg }})
-        run: cargo pgrx init --pg${{ matrix.pg }} download
+        run: |
+          if [ "${{ matrix.pg }}" = 19 ]; then
+            curl -sSfL https://ftp.postgresql.org/pub/source/v19rc1/postgresql-19rc1.tar.bz2 | tar xj -C "$RUNNER_TEMP"
+            (cd "$RUNNER_TEMP/postgresql-19rc1" && ./configure --prefix="$HOME/pg19" --without-icu >/dev/null && make -s -j"$(nproc)" >/dev/null && make -s install >/dev/null)
+            cargo pgrx init --pg19 "$HOME/pg19/bin/pg_config"
+          else
+            cargo pgrx init --pg${{ matrix.pg }} download
+          fi
       - name: cargo pgrx test (+ script feature)
         working-directory: crates/pg/pg_mentat
         run: cargo pgrx test --no-default-features --features "pg${{ matrix.pg }} script" pg${{ matrix.pg }}

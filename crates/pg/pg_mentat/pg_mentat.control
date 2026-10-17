@@ -10,7 +10,7 @@ module_pathname = '$libdir/pg_mentat'
 relocatable = false
 superuser = false
 # Note: `trusted = true` makes CREATE EXTENSION available to non-superusers,
-# but pgrx 0.17's control-file parser rejects it as a RedundantField, so it
+# but pgrx's control-file parser (0.17-0.19) rejects it as a RedundantField, so it
 # can't live here. The release workflow and the Nix install phase inject
 # `trusted = true` into the PACKAGED control file (PostgreSQL accepts it even
 # though pgrx's build-time parser does not). See issue #331.

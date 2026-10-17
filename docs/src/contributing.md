@@ -5,9 +5,9 @@
 ### Prerequisites
 
 - Rust 1.88+ (stable)
-- PostgreSQL 16 development headers (or 13-18)
+- PostgreSQL 16 development headers (or 13-19)
 - LLVM 18 / Clang (for pgrx bindgen)
-- cargo-pgrx 0.17.0
+- cargo-pgrx 0.19.3
 
 ### Nix (Recommended)
 
@@ -17,7 +17,7 @@ The project includes a Nix flake that provides the complete development environm
 nix develop
 ```
 
-This gives you Rust 1.90, PostgreSQL 16, LLVM 18, cargo-pgrx, and all required build dependencies.
+This gives you Rust 1.96, PostgreSQL 16, LLVM 18, cargo-pgrx, and all required build dependencies.
 
 ### Manual Setup
 
@@ -27,7 +27,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup default stable
 
 # Install cargo-pgrx
-cargo install cargo-pgrx --version 0.17.0
+cargo install cargo-pgrx --version 0.19.3
 
 # Initialize pgrx (downloads and builds PostgreSQL)
 cargo pgrx init --pg16 $(which pg_config)

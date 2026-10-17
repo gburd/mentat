@@ -28,11 +28,10 @@
           inherit system overlays;
         };
 
-        # Rust toolchain. Pinned to 1.90.0 to match rust-toolchain.toml and the
-        # CI host (EC2 rustup is 1.90). Plan §1.14 intends 1.98 eventually;
-        # bump both here and in rust-toolchain.toml together when the build
-        # host updates. MSRV floor stays rust-version = "1.88" in Cargo.toml.
-        rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
+        # Rust toolchain. Pinned to 1.96.0 to match rust-toolchain.toml: the
+        # floor for pgrx 0.19 (PostgreSQL 19 support). Bump both together. The
+        # published library crates keep rust-version = "1.88" in Cargo.toml.
+        rustToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
         };
 
@@ -158,7 +157,7 @@
               # pg_config WITHOUT running `cargo pgrx init`.
               printf '[configs]\n${pgFeature} = "%s"\n' \
                 "${pgPkg.pg_config}/bin/pg_config" > "$PGRX_HOME/config.toml"
-              cargo install --locked cargo-pgrx --version '~0.17' --root "$CARGO_HOME/pgrx-tools"
+              cargo install --locked cargo-pgrx --version '=0.19.3' --root "$CARGO_HOME/pgrx-tools"
               export PATH="$CARGO_HOME/pgrx-tools/bin:$PATH"
               (cd crates/pg/pg_mentat && cargo pgrx package \
                 --no-default-features --features ${pgFeature} \
@@ -303,7 +302,7 @@
             # Helper: install and initialize cargo-pgrx
             setup-pgrx() {
               echo "Installing cargo-pgrx 0.17..."
-              cargo install --locked cargo-pgrx --version '~0.17'
+              cargo install --locked cargo-pgrx --version '=0.19.3'
               echo "Initializing pgrx with the dev-shell PostgreSQL 16..."
               cargo pgrx init --pg16="${postgresql.pg_config}/bin/pg_config"
               echo "pgrx setup complete."
