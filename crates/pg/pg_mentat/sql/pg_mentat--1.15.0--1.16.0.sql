@@ -1,0 +1,4 @@
+-- pg_mentat 1.15.0 -> 1.16.0 upgrade.
+--
+-- No schema or data change. 1.16.0 rebuilds pg_mentat on pgrx 0.19.3 (adding
+-- PostgreSQL 19 support). The edge keeps the versions in step.

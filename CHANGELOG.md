@@ -8,6 +8,14 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.16.0] — PostgreSQL 19 support
+
+pg_mentat builds and runs on PostgreSQL 19 (tested on 19rc1). Release builds
+now ship tarballs for PostgreSQL 15, 16, 17, 18 and 19; 18 and 19 are new.
+Upgrading from 1.15.0 is a no-op `ALTER EXTENSION pg_mentat UPDATE`: no
+schema change. Nothing changed for the embedded SQLite or DuckDB backends,
+apart from dependency updates.
+
 ### Added
 
 - **PostgreSQL 19 support (pg_mentat).** pg_mentat now builds on pgrx 0.19.3,
@@ -16,6 +24,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
   19rc1: the full pgrx suite passes with and without `script`. CI adds `pg19`
   to the `test-pg` matrix. pgrx 0.19.3's `download` still fetches 19beta4, so
   CI builds 19rc1 from source.
+- **Release tarballs for PostgreSQL 18 and 19** (`pg_mentat-pg18.tar.gz`,
+  `pg_mentat-pg19.tar.gz`). They are built against PGDG's `postgresql-18` and
+  `postgresql-19` packages (19 is at 19~rc1, from the PGDG `19` component).
+  The Nix flake has no `pg_mentat-pg19` yet: its nixpkgs has no
+  `postgresql_19` (nixos-unstable's is 19beta4).
+
+### Known issue
+
+- **A non-superuser still cannot `CREATE EXTENSION pg_mentat`**
+  ([#331](https://codeberg.org/gregburd/mentat/issues/331), reopened). The
+  1.13.0 change below ("Trusted install") never worked. PostgreSQL honours
+  `trusted = true` only when `superuser = true`, so the install fails with
+  `permission denied for language c`. This is unchanged since 1.13.0, and
+  1.15.0 fails the same way. Install as a superuser. A fix needs `superuser =
+  true` plus explicit grants on the `mentat` schema; that is a security-model
+  change, tracked in #331.
 
 ### Changed
 
@@ -180,7 +204,9 @@ PostgreSQL-side improvements from a Datomic-team evaluation (Codeberg issues
   replacement, then delegate as before. Only these four names are deprecated;
   the other `mentat_*` functions have no `edn_*` equivalent and are unchanged.
 - **Trusted install** (issue #331): the packaged `pg_mentat.control` now sets
-  `trusted = true`, so a non-superuser can `CREATE EXTENSION pg_mentat`. pgrx
+  `trusted = true`, so a non-superuser can `CREATE EXTENSION pg_mentat`.
+  *(Correction, 1.16.0: this does not work. See 1.16.0's Known issue and
+  #331.)* pgrx
   0.17 rejects `trusted` in the source control file, so the release workflow
   and the Nix install phase inject it into the shipped artifact (PostgreSQL
   accepts it).

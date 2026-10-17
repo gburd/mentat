@@ -377,6 +377,9 @@
           pg_mentat-pg16 = mkPgMentatExtension { pgPkg = pkgs.postgresql_16; pgFeature = "pg16"; };
           pg_mentat-pg17 = mkPgMentatExtension { pgPkg = pkgs.postgresql_17; pgFeature = "pg17"; };
           pg_mentat-pg18 = mkPgMentatExtension { pgPkg = pkgs.postgresql_18; pgFeature = "pg18"; };
+          # pg19: no output yet. The locked nixpkgs (2026-05) has no
+          # postgresql_19, and nixos-unstable's is 19beta4. Add it once nixpkgs
+          # ships 19.0. PG19 is built and tested in CI/release via apt + pgrx.
 
           # SQLite embedded CLI (crates/sqlite/cli, crate `mentat_cli`).
           mentat-cli = mkCargoBin { pname = "mentat-cli"; cargoPkg = "mentat_cli"; };
