@@ -321,3 +321,24 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   mentat to 1.15.0" (ref 88ee547f, 1.11.0 -> 1.15.0). The fork build passed
   on all 5 platforms. It waits on the DuckDB maintainers.
 - EC2: all mentat-* instances, SGs and keys are deleted.
+
+## master after v1.15.0 (2026-10-17): PostgreSQL 19 support (unreleased)
+- 3d0e1608: pgrx 0.17 -> 0.19.3 (pgrx 0.17 has no PG19 bindings, which was the
+  user's PG19rc1 build failure). Toolchain 1.90 -> 1.96 everywhere; the
+  pgrx_embed bin is gone. CI test-pg matrix 13..19, where pg19 builds 19rc1
+  from source because pgrx's download fetches 19beta4. duckdb 1.10506.1
+  (zip 9, RUSTSEC-2026-0367..0369).
+- Verified:
+  - EC2: pgrx +script on 13..19rc1, 1934/0/1 each; plain pg19/pg16 1880/0;
+    DuckDB gate.
+  - Local: Rust 1.96 gate.
+  - nix pg18 smoke.sql.
+  - GitHub CI green, including test-pg (pg19).
+- AWS: the kiwi burner was REPLACED on 2026-10-17. kiwi is now account
+  505435643998. The old 830118047484 is gone, along with an orphaned
+  mentat-pg19 box that went with it. The new account has others' instances
+  (libumem-*, pgtv-*, undo-*, pcompress-dev, pgprop-*); never touch them.
+  Every mentat-* resource in the new account is deleted.
+- Next: cut 1.16.0 (or 1.15.1) so PGXN/GitHub users get PG19 builds. That
+  needs the release.yml pg matrix (currently [15, 16, 17]) to add 18/19,
+  using PGDG's postgresql-server-dev-19 (19~rc1 is in noble-pgdg component 19).
