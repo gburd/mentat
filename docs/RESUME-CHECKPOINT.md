@@ -339,6 +339,27 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   mentat-pg19 box that went with it. The new account has others' instances
   (libumem-*, pgtv-*, undo-*, pcompress-dev, pgprop-*); never touch them.
   Every mentat-* resource in the new account is deleted.
-- Next: cut 1.16.0 (or 1.15.1) so PGXN/GitHub users get PG19 builds. That
-  needs the release.yml pg matrix (currently [15, 16, 17]) to add 18/19,
-  using PGDG's postgresql-server-dev-19 (19~rc1 is in noble-pgdg component 19).
+- (superseded: 1.16.0 is released, see below)
+
+## v1.16.0 RELEASED (2026-10-17): tag 28817a03, PostgreSQL 19 support
+- release.yml builds pg15..pg19. The pg19 leg adds the PGDG component "19"
+  (19~rc1).
+- GitHub Release has 8 assets (pg15-19, CLI, SQLite ext, DuckDB ext).
+  PGXN, and crates.io (20 crates), are at 1.16.0.
+- Verified the released tarballs on Ubuntu 24.04 + PGDG 15.19, 16.15, 17.11,
+  18.6 and 19rc1:
+  - smoke.sql PASS on each;
+  - a real upgrade from the 1.15.0 tarballs (pg15/16/17) via ALTER EXTENSION
+    UPDATE keeps data written under 1.15.0;
+  - upgrade == fresh on PG16/17.
+- pgrx +script 1934/0/1 against PGDG pg18/pg19.
+- flake: no pg_mentat-pg19, because the locked nixpkgs lacks postgresql_19
+  (nixos-unstable has 19beta4). Add it when nixpkgs ships 19.0.
+- #331 REOPENED: non-superuser CREATE EXTENSION never worked ("permission
+  denied for language c"). PG ignores trusted=true unless superuser=true.
+  The fix needs superuser=true (pgrx accepts trusted then) plus GRANTs on
+  the mentat schema, which is a security-model decision for the user. Noted
+  as a Known issue in the 1.16.0 CHANGELOG and release notes.
+- DuckDB registry PR #3072 is now "Update mentat to 1.16.0" (ref 28817a03).
+  The fork build passed on all 5 platforms; waiting on maintainers.
+- EC2 (kiwi 505435643998): all mentat-* resources deleted.
