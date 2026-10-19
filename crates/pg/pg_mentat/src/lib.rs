@@ -777,6 +777,8 @@ pub mod fuzzystrmatch_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod generated_value_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod get_else_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod ground_collection_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod history_tests;

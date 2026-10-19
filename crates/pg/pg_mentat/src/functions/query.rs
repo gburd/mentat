@@ -473,22 +473,6 @@ fn typed_table_for_value_type(value_type: &str) -> &'static str {
     }
 }
 
-/// Map a value_type string to its native value column name in the narrow table.
-fn typed_value_col_for_type(value_type: &str) -> &'static str {
-    match value_type {
-        "ref" => "v",
-        "boolean" => "v",
-        "long" => "v",
-        "double" => "v",
-        "instant" => "v",
-        "string" => "v",
-        "keyword" => "v",
-        "uuid" => "v",
-        "bytes" => "v",
-        _ => "v",
-    }
-}
-
 /// Extract a store name from a schema_prefix for use with the schema cache.
 ///
 /// `"mentat."` -> `"default"`, `"\"mentat_foo\"."` -> `"foo"`.
@@ -6226,53 +6210,93 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         where_clauses.extend(fj.where_parts.iter().cloned());
     }
 
-    // Add get-else LEFT JOINs (accumulated separately for proper SQL syntax)
-    let mut left_joins: Vec<String> = Vec::new();
-    for (ge_idx, ge) in get_else_clauses.iter().enumerate() {
-        let ge_alias = format!("ge_{}", ge_idx);
-        // Resolve the attribute to determine the typed table
+    // get-else: a correlated scalar subquery in the projection,
+    // COALESCE((SELECT v FROM <typed> WHERE e = <entity> AND a = <attr>), default).
+    // A LEFT JOIN appended after the comma-separated FROM list would bind only
+    // to the last FROM item (explicit JOIN binds tighter than a comma), so its
+    // ON clause could not see the alias that binds the entity unless that alias
+    // was last: "invalid reference to FROM-clause entry" (2026-10-18 report).
+    // The subquery needs no join placement and never multiplies rows.
+    for ge in get_else_clauses {
         let cache = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix));
         let attr_entid = cache.resolve_ident(&ge.attr_ident);
         let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
         if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-            let table = attr_lookup_table(&info.value_type, temporal);
-            let value_col = typed_value_col_for_type(&info.value_type);
+            // Datomic: "get-else is not supported for cardinality-many attributes".
+            if info.cardinality == "many" {
+                return Err(format!(
+                    ":db.error/fn-arg get-else is not supported for cardinality-many \
+                     attribute :{}. Bind it with a pattern instead, e.g. [?e :{} ?v].",
+                    ge.attr_ident.trim_start_matches(':'),
+                    ge.attr_ident.trim_start_matches(':'),
+                )
+                .into());
+            }
 
-            // Determine the entity alias from var_to_alias
-            let entity_expr = if let Some((alias, col)) = var_to_alias.get(ge.entity_var.as_str()) {
-                format!("{}.{}", alias, col)
-            } else {
-                // Entity variable not bound yet — skip (will produce NULL)
-                continue;
+            // The entity: an `e`/`tx` column, or a ref value (`v` -> v_ref).
+            let entity_expr = match var_to_alias.get(ge.entity_var.as_str()) {
+                Some((alias, "v")) => format!("{alias}.v_ref"),
+                Some((alias, col)) => format!("{alias}.{col}"),
+                // Entity variable not bound by a pattern: stays NULL.
+                None => continue,
             };
 
-            // LEFT JOIN typed_table AS ge_N ON (...)
-            let join_sql = format!(
-                "LEFT JOIN {table} AS {ge_alias} ON ({ge_alias}.store_id = {sid} AND {ge_alias}.e = {entity} AND {ge_alias}.a = {attr})",
-                table = table,
-                ge_alias = ge_alias,
-                sid = store_id_param,
-                entity = entity_expr,
-                attr = entid,
-            );
-            left_joins.push(join_sql);
+            // Current state reads the projection (one row per card-one e/a).
+            // as-of / since / history read the log: the latest assertion with
+            // tx <= T that no later retraction (tx <= T) cancels.
+            let current = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+            let (from, extra) = match value_type_to_table_info(&info.value_type) {
+                Some(t) if current => (t.current_table.to_string(), String::new()),
+                Some(t) => {
+                    let upper = match temporal.as_of {
+                        Some(tx) => {
+                            let p = builder.bind_bigint(tx);
+                            format!(" AND g.tx <= {p}")
+                        }
+                        None => String::new(),
+                    };
+                    let lower = match temporal.since {
+                        Some(tx) => {
+                            let p = builder.bind_bigint(tx);
+                            format!(" AND g.tx > {p}")
+                        }
+                        None => String::new(),
+                    };
+                    (
+                        t.table.to_string(),
+                        format!(
+                            " AND g.added{upper}{lower} AND NOT EXISTS (SELECT 1 FROM {tbl} r \
+                             WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a \
+                             AND r.tx > g.tx{r_upper})",
+                            tbl = t.table,
+                            r_upper = upper.replace("g.tx", "r.tx"),
+                        ),
+                    )
+                }
+                None => continue,
+            };
 
-            // Register the result variable as COALESCE(ge_N.v, default)::TEXT
-            // Render the value as build_value_decode_expr does, so it
-            // decodes like any other value column.
-            let v = format!("{ge_alias}.{value_col}");
+            // Render the value as build_value_decode_expr does, so it decodes
+            // like any other value column.
+            let v = "g.v";
             let rendered = match info.value_type.as_str() {
                 "keyword" => format!("':' || {v}"),
-                "double" => double_text(&v),
+                "double" => double_text(v),
                 "instant" => {
                     format!("to_char({v} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')")
                 }
                 "bytes" => format!("encode({v}, 'hex')"),
                 _ => format!("{v}::TEXT"),
             };
+            let subquery = format!(
+                "(SELECT {rendered} FROM {from} g WHERE g.store_id = {sid} \
+                 AND g.e = {entity_expr} AND g.a = {entid}{extra} \
+                 ORDER BY g.tx DESC LIMIT 1)",
+                sid = store_id_param,
+            );
             let coalesce_expr =
-                format!("COALESCE({rendered}, {default})", default = ge.default_sql);
+                format!("COALESCE({subquery}, {default})", default = ge.default_sql);
             // Override the placeholder in extra_var_bindings
             extra_var_bindings.insert(ge.result_var.clone(), coalesce_expr);
         }
@@ -6625,11 +6649,6 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     };
 
     let mut body = format!(" FROM {}", joins.join(", "));
-    // Append LEFT JOINs (from get-else clauses)
-    for lj in &left_joins {
-        body.push(' ');
-        body.push_str(lj);
-    }
     if !where_clauses.is_empty() {
         body.push_str(&format!(" WHERE {}", where_clauses.join(" AND ")));
     }

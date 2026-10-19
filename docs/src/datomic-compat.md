@@ -91,7 +91,7 @@ atomic read-modify-write, as above.
 
 | Function | Datomic | pg_mentat | Status |
 |----------|---------|-----------|--------|
-| `get-else` | Yes | Yes | **Complete** -- LEFT JOIN + COALESCE |
+| `get-else` | Yes | Yes | **Complete** -- correlated subquery + COALESCE; rejects cardinality-many (as Datomic). The result can't feed a predicate yet (#334) |
 | `missing?` | Yes | Yes | **Complete** -- NOT EXISTS subquery |
 | `ground` | Yes | Yes | **Complete** -- constant binding |
 | `get-some` | Yes | No | Not implemented |
