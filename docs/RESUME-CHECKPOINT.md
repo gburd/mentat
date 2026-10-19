@@ -393,3 +393,35 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - Note: `cargo clippy -p pg_mentat -D warnings` has 6 pre-existing lints
   (auto_index.rs is_multiple_of, query.rs row_num and doc indentation). CI
   excludes pg_mentat from clippy.
+
+## v1.17.0 RELEASED (2026-10-19): tag 24f4153a, the three known issues
+- #331 (bbfdeb9d..ef529668): trusted install. The control file is
+  superuser = true + trusted = true; 27_dump_config.sql (finalize) grants
+  @extowner@ USAGE on mentat plus table/sequence privileges WITH GRANT OPTION.
+  Nothing goes to PUBLIC. release.yml/flake no longer inject `trusted`;
+  release.yml asserts it. Before this, even a superuser install left other
+  roles with "permission denied for schema mentat".
+- #334 (bbfdeb9d): predicates on computed bindings. get-else keeps a
+  native-typed form (pred_bindings) used in predicates and NUM_VAR_REF.
+  EDN: + - / are symbols (sign_symbol_name), so [(+ ...)] parses.
+- #335 (a9367a83): crates/sqlite/query-algebrizer/src/where_fn_desugar.rs.
+  missing? becomes not; get-else becomes an or-join whose second arm copies a
+  sibling pattern binding ?e. DuckDB's differential test fails on a
+  both-engines error for get-else/missing?.
+- create_store(): fixed the lookup_entity PL/pgSQL (RETURN QUERY per type).
+  Optional indexes on shared tables are created only by their owner.
+  #337 is still OPEN: named-store writes fail (the transactor writes
+  <schema>.current_*, which create_store never creates). Needs a design
+  decision (a/b/c in the issue).
+- Qualified on Debian 12 EC2:
+  - pgrx +script pg13-19, 1945/0/1 each;
+  - the released tarballs on pg15-19: a 1.16.1 db upgrades, superuser
+    smoke.sql passes, and a non-superuser can install, query and grant.
+  - crates.io mentatdb =1.17.0 runs get-else/missing? in a clean consumer.
+- Codeberg #331/#334/#335 closed; #337 open. GitHub Release (8 assets),
+  PGXN and crates.io are at 1.17.0. DuckDB registry PR #3072 is moving to
+  1.17.0 (the fork build was running at checkpoint time).
+- Gotcha: something on floki briefly holds .git/index.lock. Use
+  ~/.cache/mentat/g.sh (git with retry). The Codeberg->GitHub push mirror
+  can lag; trigger it with `tea api -X POST /repos/gregburd/mentat/push_mirrors-sync`.
+- EC2 (kiwi 505435643998): all mentat-* resources deleted.
