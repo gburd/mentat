@@ -130,6 +130,13 @@ const QUERIES: &[&str] = &[
     "[:find ?n ?x :where [?e :p/age ?a] [(* ?a 2) ?x] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/name ?n] [(get-else $ ?e :p/height 0.0) ?h] [(> ?h 1.75)]]",
     "[:find ?n :where [?e :p/name ?n] [(missing? $ ?e :p/boss)]]",
+    // get-else / missing? with several patterns, a ref-value entity, a
+    // predicate on the result (#335; were UnknownFunction on both engines).
+    "[:find ?n ?a :where [?e :p/name ?n] [?e :p/alive ?al] [(get-else $ ?e :p/age 0) ?a]]",
+    "[:find ?n ?bn :where [?e :p/name ?n] [?e :p/age ?ag] [(get-else $ ?e :p/boss 0) ?b] [(get-else $ ?e :p/height 0.0) ?bn]]",
+    "[:find ?n ?bn :where [?e :p/name ?n] [?e :p/boss ?b] [(get-else $ ?b :p/age -1) ?bn]]",
+    "[:find ?n :where [?e :p/name ?n] [(get-else $ ?e :p/alive false) ?al] [(get-else $ ?e :p/age 0) ?a] [(> ?a 26)]]",
+    "[:find ?n :where [?e :p/name ?n] [?e :p/age 25] [(missing? $ ?e :p/boss)]]",
     "[:find ?n :where [(ground [\"Bob\" \"Zed\"]) [?n ...]] [_ :p/name ?n]]",
     "[:find ?e ?a ?v :where [?e :p/name \"Alice\"] [?e ?a ?v]]",
     // Lookup refs and idents as values.
@@ -194,6 +201,12 @@ fn duckdb_matches_sqlite() {
                 "{label} {q}\n  sqlite: {}\n  duckdb ERR {b}",
                 f(a.results)
             )),
+            // Both failing agrees, except for queries that must work: the
+            // get-else / missing? cases were silently "agreeing" this way
+            // while neither engine implemented them (#335).
+            (Err(a), Err(_)) if q.contains("get-else") || q.contains("missing?") => {
+                failures.push(format!("{label} {q}\n  both engines ERR: {a}"))
+            }
             (Err(_), Err(_)) => {}
         }
     };

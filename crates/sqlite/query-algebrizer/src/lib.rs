@@ -27,6 +27,7 @@ use std::rc::Rc;
 mod clauses;
 mod types;
 mod validate;
+mod where_fn_desugar;
 
 use core_traits::{Entid, TypedValue, ValueType};
 
@@ -330,6 +331,10 @@ pub fn algebrize_with_inputs_and_temporal(
     // tables; pull them out before `inputs` is moved into the CC (which only
     // consumes scalar `values`).
     let collections = std::mem::take(&mut inputs.collections);
+    // Rules expand first; then get-else / missing? desugar into or/not
+    // (which needs :in vars, moved into the CC below).
+    let where_clauses = expand_rules(parsed.where_clauses, &parsed.rules)?;
+    let where_clauses = where_fn_desugar::desugar(where_clauses, known, &parsed.in_vars)?;
     let alias_counter = RcCounter::with_initial(counter);
     let mut cc =
         ConjoiningClauses::with_inputs_and_alias_counter(parsed.in_vars, inputs, alias_counter);
@@ -352,7 +357,6 @@ pub fn algebrize_with_inputs_and_temporal(
 
     // TODO: integrate default source into pattern processing.
     // TODO: flesh out the rest of find-into-context.
-    let where_clauses = expand_rules(parsed.where_clauses, &parsed.rules)?;
     cc.apply_clauses(known, where_clauses)?;
 
     cc.expand_column_bindings();
