@@ -213,7 +213,11 @@ peg::parser!(grammar grammar() for str {
 
     rule symbol_namespace() = symbol_char_initial() symbol_char_subsequent()* (namespace_divider() symbol_char_subsequent()+)*
     rule symbol_name() = ( symbol_char_initial()+ symbol_char_subsequent()* )
-    rule plain_symbol_name() = symbol_name() / "..." / "."
+    // EDN: `+`, `-` and `/` are symbols, and so is `+x`/`-x` when the second
+    // character isn't a digit (`-5` stays an integer: value() tries number()
+    // first). Without this, `(+ ?a 1)` was a parse error.
+    rule sign_symbol_name() = ['+' | '-'] !['0'..='9'] symbol_char_subsequent()*
+    rule plain_symbol_name() = symbol_name() / "..." / "." / sign_symbol_name() / "/"
 
     rule keyword_prefix() = ":"
 
@@ -365,8 +369,10 @@ peg::parser!(grammar grammar() for str {
     // pattern (say "[") should be bracketed on either side with either a
     // whitespace-eating rule or an explicit whitespace eating `__`.
 
+    // `+`, `-` and `/` don't start like other symbols (symbol_char_initial);
+    // name them so the arithmetic where-fns [(+ ?a ?b) ?c] etc. parse.
     rule query_function() -> query::QueryFunction
-        = __ n:$(symbol_name()) __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
+        = __ n:$(symbol_name() / "+" / "-" / "/") __ {? query::QueryFunction::from_symbol(&PlainSymbol::plain(n)).ok_or("expected query function") }
 
     rule fn_arg() -> query::FnArg
         = v:value() {? query::FnArg::from_value(&v).ok_or("expected query function argument") }

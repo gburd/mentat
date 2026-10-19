@@ -2573,22 +2573,27 @@ fn build_sql_from_datalog_enriched(
                     ),
                 };
             // args[3] = default value
-            let default_sql = match &wf.args[3] {
-                FnArg::EntidOrInteger(i) => format!("{}::TEXT", i),
+            let (default_sql, default_native) = match &wf.args[3] {
+                FnArg::EntidOrInteger(i) => (format!("{}::TEXT", i), Some(("int", i.to_string()))),
                 FnArg::Constant(NonIntegerConstant::Text(s)) => {
                     let p = builder.bind_text(s.as_ref().to_string());
-                    format!("{}::TEXT", p)
+                    (
+                        format!("{}::TEXT", p),
+                        Some(("text", format!("{}::TEXT", p))),
+                    )
                 }
-                FnArg::Constant(NonIntegerConstant::Float(f)) => {
-                    format!("{}::TEXT", f.into_inner())
-                }
-                FnArg::Constant(NonIntegerConstant::Boolean(b)) => {
-                    format!("'{}'::TEXT", if *b { "true" } else { "false" })
-                }
+                FnArg::Constant(NonIntegerConstant::Float(f)) => (
+                    format!("{}::TEXT", f.into_inner()),
+                    Some(("float", format!("{}::FLOAT8", f.into_inner()))),
+                ),
+                FnArg::Constant(NonIntegerConstant::Boolean(b)) => (
+                    format!("'{}'::TEXT", if *b { "true" } else { "false" }),
+                    Some(("bool", if *b { "TRUE" } else { "FALSE" }.to_string())),
+                ),
                 FnArg::IdentOrKeyword(kw) => {
                     let kw_str = keyword_to_ident(kw);
                     let p = builder.bind_text(kw_str);
-                    format!("{}::TEXT", p)
+                    (format!("{}::TEXT", p), None)
                 }
                 _ => {
                     return Err(
@@ -2602,6 +2607,7 @@ fn build_sql_from_datalog_enriched(
                 entity_var,
                 attr_ident,
                 default_sql,
+                default_native,
                 result_var: result_var.clone(),
             });
             // Register the result_var as an extra binding (placeholder; resolved later)
@@ -3394,6 +3400,9 @@ struct GetElseClause {
     attr_ident: String,
     /// Default value as SQL literal
     default_sql: String,
+    /// The default as a native SQL value (no TEXT cast), with its kind:
+    /// ("int"|"float"|"bool"|"text", sql). None for keyword defaults.
+    default_native: Option<(&'static str, String)>,
     /// Result variable name (e.g., "?val")
     result_var: String,
 }
@@ -6217,6 +6226,9 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     // ON clause could not see the alias that binds the entity unless that alias
     // was last: "invalid reference to FROM-clause entry" (2026-10-18 report).
     // The subquery needs no join placement and never multiplies rows.
+    // Predicates on the result use a native-typed form of the same subquery
+    // (issue #334); the projection keeps the TEXT rendering.
+    let mut pred_bindings: HashMap<String, String> = HashMap::new();
     for ge in get_else_clauses {
         let cache = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix));
         let attr_entid = cache.resolve_ident(&ge.attr_ident);
@@ -6289,14 +6301,40 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 "bytes" => format!("encode({v}, 'hex')"),
                 _ => format!("{v}::TEXT"),
             };
-            let subquery = format!(
-                "(SELECT {rendered} FROM {from} g WHERE g.store_id = {sid} \
-                 AND g.e = {entity_expr} AND g.a = {entid}{extra} \
-                 ORDER BY g.tx DESC LIMIT 1)",
-                sid = store_id_param,
+            let lookup = |col: &str| {
+                format!(
+                    "(SELECT {col} FROM {from} g WHERE g.store_id = {sid} \
+                     AND g.e = {entity_expr} AND g.a = {entid}{extra} \
+                     ORDER BY g.tx DESC LIMIT 1)",
+                    sid = store_id_param,
+                )
+            };
+            let coalesce_expr = format!(
+                "COALESCE({}, {default})",
+                lookup(&rendered),
+                default = ge.default_sql
             );
-            let coalesce_expr =
-                format!("COALESCE({subquery}, {default})", default = ge.default_sql);
+            // Native form for predicates, in the encodings pred_arg_to_sql
+            // uses for pattern-bound values (booleans as 1/0). A default
+            // whose kind doesn't fit the attribute falls back to the TEXT form.
+            let native = match (info.value_type.as_str(), &ge.default_native) {
+                ("long" | "ref", Some(("int", d))) => {
+                    Some(format!("COALESCE({}, {d})", lookup("g.v")))
+                }
+                ("double", Some(("int" | "float", d))) => {
+                    Some(format!("COALESCE({}, ({d})::FLOAT8)", lookup("g.v")))
+                }
+                ("boolean", Some(("bool", d))) => Some(format!(
+                    "CASE WHEN COALESCE({}, {d}) THEN 1 ELSE 0 END",
+                    lookup("g.v")
+                )),
+                ("string", Some(("text", d))) => Some(format!("COALESCE({}, {d})", lookup("g.v"))),
+                _ => None,
+            };
+            pred_bindings.insert(
+                ge.result_var.clone(),
+                native.unwrap_or_else(|| coalesce_expr.clone()),
+            );
             // Override the placeholder in extra_var_bindings
             extra_var_bindings.insert(ge.result_var.clone(), coalesce_expr);
         }
@@ -6457,6 +6495,19 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         where_clauses.push(not_sql);
     }
 
+    // Computed bindings (get-else, arithmetic, where-fn results) usable by
+    // predicates (#334): get-else in native form, the rest resolved as-is.
+    let computed: HashMap<String, String> = extra_var_bindings
+        .iter()
+        .filter(|(_, e)| e.as_str() != "NULL::TEXT")
+        .map(|(k, e)| {
+            let sql = pred_bindings.get(k).cloned().unwrap_or_else(|| {
+                resolve_var_refs(e, &var_to_alias, &extra_var_bindings, Some(&pred_bindings))
+            });
+            (k.clone(), sql)
+        })
+        .collect();
+
     // Handle predicate clauses
     for pred in predicates {
         let op = pred.operator.0.as_str();
@@ -6494,8 +6545,14 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
             continue;
         }
-        let pred_sql =
-            build_predicate_clause(pred, &var_to_alias, &var_to_type, input_bindings, builder)?;
+        let pred_sql = build_predicate_clause(
+            pred,
+            &var_to_alias,
+            &var_to_type,
+            &computed,
+            input_bindings,
+            builder,
+        )?;
         where_clauses.push(pred_sql);
         // Auto-index evidence: a range predicate on a value of a
         // constant-attribute pattern read from a history table.
@@ -6572,7 +6629,12 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
         } else if let Some(expr) = extra_var_bindings.get(var_display) {
             // Computed variable (from FTS or arithmetic binding)
-            let resolved = resolve_var_refs(expr, &var_to_alias, &extra_var_bindings);
+            let resolved = resolve_var_refs(
+                expr,
+                &var_to_alias,
+                &extra_var_bindings,
+                Some(&pred_bindings),
+            );
             select_exprs.push(format!("({})::TEXT", resolved));
             if has_aggregates {
                 group_by_exprs.push(format!("{}", col_idx + 1));
@@ -6804,7 +6866,7 @@ fn var_value_sql(
     }
     extra_var_bindings.get(var).map(|e| {
         (
-            resolve_var_refs(e, var_to_alias, extra_var_bindings),
+            resolve_var_refs(e, var_to_alias, extra_var_bindings, None),
             ArgKind::Text,
         )
     })
@@ -6951,6 +7013,7 @@ fn resolve_var_refs(
     expr: &str,
     var_to_alias: &HashMap<String, (String, &'static str)>,
     extra_var_bindings: &HashMap<String, String>,
+    numeric_extra: Option<&HashMap<String, String>>,
 ) -> String {
     let mut result = expr.to_string();
     // Find all NUM_VAR_REF:?xxx and VAR_REF:?xxx occurrences and replace them
@@ -6991,6 +7054,12 @@ fn resolve_var_refs(
             } else {
                 format!("{}.{}", alias, col)
             }
+        } else if let Some(native) = numeric_extra
+            .filter(|_| is_numeric)
+            .and_then(|m| m.get(var_name))
+        {
+            // get-else in arithmetic: its native value, not the TEXT rendering.
+            format!("({native})")
         } else if let Some(inner_expr) = extra_var_bindings.get(var_name) {
             inner_expr.clone()
         } else {
@@ -7324,6 +7393,7 @@ fn build_not_exists_subquery(
                     pred,
                     &not_var_to_alias,
                     &not_var_to_type,
+                    &HashMap::new(),
                     &no_inputs,
                     builder,
                 )?;
@@ -7364,6 +7434,7 @@ fn build_predicate_clause(
     pred: &Predicate,
     var_to_alias: &HashMap<String, (String, &'static str)>,
     var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
     input_bindings: &HashMap<String, serde_json::Value>,
     builder: &mut SqlBuilder<'_>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -7385,6 +7456,7 @@ fn build_predicate_clause(
             &pred.args[0],
             var_to_alias,
             var_to_type,
+            computed,
             input_bindings,
             builder,
         )?;
@@ -7392,6 +7464,7 @@ fn build_predicate_clause(
             &pred.args[1],
             var_to_alias,
             var_to_type,
+            computed,
             input_bindings,
             builder,
         )?;
@@ -7443,6 +7516,7 @@ fn build_predicate_clause(
         &pred.args[0],
         var_to_alias,
         var_to_type,
+        computed,
         input_bindings,
         builder,
     )?;
@@ -7450,6 +7524,7 @@ fn build_predicate_clause(
         &pred.args[1],
         var_to_alias,
         var_to_type,
+        computed,
         input_bindings,
         builder,
     )?;
@@ -7512,6 +7587,7 @@ fn pred_arg_to_sql(
     arg: &FnArg,
     var_to_alias: &HashMap<String, (String, &'static str)>,
     var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
     input_bindings: &HashMap<String, serde_json::Value>,
     builder: &mut SqlBuilder<'_>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -7562,6 +7638,9 @@ fn pred_arg_to_sql(
                 } else {
                     Ok(format!("{}.{}", alias, col))
                 }
+            } else if let Some(expr) = computed.get(var_name.as_str()) {
+                // Bound by get-else / arithmetic / a where-fn (#334).
+                Ok(format!("({expr})"))
             } else if let Some(val) = input_bindings.get(var_name.as_str()) {
                 // Not bound by a pattern, but supplied via the :in clause as a
                 // scalar input (e.g. [:find ... :in ?min-age :where ...

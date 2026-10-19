@@ -73,3 +73,49 @@ fn builtin_tx_fn_exists() {
     let _ = edn::entities::BuiltinTxFn::Cas;
     let _ = edn::entities::BuiltinTxFn::RetractEntity;
 }
+
+#[test]
+fn arithmetic_where_fns_parse_including_plus_minus_div() {
+    // `+`, `-` and `/` don't start like other symbols; before this they were
+    // a parse error ("expected ['0'..='9']") inside a where-fn.
+    for op in ["+", "-", "*", "/"] {
+        let q = parse::parse_query(&format!(
+            "[:find ?s :where [?e :a/n ?n] [({op} ?n 10) ?s] [(> ?s 1)]]"
+        ))
+        .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        match &q.where_clauses[1] {
+            WhereClause::WhereFn(f) => assert_eq!(f.operator.0.as_str(), op),
+            other => panic!("{op}: expected a where-fn, got {other:?}"),
+        }
+    }
+    // A negative integer argument is still an integer, not `-` applied.
+    let q = parse::parse_query("[:find ?s :where [?e :a/n ?n] [(+ ?n -5) ?s]]").unwrap();
+    match &q.where_clauses[1] {
+        WhereClause::WhereFn(f) => assert_eq!(format!("{:?}", f.args[1]), "EntidOrInteger(-5)"),
+        other => panic!("expected a where-fn, got {other:?}"),
+    }
+}
+
+#[test]
+fn sign_and_slash_symbols_follow_the_edn_spec() {
+    use edn::types::Value;
+    let v = |s: &str| parse::value(s).unwrap().without_spans();
+    let sym = |s: &str| Value::PlainSymbol(edn::symbols::PlainSymbol::plain(s));
+    // `+`, `-`, `/` and `-foo` are symbols ...
+    for s in ["+", "-", "/", "-foo", "+bar"] {
+        assert_eq!(v(s), sym(s), "{s}");
+    }
+    // ... but a sign followed by a digit is still a number.
+    assert_eq!(v("-5"), Value::Integer(-5));
+    assert_eq!(v("+5"), Value::Integer(5));
+    assert_eq!(format!("{:?}", v("-1.5")), "Float(-1.5)");
+    // In a list: `(- -5 3)` is the symbol `-`, then -5 and 3.
+    assert_eq!(
+        v("(- -5 3)"),
+        Value::List(
+            vec![sym("-"), Value::Integer(-5), Value::Integer(3)]
+                .into_iter()
+                .collect()
+        )
+    );
+}
