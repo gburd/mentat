@@ -34,34 +34,34 @@ optional = true
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.query_algebrizer_traits]
 package = "mentat_query_algebrizer_traits"
 path = "../query-algebrizer-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.query_projector_traits]
 package = "mentat_query_projector_traits"
 path = "../query-projector-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.query_pull_traits]
 package = "mentat_query_pull_traits"
 path = "../query-pull-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.16.0"
+version = "=1.16.1"

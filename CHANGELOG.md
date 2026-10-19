@@ -8,6 +8,52 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.16.1] — get-else fix
+
+### Fixed
+
+- **pg_mentat: `get-else` failed in any query with more than one `:where`
+  pattern** (report 2026-10-18). Such queries raised `invalid reference to
+  FROM-clause entry for table "datomsN"` on every call. This had been the case
+  since get-else was added. `(get-else $ ?e :attr default)` compiled to a
+  `LEFT JOIN` appended after a comma-separated `FROM` list. PostgreSQL binds an
+  explicit `JOIN` tighter than a comma, so its `ON` clause could only see the
+  last `FROM` item. Unless the pattern binding `?e` came last, it failed.
+  get-else is now a correlated `COALESCE((SELECT ...), default)` in the
+  projection. It works with any number of patterns, in any order, any number of
+  times per query. The entity can also be a ref value bound by another pattern.
+  Regression tests: `crates/pg/pg_mentat/src/get_else_tests.rs`.
+- **pg_mentat 1.16.0 release tarballs would not load on Debian 12, Ubuntu
+  22.04, RHEL 9 or Amazon Linux 2023.** `CREATE EXTENSION` failed with
+  `version 'GLIBC_2.38'` (or `2.39`) `not found`. The 1.16.0 `.so` was built
+  on the runner's Ubuntu 24.04 (glibc 2.39) with Rust 1.96. It picked up a
+  reference to Rust std's `pidfd_spawnp` and to `__isoc23_sscanf` (from an
+  inline function in PostgreSQL's `xlog_internal.h`, which glibc 2.38+
+  redirects). Releases up to 1.15.0 needed glibc 2.34. The release job now
+  builds in a `debian:bookworm` container (glibc 2.36), which brings the
+  requirement back to 2.34. A new `glibc floor` check fails the release if the
+  `.so` needs anything newer than GLIBC_2.34. The CLI, SQLite and DuckDB
+  extension assets were not affected (they still needed 2.34). (#336)
+- **pg_mentat: `get-else` under `asOf`/`since`** now returns the value at that
+  basis. It used to read every assertion in the log, so a superseded or later
+  value could show up.
+
+### Changed
+
+- **pg_mentat: `get-else` on a cardinality-many attribute is an error**
+  (`:db.error/fn-arg ... not supported for cardinality-many`), as in Datomic.
+  It used to return one row per value, and only in single-pattern queries.
+  Bind such an attribute with a pattern instead.
+
+### Known issues
+
+- A get-else (or arithmetic) result can't be used in a predicate yet:
+  `[(get-else $ ?e :a 0) ?x] [(> ?x 1)]` errors with `unbound-var` (#334).
+  This was already the case before 1.16.1.
+- The embedded SQLite store and the DuckDB extension don't implement
+  `get-else` or `missing?` (#335).
+- Non-superuser `CREATE EXTENSION` (#331): unchanged from 1.16.0.
+
 ## [1.16.0] — PostgreSQL 19 support
 
 pg_mentat builds and runs on PostgreSQL 19 (tested on 19rc1). Release builds

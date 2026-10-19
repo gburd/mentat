@@ -11,21 +11,21 @@ repository = "https://codeberg.org/gregburd/mentat"
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.query_algebrizer_traits]
 package = "mentat_query_algebrizer_traits"
 path = "../query-algebrizer-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dev-dependencies]
 itertools = "~0.15"

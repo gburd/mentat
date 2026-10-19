@@ -29,25 +29,25 @@ features = ["limits", "bundled"]
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.mentat_sql]
 path = "../sql"
-version = "=1.16.0"
+version = "=1.16.1"
 
 # TODO: This should be in dev-dependencies.
 [dependencies.tabwriter]

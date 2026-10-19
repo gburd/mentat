@@ -16,12 +16,12 @@ uuid = { version = "~1.25", features = ["v4", "serde"] }
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../core-traits"
-version = "=1.16.0"
+version = "=1.16.1"
 
 [dependencies.edn]
 package = "mentat_edn"
 path = "../edn"
-version = "=1.16.0"
+version = "=1.16.1"
 features = ["serde_support"]
 
 [lints]

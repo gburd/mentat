@@ -1,0 +1,5 @@
+-- pg_mentat 1.16.0 -> 1.16.1 upgrade.
+--
+-- No schema or data change. 1.16.1 fixes get-else in queries with more than
+-- one :where pattern. That fix is in the query compiler in the shared library,
+-- so reinstalling the .so is enough. The edge keeps the versions in step.
