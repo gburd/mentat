@@ -8,6 +8,7 @@
 /// As of Phase 3, views query the type-specific tables (`mentat.datoms_*_new`)
 /// via UNION ALL instead of the legacy wide `{schema}.datoms` table.
 use crate::functions::store_management::{get_schema_for_store, quote_ident, validate_store_name};
+use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -954,6 +955,15 @@ WHERE added = true",
     )
 }
 
+/// Whether the current role owns `table` (CREATE INDEX on it needs that).
+fn owns_table(table: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(Spi::get_one_with_args::<bool>(
+        "SELECT pg_has_role(current_user, c.relowner, 'USAGE') FROM pg_class c WHERE c.oid = $1::regclass",
+        &[DatumWithOid::from(table)],
+    )?
+    .unwrap_or(false))
+}
+
 // ---------------------------------------------------------------------------
 // Public API: create all views for a store
 // ---------------------------------------------------------------------------
@@ -997,14 +1007,18 @@ pub fn create_virtual_tables_for_schema(
     Spi::run(&count_by_attribute_fn_sql(schema))?;
     Spi::run(&find_text_fn_sql(schema))?;
 
-    // Optional extension-dependent indexes
-    if extension_available("pg_trgm") {
-        Spi::run(&trigram_indexes_sql(schema, store_name))?;
+    // Optional indexes on the SHARED narrow tables (mentat.datoms_*_new).
+    // They are tuning, not structure: the base install already ships the
+    // full-text GIN index (sql/10_narrow_storage.sql). CREATE INDEX needs table
+    // ownership, which a non-superuser on a trusted install doesn't have, so
+    // skip them for a non-owner rather than failing create_store().
+    if owns_table("mentat.datoms_text_new")? {
+        if extension_available("pg_trgm") {
+            Spi::run(&trigram_indexes_sql(schema, store_name))?;
+        }
+        // Full-text search indexes use built-in tsvector; always available in PG 12+.
+        Spi::run(&fulltext_index_sql(schema, store_name))?;
     }
-
-    // Full-text search indexes use built-in tsvector; always available in PG 12+.
-    // The pg_textsearch extension enhances this with additional dictionaries.
-    Spi::run(&fulltext_index_sql(schema, store_name))?;
 
     // NOTE: pg_vector support is planned for future implementation.
     // When available, this will create HNSW or IVFFlat indexes on embedding

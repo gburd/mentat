@@ -288,7 +288,8 @@ mod tests {
 
     // create_store() failed on every call ("syntax error at or near CASE" in
     // the generated lookup_entity function) and no test called it. Found while
-    // testing trusted installs (#331).
+    // testing trusted installs (#331). This covers creation and lookup_entity
+    // only: writing to a named store is still broken (#337).
     #[pg_test]
     fn create_store_lookup_entity_and_drop() {
         crate::ensure_extension_loaded();
