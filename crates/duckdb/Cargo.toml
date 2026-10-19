@@ -27,13 +27,13 @@ duckdb = { version = "~1.10506.0", features = ["loadable-extension", "vscalar"] 
 
 # The engine, storing in DuckDB tables (docs/duckdb-native-storage-plan.md).
 # Not the `mentat` crate: that one opens SQLite files.
-mentat_duckdb_store = { path = "store", version = "=1.16.1" }
-core_traits = { package = "mentat_core_traits", path = "../core-traits", version = "=1.16.1" }
-edn = { package = "mentat_edn", path = "../edn", version = "=1.16.1" }
-mentat_core = { path = "../core", version = "=1.16.1" }
-mentat_query_algebrizer = { path = "../sqlite/query-algebrizer", version = "=1.16.1" }
-mentat_query_projector = { path = "../sqlite/query-projector", version = "=1.16.1" }
-mentat_transaction = { path = "../sqlite/transaction", version = "=1.16.1" }
-public_traits = { package = "mentat_public_traits", path = "../sqlite/public-traits", version = "=1.16.1" }
+mentat_duckdb_store = { path = "store", version = "=1.17.0" }
+core_traits = { package = "mentat_core_traits", path = "../core-traits", version = "=1.17.0" }
+edn = { package = "mentat_edn", path = "../edn", version = "=1.17.0" }
+mentat_core = { path = "../core", version = "=1.17.0" }
+mentat_query_algebrizer = { path = "../sqlite/query-algebrizer", version = "=1.17.0" }
+mentat_query_projector = { path = "../sqlite/query-projector", version = "=1.17.0" }
+mentat_transaction = { path = "../sqlite/transaction", version = "=1.17.0" }
+public_traits = { package = "mentat_public_traits", path = "../sqlite/public-traits", version = "=1.17.0" }
 serde_json = "1"
 

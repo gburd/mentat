@@ -8,6 +8,65 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.17.0] — trusted install, get-else/missing? everywhere, predicates on computed values
+
+### Added
+
+- **pg_mentat is a trusted extension (#331).** A role with `CREATE` on the
+  database (e.g. the database owner) can `CREATE EXTENSION pg_mentat` without
+  being a superuser.
+  - The control file is `superuser = true` + `trusted = true`. PostgreSQL
+    honors `trusted` only with `superuser = true`. pgrx accepts that
+    combination, so the release-time injection is gone.
+  - The script runs as the bootstrap superuser and grants the installing role
+    (`@extowner@`) `USAGE` on `mentat` and full table/sequence privileges,
+    `WITH GRANT OPTION`, so it can grant access to other roles.
+  - PUBLIC gets nothing, as before.
+  - Arming RLS and `mentat_tune_indexes(false)` still need the table owner
+    (a superuser).
+  - Restore a non-superuser's dump as that role so its privileges come back.
+
+  See `docs/src/multi-tenancy.md`, "Installing as a non-superuser". Before,
+  `trusted = true` sat next to `superuser = false`, which PostgreSQL ignores:
+  a non-superuser install failed with `permission denied for language c`.
+- **`get-else` and `missing?` on the embedded SQLite store and the DuckDB
+  extension (#335).** They are desugared in the shared algebrizer:
+  - `missing?` becomes `(not ...)`;
+  - `get-else` becomes an `or-join` of "has the attribute" and "lacks it,
+    ground the default", where the second arm reuses a sibling pattern that
+    binds the entity;
+  - cardinality-many is rejected, as in Datomic and pg_mentat.
+
+  Before, both were `UnknownFunction`. The DuckDB differential test had both
+  queries and passed only because both engines failed; it now fails if a
+  get-else/missing? query errors on both.
+- **Predicates on computed values (pg_mentat, #334).** A get-else result, an
+  arithmetic result or another where-fn result can now feed a predicate:
+  `[(get-else $ ?e :a 0) ?x] [(> ?x 1)]` and `[(* ?n 2) ?d] [(> ?d 4)]`.
+  get-else gets a native-typed form for predicates and arithmetic, so
+  `[(get-else ...) ?r] [(+ ?r 10) ?s]` works too.
+
+### Fixed
+
+- **EDN parser: `+`, `-` and `/` are symbols**, as the EDN spec says
+  (`-foo` / `+foo` too, unless a digit follows; `-5` is still an integer).
+  Before, the arithmetic where-fns `[(+ ...)]`, `[(- ...)]` and `[(/ ...)]`
+  were a parse error, though pg_mentat implements them.
+- **pg_mentat `create_store()` failed on every call** with `syntax error at
+  or near "CASE"`. The generated `lookup_entity` function used a `CASE`
+  expression where PL/pgSQL needs one `RETURN QUERY` per branch. It also
+  creates its optional indexes on the shared tables only when the caller owns
+  them, so a non-superuser can call it.
+
+### Known issues
+
+- **Writing to a store made by `create_store()` still fails**, with
+  `relation "mentat_<name>.current_instant" does not exist`, for superusers
+  too. It has been broken since 1.5.0, when the transactor started writing
+  per-schema projection tables that `create_store()` never creates. Use
+  `mentat.stores` rows keyed by `store_id`, as in docs/src/multi-tenancy.md.
+  Fixing it needs a design decision (#337).
+
 ## [1.16.1] — get-else fix
 
 ### Fixed

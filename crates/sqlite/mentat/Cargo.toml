@@ -44,84 +44,84 @@ features = ["limits", "bundled"]
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_sql]
 path = "../sql"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_db]
 path = "../db"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_query_algebrizer]
 path = "../query-algebrizer"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.query_algebrizer_traits]
 package = "mentat_query_algebrizer_traits"
 path = "../query-algebrizer-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_query_projector]
 path = "../query-projector"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.query_projector_traits]
 package = "mentat_query_projector_traits"
 path = "../query-projector-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_query_pull]
 path = "../query-pull"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.query_pull_traits]
 package = "mentat_query_pull_traits"
 path = "../query-pull-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_query_sql]
 path = "../query-sql"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.public_traits]
 package = "mentat_public_traits"
 path = "../public-traits"
-version = "=1.16.1"
+version = "=1.17.0"
 
 [dependencies.mentat_transaction]
 path = "../transaction"
-version = "=1.16.1"
+version = "=1.17.0"
 
 # Optional: the mino Clojure-dialect interpreter, behind the `mino` feature.
 # Maintained in this repo (crates/mino/); upstream mino is archived.
 [dependencies.mino-rs]
 path = "../../mino"
-version = "=1.16.1"
+version = "=1.17.0"
 optional = true
 
 # Optional: the backend-independent mentat.store/* scripting glue (§ 1.19).
 [dependencies.mentat_script]
 path = "../../script"
-version = "=1.16.1"
+version = "=1.17.0"
 optional = true

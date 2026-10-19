@@ -91,8 +91,8 @@ atomic read-modify-write, as above.
 
 | Function | Datomic | pg_mentat | Status |
 |----------|---------|-----------|--------|
-| `get-else` | Yes | Yes | **Complete** -- correlated subquery + COALESCE; rejects cardinality-many (as Datomic). The result can't feed a predicate yet (#334) |
-| `missing?` | Yes | Yes | **Complete** -- NOT EXISTS subquery |
+| `get-else` | Yes | Yes | **Complete** -- pg_mentat: a correlated subquery + COALESCE, usable in predicates; embedded SQLite/DuckDB: desugared to or-join (1.17.0). Rejects cardinality-many (as Datomic) |
+| `missing?` | Yes | Yes | **Complete** -- NOT EXISTS subquery (embedded: `not`, 1.17.0) |
 | `ground` | Yes | Yes | **Complete** -- constant binding |
 | `get-some` | Yes | No | Not implemented |
 | `tuple` | Yes | No | Not implemented |

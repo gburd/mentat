@@ -214,8 +214,9 @@ Return a default value when an attribute is missing:
 Compiles to a correlated `COALESCE((SELECT v ... WHERE e = ?e AND a = :attr), default)`,
 so it works with any number of patterns. As in Datomic, it is an error on a
 cardinality-many attribute. As-of and since queries read the value at that
-basis. The result can be projected and aggregated, but not yet used in a
-predicate (#334).
+basis. The result can be projected, aggregated, and used in predicates and
+arithmetic (`[(get-else $ ?e :a 0) ?x] [(> ?x 1)]`). The embedded SQLite and
+DuckDB backends support get-else and missing? too (1.17.0).
 
 ### missing?
 

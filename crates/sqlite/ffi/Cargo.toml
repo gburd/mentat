@@ -21,5 +21,5 @@ libc = "~0.2"
 [dependencies.mentat]
 package = "mentatdb"
 path = "../mentat"
-version = "=1.16.1"
+version = "=1.17.0"
 default-features = false
