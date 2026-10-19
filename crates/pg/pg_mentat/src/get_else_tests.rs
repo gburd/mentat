@@ -226,4 +226,101 @@ mod tests {
         );
         assert_eq!(r, vec![j(serde_json::json!(["a", 3]))]);
     }
+
+    // #334: a predicate can use a computed binding. Before, these failed with
+    // ":db.error/unbound-var Unbound variable '?r' in predicate".
+    #[pg_test]
+    fn predicate_on_get_else_result() {
+        setup_chats();
+        // long attribute, multi-pattern
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?c :t/kind :chat] [?c :t/value ?v] \
+                 [(get-else $ ?c :t/rank 0) ?r] [(> ?r 1)]]"
+            ),
+            vec![j(serde_json::json!(["a"]))]
+        );
+        // the default participates: rank defaults to 0 for "b"
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?c :t/kind :chat] [?c :t/value ?v] \
+                 [(get-else $ ?c :t/rank 0) ?r] [(= ?r 0)]]"
+            ),
+            vec![j(serde_json::json!(["b"]))]
+        );
+        // boolean attribute (predicates encode booleans as 1/0)
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?c :t/kind :chat] [?c :t/value ?v] \
+                 [(get-else $ ?c :t/private false) ?p] [(= ?p false)]]"
+            ),
+            vec![j(serde_json::json!(["a"]))]
+        );
+        // string attribute, default used
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?c :t/kind :chat] [?c :t/value ?v] [?c :t/person ?p] \
+                 [(get-else $ ?p :p/email \"none\") ?m] [(= ?m \"x@example.com\")]]"
+            ),
+            vec![j(serde_json::json!(["a"])), j(serde_json::json!(["b"]))]
+        );
+    }
+
+    #[pg_test]
+    fn predicate_on_arithmetic_result() {
+        setup_chats();
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?c :t/value ?v] [?c :t/rank ?r] \
+                 [(* ?r 2) ?d] [(> ?d 4)]]"
+            ),
+            vec![j(serde_json::json!(["a"]))]
+        );
+        // chained: arithmetic over a get-else result, then a predicate
+        assert_eq!(
+            rows(
+                "[:find ?v :where [?c :t/kind :chat] [?c :t/value ?v] \
+                 [(get-else $ ?c :t/rank 0) ?r] [(+ ?r 10) ?s] [(>= ?s 13)]]"
+            ),
+            vec![j(serde_json::json!(["a"]))]
+        );
+    }
+
+    // create_store() failed on every call ("syntax error at or near CASE" in
+    // the generated lookup_entity function) and no test called it. Found while
+    // testing trusted installs (#331).
+    #[pg_test]
+    fn create_store_lookup_entity_and_drop() {
+        crate::ensure_extension_loaded();
+        Spi::run("SELECT create_store('vt_store', 'virtual-table test')").expect("create_store");
+        let n: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE n.nspname = 'mentat_vt_store' AND p.proname IN ('lookup_entity', 'entity_value')",
+        )
+        .expect("count")
+        .expect("NULL");
+        assert_eq!(n, 2, "virtual-table functions created in the store schema");
+        // lookup_entity compiles and runs: an ident unknown to this store
+        // raises its own error, not a syntax error.
+        Spi::run(
+            "CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("capture helper");
+        let err = Spi::get_one::<String>(
+            "SELECT pg_temp.capture($q$SELECT * FROM mentat_vt_store.lookup_entity(':no/such', 'x')$q$)",
+        )
+        .expect("capture ran")
+        .unwrap_or_default();
+        assert!(
+            err.contains("Unknown attribute ident: :no/such"),
+            "got: {err}"
+        );
+        let listed: bool = Spi::get_one("SELECT list_stores()::text LIKE '%vt_store%'")
+            .expect("list_stores")
+            .expect("NULL");
+        assert!(listed);
+        Spi::run("SELECT drop_store('vt_store')").expect("drop_store");
+    }
 }

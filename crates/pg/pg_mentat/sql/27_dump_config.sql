@@ -53,3 +53,17 @@ BEGIN
     END LOOP;
 END
 $dump$;
+
+-- Privileges for the installing role (issue #331). pg_mentat is a trusted
+-- extension (`superuser = true` + `trusted = true` in the control file): a
+-- role with CREATE on the database can run CREATE EXTENSION. The script then
+-- runs as the bootstrap superuser, which owns every object, so without these
+-- grants the installer could not use what it installed ("permission denied
+-- for schema mentat"). PostgreSQL replaces @extowner@ with the role running
+-- CREATE/ALTER EXTENSION (for a superuser install these are no-ops). WITH
+-- GRANT OPTION lets the installer grant the same to application/tenant roles
+-- (docs/src/multi-tenancy.md). Nothing is granted to PUBLIC.
+GRANT USAGE ON SCHEMA mentat TO @extowner@ WITH GRANT OPTION;
+GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON ALL TABLES IN SCHEMA mentat TO @extowner@ WITH GRANT OPTION;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA mentat TO @extowner@ WITH GRANT OPTION;

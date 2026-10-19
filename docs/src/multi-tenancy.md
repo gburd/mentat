@@ -106,13 +106,14 @@ What this does **not** protect against:
   application connections as a non-superuser role.
 * **`BYPASSRLS` roles**. Same as superusers; never grant `BYPASSRLS`
   to an application role.
-* **The table owner.** By default the role that ran
-  `CREATE EXTENSION pg_mentat` owns the narrow tables and bypasses
-  RLS. If the application connection role is the same as the owner,
-  RLS is silently inert. Either run `CREATE EXTENSION` as a dedicated
-  installer role and grant `SELECT/INSERT/UPDATE/DELETE` to per-tenant
-  roles, or call `ALTER TABLE mentat.datoms_<type>_new FORCE ROW LEVEL
-  SECURITY` to subject the owner as well.
+* **The table owner.** The narrow tables are owned by the role that
+  owns the extension's objects. For a superuser install that is the superuser
+  who ran `CREATE EXTENSION pg_mentat`; for a non-superuser (trusted) install
+  it is the bootstrap superuser (see "Installing as a non-superuser" below).
+  The owner bypasses RLS: if the application connection role is the owner,
+  RLS is silently inert. Run application connections as separate roles with
+  explicit grants, or call `ALTER TABLE mentat.datoms_<type>_new FORCE ROW
+  LEVEL SECURITY` to subject the owner as well.
 * **`SECURITY DEFINER` functions** owned by a privileged role.
   `SECURITY DEFINER` functions execute as their owner, so an unwary
   function created by the superuser is a hole in the wall.
@@ -125,6 +126,45 @@ What this does **not** protect against:
   mentat.current_store_id = '<id>'`). A web tier that lets the client
   send the tenant id is its own bug, not one that pg_mentat will
   catch.
+
+## Installing as a non-superuser
+
+pg_mentat is a trusted extension (since 1.17.0; #331). A role with `CREATE`
+on the database (for example the database owner) can install it without
+being a superuser:
+
+```sql
+-- as postgres:
+CREATE ROLE app LOGIN;
+CREATE DATABASE appdb OWNER app;
+-- as app:
+CREATE EXTENSION pg_mentat;
+```
+
+The install script runs as the bootstrap superuser, which owns the objects.
+The installing role gets `USAGE` on schema `mentat` and full privileges on
+its tables and sequences, `WITH GRANT OPTION`, so it can grant access to
+other roles. PUBLIC gets nothing:
+
+```sql
+-- as app: a read-only reporting role
+GRANT USAGE ON SCHEMA mentat TO reporting;
+GRANT SELECT ON ALL TABLES IN SCHEMA mentat TO reporting;
+```
+
+A role with no grants gets `permission denied for schema mentat`, as before.
+
+Things that need the table owner (a superuser) whoever installed it:
+`mentat.enable_multi_tenant_rls(...)` and
+`mentat_tune_indexes(dry_run => false)`. Both use `ALTER TABLE` or
+`CREATE INDEX` on the extension's tables.
+
+**Backups.** The installing role's privileges are part of the extension, not
+the dump. Restore a non-superuser's database *as that role*
+(`pg_restore -U app -d appdb ...`, into a database it owns). Then
+`CREATE EXTENSION` re-grants it, and the grants it gave to other roles
+restore too. A superuser restoring it instead must re-run the `GRANT`s for
+`app`.
 
 ## A worked example
 

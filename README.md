@@ -179,6 +179,11 @@ still builds and tests 13 through pgrx). The derivation is named
 
 ### Use it
 
+pg_mentat is a trusted extension (since 1.17.0): a superuser, or any role with
+`CREATE` on the database, can install it. A non-superuser installer gets access
+and can grant it to other roles; see
+[multi-tenancy](docs/src/multi-tenancy.md#installing-as-a-non-superuser).
+
 ```sql
 CREATE EXTENSION pg_mentat;
 

@@ -86,6 +86,9 @@ CREATE EXTENSION pg_mentat;
 ```
 
 This creates the `mentat` schema with all required tables, types, indexes, and functions.
+A superuser or (since 1.17.0) any role with `CREATE` on the database can run it;
+see [multi-tenancy](multi-tenancy.md#installing-as-a-non-superuser) for the
+privileges a non-superuser installer gets and how to grant them to others.
 
 ### 2. Define Schema Attributes
 

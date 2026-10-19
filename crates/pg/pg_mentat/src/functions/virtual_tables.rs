@@ -737,43 +737,41 @@ BEGIN
         RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
     END IF;
 
-    RETURN QUERY
-    CASE attr_type
-        WHEN 'string' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_text_new d
+    -- One RETURN QUERY per type: a CASE *expression* can't yield a set (the
+    -- old form here made every create_store() fail with a syntax error).
+    IF attr_type = 'string' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_text_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value)
-        WHEN 'keyword' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_keyword_new d
+             AND d.v = search_value;
+    ELSIF attr_type = 'keyword' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_keyword_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value)
-        WHEN 'long' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_long_new d
+             AND d.v = search_value;
+    ELSIF attr_type = 'long' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_long_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value::BIGINT)
-        WHEN 'ref' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_ref_new d
+             AND d.v = search_value::BIGINT;
+    ELSIF attr_type = 'ref' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_ref_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value::BIGINT)
-        WHEN 'boolean' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_boolean_new d
+             AND d.v = search_value::BIGINT;
+    ELSIF attr_type = 'boolean' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_boolean_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value::BOOLEAN)
-        WHEN 'double' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_double_new d
+             AND d.v = search_value::BOOLEAN;
+    ELSIF attr_type = 'double' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_double_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value::DOUBLE PRECISION)
-        WHEN 'instant' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_instant_new d
+             AND d.v = search_value::DOUBLE PRECISION;
+    ELSIF attr_type = 'instant' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_instant_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value::TIMESTAMPTZ)
-        WHEN 'uuid' THEN
-            (SELECT d.e, d.tx FROM mentat.datoms_uuid_new d
+             AND d.v = search_value::TIMESTAMPTZ;
+    ELSIF attr_type = 'uuid' THEN
+        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_uuid_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
-             AND d.v = search_value::UUID)
-        ELSE
-            (SELECT NULL::BIGINT, NULL::BIGINT WHERE false)
-    END;
+             AND d.v = search_value::UUID;
+    END IF;
 END;
 $$ LANGUAGE plpgsql STABLE",
         schema = schema,
