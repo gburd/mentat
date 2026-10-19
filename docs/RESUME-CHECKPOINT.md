@@ -363,3 +363,33 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - DuckDB registry PR #3072 is now "Update mentat to 1.16.0" (ref 28817a03).
   The fork build passed on all 5 platforms; waiting on maintainers.
 - EC2 (kiwi 505435643998): all mentat-* resources deleted.
+
+## v1.16.1 RELEASED (2026-10-19): tag b752845a, get-else fix + glibc floor
+- 670aaeaa: get-else is a correlated COALESCE((SELECT ...), default). The
+  LEFT JOIN placed after a comma FROM list could not see non-last aliases
+  (report 2026-10-18).
+  - as-of / since read the value at that basis.
+  - Cardinality-many is an error, as in Datomic.
+  - 8 regression tests in src/get_else_tests.rs; 7 of them fail on 1.16.0.
+- #336: the 1.16.0 pg tarballs needed GLIBC_2.38/2.39 (Rust 1.96 std
+  pidfd_spawnp on Ubuntu 24.04, plus __isoc23_sscanf from PG's
+  xlog_internal.h). release.yml's build job now runs in container
+  debian:bookworm, and a "glibc floor" step fails if the .so needs more than
+  GLIBC_2.34. Every 1.16.1 asset needs 2.34. The 1.16.0 release notes carry
+  a warning that points at 1.16.1.
+- Qualified on Debian 12 EC2 (PGDG 15-19rc1):
+  - pgrx +script pg13-19, 1942/0/1 each;
+  - the released tarballs: 1.15.0 db -> ALTER EXTENSION UPDATE -> 1.16.1,
+    and the report's queries are correct on pg15-19.
+- Filed:
+  - #334: a predicate can't use a computed binding (get-else/arithmetic).
+    This predates 1.16.1.
+  - #335: the embedded SQLite/DuckDB backends lack get-else and missing?.
+  - #336: the glibc issue above, fixed.
+- GitHub Release (8 assets), PGXN and crates.io (20 crates) are at 1.16.1.
+  DuckDB registry PR #3072 is "Update mentat to 1.16.1" (ref b752845a); the
+  fork build is green on 5 platforms.
+- EC2 (kiwi 505435643998): all mentat-* resources deleted.
+- Note: `cargo clippy -p pg_mentat -D warnings` has 6 pre-existing lints
+  (auto_index.rs is_multiple_of, query.rs row_num and doc indentation). CI
+  excludes pg_mentat from clippy.
