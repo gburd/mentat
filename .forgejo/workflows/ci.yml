@@ -11,7 +11,7 @@
 #   test-mino    cargo test -p mino-rs
 #   test-ffi     build + test crates/sqlite/ffi
 #   test-sqlite-ext  build the SQLite loadable extension + sqlite3 smoke test
-#   test-duckdb  build the DuckDB extension + load/query smoke test
+#   test-duckdb  build the DuckDB extension + load/query tests in DuckDB v1.5.6 and v2.0
 #   nix-build    flake builds the SQLite CLI + one extension
 #
 # Forgejo Actions syntax is nearly identical to GitHub Actions.
@@ -31,7 +31,6 @@ env:
   CARGO_INCREMENTAL: "0"
   PGRX_VERSION: "0.19.3"
   RUST_TOOLCHAIN: "1.96.0"
-  DUCKDB_VERSION: "v1.5.6"
 
 jobs:
   # --- SQLite / shared front-end: no postgres, no clang required ---------
@@ -274,7 +273,7 @@ jobs:
   test-duckdb:
     name: test-duckdb
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -283,7 +282,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              build-essential pkg-config libsqlite3-dev libssl-dev unzip python3
+              build-essential pkg-config libsqlite3-dev libssl-dev unzip python3 python3-venv \
+              cmake ninja-build
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -303,18 +303,23 @@ jobs:
         run: |
           make configure
           make debug
-      - name: Fetch a matching DuckDB CLI
-        run: |
-          set -euxo pipefail
-          curl -fsSL \
-            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
-            -o /tmp/duckdb.zip
-          mkdir -p /tmp/duckdb-cli
-          unzip -o /tmp/duckdb.zip -d /tmp/duckdb-cli
-          /tmp/duckdb-cli/duckdb --version
-      - name: Load + query smoke test (edn_t/edn_q/edn_pull/edn_eval + a native JOIN)
+      # One binary, two DuckDB versions: v1.5.6 (the stable C API floor) and
+      # v2.0.0 at d54cbbe3 (what the Community Extensions registry builds
+      # against). That commit has no CLI download: scripts/duckdb-clis.sh
+      # builds it from source at its commit (about 15 minutes cold), so the
+      # CLIs are cached by commit.
+      - name: Cache the DuckDB CLIs
+        uses: actions/cache@v4
+        with:
+          path: duckdb-cli
+          key: duckdb-cli-v1.5.6-d54cbbe3df-${{ runner.os }}
+      - name: DuckDB CLIs (v1.5.6 + v2.0.0 @d54cbbe3)
+        run: scripts/duckdb-clis.sh "$GITHUB_WORKSPACE/duckdb-cli"
+      # Footer is C_STRUCT; smoke.sh under both CLIs; the SQLLogicTest and
+      # the concurrency test under the duckdb 1.5.6 and 2.0 dev wheels.
+      - name: Load + query in DuckDB v1.5.6 and v2.0 (smoke, SQLLogicTest, concurrency)
         working-directory: crates/duckdb
-        run: DUCKDB=/tmp/duckdb-cli/duckdb bash test/smoke.sh
+        run: EXT=build/debug/mentat.duckdb_extension CLIS="$GITHUB_WORKSPACE/duckdb-cli" bash test/cross-version.sh
       # The DuckDB storage backend outside the extension, on a bundled DuckDB:
       # the differential test against the SQLite engine and the scripting
       # model suite. A separate workspace (duckdb `bundled` vs the

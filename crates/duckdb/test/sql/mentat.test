@@ -2,10 +2,11 @@
 # description: mentat DuckDB extension: edn_t / edn_q / edn_pull / edn_eval
 # group: [mentat]
 #
-# Run with the SQLLogicTest harness (`make test_debug`) ONLY when the venv/host
-# duckdb matches the extension target (v1.5.6, i.e. Python 3.10+). On Python 3.9
-# the venv caps at duckdb 1.4.5 and cannot load a v1.5.6 extension; use
-# test/smoke.sh with the standalone v1.5.6 CLI instead.
+# Run with the SQLLogicTest harness (`make test_debug`): the venv's duckdb must
+# be at least the extension's C API floor, v1.5.6 (Python 3.10+). On Python 3.9
+# the venv caps at duckdb 1.4.5, which cannot load it; use test/smoke.sh with a
+# standalone CLI instead. test/cross-version.sh also runs this file under the
+# duckdb 2.0 dev wheel.
 
 require mentat
 

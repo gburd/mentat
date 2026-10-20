@@ -8,7 +8,7 @@ allocated once, that readers never see part of a transaction, and that a
 second store is written in parallel.
 
 Usage: python3 test/concurrency.py build/debug/mentat.duckdb_extension
-(needs the duckdb==1.5.6 Python package)."""
+(needs the duckdb Python package, 1.5.6 or later; CI runs 1.5.6 and 2.0)."""
 import json
 import os
 import sys

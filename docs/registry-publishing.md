@@ -124,42 +124,55 @@ So "automate future releases update the registry" concretely means:
 `extensions/mentat/description.yml` — bumping `extension.version` and `repo.ref`
 to the new tag's commit.**
 
-### 1.3 Build & signing are central — version‑lock is a lucky match
+### 1.3 Build & signing are central — the stable C API keeps us loadable
 
 Their CI does the build + sign for all platforms and all supported DuckDB
 versions. You provide only a buildable repo at `repo.ref`. Verified from
 `community-extensions/.github/workflows/build.yml`:
 
 ```
-DUCKDB_LATEST_STABLE: 'v1.5.6'         # was v1.5.5 until 2026-09-30
-DUCKDB_VERSION:       v1.5.6           # default
-uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
-  duckdb_version:    v1.5.6
-  ci_tools_version:  v1.5-variegata
+# as of 2026-10-20 (PR #3079 merged 2026-10-15; pin bumped a4e7e801..55b86ea2)
+DUCKDB_LATEST_STABLE: 'v2.0.0'
+uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
+  duckdb_version:    v2.0.0
+  duckdb_commit:     d54cbbe3df17e8e5ce68312f483b4155836112aa   # was b15358c3 (v2.0.0-alpha46057)
+  ci_tools_version:  v2.0-cyanoptera
   extra_toolchains:  <requires_toolchains from descriptor>
 ```
 
-**Keep this aligned:** community-extensions builds against
-`DUCKDB_LATEST_STABLE`, and `mentat_duckdb` must target exactly that version
-(`duckdb = "~1.10506.0"`, `TARGET_DUCKDB_VERSION=v1.5.6`, `USE_UNSTABLE_C_API=1`).
-The unstable C API makes the binary load only into the DuckDB version it was
-built for, and the registry tests it by loading it into its own DuckDB. When
-the registry bumped v1.5.5 -> v1.5.6, our v1.5.5 build failed its Windows test
-with "built specifically for DuckDB version 'v1.5.5'". Linux looked green only
-because extension-ci-tools skips tests on linux_amd64 (and inside the Linux
-Docker build), so only the Windows and macOS jobs actually load the binary.
+(Before #3079 it was `DUCKDB_LATEST_STABLE: v1.5.6` with
+`_extension_distribution.yml@v1.5-variegata`. That v1.5.6 build now runs
+only when someone dispatches `build.yml` by hand, using `repo.variegata`.)
 
-Every DuckDB patch release therefore needs a mentat release: bump the three
-duckdb-rs crates (`1.10X0Y.0` = DuckDB v1.X.Y), `TARGET_DUCKDB_VERSION`, and
-`DUCKDB_VERSION` in ci.yml, then PR the new `repo.ref`. The official Rust
-template (`extension-template-rs`) works the same way, so this is the normal
-maintenance treadmill for duckdb-rs extensions (`UPDATING.md` "Upgrading to a
-new DuckDB version").
+**The stable C API (since the release after 1.17.0).** `mentat_duckdb` is
+built with the stable C API (`duckdb = "~1.10506.0"`,
+`TARGET_DUCKDB_VERSION=v1.5.6`, `USE_UNSTABLE_C_API` unset), so its footer is
+`C_STRUCT` with v1.5.6 as the C API *floor*, and one binary loads into DuckDB
+v1.5.6 and v2.0. That matters because the registry now builds with DuckDB
+2.0 and publishes it for 2.0 users, while its test venv still installs
+`duckdb` 1.5.6 from PyPI (until 2.0 is released there): a v1.5.6-locked binary would pass the
+registry's CI and then be refused by every DuckDB 2.0 user ("built
+specifically for DuckDB version 'v1.5.6'"). The reasoning and the ABI
+evidence are in `crates/duckdb/README.md`, "Pinned versions"; CI's
+`test-duckdb` runs `crates/duckdb/test/cross-version.sh` on every push.
+
+Through 1.17.0 the extension used the unstable C API
+(`USE_UNSTABLE_C_API=1`), which locks the binary to the exact DuckDB it was
+built for. When the registry bumped v1.5.5 -> v1.5.6, our v1.5.5 build failed
+its Windows test with "built specifically for DuckDB version 'v1.5.5'".
+Linux looked green only because extension-ci-tools skips tests on
+linux_amd64 (and inside the Linux Docker build), so only the Windows and
+macOS jobs actually load the binary. That treadmill (a mentat release for
+every DuckDB patch release) is gone with the stable API. A DuckDB release
+still needs a mentat release if it drops or renumbers the v1 C API struct;
+`test/cross-version.sh` under the new DuckDB is the check. To raise the
+floor, bump the three duckdb-rs crates (`1.10X0Y.z` = DuckDB v1.X.Y) and
+`TARGET_DUCKDB_VERSION` together.
 
 What our repo must expose for their CI (all already present in `crates/duckdb`):
 - `Makefile` including
   `extension-ci-tools/makefiles/c_api_extensions/{base,rust}.Makefile`,
-  with `EXTENSION_NAME=mentat`, `USE_UNSTABLE_C_API=1`,
+  with `EXTENSION_NAME=mentat`, `USE_UNSTABLE_C_API` unset (stable C API),
   `TARGET_DUCKDB_VERSION=v1.5.6`, and the `configure`/`debug`/`release`/`test`
   targets. ✅ present.
 - `EXTENSION_LIB_FILENAME`/`RUST_LIBNAME` override (our cdylib is
@@ -172,10 +185,11 @@ What our repo must expose for their CI (all already present in `crates/duckdb`):
   `quackformers`' exclusions to start, then relax.
 
 **Gotcha (local, not registry):** our submodule is pinned to `main`
-(`20bad04c`), while the community CI uses the tag `v1.5-variegata`. This only
-affects *local* `make` builds, not the central build. If a local build breaks
-after an upstream `main` change, pin the submodule to `v1.5-variegata` to match
-what the registry uses.
+(`20bad04c`), while the community CI uses the tag `v2.0-cyanoptera`
+(`969bc76`; `v1.5-variegata` before #3079). Their `c_api_extensions`
+Makefiles are identical today. This only affects *local* `make` builds, not
+the central build. If a local build breaks after an upstream change, pin the
+submodule to `v2.0-cyanoptera` to match what the registry uses.
 
 ### 1.4 Automation recipe (DuckDB)
 
@@ -409,12 +423,12 @@ One‑time maintainer steps:
 | | DuckDB Community Extensions | PGXN |
 |---|---|---|
 | Publish mechanism | PR editing `extensions/mentat/description.yml` in `duckdb/community-extensions` | `pgxn-bundle` + `pgxn-release` (image `pgxn/pgxn-tools`) |
-| Build/sign | **Central** (their CI, all platforms, DuckDB v1.5.6, `ci_tools_version v1.5-variegata`) | You bundle a zip; PGXN Manager just stores it |
-| Our version‑lock | **Matches** (registry stable = v1.5.6 = our pin) ✅ | n/a |
+| Build/sign | **Central** (their CI, all platforms, DuckDB 2.0 at d54cbbe3 (`v2.0.0`), `ci_tools_version v2.0-cyanoptera`) | You bundle a zip; PGXN Manager just stores it |
+| Our DuckDB pin | Stable C API, floor v1.5.6: one binary loads into v1.5.6 and v2.0 ✅ | n/a |
 | First time | Manual PR + upstream review | Create + get PGXN account approved |
 | Per release (automatable?) | CI opens PR (needs `COMMUNITY_EXT_PAT`); **merge is a human gate** | Fully automatable (`PGXN_USERNAME`/`PGXN_PASSWORD`) |
 | Secrets | `COMMUNITY_EXT_PAT` (fork+PR scope) | `PGXN_USERNAME`, `PGXN_PASSWORD` |
-| Non‑standard for us | Unstable‑C‑API version‑lock (normal for duckdb‑rs; breaks on DuckDB bumps) | `META.json` `file` path wrong + version stale; pgrx tree not classic `make`‑installable |
+| Non‑standard for us | Stable C API where `extension-template-rs` uses the unstable one (see 1.3) | `META.json` `file` path wrong + version stale; pgrx tree not classic `make`‑installable |
 | `repo.github` / source | Must be **GitHub mirror** `gburd/mentat` (their CI clones GitHub) | Bundles whatever is at HEAD of the checked‑out repo |
 | Trunk (`pgt.dev`) | — | **Defunct — do not automate** (`pgt.dev` dead, `tembo-io/trunk` gone) |
 
@@ -422,8 +436,10 @@ One‑time maintainer steps:
 
 - DuckDB community: `github.com/duckdb/community-extensions`
   (`README.md`, `UPDATING.md`, `scripts/build.py`,
-  `.github/workflows/build.yml` → `DUCKDB_LATEST_STABLE: v1.5.6`,
-  `_extension_distribution.yml@v1.5-variegata`).
+  `.github/workflows/build.yml` → since PR #3079, DuckDB 2.0 (commit
+  d54cbbe3, `v2.0.0`; b15358c3 `v2.0.0-alpha46057` until 2026-10-20) with
+  `_extension_distribution.yml@v2.0-cyanoptera`; before it
+  `DUCKDB_LATEST_STABLE: v1.5.6` with `@v1.5-variegata`).
 - Real descriptors: `extensions/quackformers/description.yml` (pure Rust,
   `build: cargo`), `extensions/crypto/description.yml`,
   `extensions/waddle/description.yml` (in `UPDATING.md`).

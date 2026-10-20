@@ -14,19 +14,64 @@ schema and the DuckDB SQL. Design: `docs/duckdb-native-storage-plan.md`.
 
 Install from the registry: `INSTALL mentat FROM community; LOAD mentat;`.
 
-## Pinned versions (IMPORTANT — version-lock caveat)
+## Pinned versions
 
-| Component | Version |
-|---|---|
-| `duckdb` / `libduckdb-sys` / `duckdb-loadable-macros` | `~1.10506.0` (= DuckDB **v1.5.6**) |
-| `TARGET_DUCKDB_VERSION` | `v1.5.6` |
-| `USE_UNSTABLE_C_API` | `1` (required by duckdb-rs today) |
+| Pin | Value | Where |
+|---|---|---|
+| `duckdb` / `libduckdb-sys` / `duckdb-loadable-macros` | `~1.10506.0` (= DuckDB **v1.5.6**; lockfile 1.10506.1) | `Cargo.toml` |
+| C API | **stable** (`USE_UNSTABLE_C_API` unset), floor `TARGET_DUCKDB_VERSION=v1.5.6` | `Makefile` |
+| Test venv | `DUCKDB_TEST_VERSION ?= 1.5.6` | `Makefile` |
+| Tested DuckDB | v1.5.6 (CLI, Python) and 2.0 (CLI built at d54cbbe3, the registry's pin, reporting `v2.0.0`; Python dev wheel `2.0.0.dev2610192346`) | `test/cross-version.sh`, `scripts/duckdb-clis.sh`, CI `test-duckdb` |
 
-Because duckdb-rs currently requires the **unstable C API**
-(`USE_UNSTABLE_C_API=1`), the produced `.duckdb_extension` loads **only** into
-DuckDB **v1.5.6**. Forward compatibility is not guaranteed. Bumping DuckDB means
-bumping the crate pin **and** `TARGET_DUCKDB_VERSION` together, then rebuilding
-(plan §9 risk 1).
+The extension uses DuckDB's **stable** C API. Its footer says `C_STRUCT` with
+`v1.5.6` as a C API *floor*: DuckDB loads it when the floor is at or below
+its own version and hands it the v1 function-pointer struct. One release
+binary loads into DuckDB v1.5.6 and v2.0. Until 1.17.0 the extension was
+built with `USE_UNSTABLE_C_API=1`; that footer (`C_STRUCT_UNSTABLE`) loads
+only into exactly v1.5.6, and DuckDB 2.0 refuses it ("built specifically for
+DuckDB version 'v1.5.6'").
+
+Why the stable API, and why now:
+
+- **The registry builds against v2.0.** Since duckdb/community-extensions
+  PR #3079 (2026-10-15) its `build.yml` builds every merged descriptor with
+  DuckDB 2.0 and ci-tools `v2.0-cyanoptera`, and deploys it for 2.0 users. It
+  first pinned commit b15358c3 (`v2.0.0-alpha46057`); since 2026-10-20 it
+  pins d54cbbe3 and calls it `v2.0.0` (`DUCKDB_LATEST_STABLE`). A v1.5.6
+  build is now made only on request (`repo.variegata`). Its test venv runs
+  `pip install duckdb`, which gives 1.5.6 until 2.0 is on PyPI. So a
+  v1.5.6-locked binary passes the registry's CI and then fails to load for
+  2.0 users.
+- **The v1 struct is append-only.** In 2.0 (both b15358c3 and d54cbbe3),
+  `duckdb_ext_api_v1` is v1.5.6's 546 entries, with the same signatures and
+  order, plus 2 appended (548). 2.0 routes `C_STRUCT_UNSTABLE` extensions to
+  a separate v2 entrypoint, so an unstable build can't be made to load
+  there.
+  duckdb-rs 1.10506's struct is the same 546 (it generates it with the
+  unstable entries enabled, but v1.5.6's header has none left inside the
+  struct: everything is stable as of v1.5.6). A v1.5.6-floor binary is
+  valid against 2.0's struct.
+- **Nothing mentat uses is unstable-only.** `vscalar`, `vtab`, data chunks,
+  `Connection::try_clone` and the SQL the pool runs through `duck_conn` are
+  all in the stable struct. The switch is a Makefile change; `src/` did not
+  change.
+- **Kept tested.** `test/cross-version.sh` checks the footer is `C_STRUCT`,
+  runs `test/smoke.sh` under the v1.5.6 and 2.0 (d54cbbe3) CLIs, and runs
+  `test/sql/mentat.test` and `test/concurrency.py` under the duckdb 1.5.6
+  and 2.0 dev wheels. CI's `test-duckdb` and release's `build-duckdb-ext`
+  run it; `scripts/duckdb-clis.sh` fetches v1.5.6 and builds the 2.0 CLI
+  from source at the registry's commit (no download exists for it). When
+  the registry moves its pin, update `V20_COMMIT` there and the CI cache
+  keys.
+
+Consequences: a DuckDB patch or minor release no longer needs a mentat
+release. What can still break it is DuckDB dropping or renumbering the v1 C
+API (there is a `duckdb_extension_v2.h`); if 2.0 final does that, the 2.0
+smoke test fails first, and the fix is to bump duckdb-rs to its 2.0 line.
+To raise the floor, bump the duckdb-rs pin and `TARGET_DUCKDB_VERSION`
+together: the floor must never be lower than the struct duckdb-rs was
+generated from. Do not set `USE_UNSTABLE_C_API=1` without reading this
+section again.
 
 This crate is **extension-only**. The `loadable-extension` feature replaces the
 DuckDB C API functions; opening a normal DuckDB `Connection` from this crate
@@ -78,8 +123,8 @@ cargo build -p mentat_duckdb   # from repo root; produces a bare .so, NOT loadab
 ## Load & use
 
 DuckDB refuses unsigned extensions unless started with `-unsigned` (or
-`allow_unsigned_extensions=true`). Use a **DuckDB v1.5.6** CLI (the pinned
-target). The standalone CLI:
+`allow_unsigned_extensions=true`). Use a DuckDB CLI at v1.5.6 (the C API
+floor) or later; v2.0 works too. The v1.5.6 standalone CLI:
 
 ```bash
 curl -sfL -o duckdb_cli.zip \
@@ -88,10 +133,10 @@ unzip duckdb_cli.zip
 ./duckdb --version   # v1.5.6 (Variegata)
 ```
 
-(The `make configure` venv installs the latest `duckdb` PyPI wheel available for
-the host Python; on Python 3.9 that caps at 1.4.5, which can NOT load a v1.5.6
-extension — hence the standalone v1.5.6 CLI for load/smoke tests. On Python
-3.10+ the venv wheel is 1.5.6 and `make test_debug` works.)
+(The `make configure` venv installs `duckdb==1.5.6` (`DUCKDB_TEST_VERSION`),
+which needs Python 3.10+; there `make test_debug` works. On Python 3.9 pip
+cannot install it (that Python caps at 1.4.5, below the floor), so use a
+standalone CLI and `test/smoke.sh`.)
 
 ```sql
 -- duckdb -unsigned my.duckdb
@@ -336,20 +381,26 @@ Quack authentication token`), for both `quack_query` and `ATTACH`.
   "Transactions and connections"); `edn_t` calls on the same store take turns.
 
 Quack is pre-2.0 at DuckDB v1.5.6 (`quack` build `c154811`): its wire protocol
-and function signatures may change in any DuckDB release, and the mentat
-extension is version-locked to v1.5.6 anyway (see "Pinned versions"). Server
-and clients must run the same DuckDB version. The stores live in the server's
+and function signatures may change in any DuckDB release. The mentat
+extension itself loads into v1.5.6 and later (see "Pinned versions"), but
+server and clients must run the same DuckDB version. The stores live in the server's
 DuckDB database, so start the server on a database file (not `:memory:`) to
 keep them.
 
 ## Tests
 
-- `test/smoke.sh` — standalone DuckDB v1.5.6 CLI; asserts on every output line,
-  that the datoms are DuckDB rows readable without the extension, that no file
-  is written, and on the error paths. `DUCKDB=/path/to/duckdb bash test/smoke.sh`.
+- `test/smoke.sh` — a standalone DuckDB CLI (v1.5.6 or later); asserts on every
+  output line, that the datoms are DuckDB rows readable without the extension,
+  that no file is written, and on the error paths.
+  `DUCKDB=/path/to/duckdb [EXT=...] bash test/smoke.sh`.
 - `test/sql/mentat.test` — SQLLogicTest (the registry's runner). Needs a Python
-  3.10+ venv with `duckdb==1.5.6` and `duckdb-sqllogictest-python`, e.g.
+  3.10+ venv with `duckdb>=1.5.6` and `duckdb-sqllogictest-python` (`make
+  configure` makes one), e.g. `make test_debug`, or
   `python -m duckdb_sqllogictest --test-dir test/sql --external-extension build/debug/mentat.duckdb_extension`.
+- `test/cross-version.sh` — the footer check plus all of the above (and
+  `test/concurrency.py`) under DuckDB v1.5.6 and v2.0, on one binary:
+  `scripts/duckdb-clis.sh ~/duckdb-cli`, then
+  `EXT=build/release/mentat.duckdb_extension CLIS=~/duckdb-cli bash test/cross-version.sh`.
 - `store/tests-harness` — the storage backend outside the extension, on a
   bundled DuckDB (a separate workspace): a differential test running the same
   transactions and 60 queries (now, as-of and since every transaction) on the

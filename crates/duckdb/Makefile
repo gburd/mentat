@@ -4,14 +4,22 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 EXTENSION_NAME=mentat
 
-# Unstable C API is currently REQUIRED by duckdb-rs. Consequence: the produced
-# binary loads ONLY into TARGET_DUCKDB_VERSION (v1.5.6) — forward compat broken.
-# (plan §1.2, §9 risk 1). Bumping DuckDB = bump the crate pin + this together.
-USE_UNSTABLE_C_API=1
-
-# Target DuckDB version. Must match the `duckdb = "~1.10506.0"` crate pin
-# (= DuckDB v1.5.6) and the venv/PyPI `duckdb` used to test/load.
+# STABLE C API: USE_UNSTABLE_C_API is deliberately NOT set. The footer is
+# stamped C_STRUCT with TARGET_DUCKDB_VERSION as the C API floor, so one
+# binary loads into DuckDB v1.5.6 and every later release that keeps the v1
+# extension API (v2.0 does, and the registry builds against v2.0). With
+# USE_UNSTABLE_C_API=1 the binary loads ONLY into the exact DuckDB it was
+# built for. See README.md "Pinned versions" before changing either.
+#
+# The C API floor. Must match the duckdb-rs pin `duckdb = "~1.10506.0"`
+# (1.10506.x = DuckDB v1.5.6): the extension uses the v1.5.6 function-pointer
+# struct, so it may not claim an older floor.
 TARGET_DUCKDB_VERSION=v1.5.6
+
+# Test (make test_release) with the v1.5.6 Python package: the floor. CI
+# also loads the binary into DuckDB v2.0 (test/smoke.sh with DUCKDB=..., and
+# the SQLLogicTest under the 2.0 dev wheel: test/cross-version.sh).
+DUCKDB_TEST_VERSION ?= 1.5.6
 
 # The version stamped into the extension footer: the workspace version from the
 # root Cargo.toml, so it can't drift from the release (this also works in copies

@@ -252,9 +252,9 @@ transactor, query planner and pull as the embedded store), compiled to DuckDB
 SQL, so the results join against native DuckDB tables. Install it from the
 [DuckDB Community Extensions](https://duckdb.org/community_extensions/)
 registry (`INSTALL mentat FROM community; LOAD mentat;`) or build it yourself.
-It is built with [duckdb-rs](https://github.com/duckdb/duckdb-rs) and pinned to
-**DuckDB v1.5.6** (via the DuckDB unstable C API); the extension loads only into
-that DuckDB version, and bumping DuckDB means bumping the pin and rebuilding.
+It is built with [duckdb-rs](https://github.com/duckdb/duckdb-rs) on DuckDB's
+stable C API with a **v1.5.6** floor: one binary loads into DuckDB v1.5.6 and
+later releases that keep the v1 extension API, DuckDB 2.0 included.
 
 ### Build
 

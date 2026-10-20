@@ -8,6 +8,27 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The DuckDB extension loads into DuckDB v1.5.6 and v2.0.** It is built on
+  DuckDB's stable C API now (`USE_UNSTABLE_C_API` dropped from
+  `crates/duckdb/Makefile`; the floor stays `TARGET_DUCKDB_VERSION=v1.5.6`).
+  The footer says `C_STRUCT` with a v1.5.6 floor instead of
+  `C_STRUCT_UNSTABLE`. Through 1.17.0 a binary loaded only into exactly
+  v1.5.6, and DuckDB 2.0 refused it ("built specifically for DuckDB version
+  'v1.5.6'"). Since duckdb/community-extensions#3079 (2026-10-15) the
+  Community Extensions registry builds and publishes with DuckDB 2.0 (pinned
+  to d54cbbe3, `v2.0.0`, since 2026-10-20), so a version-locked build there
+  would not load for 2.0 users. No source change: nothing the extension
+  uses is unstable-only. A DuckDB patch release no longer needs a mentat
+  release. See `crates/duckdb/README.md`, "Pinned versions".
+- CI (`test-duckdb`, and release's `build-duckdb-ext`) runs the new
+  `crates/duckdb/test/cross-version.sh` on one binary: footer check,
+  `test/smoke.sh` under the DuckDB v1.5.6 and 2.0 (d54cbbe3) CLIs, and the
+  SQLLogicTest and concurrency test under the duckdb 1.5.6 and 2.0 dev
+  Python packages. `scripts/duckdb-clis.sh` fetches v1.5.6 and builds the
+  2.0 CLI from source at the registry's commit.
+
 ## [1.17.0] — trusted install, get-else/missing? everywhere, predicates on computed values
 
 ### Added

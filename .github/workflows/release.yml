@@ -290,11 +290,14 @@ jobs:
   # DuckDB loadable extension (crates/duckdb) -> mentat.duckdb_extension
   # (unsigned; the signed build comes from the DuckDB Community Extensions
   # registry once the descriptor PR is merged).
+  # Stable C API (floor v1.5.6): the one binary is tested in DuckDB v1.5.6
+  # and v2.0.0 (d54cbbe3) before it ships (crates/duckdb/README.md "Pinned
+  # versions"). The asset keeps its old name; v1.5.6 is the floor now.
   build-duckdb-ext:
-    name: Build DuckDB extension (Linux x86_64, DuckDB v1.5.6)
+    name: Build DuckDB extension (Linux x86_64, DuckDB v1.5.6 and v2.0)
     needs: gate
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
@@ -302,7 +305,7 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev unzip python3 python3-venv
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev unzip python3 python3-venv cmake ninja-build
       - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -311,14 +314,19 @@ jobs:
           # from adding them mid-build (a rustup race there failed v1.10.1's
           # DuckDB build: "detected conflict: bin/cargo-fmt").
           components: rustfmt, clippy
-      - name: Build (release) + smoke test
+      - name: Cache the DuckDB CLIs
+        uses: actions/cache@v4
+        with:
+          path: duckdb-cli
+          key: duckdb-cli-v1.5.6-d54cbbe3df-${{ runner.os }}
+      - name: DuckDB CLIs (v1.5.6 + v2.0.0 @d54cbbe3)
+        run: scripts/duckdb-clis.sh "$GITHUB_WORKSPACE/duckdb-cli"
+      - name: Build (release) + test in DuckDB v1.5.6 and v2.0
         working-directory: crates/duckdb
         run: |
           make configure
           make release
-          curl -sSL https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip -o /tmp/duckdb.zip
-          unzip -o /tmp/duckdb.zip -d /tmp/duckdb-cli
-          EXT="$PWD/build/release/mentat.duckdb_extension" DUCKDB=/tmp/duckdb-cli/duckdb bash test/smoke.sh
+          EXT=build/release/mentat.duckdb_extension CLIS="$GITHUB_WORKSPACE/duckdb-cli" bash test/cross-version.sh
       - name: Package
         run: |
           STAGING="mentat-duckdb-v1.5.6-linux_amd64"
@@ -458,4 +466,5 @@ jobs:
           title: "Update mentat to ${{ github.ref_name }}"
           body: |
             Automated descriptor bump for mentat ${{ github.ref_name }}
-            (commit ${{ github.sha }}). Built against DuckDB v1.5.6.
+            (commit ${{ github.sha }}). Stable C API, floor DuckDB v1.5.6;
+            the same binary is tested in DuckDB v1.5.6 and v2.0.0 (d54cbbe3).
