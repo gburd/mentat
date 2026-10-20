@@ -1,0 +1,6 @@
+-- pg_mentat 1.17.0 -> 1.17.1 upgrade.
+--
+-- No schema or data change for PostgreSQL. 1.17.1 is a DuckDB-extension
+-- release: it moves the DuckDB extension to DuckDB's stable C API so one
+-- binary loads into DuckDB v1.5.6 and v2.0. The edge keeps the versions in
+-- step.

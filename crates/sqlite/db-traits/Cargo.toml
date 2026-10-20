@@ -19,17 +19,17 @@ thiserror = "~2.0"
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.17.0"
+version = "=1.17.1"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.17.0"
+version = "=1.17.1"
 
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.17.0"
+version = "=1.17.1"
 
 [dependencies.rusqlite]
 version = "~0.40"

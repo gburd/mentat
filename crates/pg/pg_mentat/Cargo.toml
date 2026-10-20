@@ -1,7 +1,7 @@
 [package]
 name = "pg_mentat"
 publish = false
-version = "1.17.0"
+version = "1.17.1"
 edition = "2021"
 # pgrx 0.19 (PostgreSQL 19 support) requires rustc 1.96.
 rust-version = "1.96"
@@ -46,15 +46,15 @@ parking_lot = "0.12"
 # Optional: the mino Clojure-dialect interpreter, behind the `script` feature.
 # Pure-Rust, single-threaded, no FFI/threads/global state -- safe to embed in
 # a Postgres backend (build -> eval -> drop within one function call).
-mino-rs = { path = "../../mino", optional = true, version = "=1.17.0" }
+mino-rs = { path = "../../mino", optional = true, version = "=1.17.1" }
 
 # Optional: the backend-independent mentat.store/* scripting glue (§ 1.19).
-mentat_script = { path = "../../script", optional = true, version = "=1.17.0" }
+mentat_script = { path = "../../script", optional = true, version = "=1.17.1" }
 
 # Mentat dependencies
-edn = { package = "mentat_edn", path = "../../edn", features = ["serde_support"], version = "=1.17.0" }
-core_traits = { package = "mentat_core_traits", path = "../../core-traits", version = "=1.17.0" }
-mentat_core = { path = "../../core", version = "=1.17.0" }
+edn = { package = "mentat_edn", path = "../../edn", features = ["serde_support"], version = "=1.17.1" }
+core_traits = { package = "mentat_core_traits", path = "../../core-traits", version = "=1.17.1" }
+mentat_core = { path = "../../core", version = "=1.17.1" }
 
 [dev-dependencies]
 pgrx-tests = "=0.19.3"

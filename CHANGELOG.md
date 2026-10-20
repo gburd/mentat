@@ -8,6 +8,8 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.17.1] — the DuckDB extension loads into DuckDB 2.0
+
 ### Changed
 
 - **The DuckDB extension loads into DuckDB v1.5.6 and v2.0.** It is built on
@@ -28,6 +30,14 @@ and the project follows [Semantic Versioning](https://semver.org/).
   SQLLogicTest and concurrency test under the duckdb 1.5.6 and 2.0 dev
   Python packages. `scripts/duckdb-clis.sh` fetches v1.5.6 and builds the
   2.0 CLI from source at the registry's commit.
+- No PostgreSQL, SQLite or library change. `pg_mentat--1.17.0--1.17.1.sql`
+  is a no-op edge that keeps the versions in step.
+
+### Security
+
+- Cargo.lock: rustls-webpki 0.103.16 (RUSTSEC-2026-0382) and webpki-roots
+  1.0.10 (RUSTSEC-2026-0381), both distrusted emSign intermediates. They
+  come in only through duckdb-rs's build-time downloader (`ureq`).
 
 ## [1.17.0] — trusted install, get-else/missing? everywhere, predicates on computed values
 

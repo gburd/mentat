@@ -12,9 +12,9 @@ description = "Backend-independent mino mentat.store/* scripting glue for Mentat
 name = "mentat_script"
 
 [dependencies]
-mino-rs = { path = "../mino", version = "=1.17.0" }
-edn = { package = "mentat_edn", path = "../edn", version = "=1.17.0" }
-core_traits = { package = "mentat_core_traits", path = "../core-traits", version = "=1.17.0" }
+mino-rs = { path = "../mino", version = "=1.17.1" }
+edn = { package = "mentat_edn", path = "../edn", version = "=1.17.1" }
+core_traits = { package = "mentat_core_traits", path = "../core-traits", version = "=1.17.1" }
 serde_json = "1.0"
 
 [lints]
