@@ -158,6 +158,7 @@ SELECT count(*) FROM mentat.datoms;
 | `edn_q(store VARCHAR, query VARCHAR, options VARCHAR)` | table fn | rows, all VARCHAR columns | `DuckStore::q_json` |
 | `edn_pull(store VARCHAR, pattern VARCHAR, entity BIGINT)` | scalar, volatile | VARCHAR (JSON map) | `(pull ?e pattern)` via `DuckStore::q` |
 | `edn_eval(store VARCHAR, script VARCHAR)` | scalar, volatile | VARCHAR (EDN) | `mentat_duckdb_store::script` (feature `script`) |
+| `mentat_import(store VARCHAR, path VARCHAR)` | scalar, volatile | VARCHAR (JSON: datoms, transactions, last_tx) | `DuckStore::import_sqlite` |
 
 Any NULL argument to a scalar yields NULL. `store` names a mentat store in the
 current DuckDB database; it is created (schema, tables, bootstrap transaction)
@@ -166,6 +167,39 @@ to `mentat_<name>_<hash>`: letters, digits and `_` are kept, the rest become `_`
 and a hash of the full name keeps distinct names apart, so a path-like name
 such as `'/tmp/demo.mentat'` (the pre-1.11 file argument) is just a name and
 writes no file.
+
+### Importing a 1.10.x store (`mentat_import`)
+
+Through 1.10.x this extension kept each store in a SQLite file named by the
+store argument. Since 1.11.0, stores are DuckDB tables, so that file is no
+longer read. `mentat_import(store, path)` copies such a file into a new
+DuckDB store, row for row: all datoms and the whole transaction log
+(history), with every entid, tx id, tx instant, ident, schema attribute and
+partition high-water mark unchanged. `as-of`, `since` and history queries
+answer as they did, and the next transaction gets the tx id and entids the
+old store would have given it. It also reads stores written by the embedded
+engine, the CLI and the SQLite extension (schema version 2 or later).
+
+```sql
+INSTALL sqlite; LOAD sqlite;   -- once: the file is read with DuckDB's sqlite extension
+SELECT mentat_import('people', '/srv/people.mentat');
+-- {"datoms":172,"last_tx":268435461,"store":"people","transactions":6}
+SELECT * FROM edn_q('people', '[:find ?n :where [_ :person/name ?n]]', '{}');
+```
+
+The target store must be new (or hold only its bootstrap transaction). The
+import is one DuckDB transaction: on any error the store is left as it was.
+The source file is attached read-only and detached afterwards. Doubles are
+copied bit for bit, except that `-0.0` comes back as `0.0`. Fulltext values
+become plain strings, which is how DuckDB stores hold them. A version-1 file
+(mentat before 1.10) is refused with a message: open it once with the 1.10+
+CLI or SQLite extension, which upgrades it, then import it.
+
+This extension links no SQLite, so DuckDB's `sqlite` extension must be
+loadable. With DuckDB's default settings it is installed and loaded on first
+use. If it can't be (autoloading is off, or there's no network), the call fails
+with a message saying to run `INSTALL sqlite; LOAD sqlite;`. Offline, copy the
+extension file into the extension directory first.
 
 ### Transactions and connections
 
@@ -407,7 +441,13 @@ keep them.
   bundled DuckDB (a separate workspace): a differential test running the same
   transactions and 60 queries (now, as-of and since every transaction) on the
   SQLite engine and on DuckDB, the shared scripting model suite, persistence and
-  WAL-replay tests. `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
+  WAL-replay tests, and `mentat_import` of a SQLite store (needs DuckDB's
+  `sqlite` extension, autoinstalled from extensions.duckdb.org on first run).
+  `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
+- `test/import-1.10.py` — end to end: the real 1.10.x extension (under a
+  v1.5.6 CLI, in its own process) writes a store, this build imports it, and
+  both answer the differential queries now, as of and since every transaction.
+  `python3 test/import-1.10.py <1.10.x mentat.duckdb_extension> build/release/mentat.duckdb_extension <v1.5.6 duckdb CLI>`.
 
 ## Known gaps
 
@@ -416,4 +456,3 @@ keep them.
 - Stores live in the database the extension was loaded into, not in another
   `ATTACH`ed database.
 - Mentat calls run one at a time (one connection).
-- Stores written by mentat 1.10.x (SQLite files) are not migrated.

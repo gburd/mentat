@@ -47,7 +47,7 @@ thread_local! {
 /// so writes to a store take turns; reads, and writes to other stores, don't
 /// wait. Per process: another process can't open the same database file
 /// for writing (DuckDB locks it).
-fn write_lock(schema: &str) -> Arc<Mutex<()>> {
+pub(crate) fn write_lock(schema: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let mut locks = LOCKS
         .get_or_init(Default::default)
@@ -107,6 +107,10 @@ impl<'c> DuckStore<'c> {
 
     pub fn schema_name(&self) -> &str {
         &self.schema
+    }
+
+    pub(crate) fn conn(&self) -> &'c dyn SqlConn {
+        self.conn
     }
 
     fn storing(&self) -> DuckStoring<'_> {
@@ -297,7 +301,7 @@ impl<'c> DuckStore<'c> {
     }
 
     /// Read the partition map and schema (the `idents`/`schema` views).
-    fn read(&self) -> Result<Opened> {
+    pub(crate) fn read(&self) -> Result<Opened> {
         let partition_map = self.read_partition_map()?;
         let triples = |table: &str| {
             self.conn.query_rows(
@@ -338,7 +342,7 @@ impl<'c> DuckStore<'c> {
 
     /// Run `f` in one DuckDB transaction: committed if it returns Ok, rolled
     /// back otherwise.
-    fn in_tx<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+    pub(crate) fn in_tx<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         match f(self) {
             Ok(v) => {

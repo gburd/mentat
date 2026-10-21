@@ -23,10 +23,12 @@
 
 pub use mentat_sql::{Dialect, SqlConn, SqlConnExt, SqlError, SqlRow, SqlValue};
 
+mod import;
 mod schema;
 #[cfg(feature = "script")]
 pub mod script;
 mod store;
 mod storing;
 
+pub use import::Imported;
 pub use store::{DuckStore, Opened};

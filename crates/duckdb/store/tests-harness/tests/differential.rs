@@ -10,7 +10,7 @@ use mentat_query_projector::QueryResults;
 
 use core_traits::Binding;
 
-fn norm(r: QueryResults) -> String {
+pub fn norm(r: QueryResults) -> String {
     fn b(x: &Binding) -> String {
         format!("{x:?}")
     }
@@ -56,7 +56,7 @@ fn norm_ordered(r: QueryResults) -> String {
     }
 }
 
-const TXS: &[&str] = &[
+pub const TXS: &[&str] = &[
     r#"[{:db/ident :p/name   :db/valueType :db.type/string  :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/index true}
         {:db/ident :p/age    :db/valueType :db.type/long    :db/cardinality :db.cardinality/one :db/index true}
         {:db/ident :p/height :db/valueType :db.type/double  :db/cardinality :db.cardinality/one}
@@ -80,7 +80,7 @@ const TXS: &[&str] = &[
     r#"[{:p/name "Eve" :p/age 25 :p/blob #bytes 010203}]"#,
 ];
 
-const QUERIES: &[&str] = &[
+pub const QUERIES: &[&str] = &[
     "[:find ?n :where [_ :p/name ?n]]",
     "[:find ?n ?a :where [?e :p/name ?n] [?e :p/age ?a]]",
     "[:find ?e . :where [?e :p/name \"Bob\"]]",
