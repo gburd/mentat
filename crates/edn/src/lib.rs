@@ -392,31 +392,38 @@ peg::parser!(grammar grammar() for str {
 
     /// A pull pattern on its own, e.g. `[:person/name {:person/friend [*]}]`.
     pub rule pull_pattern() -> Vec<query::PullAttributeSpec>
-        = __ "[" patterns:pull_attribute()+ "]" __ { patterns }
+        = __ "[" patterns:pull_attribute()+ "]" __ { patterns.into_iter().flatten().collect() }
 
-    rule pull_attribute() -> query::PullAttributeSpec
-        = __ "*" __ { query::PullAttributeSpec::Wildcard }
-        / __ k:raw_backward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
+    // One pattern item; a map spec `{:a [..] :b [..]}` yields one spec per entry.
+    rule pull_attribute() -> Vec<query::PullAttributeSpec>
+        = __ "*" __ { vec![query::PullAttributeSpec::Wildcard] }
+        / a:pull_keyword() alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
+            vec![query::PullAttributeSpec::Attribute(query::NamedPullAttribute {
+                alias: alias.map(::std::rc::Rc::new),
+                ..a
+            })]
+        }
+        / __ "{" es:pull_map_entry()+ "}" __ { es }
+
+    rule pull_map_entry() -> query::PullAttributeSpec
+        = a:pull_keyword() p:pull_pattern() { query::PullAttributeSpec::Nested(a, p) }
+
+    rule pull_keyword() -> query::NamedPullAttribute
+        = __ k:raw_backward_namespaced_keyword() __ {
             // Reverse pull, e.g. `:person/_friends`. Store the *forward* ident
             // (k.to_reversed()) for schema lookup and mark it reverse.
-            let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k.to_reversed()));
-            let alias = alias.map(::std::rc::Rc::new);
-            query::PullAttributeSpec::Attribute(
-                query::NamedPullAttribute {
-                    attribute,
-                    alias,
-                    reverse: true,
-                })
+            query::NamedPullAttribute {
+                attribute: query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k.to_reversed())),
+                alias: None,
+                reverse: true,
+            }
         }
-        / __ k:raw_forward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
-            let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k));
-            let alias = alias.map(::std::rc::Rc::new);
-            query::PullAttributeSpec::Attribute(
-                query::NamedPullAttribute {
-                    attribute,
-                    alias,
-                    reverse: false,
-                })
+        / __ k:raw_forward_namespaced_keyword() __ {
+            query::NamedPullAttribute {
+                attribute: query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k)),
+                alias: None,
+                reverse: false,
+            }
         }
 
     rule limit() -> query::Limit

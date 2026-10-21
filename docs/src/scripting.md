@@ -81,10 +81,12 @@ The PostgreSQL query engine accepts `as-of`/`since` temporal inputs, so
 arbitrary Datalog `mentat.store/q` runs faithfully against a historical basis:
 an as-of/since db value forwards its bound into the query inputs.
 
-The embedded algebrizer has no as-of query rewriting yet (planned for 1.7.1), so
-on the embedded backend a historical `mentat.store/q` is an error. The
-`datoms`/`entity`/`read`/`pull` paths still honor `as-of`/`since` by replaying
-the transaction log; only arbitrary Datalog `q` against a past basis is the gap.
+The embedded (SQLite) and DuckDB backends run the same temporal Datalog, so
+`q`, `pull`, `entity`, `read`, `entities` and `datoms` honor `as-of`/`since` on
+every backend. `pull` on an as-of T db returns the values as of T, including
+inside nested map specs and in a find-pull (`[:find (pull ?e [...]) ...]`).
+Before 1.18.0 the embedded backend refused `pull` and `entities` on a historical
+db, and pg and DuckDB returned current values.
 
 ## Security — `edn_eval`
 

@@ -616,3 +616,96 @@ pub fn pull_reads_the_as_of_and_since_basis(it: &mut Interpreter) {
     assert_eq!(ents(it, &as_of), "2");
     assert_eq!(ents(it, &since), "1");
 }
+
+/// Map specs in a pull pattern, `{:attr [sub-pattern]}`, forward
+/// (cardinality-one and -many) and reverse, nested, on every backend. Each
+/// nested map carries `:db/id`; on an as-of db the nesting reads that basis.
+pub fn pull_nested_map_specs(it: &mut Interpreter) {
+    seed_people(it);
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/ident :person/best :db/valueType :db.type/ref \
+           :db/cardinality :db.cardinality/one}])",
+    )
+    .unwrap();
+    let (alice, bob) = (person(it, "Alice"), person(it, "Bob"));
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {bob} :person/best {alice}]])"
+    ))
+    .unwrap();
+    let t: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {alice} :person/age 31]])"
+    ))
+    .unwrap();
+    let pull = |it: &mut Interpreter, db: &str, e: &str, pat: &str, path: &str| {
+        it.eval_to_string(&format!(
+            "(get-in (mentat.store/pull {db} {e} '{pat}) {path})"
+        ))
+        .unwrap()
+    };
+    let now = "(mentat.store/db c)";
+    let then = format!("(mentat.store/as-of (mentat.store/db c) {t})");
+
+    // Cardinality-many forward: a vector of maps.
+    let pat = "[:person/name {:person/friend [:person/name :person/age]}]";
+    assert_eq!(
+        pull(it, now, &alice, pat, "[:person/friend 0 :person/name]"),
+        "\"Bob\""
+    );
+    assert_eq!(pull(it, now, &alice, pat, "[:person/friend 0 :db/id]"), bob);
+    assert_eq!(pull(it, now, &alice, pat, "[:person/name]"), "\"Alice\"");
+    // Cardinality-one forward: one map, nested two deep.
+    let pat = "[{:person/best [:person/age {:person/friend [:person/name]}]}]";
+    assert_eq!(pull(it, now, &bob, pat, "[:person/best :db/id]"), alice);
+    assert_eq!(pull(it, now, &bob, pat, "[:person/best :person/age]"), "31");
+    assert_eq!(
+        pull(
+            it,
+            now,
+            &bob,
+            pat,
+            "[:person/best :person/friend 0 :person/name]"
+        ),
+        "\"Bob\""
+    );
+    // ...and on an as-of db: Alice's age before the change.
+    assert_eq!(
+        pull(it, &then, &bob, pat, "[:person/best :person/age]"),
+        "30"
+    );
+    // Reverse: who has Bob as a friend.
+    let pat = "[{:person/_friend [:person/name]}]";
+    assert_eq!(
+        pull(it, now, &bob, pat, "[:person/_friend 0 :person/name]"),
+        "\"Alice\""
+    );
+    assert_eq!(
+        pull(it, now, &bob, pat, "[:person/_friend 0 :db/id]"),
+        alice
+    );
+    // No ref: the key is absent.
+    assert_eq!(
+        pull(
+            it,
+            now,
+            &alice,
+            "[{:person/best [:person/name]}]",
+            "[:person/best]"
+        ),
+        "nil"
+    );
+    // A find-pull with a map spec.
+    assert_eq!(
+        it.eval_to_string(
+            "(get-in (mentat.store/q (mentat.store/db c) \
+               '[:find (pull ?e [{:person/best [:person/name]}]) . :where [?e :person/name \"Bob\"]]) \
+               [:person/best :person/name])"
+        )
+        .unwrap(),
+        "\"Alice\""
+    );
+}

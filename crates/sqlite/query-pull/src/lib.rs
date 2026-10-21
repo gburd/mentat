@@ -163,10 +163,39 @@ pub struct Puller {
     // itself as part of a pull expression: `{:person 1234, :person/name "Peter"}`.
     db_id_alias: Option<ValueRc<Keyword>>,
 
+    // Map specs, `{:attr [sub-pattern]}`: each followed ref is pulled with the
+    // sub-puller, batched per spec.
+    nested: Vec<NestedPull>,
+
     // The basis to read: `None` is the live `datoms` table; `AsOf(t)` is the
     // state after tx `t` (asserted at or before `t`, not retracted at or before
     // `t`); `Since(t)` is the current datoms transacted after `t`.
     basis: Option<TemporalBound>,
+}
+
+/// One map spec: follow `attr` (forward, or reverse when `reverse`) from each
+/// pulled entity and pull `puller` on what it reaches, under `name`.
+struct NestedPull {
+    attr: Entid,
+    reverse: bool,
+    many: bool,
+    name: ValueRc<Keyword>,
+    puller: Puller,
+}
+
+/// The ref targets in a pulled forward binding (one ref, or a vec of refs).
+fn refs_in(b: Binding) -> Vec<Entid> {
+    match b {
+        Binding::Scalar(TypedValue::Ref(r)) => vec![r],
+        Binding::Vec(vs) => vs
+            .iter()
+            .filter_map(|v| match v {
+                Binding::Scalar(TypedValue::Ref(r)) => Some(*r),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
 }
 
 /// The datoms of a historical basis as a subquery of `a, e, v, value_type_tag`
@@ -256,6 +285,7 @@ impl Puller {
         let mut names: BTreeMap<Entid, ValueRc<Keyword>> = Default::default();
         let mut attrs: BTreeSet<Entid> = Default::default();
         let mut reverse_attributes: BTreeMap<Entid, ValueRc<Keyword>> = Default::default();
+        let mut nested: Vec<NestedPull> = Vec::new();
         let db_id = ::std::rc::Rc::new(Keyword::namespaced("db", "id"));
         let mut db_id_alias = None;
 
@@ -267,7 +297,49 @@ impl Puller {
                         names.insert(*id, lookup_name(id)?);
                         attrs.insert(*id);
                     }
-                    break;
+                    // No `break`: items after `*` (`[* {:a [..]}]`) still apply.
+                }
+                PullAttributeSpec::Nested(
+                    NamedPullAttribute {
+                        ref attribute,
+                        ref alias,
+                        reverse,
+                    },
+                    ref sub,
+                ) => {
+                    let entid = match attribute {
+                        PullConcreteAttribute::Ident(ref i) => schema.get_entid(i).map(|e| e.0),
+                        PullConcreteAttribute::Entid(e) => Some(*e),
+                    };
+                    // An unknown attribute pulls nothing, as for a plain one.
+                    let Some(entid) = entid else { continue };
+                    let name = match alias {
+                        Some(a) => a.to_value_rc(),
+                        None => {
+                            let fwd = schema
+                                .get_ident(entid)
+                                .ok_or(PullError::UnnamedAttribute(entid))?;
+                            ValueRc::new(if *reverse {
+                                fwd.to_reversed()
+                            } else {
+                                fwd.clone()
+                            })
+                        }
+                    };
+                    let many = *reverse
+                        || schema
+                            .attribute_for_entid(entid)
+                            .is_some_and(|a| a.multival);
+                    if !*reverse {
+                        attrs.insert(entid); // fetched, emitted by the spec
+                    }
+                    nested.push(NestedPull {
+                        attr: entid,
+                        reverse: *reverse,
+                        many,
+                        name,
+                        puller: Puller::prepare(schema, sub.clone())?,
+                    });
                 }
                 PullAttributeSpec::Attribute(NamedPullAttribute {
                     ref attribute,
@@ -333,14 +405,46 @@ impl Puller {
             forward_attrs: attrs,
             reverse_attributes,
             db_id_alias,
+            nested,
             basis: None,
         })
     }
 
-    /// Read `basis` instead of the live datoms (`None` = current).
+    /// Read `basis` instead of the live datoms (`None` = current), in nested
+    /// map specs too.
     pub fn with_basis(mut self, basis: Option<TemporalBound>) -> Puller {
-        self.basis = basis;
+        self.set_basis(basis);
         self
+    }
+
+    fn set_basis(&mut self, basis: Option<TemporalBound>) {
+        self.basis = basis;
+        for n in self.nested.iter_mut() {
+            n.puller.set_basis(basis);
+        }
+    }
+
+    /// The entities that refer to `e` through `attr` on this puller's basis.
+    fn referrers(&self, db: &dyn SqlConn, attr: Entid, e: Entid) -> Result<Vec<Entid>> {
+        // `<> 0`, not SQLite's `IS NOT 0`: the same on non-NULL flags, and DuckDB has it.
+        let sql = match self.basis {
+            None => "SELECT DISTINCT e FROM datoms \
+                     WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet <> 0 \
+                     ORDER BY e ASC"
+                .to_string(),
+            Some(basis) => format!(
+                "SELECT DISTINCT e FROM {} b \
+                 WHERE a = ? AND v = ? AND value_type_tag = 0 ORDER BY e ASC",
+                basis_datoms_sql(basis)
+            ),
+        };
+        Ok(db
+            .query_rows(
+                &sql,
+                &[SqlValue::Integer(attr), SqlValue::Integer(e)],
+                |row| row.get_i64(0),
+            )
+            .map_err(DbError::from)?)
     }
 
     pub fn pull<E>(&self, schema: &Schema, db: &dyn SqlConn, entities: E) -> Result<PullResults>
@@ -409,28 +513,13 @@ impl Puller {
         // pulled entities via that attribute. Refs are stored as plain integers
         // with value_type_tag = 0 (ValueType::Ref).
         if !self.reverse_attributes.is_empty() && !entities.is_empty() {
-            // `<> 0`, not SQLite's `IS NOT 0`: the same on non-NULL flags, and DuckDB has it.
-            let sql = match self.basis {
-                None => "SELECT DISTINCT e FROM datoms \
-                         WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet <> 0 \
-                         ORDER BY e ASC"
-                    .to_string(),
-                Some(basis) => format!(
-                    "SELECT DISTINCT e FROM {} b \
-                     WHERE a = ? AND v = ? AND value_type_tag = 0 ORDER BY e ASC",
-                    basis_datoms_sql(basis)
-                ),
-            };
             for (attr_entid, name) in self.reverse_attributes.iter() {
                 for e in entities.iter() {
-                    let referrers: Vec<Binding> = db
-                        .query_rows(
-                            &sql,
-                            &[SqlValue::Integer(*attr_entid), SqlValue::Integer(*e)],
-                            |row| Ok(Binding::Scalar(TypedValue::Ref(row.get_i64(0)?))),
-                        )
-                        .map_err(DbError::from)?;
-
+                    let referrers: Vec<Binding> = self
+                        .referrers(db, *attr_entid, *e)?
+                        .into_iter()
+                        .map(|r| Binding::Scalar(TypedValue::Ref(r)))
+                        .collect();
                     if !referrers.is_empty() {
                         let r = maps
                             .entry(*e)
@@ -439,6 +528,57 @@ impl Puller {
                         m.insert(name.clone(), Binding::Vec(ValueRc::new(referrers)));
                     }
                 }
+            }
+        }
+
+        // Map specs: follow each ref, pull the sub-pattern for every target in
+        // one batch, and nest the results. Each nested map carries `:db/id`
+        // (pg_mentat's edn_pull shape).
+        let db_id = ValueRc::new(Keyword::namespaced("db", "id"));
+        for n in self.nested.iter() {
+            let mut targets: Vec<(Entid, Vec<Entid>)> = Vec::new();
+            for e in entities.iter() {
+                let ts = if n.reverse {
+                    self.referrers(db, n.attr, *e)?
+                } else {
+                    caches
+                        .forward_attribute_cache_for_attribute(schema, n.attr)
+                        .and_then(|c| c.binding_for_e(*e))
+                        .map(refs_in)
+                        .unwrap_or_default()
+                };
+                if !ts.is_empty() {
+                    targets.push((*e, ts));
+                }
+            }
+            if targets.is_empty() {
+                continue;
+            }
+            let all: BTreeSet<Entid> = targets.iter().flat_map(|(_, ts)| ts.clone()).collect();
+            let sub = n.puller.pull(schema, db, all)?;
+            for (e, ts) in targets {
+                let mut nested_maps: Vec<Binding> = ts
+                    .into_iter()
+                    .map(|t| {
+                        let mut m = StructuredMap::default();
+                        m.insert(db_id.clone(), Binding::Scalar(TypedValue::Ref(t)));
+                        if let Some(pulled) = sub.get(&t) {
+                            for (k, v) in pulled.0.iter() {
+                                m.insert(k.clone(), v.clone());
+                            }
+                        }
+                        Binding::Map(ValueRc::new(m))
+                    })
+                    .collect();
+                let value = if n.many {
+                    Binding::Vec(ValueRc::new(nested_maps))
+                } else {
+                    nested_maps.swap_remove(0)
+                };
+                let r = maps
+                    .entry(e)
+                    .or_insert_with(|| ValueRc::new(StructuredMap::default()));
+                ValueRc::get_mut(r).unwrap().insert(n.name.clone(), value);
             }
         }
 

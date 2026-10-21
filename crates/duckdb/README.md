@@ -298,8 +298,16 @@ runs mentat's own pull (`(pull ?e pattern)`). The JSON matches pg_mentat's
 `edn_pull`: keys are attribute idents with the colon (`":person/name"`),
 `":db/id"` is always the entity id, cardinality-many values are arrays, refs are
 `{":db/id": n}`, keywords `":ns/name"`, instants epoch microseconds, bytes hex.
-Nested map specs (`{:person/friend [:person/name]}`) are not supported by
-mentat's pull grammar yet.
+Map specs follow a ref and nest the target's pull, with its `":db/id"`:
+`[:person/name {:person/friend [:person/name]}]` gives
+`{":person/friend": [{":db/id": 2, ":person/name": "Bob"}]}` (an array for a
+cardinality-many or reverse attribute, one object for cardinality-one).
+Reverse map specs (`{:person/_friend [...]}`) and nesting work too; pg_mentat's
+recursion limits (`{:person/friend 2}`, `...`), `:limit` and `:default` do not.
+
+A find-pull in an `edn_q` with `{"asOf": T}` / `{"since": T}` reads that basis,
+and so does `mentat.store/pull` on an as-of / since db value. (Before 1.18.0
+both returned current values.)
 
 ### `edn_eval` (feature `script`, default ON)
 

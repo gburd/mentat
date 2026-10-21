@@ -200,6 +200,16 @@ SELECT mentat.pull('[
 ]', 10001);
 ```
 
+### `edn_pull(pattern, eid, options)`
+
+Pull on a historical basis (since 1.18.0). `options` takes `edn_q`'s temporal
+keys: `{"asOf": T}` (the state after transaction T) or `{"since": T}` (only the
+current datoms transacted after T). `'{}'` is the current state.
+
+```sql
+SELECT edn_pull('[:person/name :person/age]', 10001, '{"asOf": 1000}');
+```
+
 ### `mentat.pull_many(pattern, eids)` / `mentat_pull_many(pattern, eids)`
 
 Pull the same pattern for multiple entities. Returns a JSON array.

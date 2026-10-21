@@ -158,20 +158,28 @@ History queries bypass the current-value filter entirely, returning all datoms (
 
 ### Pull with As-Of
 
-Currently, the pull API always operates on the current state. To pull at a specific point in time, use a Datalog query with `as_of` and then pull individual entities:
+`edn_pull` takes the same temporal options as `edn_q` as a third argument
+(since 1.18.0):
 
 ```sql
--- Find entities as of tx 1000
-WITH historical_people AS (
-  SELECT (jsonb_array_elements(
-    (SELECT edn_q(
-      '[:find [?e ...] :where [?e :person/name]]',
-      '{"as_of": 1000}'
-    ))->'results')
-  )::bigint AS eid
-)
-SELECT edn_pull('[*]', eid) FROM historical_people;
+-- Alice as of transaction 1000: the values asserted at or before 1000 and
+-- not retracted at or before 1000.
+SELECT edn_pull('[:person/name :person/age {:person/friend [:person/name]}]',
+                10001, '{"asOf": 1000}');
+
+-- Only the current datoms transacted after 1000.
+SELECT edn_pull('[*]', 10001, '{"since": 1000}');
 ```
+
+A pull in the `:find` of a historical query reads the query's basis:
+
+```sql
+SELECT edn_q('[:find (pull ?e [:person/age]) :where [?e :person/name "Alice"]]',
+             '{"asOf": 1000}');
+```
+
+Before 1.18.0 `edn_pull` had no options argument and a find-pull under `asOf`
+or `since` returned current values.
 
 ### Subscriptions with Since
 

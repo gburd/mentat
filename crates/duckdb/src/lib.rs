@@ -296,7 +296,14 @@ fn binding_json(b: &Binding) -> Json {
 
 fn map_json(m: &StructuredMap) -> serde_json::Map<String, Json> {
     m.0.iter()
-        .map(|(k, v)| (k.to_string(), binding_json(v)))
+        .map(|(k, v)| {
+            // A (nested) map's own `:db/id` is the plain entity id, as in pg.
+            let v = match v {
+                Binding::Scalar(TypedValue::Ref(e)) if k.to_string() == ":db/id" => json!(e),
+                _ => binding_json(v),
+            };
+            (k.to_string(), v)
+        })
         .collect()
 }
 

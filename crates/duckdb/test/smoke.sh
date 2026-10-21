@@ -79,6 +79,12 @@ SELECT 'since=' || string_agg(a, ',' ORDER BY a)
 SELECT 'pull=' || (edn_pull('$DB', '[*]', getvariable('alice')::BIGINT) LIKE '%":person/name":"Alice"%');
 SELECT 'pull_id=' || ((edn_pull('$DB', '[*]', getvariable('alice')::BIGINT)::JSON->>':db/id') = getvariable('alice'));
 SELECT 'pull_attrs=' || (edn_pull('$DB', '[:person/age]', getvariable('alice')::BIGINT)::JSON->>':person/age');
+SELECT 'pull_asof=' || (p::JSON->>':person/age') FROM edn_q('$DB', '[:find (pull ?e [:person/age]) . :where [?e :person/name "Alice"]]',
+                                                    '{"asOf": ' || getvariable('tx1') || '}') AS t(p);
+SELECT 'boss_schema=' || (edn_t('$DB', '[{:db/ident :person/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
+SET VARIABLE bob = (SELECT e FROM edn_q('$DB', '[:find ?e . :where [?e :person/name "Bob"]]', NULL) AS t(e));
+SELECT 'boss=' || (edn_t('$DB', '[[:db/add ' || getvariable('bob') || ' :person/boss ' || getvariable('alice') || ']]') LIKE '%tx_id%');
+SELECT 'pull_nested=' || (edn_pull('$DB', '[{:person/boss [:person/name]}]', getvariable('bob')::BIGINT)::JSON->':person/boss'->>':person/name');
 
 -- edn_eval: (mentat.store/open) with no args opens db_path; the write is
 -- visible to a subsequent edn_q.
@@ -122,6 +128,10 @@ expect "since=31"
 expect "pull=true"
 expect "pull_id=true"
 expect "pull_attrs=31"
+expect "pull_asof=30"
+expect "boss_schema=true"
+expect "boss=true"
+expect "pull_nested=Alice"
 expect "eval=3"
 expect "after_eval=Alice,Bob,Carol"
 expect "with=true"

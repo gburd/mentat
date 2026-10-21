@@ -488,7 +488,10 @@ impl From<PullConcreteAttribute> for NamedPullAttribute {
 pub enum PullAttributeSpec {
     Wildcard,
     Attribute(NamedPullAttribute),
-    // PullMapSpec(Vec<…>),
+    /// A map spec, `{:person/friend [:person/name]}` (or reverse,
+    /// `{:person/_friend [...]}`): follow the ref attribute and pull the
+    /// sub-pattern on each entity it reaches.
+    Nested(NamedPullAttribute, Vec<PullAttributeSpec>),
     // LimitedAttribute(NamedPullAttribute, u64),  // Limit nil => Attribute instead.
     // DefaultedAttribute(NamedPullAttribute, PullDefaultValue),
 }
@@ -504,18 +507,17 @@ impl std::fmt::Display for PullConcreteAttribute {
 
 impl std::fmt::Display for NamedPullAttribute {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let attr = &self.attribute;
-        if let Some(ref alias) = self.alias {
-            if self.reverse {
-                write!(f, "_{} :as {}", attr, alias)
-            } else {
-                write!(f, "{} :as {}", attr, alias)
-            }
-        } else if self.reverse {
-            write!(f, "_{}", attr)
-        } else {
-            write!(f, "{}", attr)
+        // A reverse ident prints as the reversed keyword (`:person/_friend`),
+        // so the pattern re-parses (pg's find-pull sends it back as EDN).
+        match (&self.attribute, self.reverse) {
+            (PullConcreteAttribute::Ident(k), true) => write!(f, "{}", k.to_reversed())?,
+            (attr, true) => write!(f, "_{}", attr)?,
+            (attr, false) => write!(f, "{}", attr)?,
         }
+        if let Some(ref alias) = self.alias {
+            write!(f, " :as {}", alias)?;
+        }
+        Ok(())
     }
 }
 
@@ -524,6 +526,16 @@ impl std::fmt::Display for PullAttributeSpec {
         match self {
             PullAttributeSpec::Wildcard => write!(f, "*"),
             PullAttributeSpec::Attribute(ref attr) => write!(f, "{}", attr),
+            PullAttributeSpec::Nested(ref attr, ref patterns) => {
+                write!(f, "{{{} [", attr)?;
+                for (i, p) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, "]}}")
+            }
         }
     }
 }
