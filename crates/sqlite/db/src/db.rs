@@ -1306,16 +1306,21 @@ impl MentatStoring for rusqlite::Connection {
                     max_vars
                 );
 
-                // Cached like the search inserts: callers batch at a steady size, and a
-                // 500-pair statement costs more to prepare than to run.
-                let mut stmt = self.prepare_cached(&resolve_avs_sql(count))?;
-
-                let m: Result<Vec<(i64, Entid)>> = stmt
-                    .query_and_then(params_from_iter(&params), |row| -> Result<(i64, Entid)> {
+                let run = |stmt: &mut rusqlite::Statement| -> Result<Vec<(i64, Entid)>> {
+                    stmt.query_and_then(params_from_iter(&params), |row| -> Result<(i64, Entid)> {
                         Ok((row.get(0)?, row.get(1)?))
                     })?
-                    .collect();
-                m
+                    .collect()
+                };
+                // Cached like the search inserts: callers batch at a steady size, and a
+                // 500-pair statement costs more to prepare than to run. Not above 1000
+                // pairs: rusqlite's cache holds 16 statements, and these reach ~4 MB each.
+                let sql = resolve_avs_sql(count);
+                if count <= 1000 {
+                    run(&mut *self.prepare_cached(&sql)?)
+                } else {
+                    run(&mut self.prepare(&sql)?)
+                }
             })
             .collect::<Result<Vec<Vec<(i64, Entid)>>>>();
 

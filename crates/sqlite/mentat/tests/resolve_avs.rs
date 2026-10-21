@@ -270,10 +270,9 @@ fn resolve_ops(s: &Store, pairs: &[AVPair]) -> (u64, Duration) {
     (ops.load(Ordering::Relaxed), t)
 }
 
-/// VM steps for the pairs `pairs(key, title)` builds, at ~11k datoms (1k
-/// fulltext values) and at ~110k (10k).
-fn ops_small_big(pairs: impl Fn(i64, i64) -> Vec<AVPair>) -> (u64, u64) {
-    let mut s = Store::open("").unwrap();
+/// Install `:cell/key` (identity) and `:doc/title` (identity, fulltext);
+/// return their entids.
+fn cell_and_title(s: &mut Store) -> (i64, i64) {
     s.transact(
         r#"[{:db/ident :cell/key :db/valueType :db.type/string :db/cardinality :db.cardinality/one
              :db/unique :db.unique/identity :db/index true}
@@ -282,14 +281,15 @@ fn ops_small_big(pairs: impl Fn(i64, i64) -> Vec<AVPair>) -> (u64, u64) {
     )
     .unwrap();
     let schema = s.conn().current_schema();
-    let key = schema
-        .get_entid(&Keyword::namespaced("cell", "key"))
-        .unwrap()
-        .0;
-    let title = schema
-        .get_entid(&Keyword::namespaced("doc", "title"))
-        .unwrap()
-        .0;
+    let id = |ns, name| schema.get_entid(&Keyword::namespaced(ns, name)).unwrap().0;
+    (id("cell", "key"), id("doc", "title"))
+}
+
+/// VM steps for the pairs `pairs(key, title)` builds, at ~11k datoms (1k
+/// fulltext values) and at ~110k (10k).
+fn ops_small_big(pairs: impl Fn(i64, i64) -> Vec<AVPair>) -> (u64, u64) {
+    let mut s = Store::open("").unwrap();
+    let (key, title) = cell_and_title(&mut s);
     let pairs = pairs(key, title);
 
     grow(&s, key, title, 0, 10_000);
@@ -336,4 +336,22 @@ fn test_resolve_avs_fulltext_scans_fulltext_values_once() {
             .collect()
     });
     assert!(big < 5 * small, "{small} -> {big} VM steps");
+}
+
+/// Over 1000 pairs in one statement (prepared uncached), plain and fulltext.
+#[test]
+fn test_resolve_avs_large_batch() {
+    let mut s = Store::open("").unwrap();
+    let (key, title) = cell_and_title(&mut s);
+    grow(&s, key, title, 0, 2_000);
+    // 1200 keys (every other one missing) and 200 titles (half missing).
+    let pairs: Vec<AVPair> = (0..1200)
+        .map(|i| (key, TypedValue::typed_string(format!("cell {}", i * 2))))
+        .chain((0..200).map(|i| (title, TypedValue::typed_string(format!("title {}", i * 2)))))
+        .collect();
+    let refs: Vec<&AVPair> = pairs.iter().collect();
+    let m = s.sqlite_ref().resolve_avs(&refs).unwrap();
+    assert_eq!(m.len(), 1000 + 100);
+    assert_eq!(m[&pairs[999]], 1_000_000 + 1998);
+    assert!(!m.contains_key(&pairs[1000]));
 }
