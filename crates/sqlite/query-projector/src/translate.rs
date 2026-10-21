@@ -142,45 +142,35 @@ impl ToConstraint for ColumnConstraint {
             }
 
             Equals(qa, QueryValue::PrimitiveLong(value)) => {
-                let tag_column = qa
+                let tag_alias = qa
                     .for_associated_type_tag()
-                    .expect("an associated type tag alias")
-                    .to_column();
+                    .expect("an associated type tag alias");
                 let value_column = qa.to_column();
 
                 // A bare long in a query might match a ref, an instant, a long (obviously), or a
                 // double. If it's negative, it can't match a ref, but that's OK -- it won't!
                 //
-                // However, '1' and '0' are used to represent booleans, and some integers are also
-                // used to represent FTS values. We don't want to accidentally match those.
-                //
-                // We ask `SQLValueType` whether this value is in range for how booleans are
-                // represented in the database.
-                //
-                // We only hit this code path when the attribute is unknown, so we're querying
-                // `all_datoms`. That means we don't see FTS IDs at all -- they're transparently
-                // replaced by their strings. If that changes, then you should also exclude the
-                // string type code (10) here.
-                let must_exclude_boolean = ValueType::Boolean.accommodates_integer(value);
-                if must_exclude_boolean {
-                    Constraint::And {
-                        constraints: vec![
-                            Constraint::equal(
-                                value_column,
-                                ColumnOrExpression::Value(TypedValue::Long(value)),
-                            ),
-                            Constraint::not_equal(
-                                tag_column,
-                                ColumnOrExpression::Integer(ValueType::Boolean.value_type_tag()),
-                            ),
-                        ],
-                    }
-                } else {
+                // However, '1' and '0' are used to represent booleans, so we exclude booleans when
+                // the value is in their range. And a fulltext datom in `datoms` holds the rowid of
+                // its text in `fulltext_values` under the string tag, so we always exclude strings:
+                // no real string equals an integer (#145).
+                let mut constraints = vec![
                     Constraint::equal(
                         value_column,
                         ColumnOrExpression::Value(TypedValue::Long(value)),
-                    )
+                    ),
+                    Constraint::not_equal(
+                        tag_alias.clone().to_column(),
+                        ColumnOrExpression::Integer(ValueType::String.value_type_tag()),
+                    ),
+                ];
+                if ValueType::Boolean.accommodates_integer(value) {
+                    constraints.push(Constraint::not_equal(
+                        tag_alias.to_column(),
+                        ColumnOrExpression::Integer(ValueType::Boolean.value_type_tag()),
+                    ));
                 }
+                Constraint::And { constraints }
             }
 
             Inequality {

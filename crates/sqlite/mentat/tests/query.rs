@@ -2409,3 +2409,53 @@ fn test_inequality_over_untyped_values() {
         ["Scalar(Long(5))"]
     );
 }
+
+// #145 (Mozilla): a fulltext datom stores the rowid of its text in fulltext_values, so a
+// bare integer in the value place must not match it by that rowid.
+#[test]
+fn test_unattributed_integer_does_not_match_fulltext_rowid() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :ft/text :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+                 :db/fulltext true :db/index true}
+                {:db/ident :ft/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    // 50 texts on one entity, so every rowid in 1..=50 is one of its values.
+    let texts: Vec<String> = (1..=50).map(|i| format!("\"text {i}\"")).collect();
+    let report = store
+        .transact(&format!(
+            "[{{:db/id \"t\" :ft/text [{}]}} {{:db/id \"n\" :ft/n 42}}]",
+            texts.join(" ")
+        ))
+        .expect("data");
+    let (t, n) = (report.tempids["t"], report.tempids["n"]);
+    let rowids: Vec<i64> = store
+        .sqlite_ref()
+        .prepare("SELECT d.v FROM datoms d WHERE d.e = ? AND d.index_fulltext")
+        .unwrap()
+        .query_map([t], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(rowids.contains(&42), "{rowids:?}");
+    let matching = |store: &mut Store, v: i64| -> Vec<Binding> {
+        store
+            .q_once(&format!("[:find [?x ...] :where [?x _ {v}]]"), None)
+            .into_coll_result()
+            .expect("query")
+    };
+    let found = matching(&mut store, 42);
+    assert!(
+        found.contains(&Binding::Scalar(TypedValue::Ref(n))),
+        "{found:?}"
+    );
+    for v in rowids {
+        let found = matching(&mut store, v);
+        assert!(
+            !found.contains(&Binding::Scalar(TypedValue::Ref(t))),
+            "[?x _ {v}]: {found:?}"
+        );
+    }
+}
