@@ -490,8 +490,8 @@ mod tests {
     /// inputs contract, as-of, pull and eval.
     #[test]
     fn functions_over_a_store_file() {
-        let path =
-            std::env::temp_dir().join(format!("mentat_sqlite_ext_{}.db", std::process::id()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
         let db = path.to_str().unwrap();
         let schema = r#"[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
                          {:db/ident :person/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}]"#;
@@ -573,10 +573,6 @@ mod tests {
         .unwrap();
         assert_eq!(out, "3");
         assert!(eval_edn(db, r#"(slurp "/etc/passwd")"#).is_err());
-
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{db}{ext}"));
-        }
     }
 
     #[test]

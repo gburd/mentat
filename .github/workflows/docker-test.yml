@@ -8,11 +8,9 @@
 
 name: Test pg_mentat (Container)
 
+# Manual only: ci.yml's test-pg and installcheck jobs cover this on every push. This file
+# predates the pg_mentat merge and is kept for one-off runs.
 on:
-  push:
-    branches: [main, claude, develop]
-  pull_request:
-    branches: [main, claude]
   workflow_dispatch:
 
 jobs:

@@ -1,10 +1,8 @@
 name: Test pg_mentat (Nix)
 
+# Manual only: ci.yml's nix-build and test-pg jobs cover this on every push. This file
+# predates the pg_mentat merge and is kept for one-off runs.
 on:
-  push:
-    branches: [main, claude, develop]
-  pull_request:
-    branches: [main, claude]
   workflow_dispatch:
 
 jobs:

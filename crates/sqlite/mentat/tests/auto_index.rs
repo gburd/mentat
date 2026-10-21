@@ -383,13 +383,9 @@ fn test_adaptive_index_is_adopted_when_the_flag_is_set() {
 
 #[test]
 fn test_upgraded_store_gets_schema_indexes() {
-    let dir = std::env::temp_dir().join(format!("mentat-schema-idx-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = tempfile::tempdir().unwrap();
     for from in [1, 2] {
-        let path = dir.join(format!("v{from}.db"));
-        for ext in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
-        }
+        let path = dir.path().join(format!("v{from}.db"));
         let path = path.to_str().unwrap().to_string();
         let a = {
             let mut s = Store::open(&path).unwrap();
@@ -424,12 +420,8 @@ fn test_upgraded_store_gets_schema_indexes() {
 /// Opening (or tuning) the store refreshes them once there is data.
 #[test]
 fn test_empty_schema_index_stats_are_refreshed() {
-    let dir = std::env::temp_dir().join(format!("mentat-stale-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("s.db");
-    for ext in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
-    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.db");
     let path = path.to_str().unwrap().to_string();
     let stat = |s: &Store, a: i64| -> String {
         s.sqlite_ref()

@@ -171,15 +171,13 @@ pub(crate) mod tests {
         OPENS.with(Cell::get)
     }
 
-    struct TempStore(String);
+    /// A store file in its own temp dir, removed (with -wal/-shm) on drop.
+    struct TempStore(String, #[allow(dead_code)] tempfile::TempDir); // dir: held for its Drop
     impl TempStore {
         fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "mentat_store_cache_{tag}_{}.db",
-                std::process::id()
-            ));
-            let s = TempStore(p.to_str().unwrap().to_owned());
-            s.drop_files();
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join(format!("{tag}.db"));
+            let s = TempStore(p.to_str().unwrap().to_owned(), dir);
             Store::open(&s.0).unwrap(); // create it, so it has a canonical path
             s
         }
@@ -187,11 +185,6 @@ pub(crate) mod tests {
             for ext in ["", "-wal", "-shm"] {
                 let _ = std::fs::remove_file(format!("{}{ext}", self.0));
             }
-        }
-    }
-    impl Drop for TempStore {
-        fn drop(&mut self) {
-            self.drop_files();
         }
     }
 

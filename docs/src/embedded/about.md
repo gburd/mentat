@@ -109,7 +109,7 @@ Mentat aims to offer many of the advantages of SQLite — single-file use, embed
 Please note that this project is released with a Contributor Code of Conduct.
 By participating in this project you agree to abide by its terms.
 
-See [CONTRIBUTING.md](/CONTRIBUTING/) for further notes.
+See [Contributing](../contributing.md) for further notes.
 
 This project is very new, so we'll probably revise these guidelines. Please
 comment on an issue before putting significant effort in if you'd like to
