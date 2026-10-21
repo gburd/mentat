@@ -78,6 +78,16 @@ const TXS: &[&str] = &[
     r#"[{:p/name "Alice" :p/age 31}]"#,
     r#"[{:p/name "Dan" :p/height 1.9}]"#,
     r#"[{:p/name "Eve" :p/age 25 :p/blob #bytes 010203}]"#,
+    // Fulltext: SQLite FTS4 vs DuckDB's tokenized match.
+    r#"[{:db/ident :p/bio  :db/valueType :db.type/string :db/cardinality :db.cardinality/one  :db/fulltext true :db/index true}
+        {:db/ident :p/tags :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/fulltext true :db/index true}]"#,
+    r#"[{:p/name "Alice" :p/bio "Hello darkness, my old friend" :p/tags ["sustainable food" "Ally's pick"]}
+        {:p/name "Bob"   :p/bio "I've come to talk with you again" :p/tags ["food"]}
+        {:p/name "Carol" :p/bio "Hello-World foo_bar ÉCOLE café 3.14 Straße"}
+        {:p/name "Dan"   :p/bio "hello darkness"}
+        {:p/name "Eve"   :p/bio "Hello darkness, my old friend" :p/tags ["nightlife"]}]"#,
+    // Replacing a fulltext value: the old text no longer matches for Bob.
+    r#"[{:p/name "Bob" :p/bio "talk is cheap"}]"#,
 ];
 
 const QUERIES: &[&str] = &[
@@ -150,6 +160,57 @@ const QUERIES: &[&str] = &[
     "[:find (pull ?e [:p/name :p/_boss]) . :where [?e :p/name \"Alice\"]]",
 ];
 
+/// `(fulltext ...)` queries; each must work on both engines.
+const FULLTEXT: &[&str] = &[
+    "[:find ?e ?v ?tx ?s :where [(fulltext $ :p/bio \"hello\") [[?e ?v ?tx ?s]]]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"darkness\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"DARK*\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"dark\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"\\\"hello darkness\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"\\\"darkness hello\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"\\\"hel* dark*\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello friend\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello OR talk\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello NOT friend\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"(hello OR talk) AND cheap\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello OR talk NOT cheap\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"again\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello-world\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"foo\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"école\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"Café\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"cafe\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"straße\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"14\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello ---\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"---\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"talk\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n ?t :where [(fulltext $ :p/tags \"food\") [[?e ?t]]] [?e :p/name ?n]]",
+    "[:find ?n ?t :where [(fulltext $ :p/tags \"ally\") [[?e ?t]]] [?e :p/name ?n]]",
+    // Not a fulltext attribute: known empty.
+    "[:find ?e :where [(fulltext $ :p/name \"Alice\") [[?e]]]]",
+    // A search term bound by an earlier pattern (Alice's nicks: Al, Ally).
+    "[:find ?e ?v :where [?a :p/name \"Alice\"] [?a :p/nick ?k] [(fulltext $ :p/tags ?k) [[?e ?v]]]]",
+    // Plain patterns over a fulltext attribute.
+    "[:find ?n ?b :where [?e :p/bio ?b] [?e :p/name ?n]]",
+    "[:find ?n :where [?e :p/bio \"hello darkness\"] [?e :p/name ?n]]",
+    "[:find ?t :where [_ :p/tags ?t]]",
+    // (Pull has no order for cardinality-many values; tags are compared above.)
+    "[:find (pull ?e [:p/name :p/bio]) . :where [?e :p/name \"Alice\"]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"darkness\") [[?e]]] [?e :p/name ?n] [?e :p/age 25]]",
+];
+
+/// Malformed FTS4 queries: both engines must reject them.
+const FULLTEXT_BAD: &[&str] = &[
+    "hello OR",
+    "NOT hello",
+    "(hello",
+    "hello)",
+    "\\\"hello",
+    "AND",
+    "hello NOT ---",
+];
+
 const ORDERED: &[&str] = &[
     "[:find ?n ?a :order (asc ?a) (asc ?n) :where [?e :p/name ?n] [?e :p/age ?a]]",
     "[:find ?n ?h :order (desc ?h) :where [?e :p/name ?n] [?e :p/height ?h]]",
@@ -204,7 +265,9 @@ fn duckdb_matches_sqlite() {
             // Both failing agrees, except for queries that must work: the
             // get-else / missing? cases were silently "agreeing" this way
             // while neither engine implemented them (#335).
-            (Err(a), Err(_)) if q.contains("get-else") || q.contains("missing?") => {
+            (Err(a), Err(_))
+                if q.contains("get-else") || q.contains("missing?") || q.contains("(fulltext") =>
+            {
                 failures.push(format!("{label} {q}\n  both engines ERR: {a}"))
             }
             (Err(_), Err(_)) => {}
@@ -216,6 +279,9 @@ fn duckdb_matches_sqlite() {
     for q in ORDERED {
         check("ordered", q, None, true);
     }
+    for q in FULLTEXT {
+        check("fulltext", q, None, false);
+    }
     // As-of every transaction, since every transaction.
     for &t in &tx_ids {
         for q in &QUERIES[..12] {
@@ -226,6 +292,18 @@ fn duckdb_matches_sqlite() {
                 Some(TemporalBound::Since(t)),
                 false,
             );
+        }
+    }
+    for bad in FULLTEXT_BAD {
+        use mentat::Queryable;
+        let q = format!("[:find ?e :where [(fulltext $ :p/bio \"{bad}\") [[?e]]]]");
+        let (a, b) = (sqlite.q_once(&q, None), duck.q(&q, None, None));
+        if a.is_ok() || b.is_ok() {
+            failures.push(format!(
+                "bad fulltext {q}: sqlite ok={} duckdb ok={}",
+                a.is_ok(),
+                b.is_ok()
+            ));
         }
     }
     assert!(

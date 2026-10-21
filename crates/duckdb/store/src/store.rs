@@ -189,7 +189,7 @@ impl<'c> DuckStore<'c> {
         if let Some(opened) = cached {
             return Ok((gen, opened));
         }
-        self.drop_legacy_indexes()?;
+        self.upgrade()?;
         let opened = self.read()?;
         OPENED.with(|c| {
             c.borrow_mut()
@@ -198,26 +198,48 @@ impl<'c> DuckStore<'c> {
         Ok((gen, opened))
     }
 
-    /// Drop the secondary indexes that 1.11.0-1.14.0 created (see
-    /// `schema::LEGACY_INDEXES`). Runs on a schema-cache miss, so once per
-    /// thread and generation; a no-op once they are gone. This also repairs a
-    /// store whose index #26828 already corrupted.
-    fn drop_legacy_indexes(&self) -> Result<()> {
-        let present = self.conn.query_opt(
+    /// Bring an older store's layout up to date. Runs on a schema-cache miss,
+    /// so once per thread and generation; a no-op once done.
+    /// - Drop the secondary indexes that 1.11.0-1.14.0 created (see
+    ///   `schema::LEGACY_INDEXES`). This also repairs a store whose index
+    ///   #26828 already corrupted.
+    /// - Replace the pre-1.18 `fulltext_values` table (always empty) with the
+    ///   view `(fulltext ...)` queries join.
+    fn upgrade(&self) -> Result<()> {
+        let stale = self.conn.query_opt(
             &format!(
-                "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = ? AND index_name IN ({})",
+                "SELECT (SELECT count(*) FROM duckdb_indexes() WHERE schema_name = $1 \
+                   AND database_name = current_database() AND index_name IN ({})) \
+                 + (SELECT count(*) FROM duckdb_tables() WHERE schema_name = $1 \
+                   AND database_name = current_database() AND table_name = 'fulltext_values')",
                 schema::LEGACY_INDEXES.map(|i| format!("'{i}'")).join(", ")
             ),
             &[SqlValue::Text(self.schema.clone())],
             |r| r.get_i64(0),
         )?;
-        if present.unwrap_or(0) > 0 {
-            let lock = write_lock(&self.schema);
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            for i in schema::LEGACY_INDEXES {
-                self.conn
-                    .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
-            }
+        if stale.unwrap_or(0) == 0 {
+            return Ok(());
+        }
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        for i in schema::LEGACY_INDEXES {
+            self.conn
+                .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
+        }
+        let table: Option<i64> = self.conn.query_opt(
+            "SELECT 1 FROM duckdb_tables() WHERE schema_name = ? \
+             AND database_name = current_database() AND table_name = 'fulltext_values'",
+            &[SqlValue::Text(self.schema.clone())],
+            |r| r.get_i64(0),
+        )?;
+        if table.is_some() {
+            self.in_tx(|s| {
+                s.conn
+                    .execute_batch(&format!("DROP TABLE {}.fulltext_values", s.schema))?;
+                s.conn
+                    .execute_batch(&schema::fulltext_values_view(&s.schema))?;
+                Ok(())
+            })?;
         }
         Ok(())
     }

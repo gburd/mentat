@@ -407,10 +407,30 @@ keep them.
   SQLite engine and on DuckDB, the shared scripting model suite, persistence and
   WAL-replay tests. `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
 
+### Fulltext
+
+`(fulltext $ :attr "query") [[?e ?v ?tx ?score]]` works on any
+`:db/fulltext true` attribute, with SQLite FTS4's query syntax: words (all
+must appear), `AND`, `OR`, `NOT`, parentheses, `"exact phrases"` and
+`prefix*`. Matching is case-insensitive on whole tokens, which are runs of
+letters, digits and combining marks, as in SQLite's `unicode61` tokenizer
+(`dark` doesn't match `darkness`; `hello-world` matches `Hello World`;
+`cafe` doesn't match `café`). A malformed query is an error ("malformed MATCH
+expression"), as on SQLite. The `differential` harness test checks 30
+fulltext queries against SQLite's results.
+
+The value is stored as a plain string in `datoms` and tokenized at query
+time with DuckDB's built-in regex functions, so there is no index to keep up
+to date and no extension to load. The price is a scan of the attribute's
+values on every query. `?score` is always `0.0`, as on SQLite. `NEAR` and
+`NEAR/n` are treated as `AND`, column filters (`text:x`) and `^x` have no
+special meaning, and a search term bound from another pattern matches when
+the text contains all of its tokens.
+
 ## Known gaps
 
-- `:db/fulltext` values are stored as plain strings, not tokenized;
-  `(fulltext ...)` queries aren't supported.
+- `(fulltext ...)` is not ranked (`?score` is `0.0`) and scans the
+  attribute's values; DuckDB's `fts` extension (BM25) is not used.
 - Stores live in the database the extension was loaded into, not in another
   `ATTACH`ed database.
 - Stores written by mentat 1.10.x (SQLite files) are not migrated.

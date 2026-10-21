@@ -28,10 +28,12 @@
 //!   rows and DELETEs fail FATAL. `LEGACY_INDEXES` lists them so `open` can
 //!   drop them.
 //! - `known_parts."end"`: `end` is reserved in DuckDB.
-//! - Fulltext (`:db/fulltext`): `fulltext_values` / `fulltext_datoms` exist so
-//!   the engine's SQL resolves, and a fulltext value is stored as a plain
-//!   string in `datoms`, not tokenized. `(fulltext ...)` queries are rejected
-//!   (see `storing.rs`).
+//! - Fulltext (`:db/fulltext`): a fulltext value is stored as a plain string
+//!   in `datoms` (SQLite stores a rowid into its FTS4 table). The
+//!   `fulltext_values` view keys each distinct text by itself, so the
+//!   engine's `datoms.v = fulltext_values.rowid` join holds; `(fulltext ...)`
+//!   tokenizes at query time (`mentat_query_sql`'s `fts` module). Stores from
+//!   before 1.18 had an unused `fulltext_values` table; `open` replaces it.
 
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
@@ -86,11 +88,8 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
              v_i, v_d, v_s FROM {s}.timelined_transactions WHERE timeline = 0"
         ),
-        // Fulltext: not tokenized on DuckDB (see module docs). The views keep
-        // the engine's `all_datoms` / `fulltext_datoms` references valid.
-        format!(
-            "CREATE TABLE {s}.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT)"
-        ),
+        // Fulltext (see module docs).
+        fulltext_values_view(s),
         format!(
             "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
              index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms WHERE index_fulltext"
@@ -115,6 +114,14 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "INSERT INTO {s}.meta VALUES ('version', '{VERSION}')"
         ),
     ]
+}
+
+/// Every distinct fulltext text, keyed by itself (see module docs).
+pub fn fulltext_values_view(s: &str) -> String {
+    format!(
+        "CREATE VIEW {s}.fulltext_values AS SELECT DISTINCT v_s AS rowid, v_s AS text \
+         FROM {s}.datoms WHERE index_fulltext"
+    )
 }
 
 /// The per-transaction scratch tables (SQLite's `temp.*_searches` /
