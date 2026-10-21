@@ -1683,7 +1683,8 @@ impl MentatStoring for rusqlite::Connection {
     }
 
     fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
-        let mut stmt = self.prepare("SELECT a, v, value_type_tag FROM datoms WHERE e = ?")?;
+        // all_datoms: a fulltext value is a rowid in `datoms`, its text in the view.
+        let mut stmt = self.prepare("SELECT a, v, value_type_tag FROM all_datoms WHERE e = ?")?;
         let rows: Result<Vec<(Entid, TypedValue)>> = stmt
             .query_and_then(rusqlite::params![e], |row| {
                 let a: Entid = row.get(0)?;

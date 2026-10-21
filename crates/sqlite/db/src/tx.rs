@@ -1112,13 +1112,13 @@ where
             // Assertions that are :db.cardinality/one and not :db.fulltext.
             let mut non_fts_one: Vec<db::ReducedEntity> = vec![];
 
-            // Assertions that are :db.cardinality/many and not :db.fulltext.
+            // Assertions that are :db.cardinality/many, and retractions, not :db.fulltext.
             let mut non_fts_many: Vec<db::ReducedEntity> = vec![];
 
             // Assertions that are :db.cardinality/one and :db.fulltext.
             let mut fts_one: Vec<db::ReducedEntity> = vec![];
 
-            // Assertions that are :db.cardinality/many and :db.fulltext.
+            // Assertions that are :db.cardinality/many, and retractions, that are :db.fulltext.
             let mut fts_many: Vec<db::ReducedEntity> = vec![];
 
             // We need to ensure that callers can't blindly transact entities that haven't been
@@ -1150,13 +1150,6 @@ where
                     tx_might_update_metadata = true;
                 }
 
-                let queue = match (attribute.fulltext, attribute.multival) {
-                    (false, true) => &mut non_fts_many,
-                    (false, false) => &mut non_fts_one,
-                    (true, false) => &mut fts_one,
-                    (true, true) => &mut fts_many,
-                };
-
                 for (e, ars) in evs {
                     for (added, v) in ars
                         .add
@@ -1166,6 +1159,16 @@ where
                     {
                         let op = if added { OpType::Add } else { OpType::Retract };
                         self.watcher.datom(op, e, a, &v);
+                        // A retraction must match its value: the inexact (e, a) search of
+                        // cardinality-one assertions would find, and retract, whatever value
+                        // [e a] has. So every retraction takes the exact (e, a, v) search.
+                        let exact = attribute.multival || !added;
+                        let queue = match (attribute.fulltext, exact) {
+                            (false, true) => &mut non_fts_many,
+                            (false, false) => &mut non_fts_one,
+                            (true, false) => &mut fts_one,
+                            (true, true) => &mut fts_many,
+                        };
                         queue.push((e, a, attribute, v, added));
                     }
                 }

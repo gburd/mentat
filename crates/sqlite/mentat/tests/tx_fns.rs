@@ -281,3 +281,68 @@ fn test_retract_entity_retracts_incoming_refs() {
     assert_eq!(refs, Vec::<i64>::new(), "inbound ref retracted");
     assert_eq!(name(&store, referrer), Some("referrer".to_string()));
 }
+
+// Retracting a value the attribute doesn't have changed nothing on a cardinality-many
+// attribute, but on a cardinality-one attribute it retracted the current value.
+#[test]
+fn test_retract_of_absent_value_keeps_current_value() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :r/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    let r = store
+        .transact(r#"[{:db/id "a" :r/n 1 :r/s "x"}]"#)
+        .expect("a");
+    let a = *r.tempids.get("a").unwrap();
+    store
+        .transact(format!("[[:db/retract {a} :r/n 7] [:db/retract {a} :r/s \"y\"]]").as_str())
+        .expect("retract");
+    fn q(store: &Store, q: &str) -> mentat::RelResult<mentat::Binding> {
+        store.q_once(q, None).into_rel_result().expect(q)
+    }
+    assert_eq!(
+        q(
+            &store,
+            &format!("[:find ?n ?s :where [{a} :r/n ?n] [{a} :r/s ?s]]")
+        ),
+        vec![vec![TypedValue::Long(1), TypedValue::typed_string("x")]].into()
+    );
+    // Nothing was logged for the retractions.
+    assert_eq!(
+        q(
+            &store,
+            &format!("[:find ?v ?added :where [{a} :r/n ?v ?tx ?added]]")
+        ),
+        vec![vec![TypedValue::Long(1), TypedValue::Boolean(true)]].into()
+    );
+    // The right value still retracts.
+    store
+        .transact(format!("[[:db/retract {a} :r/n 1] [:db/retract {a} :r/s \"x\"]]").as_str())
+        .expect("retract");
+    assert_eq!(
+        q(&store, &format!("[:find ?v :where [{a} ?a ?v]]")).row_count(),
+        0
+    );
+}
+
+// :db/retractEntity on an entity with a fulltext value read the rowid as a string.
+#[test]
+fn test_retract_entity_with_fulltext_value() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    let r = store.transact(r#"[{:db/id "a" :r/s "x"}]"#).expect("a");
+    let a = *r.tempids.get("a").unwrap();
+    store
+        .transact(format!("[[:db/retractEntity {a}]]").as_str())
+        .expect("retractEntity");
+    assert_eq!(datom_count(&store, a), 0);
+}
