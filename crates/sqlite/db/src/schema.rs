@@ -33,31 +33,31 @@ impl AttributeValidation for Attribute {
     {
         if self.unique == Some(attribute::Unique::Value) && !self.index {
             bail!(DbErrorKind::BadSchemaAssertion(format!(
-                ":db/unique :db/unique_value without :db/index true for entid: {}",
+                ":db/unique :db/unique_value without :db/index true for {}",
                 ident()
             )))
         }
         if self.unique == Some(attribute::Unique::Identity) && !self.index {
             bail!(DbErrorKind::BadSchemaAssertion(format!(
-                ":db/unique :db/unique_identity without :db/index true for entid: {}",
+                ":db/unique :db/unique_identity without :db/index true for {}",
                 ident()
             )))
         }
         if self.fulltext && self.value_type != ValueType::String {
             bail!(DbErrorKind::BadSchemaAssertion(format!(
-                ":db/fulltext true without :db/valueType :db.type/string for entid: {}",
+                ":db/fulltext true without :db/valueType :db.type/string for {}",
                 ident()
             )))
         }
         if self.fulltext && !self.index {
             bail!(DbErrorKind::BadSchemaAssertion(format!(
-                ":db/fulltext true without :db/index true for entid: {}",
+                ":db/fulltext true without :db/index true for {}",
                 ident()
             )))
         }
         if self.component && self.value_type != ValueType::Ref {
             bail!(DbErrorKind::BadSchemaAssertion(format!(
-                ":db/isComponent true without :db/valueType :db.type/ref for entid: {}",
+                ":db/isComponent true without :db/valueType :db.type/ref for {}",
                 ident()
             )))
         }
@@ -76,7 +76,7 @@ fn validate_attribute_map(entid_map: &EntidMap, attribute_map: &AttributeMap) ->
             entid_map
                 .get(entid)
                 .map(|ident| ident.to_string())
-                .unwrap_or_else(|| entid.to_string())
+                .unwrap_or_else(|| format!("entid {}", entid))
         };
         attribute.validate(ident)?;
     }
@@ -314,11 +314,18 @@ impl SchemaBuilding for Schema {
 
         let mut schema =
             Schema::from_ident_map_and_attribute_map(ident_map, AttributeMap::default())?;
+        let entid_map = schema.entid_map.clone();
         let metadata_report = metadata::update_attribute_map_from_entid_triples(
             &mut schema.attribute_map,
             entid_assertions?,
             // No retractions.
             vec![],
+            &|e| {
+                entid_map
+                    .get(&e)
+                    .map(|kw| kw.to_string())
+                    .unwrap_or_else(|| format!("entid {}", e))
+            },
         )?;
 
         // Rebuild the component attributes list if necessary.
@@ -513,7 +520,7 @@ mod test {
         assert_eq!(
             err,
             Some(DbErrorKind::BadSchemaAssertion(
-                ":db/unique :db/unique_value without :db/index true for entid: :foo/bar".into()
+                ":db/unique :db/unique_value without :db/index true for :foo/bar".into()
             ))
         );
     }
@@ -543,7 +550,7 @@ mod test {
         assert_eq!(
             err,
             Some(DbErrorKind::BadSchemaAssertion(
-                ":db/unique :db/unique_identity without :db/index true for entid: :foo/bar".into()
+                ":db/unique :db/unique_identity without :db/index true for :foo/bar".into()
             ))
         );
     }
@@ -573,8 +580,7 @@ mod test {
         assert_eq!(
             err,
             Some(DbErrorKind::BadSchemaAssertion(
-                ":db/isComponent true without :db/valueType :db.type/ref for entid: :foo/bar"
-                    .into()
+                ":db/isComponent true without :db/valueType :db.type/ref for :foo/bar".into()
             ))
         );
     }
@@ -604,7 +610,7 @@ mod test {
         assert_eq!(
             err,
             Some(DbErrorKind::BadSchemaAssertion(
-                ":db/fulltext true without :db/index true for entid: :foo/bar".into()
+                ":db/fulltext true without :db/index true for :foo/bar".into()
             ))
         );
     }
@@ -633,8 +639,7 @@ mod test {
         assert_eq!(
             err,
             Some(DbErrorKind::BadSchemaAssertion(
-                ":db/fulltext true without :db/valueType :db.type/string for entid: :foo/bar"
-                    .into()
+                ":db/fulltext true without :db/valueType :db.type/string for :foo/bar".into()
             ))
         );
     }

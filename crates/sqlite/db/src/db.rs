@@ -931,7 +931,12 @@ pub fn read_attribute_map_from(
     entid_triples: Vec<(Entid, Entid, TypedValue)>,
 ) -> Result<AttributeMap> {
     let mut attribute_map = AttributeMap::default();
-    metadata::update_attribute_map_from_entid_triples(&mut attribute_map, entid_triples, vec![])?;
+    metadata::update_attribute_map_from_entid_triples(
+        &mut attribute_map,
+        entid_triples,
+        vec![],
+        &|e| format!("entid {}", e),
+    )?;
     Ok(attribute_map)
 }
 
@@ -939,7 +944,12 @@ pub fn read_attribute_map_from(
 pub(crate) fn read_attribute_map(conn: &rusqlite::Connection) -> Result<AttributeMap> {
     let entid_triples = read_materialized_view(conn, "schema")?;
     let mut attribute_map = AttributeMap::default();
-    metadata::update_attribute_map_from_entid_triples(&mut attribute_map, entid_triples, vec![])?;
+    metadata::update_attribute_map_from_entid_triples(
+        &mut attribute_map,
+        entid_triples,
+        vec![],
+        &|e| format!("entid {}", e),
+    )?;
     Ok(attribute_map)
 }
 
@@ -2214,6 +2224,28 @@ mod tests {
         );
     }
 
+    // #253: validation errors name the attribute being installed, not its entid.
+    #[test]
+    fn test_attribute_validation_names_the_ident() {
+        let mut conn = TestConn::default();
+        assert_transact!(
+            conn,
+            "
+            [{:db/ident :t/ft
+              :db/valueType :db.type/string
+              :db/cardinality :db.cardinality/one
+              :db/fulltext true
+              :db/index false}]",
+            Err("bad schema assertion: :db/fulltext true without :db/index true for :t/ft")
+        );
+        // No ident: fall back to the entid.
+        assert_transact!(conn, "
+            [[:db/add 100 :db/valueType :db.type/long]
+             [:db/add 100 :db/cardinality :db.cardinality/one]
+             [:db/add 100 :db/isComponent true]]",
+              Err("bad schema assertion: :db/isComponent true without :db/valueType :db.type/ref for entid 100"));
+    }
+
     // Unique is required!
     #[test]
     fn test_upsert_issue_538() {
@@ -2229,7 +2261,7 @@ mod tests {
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
               :db/cardinality :db.cardinality/many}]",
-              Err("bad schema assertion: :db/unique :db/unique_identity without :db/index true for entid: 65538"));
+              Err("bad schema assertion: :db/unique :db/unique_identity without :db/index true for :person/email"));
     }
 
     // TODO: don't use :db/ident to test upserts!
@@ -2662,7 +2694,7 @@ mod tests {
 
         // Trying to alter the :db/valueType will fail.
         assert_transact!(conn, "[[:db/add 100 :db/valueType :db.type/long]]",
-                         Err("bad schema assertion: Schema alteration for existing attribute with entid 100 is not valid"));
+                         Err("bad schema assertion: Schema alteration for existing attribute :test/ident is not valid"));
 
         // But we can alter the cardinality.
         assert_transact!(conn, "[[:db/add 100 :db/cardinality :db.cardinality/many]]");
@@ -2988,7 +3020,7 @@ mod tests {
 
         assert_transact!(conn,
                          "[[:db/add 222 :db/fulltext true]]",
-                         Err("bad schema assertion: Schema alteration for existing attribute with entid 222 is not valid"));
+                         Err("bad schema assertion: Schema alteration for existing attribute :test/string is not valid"));
     }
 
     #[test]
