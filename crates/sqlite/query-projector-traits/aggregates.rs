@@ -100,8 +100,9 @@ impl SimpleAggregationOp {
                     use self::ValueType::*;
                     let the_type = possibilities.exemplar().expect("a type");
                     match the_type {
-                        // Numerically ordered types.
-                        Double | Long | Instant => Ok(the_type),
+                        // Numerically ordered types. Entids are ordered integers and tx ids
+                        // are monotonic, so (max ?tx) is the latest transaction (#249).
+                        Double | Long | Instant | Ref => Ok(the_type),
 
                         // Boolean: false < true.
                         Boolean => Ok(the_type),
@@ -110,7 +111,7 @@ impl SimpleAggregationOp {
                         String => Ok(the_type),
 
                         // Unordered types.
-                        Keyword | Ref | Uuid | Bytes => {
+                        Keyword | Uuid | Bytes => {
                             bail!(ProjectorError::CannotApplyAggregateOperationToTypes(
                                 self,
                                 possibilities

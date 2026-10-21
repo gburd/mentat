@@ -1481,6 +1481,56 @@ fn test_aggregate_the() {
     );
 }
 
+// #249: min/max over refs, including transaction ids.
+#[test]
+fn test_min_max_ref() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :t/r :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                {:db/ident :t/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    let first = store.transact(r#"[{:db/id "a" :t/n 1}]"#).expect("a");
+    let a = *first.tempids.get("a").unwrap();
+    let last = store.transact(r#"[{:db/id "b" :t/n 2}]"#).expect("b");
+    let b = *last.tempids.get("b").unwrap();
+    store
+        .transact(format!("[[:db/add {a} :t/r {a}] [:db/add {a} :t/r {b}]]").as_str())
+        .expect("refs");
+
+    let scalar = |q: &str| store.q_once(q, None).into_scalar_result().expect(q);
+    assert_eq!(
+        scalar("[:find (max ?tx) . :where [_ :t/n _ ?tx]]"),
+        Some(Binding::Scalar(TypedValue::Ref(last.tx_id)))
+    );
+    assert_eq!(
+        scalar("[:find (min ?tx) . :where [_ :t/n _ ?tx]]"),
+        Some(Binding::Scalar(TypedValue::Ref(first.tx_id)))
+    );
+    assert_eq!(
+        scalar("[:find (max ?v) . :where [_ :t/r ?v]]"),
+        Some(Binding::Scalar(TypedValue::Ref(a.max(b))))
+    );
+    assert_eq!(
+        scalar("[:find (min ?v) . :where [_ :t/r ?v]]"),
+        Some(Binding::Scalar(TypedValue::Ref(a.min(b))))
+    );
+    // Grouped, in a relation.
+    let rel = store
+        .q_once("[:find ?e (max ?v) :where [?e :t/r ?v]]", None)
+        .into_rel_result()
+        .expect("rel");
+    assert_eq!(
+        rel,
+        vec![vec![TypedValue::Ref(a), TypedValue::Ref(a.max(b))]].into()
+    );
+    // Sum over refs is still meaningless.
+    assert!(store
+        .q_once("[:find (sum ?v) . :where [_ :t/r ?v]]", None)
+        .is_err());
+}
+
 #[test]
 fn test_null_aggregates() {
     let store = Store::open("").expect("opened");
