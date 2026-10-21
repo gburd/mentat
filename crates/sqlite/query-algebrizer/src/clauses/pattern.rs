@@ -509,6 +509,15 @@ impl ConjoiningClauses {
         known: &Known,
         added: PatternNonValuePlace,
     ) -> PlaceOrEmpty<EvolvedNonValuePlace> {
+        // A variable bound to a boolean (an `:in` value, `ground`) stays a
+        // variable: `apply_history_pattern` constrains the `added` column to
+        // the bound value. Treating it as an entity binding made the pattern
+        // known-empty, so `(not [?e ?a ?v _ ?op])` excluded nothing.
+        if let PatternNonValuePlace::Variable(ref v) = added {
+            if let Some(TypedValue::Boolean(_)) = self.bound_value(v) {
+                return PlaceOrEmpty::Place(EvolvedNonValuePlace::Variable(v.clone()));
+            }
+        }
         self.make_evolved_non_value(known, DatomsColumn::Value, added)
     }
 

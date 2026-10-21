@@ -505,4 +505,115 @@ mod tests {
         );
         assert_eq!(n["result"], 2, "{n}");
     }
+
+    // ========================================================================
+    // 5-place patterns inside not / not-join / or / or-join / rule bodies
+    // read the log too (1.18.0; they read current state before).
+    // ========================================================================
+
+    /// a: name "old" then "new" (so "old" was retracted), b: "keep",
+    /// c: "old" (never retracted). Returns (a, b, c).
+    fn setup_renamed() -> (i64, i64, i64) {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :hn/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                            {:db/ident :hn/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]'::TEXT)",
+        )
+        .expect("schema");
+        let r = Spi::get_one::<String>(
+            "SELECT edn_t('[[:db/add \"a\" :hn/name \"old\"] [:db/add \"b\" :hn/name \"keep\"] \
+             [:db/add \"c\" :hn/name \"old\"] [:db/add \"b\" :hn/friend \"a\"] \
+             [:db/add \"c\" :hn/friend \"b\"]]'::TEXT)",
+        )
+        .expect("tx")
+        .expect("NULL");
+        let j: serde_json::Value = serde_json::from_str(&r).expect("parse");
+        let id = |k: &str| j["tempids"][k].as_i64().expect("tempid");
+        let (a, b, c) = (id("a"), id("b"), id("c"));
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {a} :hn/name \"new\"]]'::TEXT)"
+        ))
+        .expect("rename");
+        (a, b, c)
+    }
+
+    #[pg_test]
+    fn test_hi_history_pattern_in_not() {
+        let (a, b, c) = setup_renamed();
+        let (a, b, c) = (format!("[{a}]"), format!("[{b}]"), format!("[{c}]"));
+        let mut kept = vec![b.clone(), c.clone()];
+        kept.sort();
+        // Entities whose name was never retracted from "old": only a's was.
+        // On current state the inner pattern sees no retraction and keeps a.
+        for q in [
+            "[:find ?e :where [?e :hn/name _] (not [?e :hn/name \"old\" _ ?op] [(= ?op false)])]",
+            "[:find ?e :where [?e :hn/name _] (not-join [?e] [?e :hn/name \"old\" ?tx ?op] [(= ?op false)])]",
+        ] {
+            assert_eq!(rows(q, serde_json::json!({})), kept, "{q}");
+        }
+        // ?op from :in, bound only inside the not.
+        let q = "[:find ?e :in ?op :where [?e :hn/name _] (not [?e :hn/name \"old\" _ ?op])]";
+        assert_eq!(rows(q, serde_json::json!({"inputs": [false]})), kept);
+        // true: a and c both had "old" asserted, only b is left.
+        assert_eq!(rows(q, serde_json::json!({"inputs": [true]})), [b.clone()]);
+        // Entities that never had name "old" at all (asserted or retracted).
+        let q = "[:find ?e :where [?e :hn/name _] (not-join [?e] [?e :hn/name \"old\" ?tx ?op])]";
+        assert_eq!(rows(q, serde_json::json!({})), [b.clone()]);
+        // A 4-place pattern inside not stays on current state: c still has
+        // "old", a does not.
+        let q = "[:find ?e :where [?e :hn/name _] (not [?e :hn/name \"old\"])]";
+        let mut cur = vec![a.clone(), b.clone()];
+        cur.sort();
+        assert_eq!(rows(q, serde_json::json!({})), cur);
+        // A later not pattern joins on a var bound by an earlier one.
+        let q = "[:find ?e :where [?e :hn/name _] \
+                 (not-join [?e] [?e :hn/friend ?f] [?f :hn/name \"old\" _ ?op] [(= ?op false)])]";
+        let mut not_friend_of_a = vec![a.clone(), c.clone()];
+        not_friend_of_a.sort();
+        assert_eq!(rows(q, serde_json::json!({})), not_friend_of_a);
+    }
+
+    #[pg_test]
+    fn test_hi_history_pattern_in_or() {
+        let (a, b, c) = setup_renamed();
+        // ?op is bound inside the or arms only, and projected.
+        let q = "[:find ?e ?op :where [?e :hn/name _] \
+                 (or [?e :hn/name \"old\" _ ?op] [?e :hn/name \"keep\" _ ?op])]";
+        let mut want = vec![
+            format!("[{a},false]"),
+            format!("[{a},true]"),
+            format!("[{b},true]"),
+            format!("[{c},true]"),
+        ];
+        want.sort();
+        assert_eq!(rows(q, serde_json::json!({})), want);
+        // or-join with a predicate on the history-bound ?op.
+        let q = "[:find ?e :where [?e :hn/name _] \
+                 (or-join [?e] (and [?e :hn/name \"old\" _ ?op] [(= ?op false)]) [?e :hn/name \"keep\"])]";
+        let mut want = vec![format!("[{a}]"), format!("[{b}]")];
+        want.sort();
+        assert_eq!(rows(q, serde_json::json!({})), want);
+    }
+
+    #[pg_test]
+    fn test_hi_history_pattern_in_rule_body() {
+        let (a, _b, c) = setup_renamed();
+        let q = "[:find ?e ?op :rules [[(was-old ?e ?op) [?e :hn/name \"old\" _ ?op]]] \
+                 :where (was-old ?e ?op)]";
+        let mut want = vec![
+            format!("[{a},false]"),
+            format!("[{a},true]"),
+            format!("[{c},true]"),
+        ];
+        want.sort();
+        assert_eq!(rows(q, serde_json::json!({})), want);
+        // Predicate on ?op inside the rule body.
+        let q =
+            "[:find ?e :rules [[(dropped-old ?e) [?e :hn/name \"old\" _ ?op] [(= ?op false)]]] \
+                 :where [?e :hn/name _] (dropped-old ?e)]";
+        assert_eq!(rows(q, serde_json::json!({})), [format!("[{a}]")]);
+        // A 4-place rule body stays on current state.
+        let q = "[:find ?e :rules [[(old-now ?e) [?e :hn/name \"old\"]]] :where (old-now ?e)]";
+        assert_eq!(rows(q, serde_json::json!({})), [format!("[{c}]")]);
+    }
 }

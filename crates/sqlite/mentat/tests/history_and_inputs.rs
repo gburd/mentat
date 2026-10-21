@@ -510,3 +510,130 @@ fn test_pull_as_of_and_since() {
         other => panic!("expected a pull map, got {other:?}"),
     }
 }
+
+// ============================================================================
+// 5. 5-place patterns inside not / or / or-join / rule bodies (1.18.0)
+// ============================================================================
+
+/// a: name "old" then "new" (so "old" was retracted), b: "keep", c: "old".
+fn setup_renamed() -> (Store, Entid, Entid, Entid) {
+    let mut store = setup();
+    let r = store
+        .transact(r#"[[:db/add "a" :hi/name "old"] [:db/add "b" :hi/name "keep"] [:db/add "c" :hi/name "old"]]"#)
+        .expect("tx");
+    let id = |k: &str| *r.tempids.get(k).unwrap();
+    let (a, b, c) = (id("a"), id("b"), id("c"));
+    store
+        .transact(&format!(r#"[[:db/add {a} :hi/name "new"]]"#))
+        .expect("rename");
+    (store, a, b, c)
+}
+
+/// The sorted rows of a relation result, each rendered as `e` or `e,added`.
+fn rel_rows(store: &Store, q: &str, op: Option<bool>) -> Vec<String> {
+    let inputs = match op {
+        Some(b) => QueryInputs::with_value_sequence(vec![(var("?op"), TypedValue::Boolean(b))]),
+        None => QueryInputs::default(),
+    };
+    let mut out: Vec<String> = store
+        .q_once(q, inputs)
+        .into_rel_result()
+        .expect(q)
+        .rows()
+        .map(|r| {
+            r.iter()
+                .map(|v| match v.clone().into_entid() {
+                    Some(e) => e.to_string(),
+                    None => v.clone().into_boolean().expect("bool").to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn test_history_pattern_in_not_with_bound_added() {
+    let (store, a, b, c) = setup_renamed();
+    let (a, b, c) = (a.to_string(), b.to_string(), c.to_string());
+    let mut kept = vec![b.clone(), c.clone()];
+    kept.sort();
+    // ?op bound to false by :in: entities whose "old" name was never retracted.
+    // A bound boolean ?op made the inner pattern known-empty, so this
+    // excluded nothing.
+    for q in [
+        r#"[:find ?e :in ?op :where [?e :hi/name _] (not [?e :hi/name "old" _ ?op])]"#,
+        r#"[:find ?e :in ?op :where [?e :hi/name _] (not-join [?e ?op] [?e :hi/name "old" ?tx ?op])]"#,
+        r#"[:find ?e :where [?e :hi/name _] [(ground false) ?op] (not [?e :hi/name "old" _ ?op])]"#,
+    ] {
+        assert_eq!(rel_rows(&store, q, Some(false)), kept, "{q}");
+    }
+    let q = r#"[:find ?e :in ?op :where [?e :hi/name _] [?e :hi/name "old" _ ?op]]"#;
+    assert_eq!(rel_rows(&store, q, Some(false)), [a.clone()]);
+    // Never had "old" at all.
+    let q = r#"[:find ?e :where [?e :hi/name _] (not-join [?e] [?e :hi/name "old" ?tx ?op])]"#;
+    assert_eq!(rel_rows(&store, q, None), [b.clone()]);
+}
+
+#[test]
+fn test_history_pattern_in_or_and_rules() {
+    let (store, a, b, c) = setup_renamed();
+    // A two-pattern `or` of history patterns: ?op is bound and projected
+    // (the simple-or path read current state and lost ?op).
+    let q = r#"[:find ?e ?op :where [?e :hi/name _] (or [?e :hi/name "old" _ ?op] [?e :hi/name "keep" _ ?op])]"#;
+    let mut want = vec![
+        format!("{a},false"),
+        format!("{a},true"),
+        format!("{b},true"),
+        format!("{c},true"),
+    ];
+    want.sort();
+    assert_eq!(rel_rows(&store, q, None), want);
+    // or-join whose bound ?op rules out every arm but one (this panicked).
+    let q = r#"[:find ?e :in ?op :where [?e :hi/name _] (or-join [?e ?op] [?e :hi/name "old" _ ?op] [?e :hi/name "zzz" _ ?op])]"#;
+    assert_eq!(rel_rows(&store, q, Some(false)), [a.to_string()]);
+    // Rule bodies.
+    let q = r#"[:find ?e ?op :rules [[(was-old ?e ?op) [?e :hi/name "old" _ ?op]]] :where (was-old ?e ?op)]"#;
+    let mut want = vec![
+        format!("{a},false"),
+        format!("{a},true"),
+        format!("{c},true"),
+    ];
+    want.sort();
+    assert_eq!(rel_rows(&store, q, None), want);
+    let q = r#"[:find ?e :in ?op :rules [[(dropped-old ?e ?op) [?e :hi/name "old" _ ?op]]] :where [?e :hi/name _] (dropped-old ?e ?op)]"#;
+    assert_eq!(rel_rows(&store, q, Some(false)), [a.to_string()]);
+}
+
+/// Under as-of T a two-arm `or` reads the state at T like a plain pattern
+/// (the simple-or path read current state).
+#[test]
+fn test_or_as_of_reads_state_at_t() {
+    let (mut store, a, _b, _c) = setup_renamed();
+    let t = store
+        .transact(&format!(r#"[[:db/add {a} :hi/dept "x"]]"#))
+        .expect("t")
+        .tx_id;
+    store
+        .transact(&format!(r#"[[:db/add {a} :hi/name "newer"]]"#))
+        .expect("rename again");
+    let names = |q: &str| {
+        let mut v: Vec<String> = store
+            .q_once_as_of(q, None, t)
+            .into_coll_result()
+            .expect(q)
+            .into_iter()
+            .filter_map(|b| b.into_string().map(|s| s.to_string()))
+            .collect();
+        v.sort();
+        v
+    };
+    let plain = names("[:find [?n ...] :where [?e :hi/name ?n]]");
+    assert_eq!(plain, ["keep", "new", "old"]);
+    assert_eq!(
+        names("[:find [?n ...] :where (or [?e :hi/name ?n] [?e :hi/dept ?n])]"),
+        ["keep", "new", "old", "x"]
+    );
+}

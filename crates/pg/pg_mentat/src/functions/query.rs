@@ -1200,6 +1200,31 @@ fn is_ref_var(var_to_type: &HashMap<String, Option<String>>, var: &str) -> bool 
     matches!(var_to_type.get(var), Some(Some(t)) if t == "ref")
 }
 
+/// The WHERE constraint binding a scalar `:in` value to the column a variable
+/// was bound to (`v`, `e`, `a`, `tx` or `added`), if the value fits it.
+fn scalar_input_constraint(
+    alias: &str,
+    col: &str,
+    value: &serde_json::Value,
+    is_ref: bool,
+    builder: &mut SqlBuilder<'_>,
+    schema_prefix: &str,
+) -> Option<String> {
+    match col {
+        "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix),
+        "e" => bind_input_entity(alias, value, builder, schema_prefix),
+        "a" | "tx" => value.as_i64().map(|i| {
+            let param = builder.bind_bigint(i);
+            format!("{alias}.{col} = {param}")
+        }),
+        "added" => value.as_bool().map(|b| {
+            let param = builder.bind_bool(b);
+            format!("{alias}.added = {param}")
+        }),
+        _ => None,
+    }
+}
+
 /// Bind an :in clause variable to a WHERE constraint on an entity column.
 ///
 /// For entity-position variables, the bound value must be an integer entity ID
@@ -2273,9 +2298,8 @@ fn element_to_var_name(elem: &Element) -> Option<String> {
 }
 
 /// Whether a pattern reads history (assertions and retractions): the query
-/// asked for it, or the pattern has a 5th (`added`) place.
-// ponytail: main pattern path only; a 5-place pattern inside not/rule bodies
-// still reads current state (those paths bind no `added` var yet).
+/// asked for it, or the pattern has a 5th (`added`) place. Used by the main
+/// pattern path, `not` / `not-join` subqueries and rule bodies alike.
 fn reads_history(temporal: &TemporalOption, pattern: &edn::query::Pattern) -> bool {
     temporal.history || pattern.added != PatternNonValuePlace::Placeholder
 }
@@ -2373,6 +2397,17 @@ fn temporal_conditions(
          AND {same_v} AND NOT r.added AND r.tx > {alias}.tx{r_upper})"
     ));
     out
+}
+
+/// The column to compare a `tx` / `added` place against when the variable was
+/// bound to `bound` elsewhere: a value-place binding compares its `v_ref`
+/// (tx) or `v_bool` (added) column.
+fn value_col_for<'c>(col: &str, bound: &'c str) -> &'c str {
+    match (col, bound) {
+        ("added", "v") => "v_bool",
+        (_, "v") => "v_ref",
+        _ => bound,
+    }
 }
 
 /// Extract a variable name string from a PatternNonValuePlace, if it is a variable.
@@ -6483,40 +6518,10 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     // Apply :in clause input bindings as WHERE constraints (scalar from HashMap)
     for (var_name, value) in input_bindings {
         if let Some((alias, col)) = var_to_alias.get(var_name.as_str()) {
-            let constraint = match *col {
-                "v" => bind_input_value(
-                    alias,
-                    value,
-                    is_ref_var(&var_to_type, var_name),
-                    builder,
-                    schema_prefix,
-                ),
-                "e" => bind_input_entity(alias, value, builder, schema_prefix),
-                "a" => {
-                    // Attribute column: bind as bigint
-                    if let Some(i) = value.as_i64() {
-                        let param = builder.bind_bigint(i);
-                        Some(format!("{alias}.a = {param}"))
-                    } else {
-                        None
-                    }
-                }
-                "tx" => {
-                    // Transaction column: bind as bigint
-                    if let Some(i) = value.as_i64() {
-                        let param = builder.bind_bigint(i);
-                        Some(format!("{alias}.tx = {param}"))
-                    } else {
-                        None
-                    }
-                }
-                "added" => value.as_bool().map(|b| {
-                    let param = builder.bind_bool(b);
-                    format!("{alias}.added = {param}")
-                }),
-                _ => None,
-            };
-            if let Some(c) = constraint {
+            let is_ref = is_ref_var(&var_to_type, var_name);
+            if let Some(c) =
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+            {
                 where_clauses.push(c);
             }
         }
@@ -6552,26 +6557,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                     }
                     if let Some(val) = values.get(i) {
                         if let Some((alias, col)) = var_to_alias.get(var.as_str()) {
-                            let constraint = match *col {
-                                "v" => bind_input_value(
-                                    alias,
-                                    val,
-                                    is_ref_var(&var_to_type, var),
-                                    builder,
-                                    schema_prefix,
-                                ),
-                                "e" => bind_input_entity(alias, val, builder, schema_prefix),
-                                "a" => val.as_i64().map(|i| {
-                                    let param = builder.bind_bigint(i);
-                                    format!("{alias}.a = {param}")
-                                }),
-                                "tx" => val.as_i64().map(|i| {
-                                    let param = builder.bind_bigint(i);
-                                    format!("{alias}.tx = {param}")
-                                }),
-                                _ => None,
-                            };
-                            if let Some(c) = constraint {
+                            let is_ref = is_ref_var(&var_to_type, var);
+                            if let Some(c) = scalar_input_constraint(
+                                alias,
+                                col,
+                                val,
+                                is_ref,
+                                builder,
+                                schema_prefix,
+                            ) {
                                 where_clauses.push(c);
                             }
                         }
@@ -6601,6 +6595,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             not_join,
             &var_to_alias,
             &var_to_type,
+            input_bindings,
             builder,
             temporal,
             schema_prefix,
@@ -7236,6 +7231,7 @@ fn build_not_exists_subquery(
     not_join: &edn::query::NotJoin,
     outer_var_to_alias: &HashMap<String, (String, &'static str)>,
     outer_var_to_type: &HashMap<String, Option<String>>,
+    input_bindings: &HashMap<String, serde_json::Value>,
     builder: &mut SqlBuilder<'_>,
     temporal: &TemporalOption,
     schema_prefix: &str,
@@ -7262,10 +7258,12 @@ fn build_not_exists_subquery(
                     all_not_vars.push(name.clone());
                     locally_bound_vars.insert(name);
                 }
-                if let PatternNonValuePlace::Variable(v) = &p.tx {
-                    let name = format!("{}", v);
-                    all_not_vars.push(name.clone());
-                    locally_bound_vars.insert(name);
+                for place in [&p.tx, &p.added] {
+                    if let PatternNonValuePlace::Variable(v) = place {
+                        let name = format!("{}", v);
+                        all_not_vars.push(name.clone());
+                        locally_bound_vars.insert(name);
+                    }
                 }
             }
             WhereClause::Pred(pred) => {
@@ -7282,7 +7280,9 @@ fn build_not_exists_subquery(
     let unbound: Vec<&String> = all_not_vars
         .iter()
         .filter(|v| {
-            !outer_var_to_alias.contains_key(v.as_str()) && !locally_bound_vars.contains(v.as_str())
+            !outer_var_to_alias.contains_key(v.as_str())
+                && !locally_bound_vars.contains(v.as_str())
+                && !input_bindings.contains_key(v.as_str())
         })
         .collect();
 
@@ -7324,9 +7324,15 @@ fn build_not_exists_subquery(
                 match &p.entity {
                     PatternNonValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
-                        // Correlate with outer query
-                        if let Some((outer_alias, outer_col)) = outer_var_to_alias.get(&var_name) {
-                            sub_where.push(format!("{alias}.e = {outer_alias}.{outer_col}"));
+                        // Correlate with the outer query or an earlier NOT pattern.
+                        match not_var_to_alias.get(&var_name) {
+                            Some((outer_alias, "v")) => {
+                                sub_where.push(format!("{alias}.e = {outer_alias}.v_ref"))
+                            }
+                            Some((outer_alias, outer_col)) => {
+                                sub_where.push(format!("{alias}.e = {outer_alias}.{outer_col}"))
+                            }
+                            None => {}
                         }
                     }
                     PatternNonValuePlace::Entid(id) => {
@@ -7358,7 +7364,7 @@ fn build_not_exists_subquery(
                     }
                     PatternNonValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
-                        if let Some((outer_alias, outer_col)) = outer_var_to_alias.get(&var_name) {
+                        if let Some((outer_alias, outer_col)) = not_var_to_alias.get(&var_name) {
                             sub_where.push(format!("{alias}.a = {outer_alias}.{outer_col}"));
                         }
                     }
@@ -7372,7 +7378,7 @@ fn build_not_exists_subquery(
                 match &p.value {
                     PatternValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
-                        if let Some((outer_alias, outer_col)) = outer_var_to_alias.get(&var_name) {
+                        if let Some((outer_alias, outer_col)) = not_var_to_alias.get(&var_name) {
                             if *outer_col == "v" {
                                 sub_where.push(format!(
                                     "{alias}.value_type_tag = {outer_alias}.value_type_tag \
@@ -7410,10 +7416,29 @@ fn build_not_exists_subquery(
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
+                // tx / added places: correlate, or bind locally (below).
+                for (place, col) in [(&p.tx, "tx"), (&p.added, "added")] {
+                    match place {
+                        PatternNonValuePlace::Variable(v) => {
+                            if let Some((a2, c2)) = not_var_to_alias.get(&format!("{}", v)) {
+                                let c2 = value_col_for(col, c2);
+                                sub_where.push(format!("{alias}.{col} = {a2}.{c2}"));
+                            }
+                        }
+                        PatternNonValuePlace::Entid(id) if col == "tx" => {
+                            let param = builder.bind_bigint(*id);
+                            sub_where.push(format!("{alias}.tx = {param}"));
+                        }
+                        _ => {}
+                    }
+                }
+
+                // A 5-place pattern reads the log, as in the main path.
+                let history = reads_history(temporal, p);
                 // Temporal filtering in subquery too.
                 sub_where.extend(temporal_conditions(
                     temporal,
-                    temporal.history,
+                    history,
                     &alias,
                     typed_info.as_ref(),
                     narrow_tables_prefix(schema_prefix),
@@ -7423,7 +7448,7 @@ fn build_not_exists_subquery(
 
                 // Build pushdown conditions for NOT-clause subquery
                 let not_pushdown = {
-                    let added_true = !temporal.history;
+                    let added_true = !history;
                     let attribute_entid = match &p.attribute {
                         PatternNonValuePlace::Entid(id) => Some(format!("{}", id)),
                         PatternNonValuePlace::Ident(kw) => {
@@ -7449,38 +7474,36 @@ fn build_not_exists_subquery(
                         store_id_param,
                         info,
                         Some(&not_pushdown),
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                     ));
                 } else {
                     sub_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                         narrow_tables_prefix(schema_prefix),
                     ));
                 }
 
-                // Track locally-bound variables for predicates within this NOT clause.
-                // Entity-position variables are mapped to (alias, "e").
-                if let PatternNonValuePlace::Variable(v) = &p.entity {
-                    let var_name = format!("{}", v);
-                    if !outer_var_to_alias.contains_key(&var_name) {
-                        not_var_to_alias.insert(var_name, (alias.clone(), "e"));
+                // Track locally-bound variables (first binding wins) for
+                // later patterns and predicates within this NOT clause.
+                for (place, col) in [
+                    (&p.entity, "e"),
+                    (&p.attribute, "a"),
+                    (&p.tx, "tx"),
+                    (&p.added, "added"),
+                ] {
+                    if let PatternNonValuePlace::Variable(v) = place {
+                        not_var_to_alias
+                            .entry(format!("{}", v))
+                            .or_insert_with(|| (alias.clone(), col));
                     }
                 }
-                // Value-position variables are mapped to (alias, "v").
                 if let PatternValuePlace::Variable(v) = &p.value {
                     let var_name = format!("{}", v);
-                    if !outer_var_to_alias.contains_key(&var_name) {
+                    if !not_var_to_alias.contains_key(&var_name) {
                         not_var_to_alias.insert(var_name.clone(), (alias.clone(), "v"));
                         not_var_to_type.insert(var_name, not_pattern_value_type.clone());
-                    }
-                }
-                // Tx-position variables are mapped to (alias, "tx").
-                if let PatternNonValuePlace::Variable(v) = &p.tx {
-                    let var_name = format!("{}", v);
-                    if !outer_var_to_alias.contains_key(&var_name) {
-                        not_var_to_alias.insert(var_name, (alias, "tx"));
                     }
                 }
             }
@@ -7489,17 +7512,13 @@ fn build_not_exists_subquery(
                 // Variables referenced by the predicate must be bound either by
                 // patterns within this NOT clause or by the outer query.
                 // NOT-clause predicates resolve their vars from the NOT-local
-                // and outer pattern bindings. :in scalar inputs used only
-                // inside a NOT predicate are not threaded here (rare; an empty
-                // map preserves the prior behavior — such a var surfaces the
-                // usual unbound-var error).
-                let no_inputs: HashMap<String, serde_json::Value> = HashMap::new();
+                // and outer pattern bindings, then from scalar :in inputs.
                 let pred_sql = build_predicate_clause(
                     pred,
                     &not_var_to_alias,
                     &not_var_to_type,
                     &HashMap::new(),
-                    &no_inputs,
+                    input_bindings,
                     builder,
                 )?;
                 sub_where.push(pred_sql);
@@ -7511,6 +7530,22 @@ fn build_not_exists_subquery(
                             and rule invocations inside NOT are not yet supported."
                         .into(),
                 );
+            }
+        }
+    }
+
+    // A scalar :in value for a variable bound only inside the NOT constrains
+    // it here (the outer query applies inputs to its own bindings).
+    for (var_name, value) in input_bindings {
+        if outer_var_to_alias.contains_key(var_name) {
+            continue;
+        }
+        if let Some((alias, col)) = not_var_to_alias.get(var_name) {
+            let is_ref = is_ref_var(&not_var_to_type, var_name);
+            if let Some(c) =
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+            {
+                sub_where.push(c);
             }
         }
     }
@@ -7882,6 +7917,8 @@ fn pred_arg_to_sql(
                             ))
                         }
                     }
+                } else if *col == "added" {
+                    Ok(format!("CASE WHEN {alias}.added THEN 1 ELSE 0 END"))
                 } else {
                     Ok(format!("{}.{}", alias, col))
                 }
@@ -8295,6 +8332,8 @@ fn pred_arg_to_sql_for_rule(
                 } else if *col == "computed" {
                     // This is from a recursive rule invocation
                     Ok(format!("{}.col0", alias))
+                } else if *col == "added" {
+                    Ok(format!("CASE WHEN {alias}.added THEN 1 ELSE 0 END"))
                 } else {
                     Ok(format!("{}.{}", alias, col))
                 }
@@ -8450,15 +8489,37 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                     }
                 }
 
+                // tx / added places (a 5-place pattern binds both).
+                for (place, col) in [(&p.tx, "tx"), (&p.added, "added")] {
+                    match place {
+                        PatternNonValuePlace::Variable(v) => {
+                            let var_name = format!("{}", v);
+                            if let Some((existing, ecol)) = body_var_to_alias.get(&var_name) {
+                                let ecol = value_col_for(col, ecol);
+                                where_parts.push(format!("{alias}.{col} = {existing}.{ecol}"));
+                            } else {
+                                body_var_to_alias.insert(var_name, (alias.clone(), col));
+                            }
+                        }
+                        PatternNonValuePlace::Entid(id) if col == "tx" => {
+                            let param = builder.bind_bigint(*id);
+                            where_parts.push(format!("{alias}.tx = {param}"));
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Schema-aware: reuse resolved type for FROM optimization
                 let typed_info = rule_pattern_value_type
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
+                // A 5-place pattern reads the log, as in the main path.
+                let history = reads_history(temporal, p);
                 // Temporal filtering.
                 where_parts.extend(temporal_conditions(
                     temporal,
-                    temporal.history,
+                    history,
                     &alias,
                     typed_info.as_ref(),
                     narrow_tables_prefix(schema_prefix),
@@ -8468,7 +8529,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
 
                 // Build pushdown conditions for rule-body subquery
                 let rule_pushdown = {
-                    let added_true = !temporal.history;
+                    let added_true = !history;
                     let attribute_entid = match &p.attribute {
                         PatternNonValuePlace::Entid(id) => Some(format!("{}", id)),
                         PatternNonValuePlace::Ident(kw) => {
@@ -8494,13 +8555,13 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                         store_id_param,
                         info,
                         Some(&rule_pushdown),
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                     ));
                 } else {
                     pattern_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                         narrow_tables_prefix(schema_prefix),
                     ));
                 }

@@ -182,6 +182,17 @@ impl ConjoiningClauses {
         assert!(or_join.is_fully_unified());
         assert!(or_join.clauses.len() >= 2);
 
+        // History patterns and a temporal bound read the `transactions`
+        // source; the single-alias simple `or` below would read current-state
+        // `datoms` and drop the `added` binding. Take the general path.
+        let history = |c: &OrWhereClause| {
+            matches!(c, OrWhereClause::Clause(WhereClause::Pattern(p))
+                if p.added != PatternNonValuePlace::Placeholder)
+        };
+        if self.temporal.is_some() || or_join.clauses.iter().any(history) {
+            return DeconstructedOrJoin::Complex(or_join);
+        }
+
         // We're going to collect into this.
         // If at any point we hit something that's not a suitable pattern, we'll
         // reconstruct and return a complex `OrJoin`.
@@ -379,6 +390,12 @@ impl ConjoiningClauses {
                 }
             })
             .collect();
+
+        // Every arm turned out unable to match (e.g. a bound input rules it out).
+        if patterns.is_empty() {
+            self.mark_known_empty(EmptyBecause::AttributeLookupFailed);
+            return Ok(());
+        }
 
         // Begin by building a base CC that we'll use to produce constraints from each pattern.
         // Populate this base CC with whatever variables are already known from the CC to which
