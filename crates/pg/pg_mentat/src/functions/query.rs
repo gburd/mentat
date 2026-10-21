@@ -7992,7 +7992,7 @@ fn build_rule_ctes(
             if let FnArg::Variable(v) = arg {
                 if i < CTE_COLS.len() {
                     let var_name = format!("{}", v);
-                    var_to_col.insert(var_name, (rule_name.to_string(), CTE_COLS[i]));
+                    var_to_col.insert(var_name, (quote_ident(rule_name), CTE_COLS[i]));
                 }
             }
         }
@@ -8062,12 +8062,15 @@ fn build_rule_ctes(
         // (no WITH prefix); a single WITH is added at the end.
         // RECURSIVE on any one CTE in a WITH list applies to all of them in
         // PostgreSQL, so a single global flag is correct.
-        cte_parts.push(format!("{rule_name}({cte_col_list}) AS ({cte_body})"));
+        cte_parts.push(format!(
+            "{}({cte_col_list}) AS ({cte_body})",
+            quote_ident(rule_name)
+        ));
         if is_recursive {
             any_recursive = true;
         }
 
-        from_fragments.push(rule_name.to_string());
+        from_fragments.push(quote_ident(rule_name));
     }
 
     // Combine into a single `WITH [RECURSIVE] cte1 AS (...), cte2 AS (...)`
@@ -8107,7 +8110,7 @@ fn make_per_arm_rule_cte_info(invocations: &[&RuleInvocation]) -> RuleCteInfo {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut var_to_col: HashMap<String, (String, &'static str)> = HashMap::new();
     for invocation in invocations {
-        let rule_name = invocation.name.0.as_str().to_string();
+        let rule_name = quote_ident(invocation.name.0.as_str());
         if seen_names.insert(rule_name.clone()) {
             from_fragments.push(rule_name.clone());
         }
@@ -8504,8 +8507,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
             }
             WhereClause::RuleExpr(ri) if ri.name.0.as_str() == rule_name => {
                 // Recursive self-reference: JOIN against the CTE itself
-                recursive_alias = format!("rec_{}", rule_name);
-                recursive_join = Some(format!("{rule_name} {recursive_alias}"));
+                recursive_alias = quote_ident(&format!("rec_{rule_name}"));
+                recursive_join = Some(format!("{} {recursive_alias}", quote_ident(rule_name)));
 
                 // Bind recursive arguments to body variables
                 for (i, arg) in ri.args.iter().enumerate() {

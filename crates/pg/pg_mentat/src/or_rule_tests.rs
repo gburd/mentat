@@ -161,4 +161,35 @@ mod tests {
             got, expected, p4,
         );
     }
+
+    /// Rule names are Datalog symbols, so they can hold `-`, `?` and
+    /// capitals; the CTE name is a quoted identifier. Before 1.18.0
+    /// `(is-adult? ?p)` was a SQL syntax error, including a recursive rule.
+    #[pg_test]
+    fn pg_test_rule_names_with_hyphens() {
+        setup();
+        let [p1, p2, p3, p4, p5] = setup_or_rule_data();
+        let q = "[:find ?p \
+                 :rules [[(is-adult? ?p) [?p :person/age ?a] [(>= ?a 18)]] \
+                         [(Big-Boss ?p) [?p :person/role :role/manager]]] \
+                 :where (or (is-adult? ?p) (Big-Boss ?p))]";
+        let expected: HashSet<i64> = [p1, p2, p3, p5].into_iter().collect();
+        assert_eq!(query_p_set(q), expected);
+        // A recursive rule with a hyphenated name: carol (p3) reports to p2,
+        // p2 to p1; p5 reports to p4 (not in carol's chain).
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :person/boss :db/valueType :db.type/ref \
+             :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {p3} :person/boss {p2}] [:db/add {p2} :person/boss {p1}] [:db/add {p5} :person/boss {p4}]]'::TEXT)"
+        ))
+        .expect("bosses");
+        let q = "[:find ?b :rules [[(reports-to ?e ?b) [?e :person/boss ?b]] \
+                               [(reports-to ?e ?b) [?e :person/boss ?x] (reports-to ?x ?b)]] \
+             :where [?e :person/name \"carol\"] (reports-to ?e ?b)]";
+        let expected: HashSet<i64> = [p1, p2].into_iter().collect();
+        assert_eq!(query_p_set(q), expected);
+    }
 }
