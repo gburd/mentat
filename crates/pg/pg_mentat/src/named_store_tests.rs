@@ -282,4 +282,68 @@ mod tests {
         assert_eq!(sorted(names("dup_s")), Vec::<String>::new());
         Spi::run("SELECT drop_store('dup_s')").expect("drop again");
     }
+    #[pg_test]
+    fn named_store_transactor_features() {
+        setup();
+        Spi::run("SELECT create_store('tf_s')").expect("create");
+        tx("tf_s", SCHEMA_TX);
+        tx(
+            "tf_s",
+            "[{:db/ident :p/note :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/noHistory true}]",
+        );
+        let r = tx("tf_s", "[{:db/id \"a\" :p/name \"Ann\" :p/age 1} {:db/id \"b\" :p/name \"Bob\" :p/friend \"a\"}]");
+        let ann = r["tempids"]["a"].as_i64().unwrap();
+        // Lookup ref in the entity position, resolved in the store.
+        tx("tf_s", "[[:db/add [:p/name \"Ann\"] :p/age 2]]");
+        // Upsert by unique identity: no new entity.
+        let up = tx("tf_s", "[{:db/id \"x\" :p/name \"Ann\" :p/age 3}]");
+        assert_eq!(up["tempids"]["x"].as_i64(), Some(ann), "{up}");
+        // CAS reads the store's current_datoms.
+        tx("tf_s", &format!("[[:db.fn/cas {ann} :p/age 3 4]]"));
+        let err = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT t('tf_s', '[[:db.fn/cas {ann} :p/age 3 5]]')$q$)"
+        ));
+        assert!(!err.is_empty(), "cas against a stale value fails");
+        // noHistory keeps one log row.
+        tx("tf_s", &format!("[[:db/add {ann} :p/note \"n1\"]]"));
+        tx("tf_s", &format!("[[:db/add {ann} :p/note \"n2\"]]"));
+        let notes: i64 = Spi::get_one(&format!(
+            "SELECT count(*) FROM mentat_tf_s.datoms_text_new WHERE e = {ann} \
+             AND a = (SELECT entid FROM mentat_tf_s.idents WHERE ident = ':p/note')"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(notes, 1);
+        // retractEntity removes Ann and Bob's ref to her.
+        tx("tf_s", &format!("[[:db/retractEntity {ann}]]"));
+        assert_eq!(sorted(names("tf_s")), vec!["Bob"]);
+        let friends = q(
+            "tf_s",
+            "[:find ?f . :where [?b :p/name \"Bob\"] [?b :p/friend ?f]]",
+            "{}",
+        );
+        assert_eq!(friends["result"], serde_json::Value::Null, "{friends}");
+        // The projection agrees with the log (latest tx wins), per type.
+        let mismatches: i64 = Spi::get_one(
+            "SELECT count(*) FROM ( \
+               (SELECT e, a, v FROM (SELECT DISTINCT ON (e, a, v) e, a, v, added \
+                  FROM mentat_tf_s.datoms_long_new ORDER BY e, a, v, tx DESC) l WHERE added \
+                EXCEPT SELECT e, a, v FROM mentat_tf_s.current_long) \
+               UNION ALL \
+               (SELECT e, a, v FROM mentat_tf_s.current_long \
+                EXCEPT SELECT e, a, v FROM (SELECT DISTINCT ON (e, a, v) e, a, v, added \
+                  FROM mentat_tf_s.datoms_long_new ORDER BY e, a, v, tx DESC) l WHERE added)) d",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mismatches, 0);
+        // The default store saw none of it.
+        let leaked: i64 = Spi::get_one(
+            "SELECT count(*) FROM mentat.current_text WHERE v IN ('Ann', 'Bob', 'n1', 'n2')",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(leaked, 0);
+        Spi::run("SELECT drop_store('tf_s')").expect("drop");
+    }
 }

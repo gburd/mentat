@@ -943,19 +943,6 @@ WHERE added = true",
     )
 }
 
-/// Generate SQL for optional full-text search indexes (requires pg_textsearch
-/// or built-in tsvector support).
-///
-/// Creates a GIN index on a generated tsvector column for full-text search.
-fn fulltext_index_sql(schema: &str, store_name: &str) -> String {
-    format!(
-        r"CREATE INDEX IF NOT EXISTS idx_{name}_fts_text
-ON {schema}.datoms_text_new USING GIN (to_tsvector('english', COALESCE(v, '')))
-WHERE added = true",
-        name = store_name.to_lowercase()
-    )
-}
-
 /// Whether the current role owns `table` (CREATE INDEX on it needs that).
 fn owns_table(table: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     Ok(Spi::get_one_with_args::<bool>(
@@ -1026,8 +1013,8 @@ pub fn create_virtual_tables_for_schema(
         if extension_available("pg_trgm") {
             run(trigram_indexes_sql(schema, store_name))?;
         }
-        // Full-text search indexes use built-in tsvector; always available in PG 12+.
-        run(fulltext_index_sql(schema, store_name))?;
+        // Full-text search: the store layout already carries
+        // idx_datoms_text_new_fts (copied from the default store).
     }
 
     // NOTE: pg_vector support is planned for future implementation.
@@ -1193,14 +1180,6 @@ mod tests {
         assert!(sql.contains("idx_default_trgm_keyword"));
         assert!(sql.contains("mentat.datoms_text_new"));
         assert!(sql.contains("mentat.datoms_keyword_new"));
-    }
-
-    #[test]
-    fn test_fulltext_index_sql_uses_text_table() {
-        let sql = fulltext_index_sql("mentat", "default");
-        assert!(sql.contains("to_tsvector"));
-        assert!(sql.contains("idx_default_fts_text"));
-        assert!(sql.contains("mentat.datoms_text_new"));
     }
 
     #[test]

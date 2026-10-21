@@ -122,6 +122,16 @@ fn get_store_schema(store_name: &str) -> Result<Option<String>, pgrx::spi::SpiEr
     })
 }
 
+/// Create or bump the store's row in mentat.cache_generation, so every
+/// backend reloads its schema cache for that name.
+fn bump_generation(store_name: &str) -> Result<(), pgrx::spi::SpiError> {
+    Spi::run_with_args(
+        "INSERT INTO mentat.cache_generation (store_name, gen) VALUES ($1, 1) \
+         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1",
+        &[DatumWithOid::from(store_name)],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // CRUD functions
 // ---------------------------------------------------------------------------
@@ -180,11 +190,7 @@ pub fn create_store(
     )?;
 
     // Cross-backend schema-cache invalidation for this store.
-    Spi::run_with_args(
-        "INSERT INTO mentat.cache_generation (store_name, gen) VALUES ($1, 1) \
-         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1",
-        &[DatumWithOid::from(store_name)],
-    )?;
+    bump_generation(store_name)?;
     // A store of the same name may have existed earlier in this backend.
     crate::cache::invalidate_store_cache(store_name);
 
@@ -232,10 +238,9 @@ pub fn drop_store(store_name: &str) -> Result<String, Box<dyn std::error::Error 
         "DELETE FROM mentat.stores WHERE store_name = $1",
         &[DatumWithOid::from(store_name)],
     )?;
-    Spi::run_with_args(
-        "DELETE FROM mentat.cache_generation WHERE store_name = $1",
-        &[DatumWithOid::from(store_name)],
-    )?;
+    // Bump, don't delete: a backend that cached this store must reload if a
+    // store of the same name is created again.
+    bump_generation(store_name)?;
     crate::cache::invalidate_store_cache(store_name);
 
     Ok(format!("Store '{}' dropped successfully.", store_name))
@@ -337,15 +342,8 @@ pub fn rename_store(
             DatumWithOid::from(old_name),
         ],
     )?;
-    Spi::run_with_args(
-        "DELETE FROM mentat.cache_generation WHERE store_name = $1",
-        &[DatumWithOid::from(old_name)],
-    )?;
-    Spi::run_with_args(
-        "INSERT INTO mentat.cache_generation (store_name, gen) VALUES ($1, 1) \
-         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1",
-        &[DatumWithOid::from(new_name)],
-    )?;
+    bump_generation(old_name)?;
+    bump_generation(new_name)?;
     crate::cache::invalidate_store_cache(old_name);
     crate::cache::invalidate_store_cache(new_name);
     // The virtual-table views and functions find the store's id by name.
@@ -420,6 +418,15 @@ mod tests {
     #[test]
     fn test_get_schema_for_store_default() {
         assert_eq!(get_schema_for_store("default"), "mentat");
+    }
+
+    // The 1.17.1 -> 1.18.0 upgrade installs the same layout functions as a
+    // fresh install; the two copies must not drift.
+    #[test]
+    fn upgrade_script_carries_store_layout_verbatim() {
+        let layout = include_str!("../../sql/30_store_layout.sql");
+        let upgrade = include_str!("../../sql/pg_mentat--1.17.1--1.18.0.sql");
+        assert!(upgrade.contains(layout.trim()));
     }
 
     #[test]
