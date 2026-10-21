@@ -123,9 +123,9 @@ fn instant_output_path_emits_tagged_form() {
 /// file, so writes persist to it and are visible to a plain `Store::open`.
 #[test]
 fn with_default_path_makes_no_arg_open_use_that_file() {
-    let dir = std::env::temp_dir().join(format!("mentat_default_path_{}", std::process::id()));
-    let path = dir.to_str().unwrap().to_string();
-    let _ = std::fs::remove_file(&path);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("default.db");
+    let path = path.to_str().unwrap().to_string();
 
     let mut it = Interpreter::with_default_path(&path);
     it.eval("(def c (mentat.store/open))").unwrap();
@@ -156,5 +156,4 @@ fn with_default_path_makes_no_arg_open_use_that_file() {
         )
         .unwrap_or_default();
     assert!(!r.contains("Zed"), "in-memory store leaked: {r}");
-    let _ = std::fs::remove_file(&path);
 }

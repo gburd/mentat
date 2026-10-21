@@ -230,12 +230,13 @@ fn test_as_of_and_since_use_history_index() {
     );
 }
 
-fn temp_store(name: &str) -> String {
-    let p = std::env::temp_dir().join(format!("mentat-{name}-{}.db", std::process::id()));
-    for ext in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{ext}", p.display()));
-    }
-    p.to_str().unwrap().to_string()
+/// A store path inside a fresh temp dir; the dir (with -wal/-shm) is removed
+/// when the returned guard drops, even if the test panics.
+fn temp_store(name: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let p = dir.path().join(format!("{name}.db"));
+    let p = p.to_str().unwrap().to_string();
+    (dir, p)
 }
 
 fn raw(path: &str, sql: &str) {
@@ -249,7 +250,7 @@ fn raw(path: &str, sql: &str) {
 /// log (the `parts` view), O(history). The marks now live in `known_parts`.
 #[test]
 fn test_open_does_not_scan_log() {
-    let path = temp_store("open");
+    let (_dir, path) = temp_store("open");
     let (next_e, last_tx) = {
         let mut store = Store::open(&path).expect("create");
         schema(&mut store);
@@ -272,7 +273,7 @@ fn test_open_does_not_scan_log() {
 /// open, with the marks derived once from its log.
 #[test]
 fn test_v1_store_is_upgraded_on_open() {
-    let path = temp_store("v1");
+    let (_dir, path) = temp_store("v1");
     let (next_e, last_tx) = {
         let mut store = Store::open(&path).expect("create");
         schema(&mut store);
@@ -312,7 +313,7 @@ fn test_v1_store_is_upgraded_on_open() {
 /// the file (mmap_size) for builds that don't.
 #[test]
 fn test_no_shared_page_cache_contention() {
-    let path = temp_store("mmap");
+    let (_dir, path) = temp_store("mmap");
     let store = Store::open(&path).expect("open");
     let c = store.sqlite_ref();
     let opts: Vec<String> = c
@@ -355,7 +356,7 @@ fn test_wal_stays_bounded_under_continuous_readers() {
     // 256 KiB threshold keeps the test fast. The env var is read per commit, so
     // set it before any store in this test commits.
     std::env::set_var("MENTAT_WAL_RESTART_BYTES", "262144");
-    let path = temp_store("wal-bounded");
+    let (_dir, path) = temp_store("wal-bounded");
     let mut writer = Store::open(&path).expect("open");
     schema(&mut writer);
 

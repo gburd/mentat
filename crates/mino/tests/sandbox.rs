@@ -32,11 +32,8 @@ fn sandboxed_has_no_filesystem() {
         let e = err_of(&mut it, src);
         assert!(e.contains("unbound symbol"), "{src} => {e}");
     }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("mino-sandbox-{}-{nanos}", std::process::id()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
     let p = path.display().to_string();
     let e = err_of(&mut it, &format!("(mino.store/open \"{p}\")"));
     assert!(e.contains("sandbox"), "{e}");

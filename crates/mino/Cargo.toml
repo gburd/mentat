@@ -22,4 +22,6 @@ num-integer = "0.1"
 uuid = { workspace = true }
 
 [dev-dependencies]
-# conformance harness runs mino's own .clj corpus; no framework deps
+# conformance harness runs mino's own .clj corpus; no framework deps.
+# tempfile: self-removing temp dirs for tests that touch the filesystem.
+tempfile = "~3.27"

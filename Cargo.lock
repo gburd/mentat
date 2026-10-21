@@ -2629,6 +2629,7 @@ version = "1.17.1"
 dependencies = [
  "mentatdb",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2713,6 +2714,7 @@ dependencies = [
  "rusqlite",
  "rustc_version",
  "serde_json",
+ "tempfile",
  "time",
  "uuid",
 ]
@@ -2749,6 +2751,7 @@ dependencies = [
  "num-integer",
  "num-rational",
  "num-traits",
+ "tempfile",
  "uuid",
 ]
 

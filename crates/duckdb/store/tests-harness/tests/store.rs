@@ -283,9 +283,8 @@ fn pull_and_named_stores() {
 
 #[test]
 fn persists_in_a_duckdb_file() {
-    let dir = std::env::temp_dir().join(format!("mentat-duck-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("p.duckdb");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("p.duckdb");
     {
         let c = Connection::open(&path).unwrap();
         let _s = seeded(&c);
@@ -301,7 +300,6 @@ fn persists_in_a_duckdb_file() {
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
         vec![vec!["2".to_string()]]
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A store reopens from its WAL: the database closed without a checkpoint
@@ -309,9 +307,8 @@ fn persists_in_a_duckdb_file() {
 /// in the store's schema broke WAL replay on DuckDB 1.5.6.
 #[test]
 fn reopens_from_wal_without_checkpoint() {
-    let dir = std::env::temp_dir().join(format!("mentat-duck-wal-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("w.duckdb");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("w.duckdb");
     {
         let c = Connection::open(&path).unwrap();
         c.execute_batch("PRAGMA disable_checkpoint_on_shutdown")
@@ -319,7 +316,7 @@ fn reopens_from_wal_without_checkpoint() {
         let _s = seeded(&c);
     }
     assert!(
-        dir.join("w.duckdb.wal").exists(),
+        dir.path().join("w.duckdb.wal").exists(),
         "expected an un-checkpointed WAL"
     );
     let c = Connection::open(&path).expect("WAL replays");
@@ -329,7 +326,6 @@ fn reopens_from_wal_without_checkpoint() {
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
         vec![vec!["2".to_string()]]
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Stores from 1.11.0-1.14.0 carry ART indexes that duckdb/duckdb#26828
