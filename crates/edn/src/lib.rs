@@ -381,7 +381,7 @@ peg::parser!(grammar grammar() for str {
     rule find_elem() -> query::Element
         = __ v:variable() __ { query::Element::Variable(v) }
         / __ "(" __ "the" v:variable() ")" __ { query::Element::Corresponding(v) }
-        / __ "(" __ "pull" var:variable() "[" patterns:pull_attribute()+ "]" __ ")" __ { query::Element::Pull(query::Pull { var, patterns }) }
+        / __ "(" __ "pull" var:variable() patterns:pull_pattern() ")" __ { query::Element::Pull(query::Pull { var, patterns }) }
         / __ "(" func:query_function() args:fn_arg()* ")" __ { query::Element::Aggregate(query::Aggregate { func, args }) }
 
     rule find_spec() -> query::FindSpec
@@ -389,6 +389,10 @@ peg::parser!(grammar grammar() for str {
         / fs:find_elem()+ { query::FindSpec::FindRel(fs) }
         / __ "[" f:find_elem() __ "..." __ "]" __ { query::FindSpec::FindColl(f) }
         / __ "[" fs:find_elem()+ "]" __ { query::FindSpec::FindTuple(fs) }
+
+    /// A pull pattern on its own, e.g. `[:person/name {:person/friend [*]}]`.
+    pub rule pull_pattern() -> Vec<query::PullAttributeSpec>
+        = __ "[" patterns:pull_attribute()+ "]" __ { patterns }
 
     rule pull_attribute() -> query::PullAttributeSpec
         = __ "*" __ { query::PullAttributeSpec::Wildcard }
@@ -810,5 +814,9 @@ pub mod parse {
     pub fn parse_query(input: &str) -> Result<crate::query::ParsedQuery, ParseError> {
         crate::depth::check_nesting(input, crate::depth::MAX_NESTING)?;
         grammar::parse_query(input)
+    }
+    pub fn pull_pattern(input: &str) -> Result<Vec<crate::query::PullAttributeSpec>, ParseError> {
+        crate::depth::check_nesting(input, crate::depth::MAX_NESTING)?;
+        grammar::pull_pattern(input)
     }
 }

@@ -288,6 +288,26 @@ impl Store {
             .q_explain_temporal(&self.sqlite, query, inputs, temporal)
     }
 
+    /// Pull `pattern` (EDN, e.g. `[:person/name {:person/friend [:person/name]}]`)
+    /// for `entity` on the current basis.
+    pub fn pull(&self, entity: Entid, pattern: &str) -> Result<StructuredMap> {
+        self.conn.pull_on(&self.sqlite, entity, pattern, None)
+    }
+
+    /// Pull `pattern` for `entity` as of transaction `tx` (inclusive): the
+    /// values asserted at or before `tx` and not retracted at or before `tx`.
+    pub fn pull_as_of(&self, entity: Entid, pattern: &str, tx: Entid) -> Result<StructuredMap> {
+        let basis = Some(crate::TemporalBound::AsOf(tx));
+        self.conn.pull_on(&self.sqlite, entity, pattern, basis)
+    }
+
+    /// Pull `pattern` for `entity` seeing only the current datoms transacted
+    /// after transaction `tx` (Datomic's `since`).
+    pub fn pull_since(&self, entity: Entid, pattern: &str, tx: Entid) -> Result<StructuredMap> {
+        let basis = Some(crate::TemporalBound::Since(tx));
+        self.conn.pull_on(&self.sqlite, entity, pattern, basis)
+    }
+
     /// Run a Datalog query seeing only datoms transacted after transaction `tx`
     /// (`since`). Typically used with a history pattern `[?e ?a ?v ?tx ?added]`.
     pub fn q_once_since<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>

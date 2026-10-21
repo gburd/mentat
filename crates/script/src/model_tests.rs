@@ -540,3 +540,71 @@ pub fn transaction_functions(it: &mut Interpreter) {
         .expect_err("slurp must be unavailable");
     assert!(err.contains("txfn-error"), "{err}");
 }
+
+/// `pull`, `entities` and a find-pull `q` on an as-of / since db read that
+/// basis. Alice's age changes after T: as-of T must show the old value, since
+/// T only the new one. Before 1.18.0 pg and DuckDB returned the current value
+/// here and the embedded engine refused.
+pub fn pull_reads_the_as_of_and_since_basis(it: &mut Interpreter) {
+    seed_people(it);
+    let alice = person(it, "Alice");
+    let t: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {alice} :person/age 31] {{:person/name \"Carol\"}}])"
+    ))
+    .unwrap();
+    let as_of = format!("(mentat.store/as-of (mentat.store/db c) {t})");
+    let since = format!("(mentat.store/since (mentat.store/db c) {t})");
+
+    let now = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/pull (mentat.store/db c) {alice} '[:person/age]))"
+        ))
+        .unwrap();
+    assert_eq!(now, "31");
+    let then = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/pull {as_of} {alice} '[:person/name :person/age]))"
+        ))
+        .unwrap();
+    assert_eq!(then, "30", "as-of T pulls the value before the change");
+    let then_name = it
+        .eval_to_string(&format!(
+            "(:person/name (mentat.store/pull {as_of} {alice} '[:person/name]))"
+        ))
+        .unwrap();
+    assert_eq!(then_name, "\"Alice\"");
+
+    // since T: only what was asserted after T, so the new age and no name.
+    let later = it
+        .eval_to_string(&format!(
+            "(mentat.store/pull {since} {alice} '[:person/name :person/age])"
+        ))
+        .unwrap();
+    assert!(later.contains(":person/age 31"), "{later}");
+    assert!(!later.contains("Alice"), "{later}");
+
+    // A find-pull inside q reads the db's basis too.
+    let q_then = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/q {as_of} \
+               '[:find (pull ?e [:person/age]) . :where [?e :person/name \"Alice\"]]))"
+        ))
+        .unwrap();
+    assert_eq!(q_then, "30", "find-pull under as-of");
+
+    // entities: Carol did not exist as of T.
+    let ents = |it: &mut Interpreter, db: &str| {
+        it.eval_to_string(&format!(
+            "(count (mentat.store/entities {db} :person/name))"
+        ))
+        .unwrap()
+    };
+    assert_eq!(ents(it, "(mentat.store/db c)"), "3");
+    assert_eq!(ents(it, &as_of), "2");
+    assert_eq!(ents(it, &since), "1");
+}

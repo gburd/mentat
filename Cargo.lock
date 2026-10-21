@@ -2560,6 +2560,7 @@ dependencies = [
  "mentat_db",
  "mentat_db_traits",
  "mentat_edn",
+ "mentat_query_algebrizer",
  "mentat_query_pull_traits",
  "mentat_sql",
  "rusqlite",

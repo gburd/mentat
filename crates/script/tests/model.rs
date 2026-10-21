@@ -404,7 +404,7 @@ fn q_takes_in_inputs() {
     m::q_takes_in_inputs(&mut faked());
 }
 // q_mixed_inputs, history_patterns_see_added, cas_and_retract_entity and
-// q_runs_against_as_of_and_since need a
+// q_runs_against_as_of_and_since, pull_reads_the_as_of_and_since_basis need a
 // real engine (Datalog joins, the log, tx fns, temporal Datalog): run on the
 // SQLite, DuckDB and pg backends only.
 #[test]

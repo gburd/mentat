@@ -73,7 +73,8 @@ use mentat_core::{Cloned, HasSchema, Keyword, Schema, ValueRc};
 
 use db_traits::errors::DbError;
 use mentat_db::cache;
-use mentat_sql::{SqlConn, SqlConnExt, SqlValue};
+use mentat_query_algebrizer::TemporalBound;
+use mentat_sql::{Dialect, SqlConn, SqlConnExt, SqlValue};
 
 use edn::query::{NamedPullAttribute, PullAttributeSpec, PullConcreteAttribute};
 
@@ -124,12 +125,29 @@ where
     Puller::prepare(schema, attrs)?.pull(schema, db, entities)
 }
 
+/// Pull `pattern` (parsed pull specs) for one entity on `basis` (`None` =
+/// current). An entity with nothing to show yields an empty map.
+pub fn pull_pattern_for_entity(
+    schema: &Schema,
+    db: &dyn SqlConn,
+    entity: Entid,
+    pattern: Vec<PullAttributeSpec>,
+    basis: Option<TemporalBound>,
+) -> Result<StructuredMap> {
+    let mut m =
+        Puller::prepare(schema, pattern)?
+            .with_basis(basis)
+            .pull(schema, db, once(entity))?;
+    Ok(m.remove(&entity).map(|v| v.cloned()).unwrap_or_default())
+}
+
 /// A `Puller` constructs on demand a map from a provided set of entity IDs to a set of structured maps.
 pub struct Puller {
     // The domain of this map is the set of attributes to fetch.
     // The range is the set of aliases to use in the output.
     attributes: BTreeMap<Entid, ValueRc<Keyword>>,
     attribute_spec: cache::AttributeSpec,
+    forward_attrs: BTreeSet<Entid>,
 
     // Reverse-reference attributes: `:ns/_attr`. Maps the *forward* attribute
     // entid to the output name (default `:ns/_attr`). For each pulled entity we
@@ -144,6 +162,82 @@ pub struct Puller {
     //  Mentat can use `TypedValue::Ref(1234)`, but it's sometimes convenient to fetch the entity ID
     // itself as part of a pull expression: `{:person 1234, :person/name "Peter"}`.
     db_id_alias: Option<ValueRc<Keyword>>,
+
+    // The basis to read: `None` is the live `datoms` table; `AsOf(t)` is the
+    // state after tx `t` (asserted at or before `t`, not retracted at or before
+    // `t`); `Since(t)` is the current datoms transacted after `t`.
+    basis: Option<TemporalBound>,
+}
+
+/// The datoms of a historical basis as a subquery of `a, e, v, value_type_tag`
+/// rows. A fulltext value is still its `fulltext_values` rowid on SQLite.
+fn basis_datoms_sql(basis: TemporalBound) -> String {
+    match basis {
+        // Same rule as the algebrizer's as-of rewrite: an assertion at or
+        // before t with no retraction of the same (e, a, v) after it and at or
+        // before t. `added` is 0/1 on SQLite and BOOLEAN on DuckDB; bare
+        // `t.added` / `NOT r.added` read the same on both.
+        TemporalBound::AsOf(t) => format!(
+            "(SELECT t.a AS a, t.e AS e, t.v AS v, t.value_type_tag AS value_type_tag \
+             FROM transactions t WHERE t.tx <= {t} AND t.added AND NOT EXISTS (\
+             SELECT 1 FROM transactions r WHERE r.a = t.a AND r.e = t.e \
+             AND r.value_type_tag = t.value_type_tag AND r.v = t.v \
+             AND NOT r.added AND r.tx > t.tx AND r.tx <= {t}))"
+        ),
+        // Datomic's `since`: the current datoms whose tx is after t.
+        TemporalBound::Since(t) => {
+            format!("(SELECT a, e, v, value_type_tag FROM datoms WHERE tx > {t})")
+        }
+    }
+}
+
+fn csv(ids: &[Entid]) -> String {
+    ids.iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Fill a cache with the forward values of `attrs` for `entities` on a
+/// historical basis (the counterpart of `make_cache_for_entities_and_attributes`).
+fn historical_cache(
+    schema: &Schema,
+    db: &dyn SqlConn,
+    attrs: &BTreeSet<Entid>,
+    entities: &[Entid],
+    basis: TemporalBound,
+) -> Result<cache::AttributeCaches> {
+    if attrs.is_empty() || entities.is_empty() {
+        return Ok(cache::AttributeCaches::default());
+    }
+    let src = basis_datoms_sql(basis);
+    let es = csv(entities);
+    // SQLite keeps fulltext text in `fulltext_values` and the rowid in `v`;
+    // DuckDB stores fulltext values inline (see crates/duckdb/store).
+    let (fts, plain): (Vec<Entid>, Vec<Entid>) = attrs.iter().partition(|a| {
+        db.dialect() == Dialect::Sqlite
+            && schema.attribute_for_entid(**a).is_some_and(|x| x.fulltext)
+    });
+    let mut parts = Vec::new();
+    if !plain.is_empty() {
+        parts.push(format!(
+            "SELECT b.a, b.e, b.v, b.value_type_tag FROM {src} b \
+             WHERE b.e IN ({es}) AND b.a IN ({})",
+            csv(&plain)
+        ));
+    }
+    if !fts.is_empty() {
+        parts.push(format!(
+            "SELECT b.a, b.e, f.text, b.value_type_tag FROM {src} b \
+             JOIN fulltext_values f ON f.rowid = b.v \
+             WHERE b.e IN ({es}) AND b.a IN ({})",
+            csv(&fts)
+        ));
+    }
+    let sql = format!("{} ORDER BY 1 ASC, 2 ASC", parts.join(" UNION ALL "));
+    Ok(cache::AttributeCaches::make_cache_from_aevt_sql(
+        schema, db, attrs, &sql,
+    )?)
 }
 
 impl Puller {
@@ -236,9 +330,17 @@ impl Puller {
         Ok(Puller {
             attributes: names,
             attribute_spec: cache::AttributeSpec::specified(&attrs, schema),
+            forward_attrs: attrs,
             reverse_attributes,
             db_id_alias,
+            basis: None,
         })
+    }
+
+    /// Read `basis` instead of the live datoms (`None` = current).
+    pub fn with_basis(mut self, basis: Option<TemporalBound>) -> Puller {
+        self.basis = basis;
+        self
     }
 
     pub fn pull<E>(&self, schema: &Schema, db: &dyn SqlConn, entities: E) -> Result<PullResults>
@@ -256,12 +358,15 @@ impl Puller {
         // Build a cache for these attributes and entities.
         // TODO: use the store's existing cache!
         let entities: Vec<Entid> = entities.into_iter().collect();
-        let caches = cache::AttributeCaches::make_cache_for_entities_and_attributes(
-            schema,
-            db,
-            self.attribute_spec.clone(),
-            &entities,
-        )?;
+        let caches = match self.basis {
+            None => cache::AttributeCaches::make_cache_for_entities_and_attributes(
+                schema,
+                db,
+                self.attribute_spec.clone(),
+                &entities,
+            )?,
+            Some(basis) => historical_cache(schema, db, &self.forward_attrs, &entities, basis)?,
+        };
 
         // Now construct the appropriate result format.
         // TODO: should we walk `e` then `a`, or `a` then `e`? Possibly the right answer
@@ -305,13 +410,22 @@ impl Puller {
         // with value_type_tag = 0 (ValueType::Ref).
         if !self.reverse_attributes.is_empty() && !entities.is_empty() {
             // `<> 0`, not SQLite's `IS NOT 0`: the same on non-NULL flags, and DuckDB has it.
+            let sql = match self.basis {
+                None => "SELECT DISTINCT e FROM datoms \
+                         WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet <> 0 \
+                         ORDER BY e ASC"
+                    .to_string(),
+                Some(basis) => format!(
+                    "SELECT DISTINCT e FROM {} b \
+                     WHERE a = ? AND v = ? AND value_type_tag = 0 ORDER BY e ASC",
+                    basis_datoms_sql(basis)
+                ),
+            };
             for (attr_entid, name) in self.reverse_attributes.iter() {
                 for e in entities.iter() {
                     let referrers: Vec<Binding> = db
                         .query_rows(
-                            "SELECT DISTINCT e FROM datoms \
-                             WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet <> 0 \
-                             ORDER BY e ASC",
+                            &sql,
                             &[SqlValue::Integer(*attr_entid), SqlValue::Integer(*e)],
                             |row| Ok(Binding::Scalar(TypedValue::Ref(row.get_i64(0)?))),
                         )

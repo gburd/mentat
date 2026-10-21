@@ -29,7 +29,9 @@ use mentat_db::{
     InProgressObserverTransactWatcher, PartitionMap, TxObservationService, TxObserver,
 };
 
-use mentat_query_pull::{pull_attributes_for_entities, pull_attributes_for_entity};
+use mentat_query_pull::{
+    pull_attributes_for_entities, pull_attributes_for_entity, pull_pattern_for_entity,
+};
 
 use mentat_transaction::{CacheAction, CacheDirection, InProgress, InProgressRead, Metadata};
 
@@ -295,6 +297,26 @@ impl Conn {
         let (schema, _) = self.snapshot();
         pull_attributes_for_entity(&schema, &mentat_sql::sqlite(sqlite), entity, attributes)
             .map_err(|e| e.into())
+    }
+
+    /// Pull `pattern` (EDN, e.g. `[:person/name {:person/friend [*]}]`) for
+    /// `entity` on `basis` (`None` = current, else as-of / since).
+    pub fn pull_on(
+        &self,
+        sqlite: &rusqlite::Connection,
+        entity: Entid,
+        pattern: &str,
+        basis: Option<mentat_query_algebrizer::TemporalBound>,
+    ) -> Result<StructuredMap> {
+        let (schema, _) = self.snapshot();
+        let specs = edn::parse::pull_pattern(pattern)?;
+        Ok(pull_pattern_for_entity(
+            &schema,
+            &mentat_sql::sqlite(sqlite),
+            entity,
+            specs,
+            basis,
+        )?)
     }
 
     pub fn lookup_values_for_attribute(

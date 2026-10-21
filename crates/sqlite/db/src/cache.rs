@@ -1293,6 +1293,21 @@ impl AttributeCaches {
         )
     }
 
+    /// A new cache for `attrs`, filled from `sql`: rows of `a, e, v,
+    /// value_type_tag` ordered by `a` then `e`. Pull uses it to read a
+    /// historical basis (as-of / since) instead of the live `datoms` table.
+    pub fn make_cache_from_aevt_sql(
+        schema: &Schema,
+        sqlite: &dyn SqlConn,
+        attrs: &BTreeSet<Entid>,
+        sql: &str,
+    ) -> Result<AttributeCaches> {
+        let mut cache = AttributeCaches::default();
+        cache.forward_cached_attributes.extend(attrs.iter());
+        cache.repopulate_from_aevt(schema, sqlite, sql, &[], false)?;
+        Ok(cache)
+    }
+
     /// Fetch the requested entities and attributes and put them in a new cache.
     /// The caller is responsible for ensuring that `entities` is unique.
     pub fn make_cache_for_entities_and_attributes(

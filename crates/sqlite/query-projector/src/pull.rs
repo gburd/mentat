@@ -16,14 +16,26 @@ use mentat_core::{Schema, ValueRc};
 
 use edn::query::PullAttributeSpec;
 
+use mentat_query_algebrizer::TemporalBound;
 use mentat_query_pull::Puller;
 
 use query_projector_traits::errors::Result;
 
 use super::{Index, SqlConn, SqlRow};
 
+/// A pull pattern and the basis the query reads (`None` = current), so a pull
+/// in an as-of / since query reads that basis too.
 #[derive(Clone, Debug)]
-pub(crate) struct PullOperation(pub(crate) Vec<PullAttributeSpec>);
+pub(crate) struct PullOperation(
+    pub(crate) Vec<PullAttributeSpec>,
+    pub(crate) Option<TemporalBound>,
+);
+
+impl PullOperation {
+    pub(crate) fn puller(&self, schema: &Schema) -> Result<Puller> {
+        Ok(Puller::prepare(schema, self.0.clone())?.with_basis(self.1))
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PullIndices {
@@ -73,7 +85,7 @@ impl<'schema> PullConsumer<'schema> {
         schema: &'schema Schema,
         template: &PullTemplate,
     ) -> Result<PullConsumer<'schema>> {
-        let puller = Puller::prepare(schema, template.op.0.clone())?;
+        let puller = template.op.puller(schema)?;
         Ok(PullConsumer::for_puller(puller, schema, template.indices))
     }
 
@@ -81,7 +93,7 @@ impl<'schema> PullConsumer<'schema> {
         schema: &'schema Schema,
         operation: &PullOperation,
     ) -> Result<PullConsumer<'schema>> {
-        let puller = Puller::prepare(schema, operation.0.clone())?;
+        let puller = operation.puller(schema)?;
         Ok(PullConsumer::for_puller(
             puller,
             schema,

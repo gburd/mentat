@@ -285,7 +285,7 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                             sql_index: i,
                             output_index,
                         },
-                        op: PullOperation((*patterns).clone()),
+                        op: PullOperation((*patterns).clone(), query.cc.temporal),
                     });
                     i += 1; // We used one SQL column.
                 } else {

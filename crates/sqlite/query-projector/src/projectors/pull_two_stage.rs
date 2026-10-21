@@ -43,7 +43,7 @@ impl ScalarTwoStagePullProjector {
     ) -> Result<ScalarTwoStagePullProjector> {
         Ok(ScalarTwoStagePullProjector {
             spec,
-            puller: Puller::prepare(schema, pull.0)?,
+            puller: pull.puller(schema)?,
         })
     }
 

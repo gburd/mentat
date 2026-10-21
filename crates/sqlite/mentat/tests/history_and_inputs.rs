@@ -16,9 +16,11 @@
 
 extern crate mentat;
 
-use core_traits::Entid;
+use std::collections::BTreeSet;
 
-use mentat::{HasSchema, IntoResult, QueryInputs, Queryable, Store, TypedValue, Variable};
+use core_traits::{Binding, Entid, StructuredMap};
+
+use mentat::{HasSchema, IntoResult, Keyword, QueryInputs, Queryable, Store, TypedValue, Variable};
 
 fn setup() -> Store {
     let mut store = Store::open("").expect("opened");
@@ -406,4 +408,105 @@ fn test_merge_rejects_double_binding() {
         QueryInputs::with_value_sequence(vec![(var("?name"), TypedValue::typed_string("Alice"))]);
     let b = QueryInputs::with_collection(var("?name"), vec![TypedValue::typed_string("Bob")]);
     assert!(a.merge(b).is_err());
+}
+
+// ============================================================================
+// 4. Pull on a historical basis (as-of / since)
+// ============================================================================
+
+/// `Store::pull_as_of` / `pull_since` and a find-pull under `q_once_as_of` read
+/// the basis: a value changed or retracted after T shows its old state as of T.
+#[test]
+fn test_pull_as_of_and_since() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[
+        {:db/ident :pa/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/index true :db/fulltext true}
+        {:db/ident :pa/age  :db/valueType :db.type/long   :db/cardinality :db.cardinality/one}
+        {:db/ident :pa/tags :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
+        {:db/ident :pa/friend :db/valueType :db.type/ref  :db/cardinality :db.cardinality/many}
+    ]"#,
+        )
+        .expect("schema");
+    let r1 = store
+        .transact(
+            r#"[{:db/id "a" :pa/name "Alice" :pa/age 30 :pa/tags ["x" "y"]}
+                {:db/id "b" :pa/name "Bob" :pa/friend "a"}]"#,
+        )
+        .expect("tx1");
+    let (a, b, t1) = (r1.tempids["a"], r1.tempids["b"], r1.tx_id);
+    store
+        .transact(&format!(
+            "[[:db/add {a} :pa/age 31] [:db/retract {a} :pa/tags \"x\"] [:db/add {a} :pa/tags \"z\"] \
+              [:db/retract {b} :pa/friend {a}] [:db/add {a} :pa/name \"Alicia\"]]"
+        ))
+        .expect("tx2");
+
+    let get = |sm: &StructuredMap, k: &str| sm.get(&Keyword::namespaced("pa", k)).cloned();
+    let pat = "[:pa/name :pa/age :pa/tags :pa/_friend]";
+
+    let now = store.pull(a, pat).expect("pull");
+    assert_eq!(
+        get(&now, "age"),
+        Some(Binding::Scalar(TypedValue::Long(31)))
+    );
+    assert_eq!(get(&now, "name"), Some(Binding::Scalar("Alicia".into())));
+    assert_eq!(get(&now, "_friend"), None, "the ref was retracted");
+
+    let then = store.pull_as_of(a, pat, t1).expect("pull as-of");
+    assert_eq!(
+        get(&then, "age"),
+        Some(Binding::Scalar(TypedValue::Long(30)))
+    );
+    assert_eq!(
+        get(&then, "name"),
+        Some(Binding::Scalar("Alice".into())),
+        "fulltext value as of t1"
+    );
+    let tags = |b: Option<Binding>| -> BTreeSet<String> {
+        match b {
+            Some(Binding::Vec(vs)) => vs
+                .iter()
+                .filter_map(|v| v.clone().into_string().map(|s| (*s).clone()))
+                .collect(),
+            other => panic!("expected a vec, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        tags(get(&then, "tags")),
+        ["x", "y"].map(String::from).into()
+    );
+    assert_eq!(tags(get(&now, "tags")), ["y", "z"].map(String::from).into());
+    assert_eq!(
+        get(&then, "_friend"),
+        Some(Binding::Vec(
+            vec![Binding::Scalar(TypedValue::Ref(b))].into()
+        )),
+        "Bob referred to Alice as of t1"
+    );
+
+    // since t1: only what tx2 asserted.
+    let since = store.pull_since(a, pat, t1).expect("pull since");
+    assert_eq!(
+        get(&since, "age"),
+        Some(Binding::Scalar(TypedValue::Long(31)))
+    );
+    assert_eq!(tags(get(&since, "tags")), ["z"].map(String::from).into());
+    assert_eq!(get(&since, "_friend"), None);
+
+    // A find-pull in a historical query pulls on that basis.
+    let q = "[:find (pull ?e [:pa/age]) . :in ?e :where [?e :pa/age _]]";
+    let inputs = || QueryInputs::with_value_sequence(vec![(var("?e"), TypedValue::Ref(a))]);
+    match store
+        .q_once_as_of(q, inputs(), t1)
+        .expect("q")
+        .into_scalar()
+        .expect("scalar")
+    {
+        Some(Binding::Map(m)) => {
+            assert_eq!(get(&m, "age"), Some(Binding::Scalar(TypedValue::Long(30))))
+        }
+        other => panic!("expected a pull map, got {other:?}"),
+    }
 }
