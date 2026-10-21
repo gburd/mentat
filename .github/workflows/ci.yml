@@ -10,7 +10,7 @@
 #   c) DuckDB   — test-duckdb (the mentat_duckdb loadable extension)
 # plus fmt / clippy / cargo-deny / nix-build.
 #
-# The other .github workflows only publish (release.yml, docs.yml, …); this one
+# The other .github workflows publish (release.yml) or build the book (docs.yml); this one
 # is the test matrix.
 
 name: ci

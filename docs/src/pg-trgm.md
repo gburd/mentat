@@ -147,7 +147,7 @@ clause: the bound `?e` joins back into the rest of the where-graph.
 ## What this does NOT give you
 
 - **Tokenization or stop-word handling.** That's `to_tsvector` /
-  `tsquery` territory — see [Postgres full-text search](./fulltext.md).
+  `tsquery` territory — see [Fulltext Attributes](./schema.md#fulltext-attributes).
 - **Phonetic matching.** That's [fuzzystrmatch](./fuzzystrmatch.md).
 - **Approximate-regex with bounded edits.** That's [pg_tre](./fuzzy-search.md).
 - **Cross-attribute similarity in one call.** Each `similar-to`

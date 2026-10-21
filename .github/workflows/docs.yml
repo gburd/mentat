@@ -1,13 +1,17 @@
-# Build and deploy mdBook documentation to GitHub Pages.
-#
-# Triggers on pushes to main/claude that modify docs/** or on manual dispatch.
-# Deploys to the gh-pages branch.
+# Build the mdBook documentation on every push to master and every PR that
+# touches docs/, so a broken book is caught. Deploy to GitHub Pages only when
+# the repo variable PAGES_ENABLED is 'true' (Pages is not enabled on
+# gburd/mentat yet; enable it with Source = GitHub Actions, then set the var).
 
 name: docs
 
 on:
   push:
-    branches: [main, claude]
+    branches: [master]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
     paths:
       - 'docs/**'
       - '.github/workflows/docs.yml'
@@ -15,11 +19,9 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: docs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -31,16 +33,17 @@ jobs:
 
       - name: Install mdBook
         run: |
-          mkdir -p $HOME/.local/bin
+          mkdir -p "$HOME/.local/bin"
           curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.44/mdbook-v0.4.44-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C $HOME/.local/bin
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+            | tar xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build book
         working-directory: docs
         run: mdbook build
 
       - name: Upload artifact
+        if: vars.PAGES_ENABLED == 'true' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/book
@@ -48,7 +51,11 @@ jobs:
   deploy:
     name: Deploy to Pages
     needs: build
+    if: vars.PAGES_ENABLED == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
