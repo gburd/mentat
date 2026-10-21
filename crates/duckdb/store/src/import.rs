@@ -228,12 +228,18 @@ impl DuckStore<'_> {
         // No Rust-side file check: it would see past DuckDB's file access
         // settings. A missing file fails at the first read, from SQLite.
         self.open()?;
-        let lock = write_lock(self.schema_name());
+        let lock = write_lock(self.qualified_name());
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.conn();
         // Attached databases are shared by every connection to the database,
-        // so the name is per store; the store's write lock serializes it.
-        let src = format!("{}_import_src", self.schema_name());
+        // so the name is per store (catalog and schema); the store's write
+        // lock serializes it.
+        let catalog: String = self
+            .catalog_name()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let src = format!("{}_{catalog}_import_src", self.schema_name());
         conn.execute_batch(&format!("DETACH DATABASE IF EXISTS {src}"))?;
         conn.execute_batch(&format!(
             "ATTACH {} AS {src} (TYPE sqlite, READ_ONLY)",
@@ -319,7 +325,7 @@ impl DuckStore<'_> {
                  tables {tables:?})"
             )));
         }
-        let s = self.schema_name();
+        let s = self.qualified_name();
         let user: i64 = conn
             .query_opt(
                 &format!(

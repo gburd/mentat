@@ -114,7 +114,7 @@ fn imported_store_matches_the_sqlite_store() {
 
     let c = Connection::open_in_memory().unwrap();
     let dc = DuckConn::new(&c);
-    let duck = DuckStore::new(&dc as &dyn SqlConn, "imported");
+    let duck = DuckStore::new(&dc as &dyn SqlConn, "imported").unwrap();
     let imported = duck.import_sqlite(path_s).expect("import");
     assert_eq!(imported.last_tx, *tx_ids.last().unwrap());
     // Every transaction plus the bootstrap one.
@@ -268,6 +268,7 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
     // create an empty one).
     let missing = dir.path().join("missing.mentat");
     let e = DuckStore::new(conn, "a")
+        .unwrap()
         .import_sqlite(missing.to_str().unwrap())
         .unwrap_err();
     assert!(e.to_string().contains("mentat_import: can't open"), "{e}");
@@ -285,6 +286,7 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
     ))
     .unwrap();
     let e = DuckStore::new(conn, "b")
+        .unwrap()
         .import_sqlite(other.to_str().unwrap())
         .unwrap_err();
     assert!(e.to_string().contains("not a mentat store"), "{e}");
@@ -303,17 +305,19 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
         .unwrap();
     drop(old);
     let e = DuckStore::new(conn, "v1")
+        .unwrap()
         .import_sqlite(v1.to_str().unwrap())
         .unwrap_err();
     assert!(e.to_string().contains("version-1 mentat store"), "{e}");
     assert!(e.to_string().starts_with("mentat_import"), "{e}");
     drop(mentat::Store::open(v1.to_str().unwrap()).unwrap());
     DuckStore::new(conn, "v1")
+        .unwrap()
         .import_sqlite(v1.to_str().unwrap())
         .unwrap();
 
     // A store that already has data: refused, and left as it was.
-    let s = DuckStore::new(conn, "c");
+    let s = DuckStore::new(conn, "c").unwrap();
     s.transact(TXS[0]).unwrap();
     let before = s.last_tx().unwrap();
     let e = s.import_sqlite(good.to_str().unwrap()).unwrap_err();
@@ -321,7 +325,7 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
     assert_eq!(s.last_tx().unwrap(), before);
 
     // Importing twice into a fresh store name works once.
-    let s = DuckStore::new(conn, "d");
+    let s = DuckStore::new(conn, "d").unwrap();
     s.import_sqlite(good.to_str().unwrap()).unwrap();
     assert!(s.import_sqlite(good.to_str().unwrap()).is_err());
     // Nothing stays attached.
@@ -356,7 +360,7 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
     let dc = DuckConn::new(&c);
     let conn = &dc as &dyn SqlConn;
     // A store as 1.15.0-1.17.x left it: no meta row, maybe 1.14.0's indexes.
-    let legacy = DuckStore::new(conn, "legacy");
+    let legacy = DuckStore::new(conn, "legacy").unwrap();
     legacy.transact(TXS[0]).unwrap();
     let s = legacy.schema_name().to_string();
     c.execute_batch(&format!(
@@ -391,13 +395,14 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
     .unwrap();
     // A new store, the legacy store (cache stale: generation changed), and
     // the attached file imported.
-    let fresh = DuckStore::new(conn, "fresh");
+    let fresh = DuckStore::new(conn, "fresh").unwrap();
     fresh.transact(TXS[0]).unwrap();
     fresh.transact(TXS[1]).unwrap();
     assert!(fresh.q(QUERIES[0], None, None).is_ok());
     legacy.transact(TXS[1]).unwrap();
     assert!(legacy.q(QUERIES[0], None, None).is_ok());
     DuckStore::new(conn, "people")
+        .unwrap()
         .import_sqlite(old.to_str().unwrap())
         .unwrap();
     c.execute_batch("DETACH old").unwrap();
@@ -437,6 +442,7 @@ fn other_stores_work_during_an_import() {
     drop(sqlite);
     let c = Connection::open_in_memory().unwrap();
     DuckStore::new(&DuckConn::new(&c) as &dyn SqlConn, "warm")
+        .unwrap()
         .transact(TXS[0])
         .unwrap();
     let done = std::sync::atomic::AtomicBool::new(false);
@@ -447,6 +453,7 @@ fn other_stores_work_during_an_import() {
             let dc = DuckConn::new(&c1);
             for i in 0..8 {
                 DuckStore::new(&dc as &dyn SqlConn, &format!("imp{i}"))
+                    .unwrap()
                     .import_sqlite(old.to_str().unwrap())
                     .unwrap();
             }
@@ -458,11 +465,12 @@ fn other_stores_work_during_an_import() {
         let mut i = 0;
         // At least once, however fast the imports are.
         while i == 0 || !done.load(std::sync::atomic::Ordering::Relaxed) {
-            let s = DuckStore::new(conn, &format!("other{i}"));
+            let s = DuckStore::new(conn, &format!("other{i}")).unwrap();
             s.transact(TXS[0])
                 .unwrap_or_else(|e| panic!("new store {i} during import: {e}"));
             s.q(QUERIES[0], None, None).unwrap();
             DuckStore::new(conn, "warm")
+                .unwrap()
                 .transact(r#"[{:p/name "W"}]"#)
                 .unwrap_or_else(|e| panic!("warm store during import: {e}"));
             i += 1;
@@ -500,7 +508,7 @@ fn a_failed_or_panicking_import_leaves_nothing_behind() {
     let c = Connection::open_in_memory().unwrap();
     let dc = DuckConn::new(&c);
     let conn = &dc as &dyn SqlConn;
-    let s = DuckStore::new(conn, "victim");
+    let s = DuckStore::new(conn, "victim").unwrap();
     let clean = |what: &str| {
         let attached: i64 = c
             .query_row(
@@ -513,6 +521,7 @@ fn a_failed_or_panicking_import_leaves_nothing_behind() {
         c.execute_batch("BEGIN; ROLLBACK")
             .unwrap_or_else(|e| panic!("{what}: a transaction is still open: {e}"));
         DuckStore::new(conn, "other")
+            .unwrap()
             .transact(TXS[0])
             .unwrap_or_else(|e| panic!("{what}: another store can't transact: {e}"));
     };
@@ -588,7 +597,7 @@ fn a_retracted_fulltext_attribute_keeps_its_history_text() {
 
     let c = Connection::open_in_memory().unwrap();
     let dc = DuckConn::new(&c);
-    let duck = DuckStore::new(&dc as &dyn SqlConn, "ft");
+    let duck = DuckStore::new(&dc as &dyn SqlConn, "ft").unwrap();
     duck.import_sqlite(path.to_str().unwrap()).unwrap();
     let mut log: Vec<(String, i64, bool)> = c
         .prepare(&format!(
@@ -641,11 +650,11 @@ fn the_source_is_read_only() {
 
     let c = Connection::open_in_memory().unwrap();
     let dc = DuckConn::new(&c);
-    let s = DuckStore::new(&dc as &dyn SqlConn, "ro");
+    let s = DuckStore::new(&dc as &dyn SqlConn, "ro").unwrap();
     // From another connection (attaches are database-wide), while the
     // import holds its attach.
     let other: &'static Connection = Box::leak(Box::new(c.try_clone().unwrap()));
-    let src = format!("{}_import_src", s.schema_name());
+    let src = format!("{}_{}_import_src", s.schema_name(), s.catalog_name());
     let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
     let seen2 = seen.clone();
     failpoints::run_at("import", move || {
@@ -696,6 +705,7 @@ fn views_and_unreadable_wal_files_are_refused_up_front() {
     drop(st);
     let t0 = std::time::Instant::now();
     let e = DuckStore::new(conn, "view")
+        .unwrap()
         .import_sqlite(view.to_str().unwrap())
         .unwrap_err();
     assert!(e.to_string().contains("not a mentat store"), "{e}");
@@ -717,6 +727,7 @@ fn views_and_unreadable_wal_files_are_refused_up_front() {
     drop(st);
     let t0 = std::time::Instant::now();
     let e = DuckStore::new(conn, "ftview")
+        .unwrap()
         .import_sqlite(ftv.to_str().unwrap())
         .unwrap_err();
     assert!(e.to_string().contains("not a mentat store"), "{e}");
@@ -737,6 +748,7 @@ fn views_and_unreadable_wal_files_are_refused_up_front() {
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
     if std::fs::write(ro.join("probe"), b"").is_err() {
         let e = DuckStore::new(conn, "wal")
+            .unwrap()
             .import_sqlite(wal.to_str().unwrap())
             .unwrap_err();
         assert!(

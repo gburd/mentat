@@ -37,7 +37,7 @@ fn concurrent_writers_and_readers_on_one_store() {
     let c = Connection::open_in_memory().unwrap();
     {
         let dc = DuckConn::new(&c);
-        DuckStore::new(&dc as &dyn SqlConn, "conc")
+        DuckStore::new(&dc as &dyn SqlConn, "conc").unwrap()
             .transact(
                 "[{:db/ident :w/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
                   {:db/ident :w/writer :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
@@ -52,7 +52,7 @@ fn concurrent_writers_and_readers_on_one_store() {
                 let done = &done;
                 sc.spawn(move || {
                     let dc = DuckConn::new(&c);
-                    let s = DuckStore::new(&dc as &dyn SqlConn, "conc");
+                    let s = DuckStore::new(&dc as &dyn SqlConn, "conc").unwrap();
                     let (mut last, mut reads) = (0, 0);
                     while !done.load(Ordering::Relaxed) {
                         let n = count(&s);
@@ -69,7 +69,7 @@ fn concurrent_writers_and_readers_on_one_store() {
                 let c = c.try_clone().unwrap();
                 sc.spawn(move || {
                     let dc = DuckConn::new(&c);
-                    let s = DuckStore::new(&dc as &dyn SqlConn, "conc");
+                    let s = DuckStore::new(&dc as &dyn SqlConn, "conc").unwrap();
                     let mut ids = vec![];
                     for t in 0..TXS {
                         let tx: String = (0..BATCH)
@@ -110,7 +110,7 @@ fn concurrent_writers_and_readers_on_one_store() {
     assert_eq!(allocated.len(), WRITERS * TXS * (BATCH + 1));
 
     let dc = DuckConn::new(&c);
-    let s = DuckStore::new(&dc as &dyn SqlConn, "conc");
+    let s = DuckStore::new(&dc as &dyn SqlConn, "conc").unwrap();
     assert_eq!(count(&s), (WRITERS * TXS * BATCH) as i64);
     for w in 0..WRITERS {
         let q = format!("[:find (count ?e) . :where [?e :w/writer {w}]]");

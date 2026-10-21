@@ -189,10 +189,21 @@ pub trait SqlConn {
     /// Number of result columns of `sql` (prepared, not run).
     fn column_count(&self, sql: &str) -> Result<usize, SqlError>;
 
-    /// Resolve unqualified table names in `schema` (DuckDB's search path;
-    /// SQLite has no schemas and never calls this).
+    /// Resolve unqualified table names in `schema` (DuckDB's search path,
+    /// `"catalog".schema`; SQLite has no schemas and never calls this).
     fn use_schema(&self, schema: &str) -> Result<(), SqlError> {
-        self.execute_batch(&format!("SET search_path = '{schema}'"))
+        self.execute_batch(&format!(
+            "SET search_path = '{}'",
+            schema.replace('\'', "''")
+        ))
+    }
+
+    /// DuckDB: the database (catalog) this connection opened in, where a
+    /// store whose name names no attached database lives. Read when the
+    /// connection was wrapped: `use_schema` moves `current_database()`.
+    /// SQLite has no catalogs and never calls this.
+    fn home_catalog(&self) -> Result<String, SqlError> {
+        Err(SqlError::new("this connection has no catalogs"))
     }
 
     /// As [`SqlConn::query`], but the connection may keep the statement

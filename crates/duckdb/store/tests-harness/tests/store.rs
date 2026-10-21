@@ -46,7 +46,7 @@ const SCHEMA: &str = r#"[
 
 fn seeded(c: &Connection) -> DuckStore<'_> {
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     s.transact(SCHEMA).expect("schema");
     s.transact(
         r#"[{:db/id "a" :person/name "Alice" :person/age 30 :person/score 9.5 :person/tag [:t/x :t/y]}
@@ -273,7 +273,7 @@ fn pull_and_named_stores() {
 
     // A second, path-named store is a separate DuckDB schema.
     let conn2: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let other = DuckStore::new(conn2, "/tmp/demo.mentat");
+    let other = DuckStore::new(conn2, "/tmp/demo.mentat").unwrap();
     other.transact(SCHEMA).unwrap();
     other.transact(r#"[{:person/name "Zed"}]"#).unwrap();
     assert_eq!(
@@ -305,7 +305,7 @@ fn persists_in_a_duckdb_file() {
         .unwrap();
     assert!(n > 0);
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     assert_eq!(
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
         vec![vec!["2".to_string()]]
@@ -331,7 +331,7 @@ fn reopens_from_wal_without_checkpoint() {
     );
     let c = Connection::open(&path).expect("WAL replays");
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     assert_eq!(
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
         vec![vec!["2".to_string()]]
@@ -367,7 +367,7 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     .unwrap();
     assert_eq!(index_count(&c), 3);
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     let names = q(&s, "[:find ?n :where [_ :person/name ?n]]");
     assert_eq!(names.len(), 2, "the store still answers: {names:?}");
     assert_eq!(index_count(&c), 0, "legacy indexes dropped on open");
@@ -390,7 +390,10 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
 fn repeated_queries_see_new_datoms() {
     let c = Connection::open_in_memory().unwrap();
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let (one, two) = (DuckStore::new(conn, "one"), DuckStore::new(conn, "two"));
+    let (one, two) = (
+        DuckStore::new(conn, "one").unwrap(),
+        DuckStore::new(conn, "two").unwrap(),
+    );
     let count = "[:find (count ?e) . :where [?e :person/age _]]";
     let pull = "[:find (pull ?e [:person/age]) . :where [?e :person/name \"P\"]]";
     for s in [&one, &two] {
@@ -477,6 +480,7 @@ fn a_panic_mid_write_leaves_no_transaction_open() {
     s.transact(r#"[{:person/name "Real"}]"#).unwrap();
     let odc = DuckConn::new(&other);
     DuckStore::new(&odc as &dyn SqlConn, "default")
+        .unwrap()
         .transact(r#"[{:person/name "Other"}]"#)
         .unwrap();
     let mut names: Vec<String> = q(&s, "[:find ?n :where [_ :person/name ?n]]")
@@ -508,7 +512,7 @@ fn pre_1_18_fulltext_table_is_upgraded_on_open() {
     )
     .unwrap();
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     assert_eq!(
         q(
             &s,
@@ -533,4 +537,107 @@ fn pre_1_18_fulltext_table_is_upgraded_on_open() {
         )
         .unwrap();
     assert_eq!(recorded, 1);
+}
+
+/// `'db.name'` addresses store `name` in an ATTACHed database: every row
+/// lands in that file, not in the main one; the store reopens from the file
+/// (also from an un-checkpointed WAL), under another ATTACH name, and when the
+/// file is opened directly.
+#[test]
+fn stores_in_an_attached_database() {
+    let dir = std::env::temp_dir().join(format!("mentat-duck-attach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (main, other) = (dir.join("home.duckdb"), dir.join("other.duckdb"));
+    let count = "[:find (count ?e) . :where [?e :person/name _]]";
+    let fts = "[:find ?n :where [(fulltext $ :person/bio \"dark*\") [[?e]]] [?e :person/name ?n]]";
+    let attach = |c: &Connection, alias: &str| {
+        c.execute_batch(&format!("ATTACH '{}' AS {alias}", other.display()))
+            .unwrap();
+    };
+    {
+        let c = Connection::open(&main).unwrap();
+        attach(&c, "otherdb");
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "otherdb.people").unwrap();
+        assert_eq!(s.catalog_name(), "otherdb");
+        s.transact(SCHEMA).unwrap();
+        s.transact(
+            "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+        )
+        .unwrap();
+        s.transact(r#"[{:person/name "Ann" :person/bio "Hello darkness"} {:person/name "Ben"}]"#)
+            .unwrap();
+        assert_eq!(q(&s, count), vec![vec!["2".to_string()]]);
+        assert_eq!(q(&s, fts), vec![vec!["Ann".to_string()]]);
+        // `'otherdb.'` is otherdb's default store; the main database's
+        // stores are separate, and the main file holds no store at all.
+        let d = DuckStore::new(conn, "otherdb.").unwrap();
+        assert_eq!((d.catalog_name(), d.schema_name()), ("otherdb", "mentat"));
+        d.transact(SCHEMA).unwrap();
+        let m = DuckStore::new(conn, "people").unwrap();
+        assert_eq!(m.catalog_name(), "home");
+        m.transact(SCHEMA).unwrap();
+        assert_eq!(q(&m, count), vec![vec!["0".to_string()]]);
+        let where_: Vec<(String, String)> = c
+            .prepare(
+                "SELECT database_name, schema_name FROM duckdb_tables() \
+                 WHERE table_name = 'datoms' ORDER BY ALL",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            where_,
+            vec![
+                ("home".to_string(), m.schema_name().to_string()),
+                ("otherdb".to_string(), "mentat".to_string()),
+                ("otherdb".to_string(), s.schema_name().to_string()),
+            ]
+        );
+        // Close without a checkpoint: the attached file reopens from its WAL.
+        c.execute_batch("PRAGMA disable_checkpoint_on_shutdown")
+            .unwrap();
+        s.transact(r#"[{:person/name "Cy"}]"#).unwrap();
+    }
+    {
+        // Attached under another name.
+        let c = Connection::open(&main).unwrap();
+        attach(&c, "Again");
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "again.people").unwrap();
+        assert_eq!(s.catalog_name(), "Again");
+        assert_eq!(q(&s, count), vec![vec!["3".to_string()]]);
+        assert_eq!(q(&s, fts), vec![vec!["Ann".to_string()]]);
+        s.transact(r#"[{:person/name "Di"}]"#).unwrap();
+    }
+    // The file on its own, as the main database: the same store, by name.
+    let c = Connection::open(&other).unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "people").unwrap();
+    assert_eq!(q(&s, count), vec![vec!["4".to_string()]]);
+    assert_eq!(q(&s, fts), vec![vec!["Ann".to_string()]]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A name whose prefix is not an attached database is a store in the home
+/// database, as before; so is a dotted name already in use there.
+#[test]
+fn dotted_names_without_an_attached_database() {
+    let c = Connection::open_in_memory().unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "nodb.people").unwrap();
+    assert_eq!(s.catalog_name(), "memory");
+    assert!(s.schema_name().starts_with("mentat_nodb_people_"));
+    s.transact(SCHEMA).unwrap();
+    c.execute_batch("ATTACH ':memory:' AS nodb").unwrap();
+    let again = DuckStore::new(conn, "nodb.people").unwrap();
+    assert_eq!(
+        again.catalog_name(),
+        "memory",
+        "an existing store keeps its name"
+    );
+    let fresh = DuckStore::new(conn, "nodb.fresh").unwrap();
+    assert_eq!(fresh.catalog_name(), "nodb");
 }
