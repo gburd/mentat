@@ -179,7 +179,8 @@ picked up on the next call.
 
 The extension opens a pool of connections to the database when it is loaded
 (`MENTAT_DUCKDB_POOL`, read at `LOAD`; default one per core, at most 8). Each
-call borrows one, so that many mentat calls from concurrent clients run in
+database it is loaded into gets its own pool. Each call borrows a connection
+from its database's pool, so that many mentat calls from concurrent clients run in
 parallel; past that, calls wait for a free connection. Writes to one store take
 turns: `edn_t` holds a per-store lock for its whole transaction, because two
 DuckDB transactions that both update the store's partition counters conflict.
