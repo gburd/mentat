@@ -30,6 +30,71 @@ fn norm_ordered(r: QueryResults) -> String {
     }
 }
 
+/// Fulltext attributes and values, transacted after `TXS`.
+const FULLTEXT_TXS: &[&str] = &[
+    // Fulltext: SQLite FTS4 vs DuckDB's tokenized match.
+    r#"[{:db/ident :p/bio  :db/valueType :db.type/string :db/cardinality :db.cardinality/one  :db/fulltext true :db/index true}
+        {:db/ident :p/tags :db/valueType :db.type/string :db/cardinality :db.cardinality/many :db/fulltext true :db/index true}]"#,
+    r#"[{:p/name "Alice" :p/bio "Hello darkness, my old friend" :p/tags ["sustainable food" "Ally's pick"]}
+        {:p/name "Bob"   :p/bio "I've come to talk with you again" :p/tags ["food"]}
+        {:p/name "Carol" :p/bio "Hello-World foo_bar ÉCOLE café 3.14 Straße"}
+        {:p/name "Dan"   :p/bio "hello darkness"}
+        {:p/name "Eve"   :p/bio "Hello darkness, my old friend" :p/tags ["nightlife"]}]"#,
+    // Replacing a fulltext value: the old text no longer matches for Bob.
+    r#"[{:p/name "Bob" :p/bio "talk is cheap"}]"#,
+];
+
+/// `(fulltext ...)` queries; each must work on both engines.
+const FULLTEXT: &[&str] = &[
+    "[:find ?e ?v ?tx ?s :where [(fulltext $ :p/bio \"hello\") [[?e ?v ?tx ?s]]]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"darkness\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"DARK*\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"dark\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"\\\"hello darkness\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"\\\"darkness hello\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"\\\"hel* dark*\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello friend\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello OR talk\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello NOT friend\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"(hello OR talk) AND cheap\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello OR talk NOT cheap\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"again\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello-world\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"foo\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"école\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"Café\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"cafe\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"straße\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"14\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"hello ---\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"---\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"talk\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n ?t :where [(fulltext $ :p/tags \"food\") [[?e ?t]]] [?e :p/name ?n]]",
+    "[:find ?n ?t :where [(fulltext $ :p/tags \"ally\") [[?e ?t]]] [?e :p/name ?n]]",
+    // Not a fulltext attribute: known empty.
+    "[:find ?e :where [(fulltext $ :p/name \"Alice\") [[?e]]]]",
+    // A search term bound by an earlier pattern (Alice's nicks: Al, Ally).
+    "[:find ?e ?v :where [?a :p/name \"Alice\"] [?a :p/nick ?k] [(fulltext $ :p/tags ?k) [[?e ?v]]]]",
+    // Plain patterns over a fulltext attribute.
+    "[:find ?n ?b :where [?e :p/bio ?b] [?e :p/name ?n]]",
+    "[:find ?n :where [?e :p/bio \"hello darkness\"] [?e :p/name ?n]]",
+    "[:find ?t :where [_ :p/tags ?t]]",
+    // (Pull has no order for cardinality-many values; tags are compared above.)
+    "[:find (pull ?e [:p/name :p/bio]) . :where [?e :p/name \"Alice\"]]",
+    "[:find ?n :where [(fulltext $ :p/bio \"darkness\") [[?e]]] [?e :p/name ?n] [?e :p/age 25]]",
+];
+
+/// Malformed FTS4 queries: both engines must reject them.
+const FULLTEXT_BAD: &[&str] = &[
+    "hello OR",
+    "NOT hello",
+    "(hello",
+    "hello)",
+    "\\\"hello",
+    "AND",
+    "hello NOT ---",
+];
+
 const ORDERED: &[&str] = &[
     "[:find ?n ?a :order (asc ?a) (asc ?n) :where [?e :p/name ?n] [?e :p/age ?a]]",
     "[:find ?n ?h :order (desc ?h) :where [?e :p/name ?n] [?e :p/height ?h]]",
@@ -45,7 +110,7 @@ fn duckdb_matches_sqlite() {
 
     let mut tx_ids = Vec::new();
     let mut counts = Vec::new();
-    for (i, tx) in TXS.iter().enumerate() {
+    for (i, tx) in TXS.iter().chain(FULLTEXT_TXS).enumerate() {
         let a = sqlite
             .transact(*tx)
             .unwrap_or_else(|e| panic!("sqlite tx {i}: {e}"));
@@ -64,8 +129,9 @@ fn duckdb_matches_sqlite() {
         counts.push((a.datoms_asserted.unwrap(), a.datoms_retracted.unwrap()));
     }
 
-    // A no-op, then a replacement and a new value, a keyword, then three new refs.
-    assert_eq!(counts[counts.len() - 4..], [(0, 0), (2, 1), (1, 0), (3, 0)]);
+    // TXS's last four: a no-op, then a replacement and a new value, a
+    // keyword, then three new refs.
+    assert_eq!(counts[TXS.len() - 4..TXS.len()], [(0, 0), (2, 1), (1, 0), (3, 0)]);
 
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>, ordered: bool| {
@@ -101,6 +167,7 @@ fn duckdb_matches_sqlite() {
                     "?tx)",
                     "(max ?l)",
                     "99)]]",
+                    "(fulltext",
                 ]
                 .iter()
                 .any(|f| q.contains(f)) =>
@@ -115,6 +182,9 @@ fn duckdb_matches_sqlite() {
     }
     for q in ORDERED {
         check("ordered", q, None, true);
+    }
+    for q in FULLTEXT {
+        check("fulltext", q, None, false);
     }
     // As-of every transaction, since every transaction. The pulls too: a
     // find-pull reads the query's basis (before 1.18.0 it read current state).
@@ -141,6 +211,18 @@ fn duckdb_matches_sqlite() {
             if let Some(w) = window {
                 check(&format!("{w:?}"), q, Some(w), false);
             }
+        }
+    }
+    for bad in FULLTEXT_BAD {
+        use mentat::Queryable;
+        let q = format!("[:find ?e :where [(fulltext $ :p/bio \"{bad}\") [[?e]]]]");
+        let (a, b) = (sqlite.q_once(&q, None), duck.q(&q, None, None));
+        if a.is_ok() || b.is_ok() {
+            failures.push(format!(
+                "bad fulltext {q}: sqlite ok={} duckdb ok={}",
+                a.is_ok(),
+                b.is_ok()
+            ));
         }
     }
     assert!(

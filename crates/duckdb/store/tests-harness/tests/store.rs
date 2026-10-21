@@ -486,3 +486,51 @@ fn a_panic_mid_write_leaves_no_transaction_open() {
     names.sort();
     assert_eq!(names, ["Alice", "Bob", "Other", "Real"]);
 }
+
+/// A store from before 1.18 has an (empty, unused) `fulltext_values` table;
+/// opening it replaces the table with the view `(fulltext ...)` joins, and
+/// fulltext values transacted before then match.
+#[test]
+fn pre_1_18_fulltext_table_is_upgraded_on_open() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    s.transact(
+        "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+    )
+    .unwrap();
+    s.transact(r#"[{:person/name "Alice" :person/bio "Hello darkness"}]"#)
+        .unwrap();
+    c.execute_batch(
+        "DROP VIEW mentat.fulltext_values; \
+         CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
+         DELETE FROM mentat.meta WHERE key = 'fulltext_values_view'; \
+         UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
+    )
+    .unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "default");
+    assert_eq!(
+        q(
+            &s,
+            "[:find ?n :where [(fulltext $ :person/bio \"DARKNESS\") [[?e]]] [?e :person/name ?n]]"
+        ),
+        vec![vec!["Alice".to_string()]]
+    );
+    let views: i64 = c
+        .query_row(
+            "SELECT count(*) FROM duckdb_views() WHERE schema_name = 'mentat' AND view_name = 'fulltext_values'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(views, 1);
+    // Recorded, so later opens don't look again.
+    let recorded: i64 = c
+        .query_row(
+            "SELECT count(*) FROM mentat.meta WHERE key = 'fulltext_values_view'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 1);
+}

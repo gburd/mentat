@@ -25,13 +25,16 @@ use mentat_core::SQLTypeAffinity;
 use edn::query::{Direction, Limit, Variable};
 
 use mentat_query_algebrizer::{
-    Column, DatomsColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias, StringMatchOp,
+    Column, DatomsColumn, FulltextColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias,
+    StringMatchOp,
     TableAlias, TransactionsColumn, VariableColumn,
 };
 
 use sql_traits::errors::{BuildQueryResult, SQLError};
 
 use mentat_sql::{Dialect, QueryBuilder, QueryFragment, SQLQuery, SQLiteQueryBuilder};
+
+mod fts;
 
 //---------------------------------------------------------
 // A Mentat-focused representation of a SQL query.
@@ -395,6 +398,9 @@ impl QueryFragment for Constraint {
                 // instead -- NULL for a non-integer value, so no match, as on
                 // SQLite.
                 let duck = out.dialect() == Dialect::DuckDb;
+                if duck && op.0 == "MATCH" {
+                    return fts::push_duckdb_match(out, left, right);
+                }
                 let numeric = duck && matches!(op.0, "<" | "<=" | ">" | ">=");
                 let int_join = duck
                     && matches!(op.0, "=" | "<>")
@@ -418,8 +424,14 @@ impl QueryFragment for Constraint {
                 } else {
                     None
                 };
+                // A fulltext value joins its text (DuckDB's `fulltext_values`
+                // view keys each text by itself).
+                let fts_join =
+                    duck && op.0 == "=" && (is_fulltext_rowid(left) || is_fulltext_rowid(right));
                 let mode = if numeric {
                     Comparand::Numeric
+                } else if fts_join {
+                    Comparand::Member("v_s")
                 } else if int_join {
                     Comparand::Member("v_i")
                 } else if let Some(m) = eq_member {
@@ -645,6 +657,13 @@ fn is_value_column(c: &ColumnOrExpression) -> bool {
         ),
         _ => false,
     }
+}
+
+fn is_fulltext_rowid(c: &ColumnOrExpression) -> bool {
+    matches!(
+        c,
+        ColumnOrExpression::Column(QualifiedAlias(_, Column::Fulltext(FulltextColumn::Rowid)))
+    )
 }
 
 /// True if `c` is one of the BIGINT columns: entity, attribute or tx.
@@ -964,7 +983,7 @@ mod tests {
     use super::*;
     use std::rc::Rc;
 
-    use mentat_query_algebrizer::{Column, DatomsColumn, DatomsTable, FulltextColumn};
+    use mentat_query_algebrizer::DatomsTable;
 
     fn build_query(c: &dyn QueryFragment) -> SQLQuery {
         let mut builder = SQLiteQueryBuilder::new();

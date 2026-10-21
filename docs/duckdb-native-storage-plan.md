@@ -94,9 +94,13 @@ pg_mentat's typed-column layout (`v_long`, `v_text`, …), at the cost of more
 SQL rewriting. Decided in M2 by the query-engine tests.
 
 Fulltext (`:db/fulltext`): SQLite FTS4 has no DuckDB equivalent in core.
-**Not in this release**: transacting a fulltext attribute stores the value as a
-plain string, and `(fulltext …)` in a query returns an error naming the gap.
-DuckDB's `fts` extension can back it later.
+A fulltext value is stored as a plain string. Since 1.18, `(fulltext …)`
+compiles FTS4's query syntax to DuckDB regex SQL over the tokens of the
+text (`mentat_query_sql`'s `fts` module), against a `fulltext_values` view
+that keys each text by itself. DuckDB's `fts` extension was not used: it
+has to be installed (a download, which may be offline) and loaded from
+inside the extension, and its index is a snapshot that must be rebuilt
+after every write.
 
 ### 2. Engine: reuse the SQLite engine through a SQL-dialect seam, not a port
 

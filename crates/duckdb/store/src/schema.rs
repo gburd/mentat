@@ -28,10 +28,12 @@
 //!   rows and DELETEs fail FATAL. `LEGACY_INDEXES` lists them so `open` can
 //!   drop them.
 //! - `known_parts."end"`: `end` is reserved in DuckDB.
-//! - Fulltext (`:db/fulltext`): `fulltext_values` / `fulltext_datoms` exist so
-//!   the engine's SQL resolves, and a fulltext value is stored as a plain
-//!   string in `datoms`, not tokenized. `(fulltext ...)` queries are rejected
-//!   (see `storing.rs`).
+//! - Fulltext (`:db/fulltext`): a fulltext value is stored as a plain string
+//!   in `datoms` (SQLite stores a rowid into its FTS4 table). The
+//!   `fulltext_values` view keys each distinct text by itself, so the
+//!   engine's `datoms.v = fulltext_values.rowid` join holds; `(fulltext ...)`
+//!   tokenizes at query time (`mentat_query_sql`'s `fts` module). Stores from
+//!   before 1.18 had an unused `fulltext_values` table; `open` replaces it.
 
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
@@ -42,6 +44,10 @@ pub const LEGACY_INDEXES: [&str; 3] = ["idx_datoms_ea", "idx_datoms_a", "idx_tt_
 /// The `meta` key recording that a store has none of `LEGACY_INDEXES`
 /// (written at creation, or once `open` has dropped them).
 pub const LEGACY_INDEXES_DROPPED: &str = "legacy_indexes_dropped";
+
+/// The `meta` key recording that a store's `fulltext_values` is the view
+/// (written at creation, or once `open` has replaced the pre-1.18 table).
+pub const FULLTEXT_VIEW: &str = "fulltext_values_view";
 
 /// The type of every `v` column.
 pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
@@ -90,11 +96,8 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
              v_i, v_d, v_s FROM {s}.timelined_transactions WHERE timeline = 0"
         ),
-        // Fulltext: not tokenized on DuckDB (see module docs). The views keep
-        // the engine's `all_datoms` / `fulltext_datoms` references valid.
-        format!(
-            "CREATE TABLE {s}.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT)"
-        ),
+        // Fulltext (see module docs).
+        fulltext_values_view(s),
         format!(
             "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
              index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms WHERE index_fulltext"
@@ -119,7 +122,16 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "INSERT INTO {s}.meta VALUES ('version', '{VERSION}')"
         ),
         format!("INSERT INTO {s}.meta VALUES ('{LEGACY_INDEXES_DROPPED}', '1')"),
+        format!("INSERT INTO {s}.meta VALUES ('{FULLTEXT_VIEW}', '1')"),
     ]
+}
+
+/// Every distinct fulltext text, keyed by itself (see module docs).
+pub fn fulltext_values_view(s: &str) -> String {
+    format!(
+        "CREATE VIEW {s}.fulltext_values AS SELECT DISTINCT v_s AS rowid, v_s AS text \
+         FROM {s}.datoms WHERE index_fulltext"
+    )
 }
 
 /// The per-transaction scratch tables (SQLite's `temp.*_searches` /

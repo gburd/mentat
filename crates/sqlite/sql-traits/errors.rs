@@ -17,6 +17,9 @@ pub enum SQLError {
 
     #[error("parameter name could be generated: '{0}'")]
     BindParamCouldBeGenerated(String),
+
+    #[error("malformed MATCH expression: [{0}]")]
+    MalformedMatch(String),
 }
 
 pub type BuildQueryResult = Result<(), SQLError>;

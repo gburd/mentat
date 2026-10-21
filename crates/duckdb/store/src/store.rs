@@ -234,11 +234,13 @@ impl<'c> DuckStore<'c> {
             return Ok((gen, opened));
         }
         let checked = self.drop_legacy_indexes()?;
+        let upgraded = self.upgrade_fulltext_values()?;
         let opened = self.read()?;
-        // Cache only once the legacy-index check could run: a check that
-        // failed (a SQLite file was attached) must run again on this thread's
-        // next open, not after the next schema change.
-        if checked {
+        // Cache only once the legacy-index check could run and the store is
+        // up to date: a check that failed (a SQLite file was attached), or an
+        // upgrade a read-only database couldn't make, must run again on this
+        // thread's next open, not after the next schema change.
+        if checked && upgraded {
             OPENED.with(|c| {
                 c.borrow_mut()
                     .insert(self.schema.clone(), (gen, opened.clone()))
@@ -293,6 +295,57 @@ impl<'c> DuckStore<'c> {
             ),
             &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
         );
+        Ok(true)
+    }
+
+    /// Replace the pre-1.18 `fulltext_values` table (always empty) with the
+    /// view `(fulltext ...)` queries join, once per store: `meta` then
+    /// records it (a store created since has the row from the start). Runs on
+    /// a schema-cache miss. A read-only database (`duckdb -readonly`,
+    /// `ATTACH ... (READ_ONLY)`) is left as it is, and every query still
+    /// works; returns false then, so a later writable open upgrades it.
+    fn upgrade_fulltext_values(&self) -> Result<bool> {
+        let done = self.conn.query_opt(
+            &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.schema),
+            &[SqlValue::Text(schema::FULLTEXT_VIEW.into())],
+            |r| r.get_i64(0),
+        )?;
+        if done.is_some() {
+            return Ok(true);
+        }
+        let read_only = self.conn.query_opt(
+            "SELECT readonly::INTEGER FROM duckdb_databases() \
+             WHERE database_name = current_database()",
+            &[],
+            |r| r.get_bool(0),
+        )?;
+        if read_only == Some(true) {
+            return Ok(false);
+        }
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.in_tx(|s| {
+            let table = s.conn.query_opt(
+                "SELECT 1 FROM duckdb_tables() WHERE database_name = current_database() \
+                 AND schema_name = ? AND table_name = 'fulltext_values'",
+                &[SqlValue::Text(s.schema.clone())],
+                |r| r.get_i64(0),
+            )?;
+            if table.is_some() {
+                s.conn
+                    .execute_batch(&format!("DROP TABLE {}.fulltext_values", s.schema))?;
+                s.conn
+                    .execute_batch(&schema::fulltext_values_view(&s.schema))?;
+            }
+            s.conn.execute(
+                &format!(
+                    "INSERT INTO {}.meta VALUES (?, '1') ON CONFLICT DO NOTHING",
+                    s.schema
+                ),
+                &[SqlValue::Text(schema::FULLTEXT_VIEW.into())],
+            )?;
+            Ok(())
+        })?;
         Ok(true)
     }
 
