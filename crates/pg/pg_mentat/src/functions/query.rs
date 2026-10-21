@@ -354,17 +354,6 @@ fn build_datoms_from_fragment(
     )
 }
 
-/// The schema prefix (`mentat.`) of the narrow `datoms_<type>_new` /
-/// `current_<type>` tables a query on store `schema_prefix` reads. Every
-/// read of those tables -- a pattern's FROM and its as-of anti-join alike --
-/// takes the prefix from here, so they always read the same schema.
-// named-stores: every store's rows sit in mentat's tables today, keyed by
-// store_id; feat/pg-named-stores moves them into each store's schema. Return
-// `schema_prefix` here then (value_type_to_table_info takes it too).
-fn narrow_tables_prefix(_schema_prefix: &str) -> &str {
-    "mentat."
-}
-
 // ============================================================================
 // Schema-Aware Single-Table Query Helpers
 // ============================================================================
@@ -372,15 +361,17 @@ fn narrow_tables_prefix(_schema_prefix: &str) -> &str {
 /// Metadata for a single type-specific datoms table, used by the schema-aware
 /// query optimizer to replace the 9-way UNION ALL with a direct table scan.
 struct TypedTableInfo {
-    /// The table name (e.g., "mentat.datoms_text_new").
-    table: &'static str,
-    /// The current-state projection table for this type (e.g.,
+    /// The store's log table (e.g., "mentat.datoms_text_new" or
+    /// "mentat_s1.datoms_text_new").
+    table: String,
+    /// The store's current-state projection table for this type (e.g.,
     /// "mentat.current_text"). Read instead of `table` for current-time
     /// (non-as-of) queries: it holds only live datoms, so liveness needs no
     /// `added=true` filter or latest-tx-wins resolution over the log.
-    current_table: &'static str,
-    /// The SQL type of the native `v` column (e.g., "TEXT", "BIGINT").
-    _sql_type: &'static str,
+    current_table: String,
+    /// The default store's log table, for auto-index evidence (whose table
+    /// names are pinned to the `mentat` schema).
+    default_table: &'static str,
     /// The type tag constant for this value type.
     type_tag: i16,
     /// The virtual column name in the UNION ALL projection that this type populates
@@ -388,77 +379,86 @@ struct TypedTableInfo {
     value_column: &'static str,
 }
 
-/// Map a value_type enum label (as stored in the schema table) to its typed table metadata.
+/// Map a value_type enum label (as stored in the schema table) to its typed
+/// table metadata, with table names under `schema_prefix` (the store's
+/// schema, e.g. "mentat." or "mentat_s1.").
 ///
 /// Returns `None` for unrecognized type names, which causes the caller to fall
 /// back to the UNION ALL strategy.
-fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
-    match value_type {
-        "ref" => Some(TypedTableInfo {
-            table: "mentat.datoms_ref_new",
-            current_table: "mentat.current_ref",
-            _sql_type: "BIGINT",
-            type_tag: type_tag::REF,
-            value_column: "v_ref",
-        }),
-        "boolean" => Some(TypedTableInfo {
-            table: "mentat.datoms_boolean_new",
-            current_table: "mentat.current_boolean",
-            _sql_type: "BOOLEAN",
-            type_tag: type_tag::BOOLEAN,
-            value_column: "v_bool",
-        }),
-        "long" => Some(TypedTableInfo {
-            table: "mentat.datoms_long_new",
-            current_table: "mentat.current_long",
-            _sql_type: "BIGINT",
-            type_tag: type_tag::LONG,
-            value_column: "v_long",
-        }),
-        "double" => Some(TypedTableInfo {
-            table: "mentat.datoms_double_new",
-            current_table: "mentat.current_double",
-            _sql_type: "DOUBLE PRECISION",
-            type_tag: type_tag::DOUBLE,
-            value_column: "v_double",
-        }),
-        "instant" => Some(TypedTableInfo {
-            table: "mentat.datoms_instant_new",
-            current_table: "mentat.current_instant",
-            _sql_type: "TIMESTAMPTZ",
-            type_tag: type_tag::INSTANT,
-            value_column: "v_instant",
-        }),
-        "string" => Some(TypedTableInfo {
-            table: "mentat.datoms_text_new",
-            current_table: "mentat.current_text",
-            _sql_type: "TEXT",
-            type_tag: type_tag::STRING,
-            value_column: "v_text",
-        }),
-        "keyword" => Some(TypedTableInfo {
-            table: "mentat.datoms_keyword_new",
-            current_table: "mentat.current_keyword",
-            _sql_type: "TEXT",
-            type_tag: type_tag::KEYWORD,
-            value_column: "v_keyword",
-        }),
-        "uuid" => Some(TypedTableInfo {
-            table: "mentat.datoms_uuid_new",
-            current_table: "mentat.current_uuid",
-            _sql_type: "UUID",
-            type_tag: type_tag::UUID,
-            value_column: "v_uuid",
-        }),
-        "bytes" => Some(TypedTableInfo {
-            table: "mentat.datoms_bytes_new",
-            current_table: "mentat.current_bytes",
-            _sql_type: "BYTEA",
-            type_tag: type_tag::BYTES,
-            value_column: "v_bytes",
-        }),
-        _ => None,
-    }
+fn value_type_to_table_info(value_type: &str, schema_prefix: &str) -> Option<TypedTableInfo> {
+    let (log, cur, default_table, type_tag, value_column) = match value_type {
+        "ref" => (
+            "datoms_ref_new",
+            "current_ref",
+            "mentat.datoms_ref_new",
+            type_tag::REF,
+            "v_ref",
+        ),
+        "boolean" => (
+            "datoms_boolean_new",
+            "current_boolean",
+            "mentat.datoms_boolean_new",
+            type_tag::BOOLEAN,
+            "v_bool",
+        ),
+        "long" => (
+            "datoms_long_new",
+            "current_long",
+            "mentat.datoms_long_new",
+            type_tag::LONG,
+            "v_long",
+        ),
+        "double" => (
+            "datoms_double_new",
+            "current_double",
+            "mentat.datoms_double_new",
+            type_tag::DOUBLE,
+            "v_double",
+        ),
+        "instant" => (
+            "datoms_instant_new",
+            "current_instant",
+            "mentat.datoms_instant_new",
+            type_tag::INSTANT,
+            "v_instant",
+        ),
+        "string" => (
+            "datoms_text_new",
+            "current_text",
+            "mentat.datoms_text_new",
+            type_tag::STRING,
+            "v_text",
+        ),
+        "keyword" => (
+            "datoms_keyword_new",
+            "current_keyword",
+            "mentat.datoms_keyword_new",
+            type_tag::KEYWORD,
+            "v_keyword",
+        ),
+        "uuid" => (
+            "datoms_uuid_new",
+            "current_uuid",
+            "mentat.datoms_uuid_new",
+            type_tag::UUID,
+            "v_uuid",
+        ),
+        "bytes" => (
+            "datoms_bytes_new",
+            "current_bytes",
+            "mentat.datoms_bytes_new",
+            type_tag::BYTES,
+            "v_bytes",
+        ),
+        _ => return None,
+    };
+    Some(TypedTableInfo {
+        table: format!("{schema_prefix}{log}"),
+        current_table: format!("{schema_prefix}{cur}"),
+        default_table,
+        type_tag,
+        value_column,
+    })
 }
 
 /// The table that answers "does e have a live value for attribute a"
@@ -473,12 +473,12 @@ fn attr_lookup_table(
     store_id_param: &str,
     builder: &mut SqlBuilder<'_>,
 ) -> String {
-    match value_type_to_table_info(value_type) {
+    match value_type_to_table_info(value_type, tables_prefix) {
         Some(info) => {
             let from = if reads_projection(temporal, false) {
-                info.current_table
+                info.current_table.clone()
             } else {
-                info.table
+                info.table.clone()
             };
             let live = temporal_conditions(
                 temporal,
@@ -642,9 +642,9 @@ fn build_typed_datoms_from_fragment_with_pushdown(
     // append-only log and keep the `added` column for supersession logic.
     let (table, added_col, drop_added_pushdown) = if use_projection {
         // Projection rows are all live: synthesize `true AS added`.
-        (info.current_table, "true AS added", true)
+        (info.current_table.as_str(), "true AS added", true)
     } else {
-        (info.table, "added", false)
+        (info.table.as_str(), "added", false)
     };
 
     // Build pushdown WHERE conditions for direct index usage
@@ -1242,7 +1242,8 @@ fn resolve_lookup_ref_to_eid(arr: &[serde_json::Value], schema_prefix: &str) -> 
     }
 
     // Resolve the attribute ident to an entid via cache
-    let attr_entid = crate::cache::get_cache().resolve_ident(attr_str)?;
+    let attr_entid = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix))
+        .resolve_ident(attr_str)?;
 
     // Query for the entity with this unique attribute value using typed columns
     lookup_ref_query(attr_entid, &arr[1], schema_prefix)
@@ -1264,8 +1265,10 @@ fn lookup_ref_query(
         serde_json::Value::String(s) => {
             if let Some(stripped) = s.strip_prefix(':') {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_keyword_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_keyword_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1274,8 +1277,10 @@ fn lookup_ref_query(
                 )
             } else {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_text_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_text_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1287,8 +1292,10 @@ fn lookup_ref_query(
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_long_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_long_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1297,8 +1304,10 @@ fn lookup_ref_query(
                 )
             } else if let Some(f) = n.as_f64() {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_double_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_double_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1310,8 +1319,10 @@ fn lookup_ref_query(
             }
         }
         serde_json::Value::Bool(b) => select_one_i64_ro(
-            "SELECT e FROM mentat.datoms_boolean_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema_prefix}datoms_boolean_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_entid),
@@ -2300,8 +2311,8 @@ fn reads_projection(temporal: &TemporalOption, history: bool) -> bool {
 ///
 /// `typed` is the pattern's typed table info (its log table, and the alias
 /// column its `v` lands in), or `None` for the nine-way UNION (attribute or
-/// type unknown). `tables_prefix` is the schema the pattern reads
-/// ([`narrow_tables_prefix`]); the anti-join reads the same one.
+/// type unknown). `tables_prefix` is the schema the pattern reads (the
+/// store's, e.g. `"mentat_s".`); the anti-join reads the same one.
 fn temporal_conditions(
     temporal: &TemporalOption,
     history: bool,
@@ -3456,8 +3467,8 @@ fn build_sql_from_datalog_enriched(
 
             // Determine table from attribute type
             let table = resolve_pattern_value_type(&pattern.attribute, schema_prefix)
-                .and_then(|vt| value_type_to_table_info(&vt))
-                .map(|info| info.table.to_string())
+                .and_then(|vt| value_type_to_table_info(&vt, schema_prefix))
+                .map(|info| info.table)
                 .unwrap_or_else(|| "union_all".to_string());
 
             // Collect variable names for join detection
@@ -3821,7 +3832,7 @@ fn build_fulltext_join(
     }
 
     // Query datoms_text_new directly -- no fulltext table join needed.
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -3945,7 +3956,7 @@ fn build_fuzzy_match_join(
         }
     }
 
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4088,7 +4099,7 @@ fn build_similar_to_join(
         }
     }
 
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4224,7 +4235,7 @@ fn build_rum_fulltext_join(
         }
     }
 
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4891,7 +4902,7 @@ fn build_infer_near_join(
     // scan with a sort.
     let from_fragment = format!(
         "(SELECT e, (v <~> ({needle_param})::TEXT) AS infer_dist \
-         FROM mentat.current_text \
+         FROM {schema_prefix}current_text \
          WHERE a = (SELECT entid FROM {schema_prefix}schema WHERE ident = {attr_param}) \
            AND store_id = {store_id_param} \
          ORDER BY v <~> ({needle_param})::TEXT \
@@ -6233,7 +6244,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         // both the FROM fragment and the NOT EXISTS subquery.
         let typed_info = pattern_value_type
             .as_ref()
-            .and_then(|vt| value_type_to_table_info(vt));
+            .and_then(|vt| value_type_to_table_info(vt, schema_prefix));
 
         // A history pattern -- a non-placeholder 5th place, `[?e ?a ?v ?tx
         // ?added]` -- reads the append-only log, assertions and retractions
@@ -6248,7 +6259,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             history,
             &alias,
             typed_info.as_ref(),
-            narrow_tables_prefix(schema_prefix),
+            schema_prefix,
             store_id_param,
             builder,
         ));
@@ -6303,7 +6314,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 .as_ref()
                 .and_then(|a| a.parse().ok());
             if let (false, Some(a)) = (use_projection, attr) {
-                alias_attr.insert(alias.clone(), (a, info.table));
+                alias_attr.insert(alias.clone(), (a, info.default_table));
             }
             joins.push(build_typed_datoms_from_fragment_with_pushdown(
                 &alias,
@@ -6318,7 +6329,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 &alias,
                 store_id_param,
                 use_projection,
-                narrow_tables_prefix(schema_prefix),
+                schema_prefix,
             ));
             crate::monitoring::record_union_all_fallback();
         }
@@ -6370,12 +6381,12 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             // (temporal_conditions: Datomic's rule, issue #364). get-else
             // reads a value, not the log, so {"history": true} doesn't apply:
             // the log would hand back a retraction row's value.
-            let (from, extra) = match value_type_to_table_info(&info.value_type) {
+            let (from, extra) = match value_type_to_table_info(&info.value_type, schema_prefix) {
                 Some(t) => {
                     let from = if reads_projection(temporal, false) {
-                        t.current_table
+                        t.current_table.clone()
                     } else {
-                        t.table
+                        t.table.clone()
                     };
                     let live = temporal_conditions(
                         temporal,
@@ -6385,7 +6396,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                             value_column: "v",
                             ..t
                         }),
-                        narrow_tables_prefix(schema_prefix),
+                        schema_prefix,
                         store_id_param,
                         builder,
                     );
@@ -6461,7 +6472,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             let table = attr_lookup_table(
                 &info.value_type,
                 temporal,
-                narrow_tables_prefix(schema_prefix),
+                schema_prefix,
                 store_id_param,
                 builder,
             );
@@ -6644,7 +6655,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                         let table = attr_lookup_table(
                             &info.value_type,
                             temporal,
-                            narrow_tables_prefix(schema_prefix),
+                            schema_prefix,
                             store_id_param,
                             builder,
                         );
@@ -7395,7 +7406,7 @@ fn build_not_exists_subquery(
                 // Schema-aware: resolve type early for FROM, NOT EXISTS, and predicates
                 let typed_info = not_pattern_value_type
                     .as_ref()
-                    .and_then(|vt| value_type_to_table_info(vt));
+                    .and_then(|vt| value_type_to_table_info(vt, schema_prefix));
 
                 // Temporal filtering in subquery too.
                 sub_where.extend(temporal_conditions(
@@ -7403,7 +7414,7 @@ fn build_not_exists_subquery(
                     temporal.history,
                     &alias,
                     typed_info.as_ref(),
-                    narrow_tables_prefix(schema_prefix),
+                    schema_prefix,
                     store_id_param,
                     builder,
                 ));
@@ -7443,7 +7454,7 @@ fn build_not_exists_subquery(
                         &alias,
                         store_id_param,
                         reads_projection(temporal, temporal.history),
-                        narrow_tables_prefix(schema_prefix),
+                        schema_prefix,
                     ));
                 }
 
@@ -8295,7 +8306,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                 // Schema-aware: reuse resolved type for FROM optimization
                 let typed_info = rule_pattern_value_type
                     .as_ref()
-                    .and_then(|vt| value_type_to_table_info(vt));
+                    .and_then(|vt| value_type_to_table_info(vt, schema_prefix));
 
                 // Temporal filtering.
                 where_parts.extend(temporal_conditions(
@@ -8303,7 +8314,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                     temporal.history,
                     &alias,
                     typed_info.as_ref(),
-                    narrow_tables_prefix(schema_prefix),
+                    schema_prefix,
                     store_id_param,
                     builder,
                 ));
@@ -8343,7 +8354,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                         &alias,
                         store_id_param,
                         reads_projection(temporal, temporal.history),
-                        narrow_tables_prefix(schema_prefix),
+                        schema_prefix,
                     ));
                 }
             }
@@ -8561,6 +8572,12 @@ mod tests {
             missing.starts_with("(SELECT * FROM \"mentat_s\"."),
             "{missing}"
         );
-        assert_eq!(narrow_tables_prefix("\"mentat_s\"."), "mentat.");
+        // get-else / missing? on a known type read the same schema.
+        let typed = attr_lookup_table("long", &as_of, prefix, "$1", &mut b);
+        assert!(
+            typed.starts_with("\"mentat_s\".datoms_long_new AS g"),
+            "{typed}"
+        );
+        assert!(!typed.contains("mentat."), "{typed}");
     }
 }

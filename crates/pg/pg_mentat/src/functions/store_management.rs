@@ -128,13 +128,18 @@ fn get_store_schema(store_name: &str) -> Result<Option<String>, pgrx::spi::SpiEr
 
 /// Create a new named store with its own PostgreSQL schema.
 ///
-/// This creates a new PostgreSQL schema (mentat_<name>) with core tables
-/// (datoms, schema, idents, partitions, transactions) and registers the store
-/// in the mentat.stores metadata table.
+/// The store lives in schema `mentat_<name>`, with the same tables the
+/// default store has in `mentat` (narrow datom logs, current-state
+/// projections, schema / idents / partitions / transactions, partition
+/// sequences), created by `mentat._create_store_layout`
+/// (sql/30_store_layout.sql) from the default store's own definitions. The
+/// calling role owns it; roles with access to the default store get the same
+/// access to it (`mentat._store_grants`).
 ///
 /// # Example
 /// ```sql
-/// SELECT mentat_create_store('my_store', 'A store for my project');
+/// SELECT create_store('my_store', 'A store for my project');
+/// SELECT t('my_store', '[{:db/ident :m/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]');
 /// ```
 #[pg_extern]
 pub fn create_store(
@@ -153,121 +158,43 @@ pub fn create_store(
     let schema_name = get_schema_for_store(store_name);
     let quoted_schema = quote_ident(&schema_name);
 
-    // Create the schema
-    Spi::run(&format!("CREATE SCHEMA IF NOT EXISTS {}", quoted_schema))?;
+    // Register first: the layout needs the store_id.
+    let store_id: i64 = Spi::get_one_with_args(
+        "INSERT INTO mentat.stores (store_name, schema_name, description) \
+         VALUES ($1, $2, $3) RETURNING store_id",
+        &[
+            DatumWithOid::from(store_name),
+            DatumWithOid::from(schema_name.as_str()),
+            DatumWithOid::from(description),
+        ],
+    )?
+    .ok_or("INSERT INTO mentat.stores returned no store_id")?;
 
-    // Create core tables in the new schema
-    Spi::run(&format!(
-        r"
-        CREATE TABLE IF NOT EXISTS {schema}.datoms (
-            e BIGINT NOT NULL,
-            a BIGINT NOT NULL,
-            value_type_tag SMALLINT NOT NULL,
-            v_ref BIGINT,
-            v_bool BOOLEAN,
-            v_long BIGINT,
-            v_double DOUBLE PRECISION,
-            v_text TEXT,
-            v_keyword TEXT,
-            v_instant TIMESTAMPTZ,
-            v_uuid UUID,
-            v_bytes BYTEA,
-            tx BIGINT NOT NULL,
-            added BOOLEAN NOT NULL DEFAULT TRUE
-        );
+    Spi::run(&format!("CREATE SCHEMA {}", quoted_schema))?;
+    Spi::run_with_args(
+        "SELECT mentat._create_store_layout($1, $2)",
+        &[
+            DatumWithOid::from(schema_name.as_str()),
+            DatumWithOid::from(store_id),
+        ],
+    )?;
 
-        CREATE TABLE IF NOT EXISTS {schema}.schema (
-            entid BIGINT PRIMARY KEY,
-            ident TEXT UNIQUE NOT NULL,
-            value_type mentat.value_type NOT NULL,
-            cardinality mentat.cardinality_type NOT NULL DEFAULT 'one',
-            unique_constraint mentat.unique_type,
-            indexed BOOLEAN NOT NULL DEFAULT FALSE,
-            fulltext BOOLEAN NOT NULL DEFAULT FALSE,
-            component BOOLEAN NOT NULL DEFAULT FALSE,
-            no_history BOOLEAN NOT NULL DEFAULT FALSE
-        );
-
-        CREATE TABLE IF NOT EXISTS {schema}.idents (
-            ident TEXT PRIMARY KEY,
-            entid BIGINT UNIQUE NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS {schema}.partitions (
-            name TEXT PRIMARY KEY,
-            start_entid BIGINT NOT NULL,
-            end_entid BIGINT NOT NULL,
-            next_entid BIGINT NOT NULL,
-            allow_excision BOOLEAN NOT NULL DEFAULT FALSE
-        );
-
-        CREATE TABLE IF NOT EXISTS {schema}.transactions (
-            tx BIGINT PRIMARY KEY,
-            tx_instant TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-
-        INSERT INTO {schema}.partitions (name, start_entid, end_entid, next_entid, allow_excision) VALUES
-            ('db.part/db',   0,             1000000,       100,            FALSE),
-            ('db.part/user', 1000001,       1000000000000, 1000001,        FALSE),
-            ('db.part/tx',   1000000000000, 2000000000000, 1000000000001,  FALSE)
-        ON CONFLICT (name) DO NOTHING;
-
-        INSERT INTO {schema}.transactions (tx, tx_instant)
-        VALUES (1000000000000, '2025-01-01T00:00:00Z')
-        ON CONFLICT (tx) DO NOTHING;
-
-        CREATE TABLE IF NOT EXISTS {schema}.fulltext (
-            rowid BIGSERIAL PRIMARY KEY,
-            text_value TEXT NOT NULL
-        );
-
-        -- Bounded per-band sequences (see 02_tables.sql / lib.rs for rationale).
-        CREATE SEQUENCE IF NOT EXISTS {schema}.partition_db_seq
-            START WITH 100 MINVALUE 100 MAXVALUE 999999 CACHE 10;
-        CREATE SEQUENCE IF NOT EXISTS {schema}.partition_user_seq
-            START WITH 1000001 MINVALUE 1000001 MAXVALUE 999999999999 CACHE 100;
-        CREATE SEQUENCE IF NOT EXISTS {schema}.partition_tx_seq
-            START WITH 1000000000001 MINVALUE 1000000000000 MAXVALUE 1999999999999 CACHE 100;
-        ",
-        schema = quoted_schema
-    ))?;
-
-    // Create indexes on the new datoms table
-    Spi::run(&format!(
-        r"
-        CREATE INDEX IF NOT EXISTS idx_{name}_eavt ON {schema}.datoms (e, a, value_type_tag, tx) WHERE added = TRUE;
-        CREATE INDEX IF NOT EXISTS idx_{name}_aevt ON {schema}.datoms (a, e, value_type_tag, tx) WHERE added = TRUE;
-        CREATE INDEX IF NOT EXISTS idx_{name}_tx ON {schema}.datoms (tx DESC);
-        ",
-        name = store_name,
-        schema = quoted_schema
-    ))?;
-
-    // Register in metadata table
-    match description {
-        Some(d) => {
-            Spi::run_with_args(
-                "INSERT INTO mentat.stores (store_name, schema_name, description) VALUES ($1, $2, $3)",
-                &[
-                    DatumWithOid::from(store_name),
-                    DatumWithOid::from(schema_name.as_str()),
-                    DatumWithOid::from(d),
-                ],
-            )?;
-        }
-        None => {
-            Spi::run_with_args(
-                "INSERT INTO mentat.stores (store_name, schema_name) VALUES ($1, $2)",
-                &[
-                    DatumWithOid::from(store_name),
-                    DatumWithOid::from(schema_name.as_str()),
-                ],
-            )?;
-        }
-    }
+    // Cross-backend schema-cache invalidation for this store.
+    Spi::run_with_args(
+        "INSERT INTO mentat.cache_generation (store_name, gen) VALUES ($1, 1) \
+         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1",
+        &[DatumWithOid::from(store_name)],
+    )?;
+    // A store of the same name may have existed earlier in this backend.
+    crate::cache::invalidate_store_cache(store_name);
 
     // Create virtual table views (entities, attributes, facts, etc.)
     crate::functions::virtual_tables::create_virtual_tables_for_schema(&quoted_schema, store_name)?;
+
+    Spi::run_with_args(
+        "SELECT mentat._store_grants($1)",
+        &[DatumWithOid::from(schema_name.as_str())],
+    )?;
 
     Ok(format!("Store '{}' created successfully.", store_name))
 }
@@ -305,6 +232,11 @@ pub fn drop_store(store_name: &str) -> Result<String, Box<dyn std::error::Error 
         "DELETE FROM mentat.stores WHERE store_name = $1",
         &[DatumWithOid::from(store_name)],
     )?;
+    Spi::run_with_args(
+        "DELETE FROM mentat.cache_generation WHERE store_name = $1",
+        &[DatumWithOid::from(store_name)],
+    )?;
+    crate::cache::invalidate_store_cache(store_name);
 
     Ok(format!("Store '{}' dropped successfully.", store_name))
 }
@@ -405,6 +337,19 @@ pub fn rename_store(
             DatumWithOid::from(old_name),
         ],
     )?;
+    Spi::run_with_args(
+        "DELETE FROM mentat.cache_generation WHERE store_name = $1",
+        &[DatumWithOid::from(old_name)],
+    )?;
+    Spi::run_with_args(
+        "INSERT INTO mentat.cache_generation (store_name, gen) VALUES ($1, 1) \
+         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1",
+        &[DatumWithOid::from(new_name)],
+    )?;
+    crate::cache::invalidate_store_cache(old_name);
+    crate::cache::invalidate_store_cache(new_name);
+    // The virtual-table views and functions find the store's id by name.
+    crate::functions::virtual_tables::create_virtual_tables_for_schema(&quoted_new, new_name)?;
 
     Ok(format!("Store '{}' renamed to '{}'.", old_name, new_name))
 }

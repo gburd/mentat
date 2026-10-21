@@ -1,5 +1,5 @@
 use crate::error::MentatError;
-use crate::functions::store_management::get_schema_for_store;
+use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::spi::SpiClient;
@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 /// Get store_id from a PostgreSQL schema name (e.g. "mentat" -> 0, "mentat_foo" -> lookup).
 /// This mirrors the logic in transact.rs but is local to pull.
 fn get_store_id_from_schema(schema: &str) -> Result<i64, PullError> {
+    let schema = schema.trim_matches('"');
     let store_name = if schema == "mentat" {
         "default"
     } else if let Some(name) = schema.strip_prefix("mentat_") {
@@ -111,15 +112,9 @@ fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, 
     Ok((as_of.is_some() || since.is_some()).then_some(PullBasis { as_of, since }))
 }
 
-/// Where the narrow `datoms_<type>_new` / `current_<type>` tables live: every
-/// store's rows sit in `mentat`'s, keyed by `store_id`. The named-stores work
-/// (feat/pg-named-stores) moves them into each store's schema; then the call
-/// sites pass `db_schema` instead.
-const NARROW_TABLES_SCHEMA: &str = "mentat";
-
 /// The table (or subquery) of live `(store_id, e, a, v, tx)` rows for value
-/// type `ty` (`ref`, `text`, ...) under schema `tables_schema`
-/// ([`NARROW_TABLES_SCHEMA`] today) on the current pull basis, with Datomic's meaning (edn_q's
+/// type `ty` (`ref`, `text`, ...) under schema `tables_schema` (the pulled
+/// store's schema, quoted) on the current pull basis, with Datomic's meaning (edn_q's
 /// rule, issue #364). As of T: the assertions with tx <= T that no
 /// retraction with a later tx <= T cancels. Since S: the current datoms
 /// transacted after S. Both: the as-of rule with tx > S too.
@@ -160,6 +155,7 @@ fn basis_table(tables_schema: &str, ty: &str) -> String {
 /// `extra_select_prefix` allows prepending columns (e.g., "e, " for multi-entity queries).
 /// `where_clause` is the filter applied to each sub-select (excluding store_id which is always added).
 fn build_union_all_datoms_query(
+    db_schema: &str,
     store_id: i64,
     extra_select_prefix: &str,
     where_clause: &str,
@@ -233,15 +229,15 @@ fn build_union_all_datoms_query(
             WHERE store_id = {sid} AND {whr} \
         ) AS _datoms {order}",
         pfx = extra_select_prefix,
-        t_ref = basis_table(NARROW_TABLES_SCHEMA, "ref"),
-        t_boolean = basis_table(NARROW_TABLES_SCHEMA, "boolean"),
-        t_long = basis_table(NARROW_TABLES_SCHEMA, "long"),
-        t_double = basis_table(NARROW_TABLES_SCHEMA, "double"),
-        t_instant = basis_table(NARROW_TABLES_SCHEMA, "instant"),
-        t_text = basis_table(NARROW_TABLES_SCHEMA, "text"),
-        t_keyword = basis_table(NARROW_TABLES_SCHEMA, "keyword"),
-        t_uuid = basis_table(NARROW_TABLES_SCHEMA, "uuid"),
-        t_bytes = basis_table(NARROW_TABLES_SCHEMA, "bytes"),
+        t_ref = basis_table(db_schema, "ref"),
+        t_boolean = basis_table(db_schema, "boolean"),
+        t_long = basis_table(db_schema, "long"),
+        t_double = basis_table(db_schema, "double"),
+        t_instant = basis_table(db_schema, "instant"),
+        t_text = basis_table(db_schema, "text"),
+        t_keyword = basis_table(db_schema, "keyword"),
+        t_uuid = basis_table(db_schema, "uuid"),
+        t_bytes = basis_table(db_schema, "bytes"),
         sid = store_id,
         whr = whr,
         order = order_clause,
@@ -477,7 +473,7 @@ pub fn mentat_pull_with_options(
 /// ```
 #[pg_extern]
 pub fn pull(store: &str, pattern: &str, entity_id: i64) -> Result<JsonB, PullError> {
-    let db_schema = get_schema_for_store(store);
+    let db_schema = quote_ident(&get_schema_for_store(store));
     let store_id = get_store_id_from_schema(&db_schema)?;
     let parsed = edn::parse::value(pattern).map_err(|e| -> PullError {
         MentatError::InvalidPullPattern {
@@ -550,7 +546,7 @@ pub fn mentat_pull_many(pattern: &str, entity_ids: Vec<i64>) -> Result<JsonB, Pu
 /// ```
 #[pg_extern]
 pub fn pull_many(store: &str, pattern: &str, entity_ids: Vec<i64>) -> Result<JsonB, PullError> {
-    let db_schema = get_schema_for_store(store);
+    let db_schema = quote_ident(&get_schema_for_store(store));
     let store_id = get_store_id_from_schema(&db_schema)?;
     let parsed = edn::parse::value(pattern).map_err(|e| -> PullError {
         MentatError::InvalidPullPattern {
@@ -669,6 +665,7 @@ fn pull_many_batched(
 
     Spi::connect(|client| {
         let datoms_subquery = build_union_all_datoms_query(
+            db_schema,
             store_id,
             "e, a, ",
             &format!("e IN ({eid_csv}) AND added = true"),
@@ -753,6 +750,7 @@ fn pull_many_batched(
                 .join(",");
 
             let comp_datoms_subquery = build_union_all_datoms_query(
+                db_schema,
                 store_id,
                 "e, a, ",
                 &format!("e IN ({comp_eid_csv}) AND added = true"),
@@ -1368,6 +1366,7 @@ fn pull_forward_attributes_batched(
         .join(",");
 
     let datoms_subquery = build_union_all_datoms_query(
+        db_schema,
         store_id,
         "a, ",
         &format!("e = {} AND added = true", entity_id),
@@ -1511,7 +1510,7 @@ fn pull_reverse_attributes_batched(
                AND d.v = {entity_id} \
          ORDER BY s.ident, d.e",
         schema = db_schema,
-        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
+        ref_table = basis_table(db_schema, "ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1572,6 +1571,7 @@ fn pull_wildcard(
     depth: usize,
 ) -> Result<(), PullError> {
     let datoms_subquery = build_union_all_datoms_query(
+        db_schema,
         store_id,
         "a, ",
         &format!("e = {} AND added = true", entity_id),
@@ -1957,7 +1957,7 @@ fn query_forward_refs(
          WHERE d.store_id = {store_id} AND d.e = {entity_id} \
                AND s.ident = '{escaped_ident}'",
         schema = db_schema,
-        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
+        ref_table = basis_table(db_schema, "ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1994,7 +1994,7 @@ fn query_reverse_refs(
          WHERE d.store_id = {store_id} AND s.ident = '{escaped_ident}' \
                AND d.v = {entity_id}",
         schema = db_schema,
-        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
+        ref_table = basis_table(db_schema, "ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -2048,7 +2048,7 @@ fn query_forward_refs_batched(
                AND s.ident = '{escaped_ident}' \
          ORDER BY d.e",
         schema = db_schema,
-        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
+        ref_table = basis_table(db_schema, "ref"),
         store_id = store_id,
     );
 
@@ -2084,6 +2084,7 @@ fn pull_all_attributes_for_recursive(
     depth: usize,
 ) -> Result<(), PullError> {
     let datoms_subquery = build_union_all_datoms_query(
+        db_schema,
         store_id,
         "a, ",
         &format!("e = {} AND added = true", entity_id),
@@ -2285,10 +2286,6 @@ mod tests {
     fn test_basis_table_uses_the_given_schema() {
         crate::ensure_extension_loaded();
         assert_eq!(basis_table("mentat", "ref"), "mentat.current_ref");
-        assert_eq!(
-            basis_table(NARROW_TABLES_SCHEMA, "ref"),
-            "mentat.current_ref"
-        );
         for (as_of, since) in [(Some(5), None), (None, Some(3)), (Some(5), Some(3))] {
             let sql = with_basis(Some(PullBasis { as_of, since }), || {
                 basis_table("\"mentat_s\"", "text")
