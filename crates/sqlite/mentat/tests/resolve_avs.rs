@@ -12,6 +12,8 @@
 //! on both arms (plain and :db/fulltext values), and O(pairs x log store), not
 //! O(store) per statement (reported by the Improv team against 1.17.1).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mentat::{Binding, HasSchema, Keyword, Queryable, Store, TypedValue};
@@ -243,26 +245,34 @@ fn grow(s: &Store, key: i64, title: i64, from: usize, n: usize) {
         .unwrap();
 }
 
-fn median_resolve(s: &Store, pairs: &[AVPair]) -> Duration {
+/// SQLite VM steps (progress-handler calls at N = 1) for one `resolve_avs` of
+/// `pairs`, and its time, for information only. A first call prepares and
+/// caches the statement, so only execution counts.
+fn resolve_ops(s: &Store, pairs: &[AVPair]) -> (u64, Duration) {
     let refs: Vec<&AVPair> = pairs.iter().collect();
-    let mut t: Vec<Duration> = (0..7)
-        .map(|_| {
-            let start = Instant::now();
-            let m = s.sqlite_ref().resolve_avs(&refs).unwrap();
-            let d = start.elapsed();
-            assert_eq!(m.len(), pairs.len());
-            d
-        })
-        .collect();
-    t.sort();
-    t[t.len() / 2]
+    let c = s.sqlite_ref();
+    assert_eq!(c.resolve_avs(&refs).unwrap().len(), pairs.len());
+    let ops = Arc::new(AtomicU64::new(0));
+    let o = Arc::clone(&ops);
+    c.progress_handler(
+        1,
+        Some(move || {
+            o.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    let start = Instant::now();
+    let m = c.resolve_avs(&refs).unwrap();
+    let t = start.elapsed();
+    c.progress_handler(0, None::<fn() -> bool>).unwrap();
+    assert_eq!(m.len(), pairs.len());
+    (ops.load(Ordering::Relaxed), t)
 }
 
-/// 500 existing keys resolve in about the same time at 10k and 100k datoms.
-/// Before the fix SQLite scanned the AVET index (and probed FTS per datom of
-/// the attribute) for every statement: about 10x here.
-#[test]
-fn test_resolve_avs_does_not_scale_with_store() {
+/// VM steps for the pairs `pairs(key, title)` builds, at ~11k datoms (1k
+/// fulltext values) and at ~110k (10k).
+fn ops_small_big(pairs: impl Fn(i64, i64) -> Vec<AVPair>) -> (u64, u64) {
     let mut s = Store::open("").unwrap();
     s.transact(
         r#"[{:db/ident :cell/key :db/valueType :db.type/string :db/cardinality :db.cardinality/one
@@ -280,22 +290,35 @@ fn test_resolve_avs_does_not_scale_with_store() {
         .get_entid(&Keyword::namespaced("doc", "title"))
         .unwrap()
         .0;
-    // Keys present at both sizes, spread over the first 10k.
-    let pairs: Vec<AVPair> = (0..500)
-        .map(|i| (key, TypedValue::typed_string(format!("cell {}", i * 20))))
-        .collect();
+    let pairs = pairs(key, title);
 
     grow(&s, key, title, 0, 10_000);
-    let small = median_resolve(&s, &pairs);
+    let (small, ts) = resolve_ops(&s, &pairs);
     grow(&s, key, title, 10_000, 100_000);
     let n: i64 = s
         .sqlite_ref()
         .query_row("SELECT count(*) FROM datoms", [], |r| r.get(0))
         .unwrap();
     assert!(n > 100_000, "{n} datoms");
-    let big = median_resolve(&s, &pairs);
-    assert!(
-        big < small * 3,
-        "500 lookups: {small:?} at ~11k datoms, {big:?} at {n} datoms"
+    let (big, tb) = resolve_ops(&s, &pairs);
+    println!(
+        "{} lookups: {small} VM steps ({ts:?}) at ~11k datoms, {big} ({tb:?}) at {n}",
+        pairs.len()
     );
+    (small, big)
+}
+
+/// 500 existing keys resolve with the same work at ~11k and ~110k datoms.
+/// Counted in VM steps, not time, so a loaded machine can't fail it. Before
+/// the fix SQLite scanned the AVET index (and probed FTS per datom of the
+/// attribute) for every statement: 9.6x here.
+#[test]
+fn test_resolve_avs_does_not_scale_with_store() {
+    // Keys present at both sizes, spread over the first 10k.
+    let (small, big) = ops_small_big(|key, _| {
+        (0..500)
+            .map(|i| (key, TypedValue::typed_string(format!("cell {}", i * 20))))
+            .collect()
+    });
+    assert!(2 * big < 3 * small, "{small} -> {big} VM steps");
 }

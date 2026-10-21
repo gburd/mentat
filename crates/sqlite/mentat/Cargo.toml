@@ -41,6 +41,11 @@ uuid = { version = "~1.25", features = ["v4", "serde"] }
 version = "~0.40"
 features = ["limits", "bundled"]
 
+# `hooks` for progress_handler: tests count SQLite VM steps.
+[dev-dependencies.rusqlite]
+version = "~0.40"
+features = ["hooks"]
+
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
