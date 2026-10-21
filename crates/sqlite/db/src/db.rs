@@ -13,7 +13,7 @@
 use db_traits::errors::ResultExt;
 
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::iter::once;
 use std::ops::Range;
 use std::path::Path;
@@ -1216,6 +1216,37 @@ fn update_datoms(conn: &rusqlite::Connection, tx: Entid) -> Result<()> {
     Ok(())
 }
 
+/// The statement `resolve_avs` runs for `count` pairs, bound as
+/// (search_id, a, v, value_type_tag) per pair.
+///
+/// The two arms are `all_datoms` split on index_fulltext, as the view is.
+/// Through the view, `d.v = t.v` couldn't seek on the fulltext arm, and with
+/// many pairs SQLite drove the join from datoms: both O(store) per statement.
+/// CROSS JOIN fixes the order so `t` drives. Arm 1: one idx_datoms_avet
+/// (a, value_type_tag, v) seek per pair. Arm 2: fulltext datoms, whose `v` is a
+/// fulltext_values rowid, only for pairs whose attribute is :db/fulltext (set
+/// at install and never altered, so the schema table is authoritative); then
+/// one datoms seek per matching text. `+f.rowid` drops the INTEGER affinity
+/// that would otherwise stop that seek from using `v`.
+// shortcut: FTS4 can't seek `text = ?`, so each fulltext pair scans
+// fulltext_values; index the text if fulltext identity lookups at scale matter.
+fn resolve_avs_sql(count: usize) -> String {
+    format!(
+        "WITH t(search_id, a, v, value_type_tag) AS (VALUES {}) \
+         SELECT t.search_id, d.e FROM t CROSS JOIN datoms AS d \
+         WHERE d.index_avet IS NOT 0 AND d.index_fulltext IS 0 \
+           AND d.a = t.a AND d.value_type_tag = t.value_type_tag AND d.v = t.v \
+         UNION ALL \
+         SELECT t.search_id, d.e \
+         FROM t CROSS JOIN schema AS s CROSS JOIN fulltext_values AS f CROSS JOIN datoms AS d \
+         WHERE s.e = t.a AND s.a = {} AND s.v = 1 AND f.text = t.v \
+           AND d.index_avet IS NOT 0 AND d.index_fulltext IS NOT 0 \
+           AND d.a = t.a AND d.value_type_tag = t.value_type_tag AND d.v = +f.rowid",
+        repeat_values(4, count),
+        entids::DB_FULLTEXT
+    )
+}
+
 impl MentatStoring for rusqlite::Connection {
     fn resolve_avs<'a>(&self, avs: &'a [&'a AVPair]) -> Result<AVMap<'a>> {
         // Start search_id's at some identifiable number.
@@ -1225,7 +1256,9 @@ impl MentatStoring for rusqlite::Connection {
         // We map [a v] -> numeric search_id -> e, and then we use the search_id lookups to finally
         // produce the map [a v] -> e.
         //
-        // TODO: `collect` into a HashSet so that any (a, v) is resolved at most once.
+        // Resolve each distinct (a, v) once. AVMap keys compare by value, so the map is unchanged.
+        let mut seen: HashSet<&AVPair> = HashSet::with_capacity(avs.len());
+        let avs: Vec<&'a AVPair> = avs.iter().copied().filter(|av| seen.insert(av)).collect();
         let max_vars = self
             .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
             .expect("SQLITE_LIMIT_VARIABLE_NUMBER") as usize;
@@ -1236,46 +1269,53 @@ impl MentatStoring for rusqlite::Connection {
 
         // We'd like to `flat_map` here, but it's not obvious how to `flat_map` across `Result`.
         // Alternatively, this is a `fold`, and it might be wise to express it as such.
-        let results: Result<Vec<Vec<_>>> = chunks.into_iter().map(|chunk| -> Result<Vec<_>> {
-            let mut count = 0;
+        let results: Result<Vec<Vec<_>>> = chunks
+            .into_iter()
+            .map(|chunk| -> Result<Vec<_>> {
+                let mut count = 0;
 
-            // We must keep these computed values somewhere to reference them later, so we can't
-            // combine this `map` and the subsequent `flat_map`.
-            let block: Vec<(i64, i64, ToSqlOutput<'a>, i32)> = chunk.map(|(index, &&(a, ref v))| {
-                count += 1;
-                let search_id: i64 = initial_search_id + index as i64;
-                let (value, value_type_tag) = v.to_sql_value_pair();
-                (search_id, a, value, value_type_tag)
-            }).collect();
+                // We must keep these computed values somewhere to reference them later, so we can't
+                // combine this `map` and the subsequent `flat_map`.
+                let block: Vec<(i64, i64, ToSqlOutput<'a>, i32)> = chunk
+                    .map(|(index, &&(a, ref v))| {
+                        count += 1;
+                        let search_id: i64 = initial_search_id + index as i64;
+                        let (value, value_type_tag) = v.to_sql_value_pair();
+                        (search_id, a, value, value_type_tag)
+                    })
+                    .collect();
 
-            // `params` reference computed values in `block`.
-            let params: Vec<&dyn ToSql> = block.iter().flat_map(|(searchid, a, value, value_type_tag)| {
-                // Avoid inner heap allocation.
-                once(searchid as &dyn ToSql)
-                    .chain(once(a as &dyn ToSql)
-                           .chain(once(value as &dyn ToSql)
-                                  .chain(once(value_type_tag as &dyn ToSql))))
-            }).collect();
+                // `params` reference computed values in `block`.
+                let params: Vec<&dyn ToSql> = block
+                    .iter()
+                    .flat_map(|(searchid, a, value, value_type_tag)| {
+                        // Avoid inner heap allocation.
+                        once(searchid as &dyn ToSql).chain(once(a as &dyn ToSql).chain(
+                            once(value as &dyn ToSql).chain(once(value_type_tag as &dyn ToSql)),
+                        ))
+                    })
+                    .collect();
 
-            // TODO: cache these statements for selected values of `count`.
-            // TODO: query against `datoms` and UNION ALL with `fulltext_datoms` rather than
-            // querying against `all_datoms`.  We know all the attributes, and in the common case,
-            // where most unique attributes will not be fulltext-indexed, we'll be querying just
-            // `datoms`, which will be much faster.ˇ
-            assert!(bindings_per_statement * count <= max_vars, "Too many values: {} * {} > {}", bindings_per_statement, count, max_vars);
+                // TODO: cache these statements for selected values of `count`.
+                assert!(
+                    bindings_per_statement * count <= max_vars,
+                    "Too many values: {} * {} > {}",
+                    bindings_per_statement,
+                    count,
+                    max_vars
+                );
 
-            let values: String = repeat_values(bindings_per_statement, count);
-            let s: String = format!("WITH t(search_id, a, v, value_type_tag) AS (VALUES {}) SELECT t.search_id, d.e \
-                                     FROM t, all_datoms AS d \
-                                     WHERE d.index_avet IS NOT 0 AND d.a = t.a AND d.value_type_tag = t.value_type_tag AND d.v = t.v",
-                                    values);
-            let mut stmt: rusqlite::Statement = self.prepare(s.as_str())?;
+                let s = resolve_avs_sql(count);
+                let mut stmt: rusqlite::Statement = self.prepare(s.as_str())?;
 
-            let m: Result<Vec<(i64, Entid)>> = stmt.query_and_then(params_from_iter(&params), |row| -> Result<(i64, Entid)> {
-                Ok((row.get(0)?, row.get(1)?))
-            })?.collect();
-            m
-        }).collect::<Result<Vec<Vec<(i64, Entid)>>>>();
+                let m: Result<Vec<(i64, Entid)>> = stmt
+                    .query_and_then(params_from_iter(&params), |row| -> Result<(i64, Entid)> {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?
+                    .collect();
+                m
+            })
+            .collect::<Result<Vec<Vec<(i64, Entid)>>>>();
 
         // Flatten.
         let results: Vec<(i64, Entid)> = results?.as_slice().concat();
@@ -2390,6 +2430,75 @@ mod tests {
             [?tx :db/txInstant ?ms ?tx true]
         ]"#
         );
+    }
+
+    /// `resolve_avs` must stay O(pairs x log store): `t` drives, both arms seek
+    /// datoms on v, and arm 2 never scans the datoms of an attribute. Checked
+    /// at 100k datoms for 1 and 500 pairs, with and without statistics.
+    #[test]
+    fn test_resolve_avs_plan() {
+        let mut conn = TestConn::default();
+        assert_transact!(
+            conn,
+            r#"[{:db/ident :test/key :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                  :db/unique :db.unique/identity :db/index true}
+                 {:db/ident :test/title :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                  :db/unique :db.unique/identity :db/index true :db/fulltext true}]"#
+        );
+        let key = conn
+            .schema
+            .require_entid(&to_namespaced_keyword(":test/key").unwrap())
+            .unwrap()
+            .0;
+        conn.sqlite
+            .execute_batch(&format!(
+                "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 99999)
+                 INSERT INTO datoms (e, a, v, tx, value_type_tag, index_avet, unique_value)
+                 SELECT 100000 + i, {key}, 'k' || i, 268435457, 10, 1, 1 FROM n;"
+            ))
+            .unwrap();
+        // Without statistics (a fresh store) and with them.
+        for (analyze, count) in [(false, 1), (false, 500), (true, 1), (true, 500)] {
+            if analyze {
+                conn.sqlite.execute_batch("ANALYZE").unwrap();
+            }
+            let plan: Vec<String> = conn
+                .sqlite
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", resolve_avs_sql(count)))
+                .unwrap()
+                .query_map(
+                    params_from_iter(std::iter::repeat_n(0i64, 4 * count)),
+                    |r| r.get(3),
+                )
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let plan = plan.join("\n");
+            // Arm 1 seeks on v. Arm 2 reaches fulltext_values only past the
+            // schema probe, so non-fulltext pairs skip it, and seeks datoms on v.
+            let lines: Vec<&str> = plan.lines().collect();
+            let pos = |p: &str| {
+                lines
+                    .iter()
+                    .position(|l| l.starts_with(p))
+                    .unwrap_or_else(|| panic!("no {p:?} ({count} pairs):\n{plan}"))
+            };
+            assert!(
+                lines.contains(
+                    &"SEARCH d USING INDEX idx_datoms_avet (a=? AND value_type_tag=? AND v=?)"
+                ),
+                "{count} pairs:\n{plan}"
+            );
+            let d: Vec<&&str> = lines.iter().filter(|l| l.contains(" d ")).collect();
+            assert_eq!(d.len(), 2, "{count} pairs:\n{plan}");
+            assert!(
+                d.iter()
+                    .all(|l| l.starts_with("SEARCH d ") && l.contains("v=?")),
+                "{count} pairs:\n{plan}"
+            );
+            assert!(pos("SEARCH s ") < pos("SCAN f "), "{count} pairs:\n{plan}");
+            assert!(!plan.contains("BLOOM"), "{count} pairs:\n{plan}");
+        }
     }
 
     #[test]
