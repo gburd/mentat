@@ -80,7 +80,19 @@ fn duckdb_matches_sqlite() {
             // Both failing agrees, except for queries that must work: the
             // get-else / missing? cases were silently "agreeing" this way
             // while neither engine implemented them (#335).
-            (Err(a), Err(_)) if q.contains("get-else") || q.contains("missing?") => {
+            (Err(a), Err(_))
+                if [
+                    "get-else",
+                    "missing?",
+                    "like",
+                    "-with?",
+                    "includes?",
+                    "?tx)",
+                    "(max ?l)",
+                ]
+                .iter()
+                .any(|f| q.contains(f)) =>
+            {
                 failures.push(format!("{label} {q}\n  both engines ERR: {a}"))
             }
             (Err(_), Err(_)) => {}

@@ -7564,6 +7564,37 @@ fn build_predicate_clause(
         return Ok(format!("({} {} {})", left, sql_op, right));
     }
 
+    // Clojure's string predicates (#267), as on the embedded engine.
+    if matches!(op, "starts-with?" | "ends-with?" | "includes?") {
+        if pred.args.len() != 2 {
+            return Err(format!(
+                ":db.error/predicate-arity Predicate '{}' requires exactly 2 arguments, got {}. \
+                 Example: [({} ?name \"Al\")]",
+                op,
+                pred.args.len(),
+                op
+            )
+            .into());
+        }
+        let mut sql = Vec::with_capacity(2);
+        for arg in &pred.args {
+            sql.push(pred_arg_to_sql(
+                arg,
+                var_to_alias,
+                var_to_type,
+                computed,
+                input_bindings,
+                builder,
+            )?);
+        }
+        let (s, p) = (&sql[0], &sql[1]);
+        return Ok(match op {
+            "starts-with?" => format!("(left(({s})::TEXT, length({p})) = {p})"),
+            "ends-with?" => format!("(right(({s})::TEXT, length({p})) = {p})"),
+            _ => format!("(strpos(({s})::TEXT, {p}) > 0)"),
+        });
+    }
+
     let sql_op = match op {
         "<" => "<",
         ">" => ">",
@@ -7574,8 +7605,8 @@ fn build_predicate_clause(
         _ => {
             return Err(format!(
                 ":db.error/unsupported-predicate Unsupported predicate operator '{}'. \
-             Supported operators: <, >, <=, >=, =, !=, like, ilike. \
-             Example: [(< ?age 30)]",
+             Supported operators: <, >, <=, >=, =, !=, like, ilike, starts-with?, \
+             ends-with?, includes?. Example: [(< ?age 30)]",
                 op
             )
             .into())

@@ -91,6 +91,22 @@ pub const QUERIES: &[&str] = &[
     "[:find (sum ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
     "[:find (max ?t) . :where [_ :p/born ?t]]",
+    // min/max over refs and tx ids (#249).
+    "[:find (max ?tx) . :where [_ :p/age _ ?tx]]",
+    "[:find (min ?tx) . :where [_ :p/age _ ?tx]]",
+    "[:find ?e (max ?l) :where [?e :p/likes ?l]]",
+    // String predicates (#267).
+    "[:find ?n :where [_ :p/name ?n] [(like ?n \"A%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(like ?n \"a%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(ilike ?n \"%A%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(like ?n \"_o_\")]]",
+    "[:find ?n :where [_ :p/nick ?n] [(like ?n \"Al%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(starts-with? ?n \"Ca\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(ends-with? ?n \"e\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(includes? ?n \"o\")]]",
+    "[:find ?n ?k :where [?e :p/name ?n] [?e :p/nick ?k] [(starts-with? ?n ?k)]]",
+    "[:find ?r :where [_ :p/role ?r] [(like ?r \"r/d%\")]]",
+    "[:find ?v :where [?e :p/name \"Alice\"] [?e _ ?v] [(includes? ?v \"l\")]]",
     // Strings: ordering and equality compare text, not numbers.
     "[:find ?n :where [_ :p/name ?n] [(< ?n \"Bz\")]]",
     "[:find ?n :where [?e :p/name ?n] [?e :p/nick ?k] [(!= ?k \"Al\")]]",

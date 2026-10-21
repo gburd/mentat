@@ -175,12 +175,24 @@ Supported operators: `+`, `-`, `*`, `/`.
 
 ### String Predicates (Extension)
 
-pg_mentat extends Datomic's predicate set with PostgreSQL's pattern matching:
+Every backend (pg_mentat, the embedded engine, DuckDB) extends Datomic's
+predicate set with pattern matching and Clojure's string tests:
 
 ```clojure
-[(like ?name "Ali%")]
-[(ilike ?email "%@EXAMPLE.COM")]
+[(like ?name "Ali%")]               ; case-sensitive; % any run, _ one character
+[(ilike ?email "%@EXAMPLE.COM")]    ; case-insensitive
+[(like ?code "50\\%")]             ; \ escapes % and _
+[(starts-with? ?name "Al")]
+[(ends-with? ?file ".edn")]
+[(includes? ?title ?word)]
 ```
+
+The first argument is a string value (a keyword value matches on its text
+without the leading `:`, e.g. `"k/alpha"`). The second is a string: a
+constant or a bound variable. On the embedded engine and DuckDB a `like` /
+`ilike` pattern must be a constant or an `:in` value. On the embedded engine
+`ilike` folds ASCII letters only (`"É"` does not match `"é"`); PostgreSQL and
+DuckDB fold all of Unicode.
 
 ### Type Safety
 

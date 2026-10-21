@@ -193,6 +193,18 @@ impl ToConstraint for ColumnConstraint {
                 right: right.into(),
             },
 
+            StringMatch {
+                op,
+                value,
+                keyword,
+                pattern,
+            } => Constraint::StringMatch {
+                op,
+                value: value.into(),
+                keyword,
+                pattern: pattern.into(),
+            },
+
             Matches(left, right) => Constraint::Infix {
                 op: Op("MATCH"),
                 left: ColumnOrExpression::Column(left),

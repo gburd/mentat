@@ -145,4 +145,53 @@ mod tests {
             serde_json::json!([[a, a.max(b)]])
         );
     }
+
+    fn coll(query: &str) -> Vec<String> {
+        let mut v: Vec<String> = q(query)["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{query}: no result array"))
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| x.to_string())
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    // #267: like / ilike / starts-with? / ends-with? / includes?, as on the embedded engine.
+    #[pg_test]
+    fn string_predicates() {
+        setup();
+        tx("[{:db/ident :ms/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             {:db/ident :ms/pre :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             {:db/ident :ms/kw :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}]");
+        tx(
+            r#"[{:ms/name "Alice" :ms/pre "Al" :ms/kw :k/alpha} {:ms/name "alfred" :ms/pre "xx"}
+               {:ms/name "50%" :ms/pre "5"} {:ms/name "500"} {:ms/name "a*b?[c]"} {:ms/name "café" :ms/pre ""}]"#,
+        );
+        let q = |pred: &str| coll(&format!("[:find [?s ...] :where [_ :ms/name ?s] [{pred}]]"));
+        assert_eq!(q(r#"(like ?s "Al%")"#), vec!["Alice"]);
+        assert_eq!(q(r#"(ilike ?s "AL%")"#), vec!["Alice", "alfred"]);
+        assert_eq!(q(r#"(like ?s "50\\%")"#), vec!["50%"]);
+        assert_eq!(q(r#"(like ?s "a*b?[c]")"#), vec!["a*b?[c]"]);
+        assert_eq!(q(r#"(starts-with? ?s "Al")"#), vec!["Alice"]);
+        assert_eq!(q(r#"(ends-with? ?s "é")"#), vec!["café"]);
+        assert_eq!(q(r#"(includes? ?s "*b?")"#), vec!["a*b?[c]"]);
+        assert_eq!(q(r#"(ends-with? ?s "")"#).len(), 6);
+        assert_eq!(
+            coll("[:find [?s ...] :where [?e :ms/name ?s] [?e :ms/pre ?p] [(starts-with? ?s ?p)]]"),
+            vec!["50%", "Alice", "café"]
+        );
+        assert_eq!(
+            coll(r#"[:find [?v ...] :where [_ :ms/kw ?v] [(like ?v "k/%")]]"#),
+            vec![":k/alpha"]
+        );
+        let e = error_message(
+            r#"SELECT edn_q('[:find ?s :where [_ :ms/name ?s] [(includes? ?s)]]'::TEXT, '{}'::jsonb)"#,
+        );
+        assert!(e.contains("requires exactly 2 arguments, got 1"), "{e}");
+    }
 }

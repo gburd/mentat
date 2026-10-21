@@ -2141,3 +2141,129 @@ fn test_plain_keyword_in_value_place() {
     // A plain keyword nobody stored matches nothing (and is not an error).
     assert!(names("[:find [?n ...] :where [?e :task/status :nope] [?e :task/name ?n]]").is_empty());
 }
+
+// #267: like / ilike and the string predicates.
+#[test]
+fn test_string_predicates() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :s/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :s/pre  :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :s/kw   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                {:db/ident :s/n    :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :s/doc  :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(
+            r#"[{:s/name "Alice" :s/pre "Al" :s/kw :k/alpha :s/n 1 :s/doc "Alice in Wonderland"}
+                {:s/name "alfred" :s/pre "xx" :s/n 2}
+                {:s/name "50%" :s/pre "5"}
+                {:s/name "500"}
+                {:s/name "a*b?[c]"}
+                {:s/name "axbyzc]"}
+                {:s/name "café" :s/pre ""}]"#,
+        )
+        .expect("data");
+
+    let names = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_coll_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .into_iter()
+            .map(|b| match b {
+                Binding::Scalar(TypedValue::String(s)) => s.to_string(),
+                Binding::Scalar(TypedValue::Keyword(k)) => k.to_string(),
+                b => panic!("{b:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let q = |pred: &str| names(&format!("[:find [?s ...] :where [_ :s/name ?s] [{pred}]]"));
+
+    // like is case-sensitive; ilike is not.
+    assert_eq!(q(r#"(like ?s "Al%")"#), vec!["Alice"]);
+    assert_eq!(q(r#"(like ?s "al%")"#), vec!["alfred"]);
+    assert_eq!(q(r#"(ilike ?s "AL%")"#), vec!["Alice", "alfred"]);
+    assert_eq!(q(r#"(like ?s "_lice")"#), vec!["Alice"]);
+    // \ escapes % and _; GLOB metacharacters in a pattern are literals.
+    assert_eq!(q(r#"(like ?s "50\\%")"#), vec!["50%"]);
+    assert_eq!(q(r#"(like ?s "50%")"#), vec!["50%", "500"]);
+    assert_eq!(q(r#"(like ?s "a*b?[c]")"#), vec!["a*b?[c]"]);
+    assert_eq!(q(r#"(ilike ?s "A*B?[C]")"#), vec!["a*b?[c]"]);
+    assert_eq!(q(r#"(like ?s "caf_")"#), vec!["café"]);
+
+    // starts-with? / ends-with? / includes?, with constants.
+    assert_eq!(q(r#"(starts-with? ?s "Al")"#), vec!["Alice"]);
+    assert_eq!(q(r#"(ends-with? ?s "é")"#), vec!["café"]);
+    assert_eq!(q(r#"(includes? ?s "*b?")"#), vec!["a*b?[c]"]);
+    assert_eq!(q(r#"(includes? ?s "%")"#), vec!["50%"]);
+    assert_eq!(q(r#"(ends-with? ?s "")"#).len(), 7);
+    // ... and with a bound second argument.
+    assert_eq!(
+        names("[:find [?s ...] :where [?e :s/name ?s] [?e :s/pre ?p] [(starts-with? ?s ?p)]]"),
+        vec!["50%", "Alice", "café"]
+    );
+    // A pattern bound with :in.
+    let inputs = QueryInputs::with_value_sequence(vec![(
+        Variable::from_valid_name("?p"),
+        TypedValue::typed_string("%e%").into(),
+    )]);
+    let mut v: Vec<_> = store
+        .q_once(
+            "[:find [?s ...] :in ?p :where [_ :s/name ?s] [(like ?s ?p)]]",
+            inputs,
+        )
+        .into_coll_result()
+        .expect("like with :in");
+    v.sort_by_key(|b| format!("{b:?}"));
+    assert_eq!(
+        v,
+        vec![
+            Binding::Scalar(TypedValue::typed_string("Alice")),
+            Binding::Scalar(TypedValue::typed_string("alfred"))
+        ]
+    );
+
+    // A keyword attribute matches on its text without the leading `:`, as on pg_mentat.
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [_ :s/kw ?v] [(like ?v "k/%")]]"#),
+        vec![":k/alpha"]
+    );
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [_ :s/kw ?v] [(starts-with? ?v ":")]]"#),
+        Vec::<String>::new()
+    );
+    // An untyped value: only strings match, other types are skipped.
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [?e :s/n _] [?e ?a ?v] [(like ?v "Al%")]]"#),
+        vec!["Al", "Alice", "Alice in Wonderland"]
+    );
+    // A fulltext attribute matches on its text.
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [_ :s/doc ?v] [(ilike ?v "%wonder%")]]"#),
+        vec!["Alice in Wonderland"]
+    );
+    // Inside not.
+    assert_eq!(
+        names(r#"[:find [?s ...] :where [?e :s/name ?s] [?e :s/n _] (not [(like ?s "A%")])]"#),
+        vec!["alfred"]
+    );
+
+    // Errors: arity, a pattern from a column, a trailing escape, a non-string pattern.
+    for (pred, msg) in [
+        (r#"(like ?s)"#, "invalid number of arguments to like: expected 2, got 1."),
+        (r#"(like ?s ?s)"#, "invalid argument to like: expected constant string pattern in position 1."),
+        (r#"(like ?s "a\\")"#, "invalid argument to like: expected pattern that does not end with an escape character in position 1."),
+        (r#"(starts-with? ?s 5)"#, "invalid argument to starts-with?: expected string in position 1."),
+    ] {
+        let err = store
+            .q_once(&format!("[:find ?s :where [_ :s/name ?s] [{pred}]]"), None)
+            .expect_err(pred);
+        assert_eq!(err.to_string(), msg, "{pred}");
+    }
+}
