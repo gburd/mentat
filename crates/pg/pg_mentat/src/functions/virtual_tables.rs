@@ -1004,17 +1004,13 @@ pub fn create_virtual_tables_for_schema(
     run(count_by_attribute_fn_sql(schema))?;
     run(find_text_fn_sql(schema))?;
 
-    // Optional indexes on the store's narrow text tables.
-    // They are tuning, not structure: the base install already ships the
-    // full-text GIN index (sql/10_narrow_storage.sql). CREATE INDEX needs table
-    // ownership, which a non-superuser on a trusted install doesn't have, so
-    // skip them for a non-owner rather than failing create_store().
-    if owns_table(&format!("{schema}.datoms_text_new"))? {
-        if extension_available("pg_trgm") {
-            run(trigram_indexes_sql(schema, store_name))?;
-        }
-        // Full-text search: the store layout already carries
-        // idx_datoms_text_new_fts (copied from the default store).
+    // Optional trigram indexes on the store's narrow text tables. They are
+    // tuning, not structure (the store layout already carries the shipped
+    // full-text GIN index). CREATE INDEX needs table ownership, which a role
+    // regenerating the default store's views on a trusted install doesn't
+    // have, so skip them for a non-owner rather than failing.
+    if extension_available("pg_trgm") && owns_table(&format!("{schema}.datoms_text_new"))? {
+        run(trigram_indexes_sql(schema, store_name))?;
     }
 
     // NOTE: pg_vector support is planned for future implementation.
