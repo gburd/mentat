@@ -3022,6 +3022,69 @@ mod tests {
         );
     }
 
+    /// Issue #119: each datom's index_avet, index_vaet, index_fulltext and unique_value flags
+    /// follow its attribute's :db/index, ref type, :db/fulltext and :db/unique, when written and
+    /// when the attribute is altered.
+    #[test]
+    fn test_datom_flags_follow_the_attribute() {
+        let mut conn = TestConn::default();
+        assert_transact!(
+            conn,
+            "[{:db/id 100 :db/ident :f/plain :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+              {:db/id 101 :db/ident :f/indexed :db/valueType :db.type/long :db/cardinality :db.cardinality/one :db/index true}
+              {:db/id 102 :db/ident :f/ref :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+              {:db/id 103 :db/ident :f/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}
+              {:db/id 104 :db/ident :f/unique :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/value :db/index true}
+              {:db/id 105 :db/ident :f/identity :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/index true}]"
+        );
+        assert_transact!(
+            conn,
+            "[{:db/id 200 :f/plain 1 :f/indexed 2 :f/ref 200 :f/text \"t\" :f/unique \"u\" :f/identity \"i\"}]"
+        );
+        let flags = |conn: &TestConn| -> Vec<(i64, [bool; 4])> {
+            conn.sqlite
+                .prepare(
+                    "SELECT a, index_avet, index_vaet, index_fulltext, unique_value \
+                     FROM datoms WHERE e = 200 ORDER BY a",
+                )
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        //            avet   vaet   fulltext unique
+        assert_eq!(
+            flags(&conn),
+            vec![
+                (100, [false, false, false, false]),
+                (101, [true, false, false, false]),
+                (102, [false, true, false, false]),
+                (103, [true, false, true, false]),
+                (104, [true, false, false, true]),
+                (105, [true, false, false, true]),
+            ]
+        );
+
+        // Altering :db/index and :db/unique updates the existing datoms.
+        assert_transact!(
+            conn,
+            "[[:db/add 100 :db/index true] [:db/add 100 :db/unique :db.unique/value]
+              [:db/add 101 :db/index false] [:db/retract 104 :db/unique :db.unique/value]]"
+        );
+        let altered = flags(&conn);
+        assert_eq!(
+            [altered[0], altered[1], altered[4]],
+            [
+                (100, [true, false, false, true]),
+                (101, [false, false, false, false]),
+                (104, [true, false, false, false]),
+            ]
+        );
+    }
+
     #[test]
     fn test_db_double_retraction_issue_818() {
         let mut conn = TestConn::default();
