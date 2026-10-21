@@ -914,22 +914,23 @@ fn execute_transaction_inner(
     // --- End per-transaction context setup ---
 
     // Insert :db/txInstant datom for this transaction using typed column
-    // Straight into the store's narrow log (the `datoms` compat view routes
-    // to the default store only).
+    // Through the store's `datoms` view: its INSTEAD OF trigger routes the
+    // row to the narrow log, and statement triggers on the view (subscriptions,
+    // on-write materialized views) fire once per transaction.
     Spi::run_with_args(
         &format!(
-            "INSERT INTO {}.datoms_instant_new (store_id, e, a, v, tx, added) \
-             VALUES ($1, $2, $3, {}, $5, true) \
-             ON CONFLICT DO NOTHING",
+            "INSERT INTO {}.datoms (e, a, value_type_tag, v_instant, tx, added) \
+             VALUES ($1, $2, $3, {}, $5, $6)",
             qs,
             sql_instant_from_micros("$4")
         ),
         &[
-            DatumWithOid::from(tx_store_id),
             DatumWithOid::from(tx_id),
             DatumWithOid::from(bootstrap_entids::DB_TX_INSTANT),
+            DatumWithOid::from(4_i16), // type_tag::INSTANT = 4
             DatumWithOid::from(tx_instant_micros),
             DatumWithOid::from(tx_id),
+            DatumWithOid::from(true),
         ],
     )?;
 

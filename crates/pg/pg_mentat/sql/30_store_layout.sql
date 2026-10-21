@@ -4,7 +4,8 @@
 -- the same tables as the default store's `mentat` schema: the nine narrow
 -- datom logs, the nine current-state projections, schema / idents /
 -- partitions / transactions / fulltext, the partition sequences and the
--- datoms / current_datoms views. The transactor and the query engine take
+-- datoms / current_datoms views (datoms with INSTEAD OF INSERT / DELETE
+-- triggers, like the default store's). The transactor and the query engine take
 -- the store's schema as a prefix, so a named store reads and writes only its
 -- own tables.
 --
@@ -36,6 +37,58 @@ AS $$
     ]
 $$;
 
+-- INSTEAD OF triggers for a named store's `datoms` view, as
+-- mentat.datoms_view_insert / _delete are for the default store's: route the
+-- row to the narrow table in the view's own schema. store_id takes the
+-- column default, which _create_store_layout sets to the store's id. Value
+-- type tags as in sql/10_narrow_storage.sql.
+CREATE OR REPLACE FUNCTION mentat._store_datoms_view_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    ty TEXT;
+    col TEXT;
+BEGIN
+    IF NEW.tx IS NULL OR NEW.added IS NULL THEN
+        RAISE EXCEPTION '%.datoms INSERT requires tx and added to be non-NULL', TG_TABLE_SCHEMA;
+    END IF;
+    SELECT m.ty, m.col INTO ty, col
+      FROM (VALUES (0, 'ref', 'v_ref'), (1, 'boolean', 'v_bool'), (2, 'long', 'v_long'),
+                   (3, 'double', 'v_double'), (4, 'instant', 'v_instant'), (7, 'text', 'v_text'),
+                   (8, 'keyword', 'v_keyword'), (10, 'uuid', 'v_uuid'), (11, 'bytes', 'v_bytes'))
+           AS m(tag, ty, col)
+     WHERE m.tag = NEW.value_type_tag;
+    IF ty IS NULL THEN
+        RAISE EXCEPTION '%.datoms INSERT: unknown value_type_tag %', TG_TABLE_SCHEMA, NEW.value_type_tag;
+    END IF;
+    EXECUTE format('INSERT INTO %I.datoms_%s_new (e, a, v, tx, added) VALUES ($1, $2, ($3).%I, $4, $5) '
+                   'ON CONFLICT DO NOTHING', TG_TABLE_SCHEMA, ty, col)
+        USING NEW.e, NEW.a, NEW, NEW.tx, NEW.added;
+    RETURN NEW;
+END;
+$fn$;
+
+CREATE OR REPLACE FUNCTION mentat._store_datoms_view_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    ty TEXT;
+BEGIN
+    SELECT m.ty INTO ty
+      FROM (VALUES (0, 'ref'), (1, 'boolean'), (2, 'long'), (3, 'double'), (4, 'instant'),
+                   (7, 'text'), (8, 'keyword'), (10, 'uuid'), (11, 'bytes')) AS m(tag, ty)
+     WHERE m.tag = OLD.value_type_tag;
+    IF ty IS NOT NULL THEN
+        EXECUTE format('DELETE FROM %I.datoms_%s_new WHERE e = $1 AND a = $2 AND tx = $3',
+                       TG_TABLE_SCHEMA, ty)
+            USING OLD.e, OLD.a, OLD.tx;
+    END IF;
+    RETURN OLD;
+END;
+$fn$;
+
 -- Create (or complete) the layout of store `p_store_id` in schema `p_schema`.
 -- Idempotent: an object that already exists is left alone, so the upgrade
 -- migration can use it to complete a pre-1.18 store.
@@ -57,7 +110,9 @@ BEGIN
     IF p_schema = 'mentat' THEN
         RAISE EXCEPTION 'mentat._create_store_layout: the default store''s schema is created by CREATE EXTENSION';
     END IF;
-    EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I', p_schema);
+    IF to_regnamespace(p_schema) IS NULL THEN
+        EXECUTE format('CREATE SCHEMA %I', p_schema);
+    END IF;
 
     FOREACH t IN ARRAY mentat._store_tables() LOOP
         IF to_regclass(format('%I.%I', p_schema, t)) IS NOT NULL THEN
@@ -130,6 +185,13 @@ BEGIN
             EXECUTE format('CREATE VIEW %I.%I AS %s', p_schema, t, def);
         END IF;
     END LOOP;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = format('%I.datoms', p_schema)::regclass
+                                             AND tgname = 'datoms_view_insert') THEN
+        EXECUTE format('CREATE TRIGGER datoms_view_insert INSTEAD OF INSERT ON %I.datoms '
+                       'FOR EACH ROW EXECUTE FUNCTION mentat._store_datoms_view_insert()', p_schema);
+        EXECUTE format('CREATE TRIGGER datoms_view_delete INSTEAD OF DELETE ON %I.datoms '
+                       'FOR EACH ROW EXECUTE FUNCTION mentat._store_datoms_view_delete()', p_schema);
+    END IF;
 
     -- Seed rows: the ones CREATE EXTENSION puts in the default store (the
     -- same set sql/27_dump_config.sql filters out of a dump).
