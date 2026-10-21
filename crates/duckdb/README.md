@@ -160,12 +160,38 @@ SELECT count(*) FROM mentat.datoms;
 | `edn_eval(store VARCHAR, script VARCHAR)` | scalar, volatile | VARCHAR (EDN) | `mentat_duckdb_store::script` (feature `script`) |
 
 Any NULL argument to a scalar yields NULL. `store` names a mentat store in the
-current DuckDB database; it is created (schema, tables, bootstrap transaction)
-on first use. `'default'` (or `''`) is the schema `mentat`. Any other name maps
-to `mentat_<name>_<hash>`: letters, digits and `_` are kept, the rest become `_`,
-and a hash of the full name keeps distinct names apart, so a path-like name
-such as `'/tmp/demo.mentat'` (the pre-1.11 file argument) is just a name and
-writes no file.
+DuckDB database the extension was loaded into; it is created (schema, tables,
+bootstrap transaction) on first use. `'default'` (or `''`) is the schema
+`mentat`. Any other name maps to `mentat_<name>_<hash>`: letters, digits and
+`_` are kept, the rest become `_`, and a hash of the full name keeps distinct
+names apart, so a path-like name such as `'/tmp/demo.mentat'` (the pre-1.11
+file argument) is just a name and writes no file.
+
+### Stores in an `ATTACH`ed database
+
+`'db.name'` is store `name` in the attached database `db` (matched without
+regard to case); `'db.'` or `'db.default'` is `db`'s default store. The store's
+tables, rows and WAL are in `db`'s file, and the store works the same when the
+file is attached under another name or opened on its own (then it is store
+`name`):
+
+```sql
+ATTACH 'notes.duckdb' AS side;
+SELECT edn_t('side.notes', '[{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+SELECT * FROM edn_q('side.notes', '[:find ?t :where [_ :note/text ?t]]', '{}');
+```
+
+This is store-name syntax, not an `edn_q` option, so the options JSON stays the
+same as on the other backends. A name whose part before the first `.` is not
+an attached database is a store in the main database, as before (so
+`'/tmp/demo.mentat'` and `'v1.2'` are unchanged). So is a dotted name that
+already names a store in the main database, even after a database of that
+name is attached. `USE otherdb` does not move stores: unprefixed names always
+mean the database the extension was loaded into. Each `edn_t` commits one
+DuckDB transaction in the store's database. The stores have no secondary
+indexes in any database, so duckdb/duckdb#26828 (see "Storage layout") does
+not apply to attached files either; the harness test reopens an attached
+store from an un-checkpointed WAL.
 
 ### Transactions and connections
 
@@ -403,9 +429,9 @@ keep them.
   `EXT=build/release/mentat.duckdb_extension CLIS=~/duckdb-cli bash test/cross-version.sh`.
 - `store/tests-harness` — the storage backend outside the extension, on a
   bundled DuckDB (a separate workspace): a differential test running the same
-  transactions and 60 queries (now, as-of and since every transaction) on the
-  SQLite engine and on DuckDB, the shared scripting model suite, persistence and
-  WAL-replay tests. `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
+  transactions and 60 queries (now, as-of and since every transaction) plus 31
+  fulltext queries on the SQLite engine and on DuckDB, the shared scripting
+  model suite, persistence, WAL-replay and attached-database tests. `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
 
 ### Fulltext
 
@@ -431,6 +457,7 @@ the text contains all of its tokens.
 
 - `(fulltext ...)` is not ranked (`?score` is `0.0`) and scans the
   attribute's values; DuckDB's `fts` extension (BM25) is not used.
-- Stores live in the database the extension was loaded into, not in another
-  `ATTACH`ed database.
+- A store in an attached database must be named with its prefix
+  (`'db.name'`) on every call; `USE` does not change where unprefixed names
+  go.
 - Stores written by mentat 1.10.x (SQLite files) are not migrated.

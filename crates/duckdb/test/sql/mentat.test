@@ -182,3 +182,31 @@ statement error
 SELECT * FROM edn_q(getvariable('db'), '[:find ?e :where [(fulltext $ :person/bio "hello OR") [[?e]]]]', '{}');
 ----
 malformed MATCH expression
+
+# A store in an ATTACHed database: 'db.name'. Its tables are in that catalog.
+statement ok
+ATTACH ':memory:' AS side;
+
+query I
+SELECT edn_t('side.' || getvariable('db'), '[{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%';
+----
+true
+
+statement ok
+SELECT edn_t('side.' || getvariable('db'), '[{:note/text "in side"}]');
+
+query I
+SELECT t FROM edn_q('side.' || getvariable('db'), '[:find ?t :where [_ :note/text ?t]]', '{}') AS q(t);
+----
+in side
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'side' AND schema_name LIKE 'mentat_test_%' AND table_name = 'datoms';
+----
+1
+
+# The same name without the prefix is a different store, in this database.
+query I
+SELECT count(*) FROM edn_q(getvariable('db'), '[:find ?t :where [_ :note/text ?t]]', '{}');
+----
+0

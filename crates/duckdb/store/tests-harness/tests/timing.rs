@@ -10,7 +10,7 @@ use std::time::Instant;
 fn point_lookup_breakdown() {
     let c = Connection::open_in_memory().unwrap();
     let dc = DuckConn::new(&c);
-    let s = DuckStore::new(&dc as &dyn SqlConn, "default");
+    let s = DuckStore::new(&dc as &dyn SqlConn, "default").unwrap();
     s.transact("[{:db/ident :u/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/index true}]").unwrap();
     let mut tx = String::from("[");
     for i in 0..20000 {

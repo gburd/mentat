@@ -57,7 +57,10 @@ pub fn typed_values(x: &str) -> String {
     format!("union_extract({x}, 'i'), union_extract({x}, 'd'), union_extract({x}, 's')")
 }
 
-/// DDL for a new store in DuckDB schema `s`.
+/// DDL for a new store in DuckDB schema `s` (`"catalog"."schema"`). View
+/// bodies name their tables unqualified: DuckDB binds them in the view's own
+/// catalog and schema, so the store keeps working when its file is attached
+/// under another name or opened directly.
 pub fn create_statements(s: &str) -> Vec<String> {
     vec![
         format!("CREATE SCHEMA IF NOT EXISTS {s}"),
@@ -86,17 +89,17 @@ pub fn create_statements(s: &str) -> Vec<String> {
         ),
         format!(
             "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
-             v_i, v_d, v_s FROM {s}.timelined_transactions WHERE timeline = 0"
+             v_i, v_d, v_s FROM timelined_transactions WHERE timeline = 0"
         ),
         // Fulltext (see module docs).
         fulltext_values_view(s),
         format!(
             "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms WHERE index_fulltext"
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms WHERE index_fulltext"
         ),
         format!(
             "CREATE VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms"
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms"
         ),
         format!(
             "CREATE TABLE {s}.idents (e BIGINT NOT NULL, a BIGINT NOT NULL, \
@@ -120,7 +123,7 @@ pub fn create_statements(s: &str) -> Vec<String> {
 pub fn fulltext_values_view(s: &str) -> String {
     format!(
         "CREATE VIEW {s}.fulltext_values AS SELECT DISTINCT v_s AS rowid, v_s AS text \
-         FROM {s}.datoms WHERE index_fulltext"
+         FROM datoms WHERE index_fulltext"
     )
 }
 

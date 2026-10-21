@@ -189,8 +189,11 @@ deliberately left as they are, per instruction.
 
 **Which database**: the one the extension was loaded into (its default catalog
 when the entrypoint ran). A persistent database (`duckdb my.db`) gets persistent
-datoms; `:memory:` gets in-memory ones. Writing to a different attached database
-is a follow-up (an explicit `ATTACH` name in the store argument).
+datoms; `:memory:` gets in-memory ones. Since 1.18 a store argument `'db.name'`
+puts store `name` in the attached database `db` (README, "Stores in an
+`ATTACH`ed database"): the store's SQL is catalog-qualified, its search path is
+`"db"."schema"`, and its view bodies name tables unqualified so they bind in
+their own catalog under any ATTACH alias.
 
 **Transactions**: `edn_t` commits its own transaction. Calling it inside a
 caller's `BEGIN … ROLLBACK` doesn't roll it back (spike finding 2). This matches

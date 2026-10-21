@@ -18,8 +18,9 @@
 //! A store is a DuckDB schema (`mentat` for the default store, `mentat_<name>`
 //! otherwise) holding the same tables as the SQLite store: `datoms`,
 //! `timelined_transactions` (+ the `transactions` view), `idents`, `schema`,
-//! `known_parts`. Every query runs with that schema first on the search path,
-//! so the engine's unqualified table names resolve to the store's tables.
+//! `known_parts`, in the connection's database or an ATTACHed one
+//! (`'db.name'`). Every query runs with `"catalog"."schema"` as the search
+//! path, so the engine's unqualified table names resolve to the store's tables.
 
 pub use mentat_sql::{Dialect, SqlConn, SqlConnExt, SqlError, SqlRow, SqlValue};
 

@@ -59,7 +59,13 @@ fn write_lock(schema: &str) -> Arc<Mutex<()>> {
 /// no state beyond the store's name, so the extension builds one per call.
 pub struct DuckStore<'c> {
     conn: &'c dyn SqlConn,
+    /// The database (catalog) holding the store.
+    catalog: String,
+    /// The store's schema in it (`schema_for`).
     schema: String,
+    /// `"catalog"."schema"`: what the store's own SQL names, and the search
+    /// path the engine's unqualified SQL runs under.
+    qualified: String,
 }
 
 /// The DuckDB schema for store `name`: `mentat` for the default store,
@@ -96,16 +102,59 @@ fn decode(v: SqlValue, tag: i64) -> std::result::Result<TypedValue, mentat_sql::
     TypedValue::from_sql(v, tag as i32).map_err(|e| mentat_sql::SqlError::new(e.to_string()))
 }
 
+fn quote(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
 impl<'c> DuckStore<'c> {
-    pub fn new(conn: &'c dyn SqlConn, store: &str) -> Self {
+    /// Store `store`: `'db.name'` is store `name` in the attached database
+    /// `db`, when a database of that name (any case) is attached; any other
+    /// value is a store in the connection's own database (`home_catalog`).
+    /// `'db.'` and `'db.default'` are `db`'s default store. A store that
+    /// already exists in the home database under the whole name (a
+    /// path-like name, or one made before `db` was attached) keeps it.
+    pub fn new(conn: &'c dyn SqlConn, store: &str) -> Result<Self> {
+        let home = conn.home_catalog()?;
+        let mut target = (home.clone(), store);
+        if let Some((db, rest)) = store
+            .trim()
+            .split_once('.')
+            .filter(|(db, _)| !db.is_empty())
+        {
+            let catalog = conn.query_opt(
+                "SELECT database_name FROM duckdb_databases() \
+                 WHERE NOT internal AND lower(database_name) = lower(?)",
+                &[SqlValue::Text(db.to_string())],
+                |r| r.get_text(0),
+            )?;
+            if let Some(catalog) = catalog {
+                let in_home = DuckStore::at(conn, home, store);
+                if !in_home.exists()? {
+                    target = (catalog, rest);
+                }
+            }
+        }
+        Ok(DuckStore::at(conn, target.0, target.1))
+    }
+
+    fn at(conn: &'c dyn SqlConn, catalog: String, name: &str) -> Self {
+        let schema = schema_for(name);
         DuckStore {
             conn,
-            schema: schema_for(store),
+            qualified: format!("{}.{}", quote(&catalog), quote(&schema)),
+            catalog,
+            schema,
         }
     }
 
+    /// The store's schema, unqualified.
     pub fn schema_name(&self) -> &str {
         &self.schema
+    }
+
+    /// The database (catalog) holding the store.
+    pub fn catalog_name(&self) -> &str {
+        &self.catalog
     }
 
     fn storing(&self) -> DuckStoring<'_> {
@@ -118,17 +167,25 @@ impl<'c> DuckStore<'c> {
     /// Point the connection's search path at this store, so the engine's
     /// unqualified table names resolve to its tables.
     fn use_schema(&self) -> Result<()> {
-        self.conn.use_schema(&self.schema)?;
+        self.conn.use_schema(&self.qualified)?;
         Ok(())
+    }
+
+    /// `[catalog, schema]`, bound as `$1`, `$2`.
+    fn names(&self) -> [SqlValue; 2] {
+        [
+            SqlValue::Text(self.catalog.clone()),
+            SqlValue::Text(self.schema.clone()),
+        ]
     }
 
     fn exists(&self) -> Result<bool> {
         Ok(self
             .conn
             .query_opt(
-                "SELECT 1 FROM duckdb_tables() WHERE schema_name = ? AND table_name = 'meta' \
-                 AND database_name = current_database()",
-                &[SqlValue::Text(self.schema.clone())],
+                "SELECT 1 FROM duckdb_tables() WHERE database_name = $1 AND schema_name = $2 \
+                 AND table_name = 'meta'",
+                &self.names(),
                 |r| r.get_i64(0),
             )?
             .is_some())
@@ -146,7 +203,7 @@ impl<'c> DuckStore<'c> {
         self.conn.query_cached(
             &format!(
                 "SELECT value::BIGINT FROM {}.meta WHERE key = ?",
-                self.schema
+                self.qualified
             ),
             &[SqlValue::Text("generation".into())],
             &mut |r| {
@@ -172,7 +229,7 @@ impl<'c> DuckStore<'c> {
             Ok(Some(g)) => g,
             _ => {
                 if !self.exists()? {
-                    let lock = write_lock(&self.schema);
+                    let lock = write_lock(&self.qualified);
                     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.in_tx(|s| s.create())?;
                 }
@@ -182,7 +239,7 @@ impl<'c> DuckStore<'c> {
         self.use_schema()?;
         let cached = OPENED.with(|c| {
             c.borrow()
-                .get(&self.schema)
+                .get(&self.qualified)
                 .filter(|(g, _)| *g == gen)
                 .map(|(_, o)| o.clone())
         });
@@ -193,7 +250,7 @@ impl<'c> DuckStore<'c> {
         let opened = self.read()?;
         OPENED.with(|c| {
             c.borrow_mut()
-                .insert(self.schema.clone(), (gen, opened.clone()))
+                .insert(self.qualified.clone(), (gen, opened.clone()))
         });
         Ok((gen, opened))
     }
@@ -208,36 +265,36 @@ impl<'c> DuckStore<'c> {
     fn upgrade(&self) -> Result<()> {
         let stale = self.conn.query_opt(
             &format!(
-                "SELECT (SELECT count(*) FROM duckdb_indexes() WHERE schema_name = $1 \
-                   AND database_name = current_database() AND index_name IN ({})) \
-                 + (SELECT count(*) FROM duckdb_tables() WHERE schema_name = $1 \
-                   AND database_name = current_database() AND table_name = 'fulltext_values')",
+                "SELECT (SELECT count(*) FROM duckdb_indexes() WHERE database_name = $1 \
+                   AND schema_name = $2 AND index_name IN ({})) \
+                 + (SELECT count(*) FROM duckdb_tables() WHERE database_name = $1 \
+                   AND schema_name = $2 AND table_name = 'fulltext_values')",
                 schema::LEGACY_INDEXES.map(|i| format!("'{i}'")).join(", ")
             ),
-            &[SqlValue::Text(self.schema.clone())],
+            &self.names(),
             |r| r.get_i64(0),
         )?;
         if stale.unwrap_or(0) == 0 {
             return Ok(());
         }
-        let lock = write_lock(&self.schema);
+        let lock = write_lock(&self.qualified);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         for i in schema::LEGACY_INDEXES {
             self.conn
-                .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
+                .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.qualified))?;
         }
         let table: Option<i64> = self.conn.query_opt(
-            "SELECT 1 FROM duckdb_tables() WHERE schema_name = ? \
-             AND database_name = current_database() AND table_name = 'fulltext_values'",
-            &[SqlValue::Text(self.schema.clone())],
+            "SELECT 1 FROM duckdb_tables() WHERE database_name = $1 AND schema_name = $2 \
+             AND table_name = 'fulltext_values'",
+            &self.names(),
             |r| r.get_i64(0),
         )?;
         if table.is_some() {
             self.in_tx(|s| {
                 s.conn
-                    .execute_batch(&format!("DROP TABLE {}.fulltext_values", s.schema))?;
+                    .execute_batch(&format!("DROP TABLE {}.fulltext_values", s.qualified))?;
                 s.conn
-                    .execute_batch(&schema::fulltext_values_view(&s.schema))?;
+                    .execute_batch(&schema::fulltext_values_view(&s.qualified))?;
                 Ok(())
             })?;
         }
@@ -249,14 +306,14 @@ impl<'c> DuckStore<'c> {
         if self.exists()? {
             return Ok(());
         }
-        for stmt in schema::create_statements(&self.schema) {
+        for stmt in schema::create_statements(&self.qualified) {
             self.conn.execute_batch(&stmt)?;
         }
         self.use_schema()?;
         self.conn.execute(
             &format!(
                 "INSERT INTO {}.meta VALUES ('generation', ((hash(uuid()) >> 1)::BIGINT)::VARCHAR)",
-                self.schema
+                self.qualified
             ),
             &[],
         )?;
@@ -377,7 +434,7 @@ impl<'c> DuckStore<'c> {
     pub fn transact(&self, edn: &str) -> Result<TxReport> {
         let entities = edn::parse::entities(edn)?;
         let (gen, opened) = self.open_gen()?;
-        let lock = write_lock(&self.schema);
+        let lock = write_lock(&self.qualified);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         self.in_tx(|s| {
             // The partition map is read inside the writing transaction; the

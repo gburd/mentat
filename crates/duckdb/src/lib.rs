@@ -9,6 +9,7 @@
 //! loaded into: a DuckDB schema holding its tables (`mentat` for `'default'`,
 //! `mentat_<name>_<hash>` otherwise; see `mentat_duckdb_store`). Until 1.11 the
 //! argument was a SQLite file path; such a value still works, as a name.
+//! `'db.name'` is store `name` in the ATTACHed database `db`.
 //! See docs/duckdb-native-storage-plan.md.
 //!
 //! SQL runs on a pool of connections cloned from the one DuckDB hands the
@@ -106,7 +107,7 @@ fn conn() -> Result<(&'static dyn SqlConn, Lease), BoxErr> {
 /// A store on a leased connection, plus the lease.
 fn store(name: &str) -> Result<(DuckStore<'static>, Lease), BoxErr> {
     let (c, lease) = conn()?;
-    Ok((DuckStore::new(c, name), lease))
+    Ok((DuckStore::new(c, name)?, lease))
 }
 
 // ---------------------------------------------------------------------------
