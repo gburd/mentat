@@ -1084,3 +1084,98 @@ pub fn not_or_reads_the_basis(it: &mut Interpreter) {
     assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t1)), not_m), ex);
     assert_eq!(q_sorted(it, &db_on(Some(t3), None), not_m), "[]");
 }
+
+/// Issue #362: retracting a value an attribute doesn't have changes nothing: on a
+/// cardinality-one attribute (it used to retract the current value on the embedded
+/// engine), on a cardinality-many attribute, and on a ref given as a lookup ref. No
+/// retraction is logged (pg_mentat used to log one) and the report counts nothing.
+pub fn retracting_an_absent_value_is_a_no_op(it: &mut Interpreter) {
+    seed_people(it);
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :person/best :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+            {:db/ident :person/tag :db/valueType :db.type/string :db/cardinality :db.cardinality/many}])",
+    )
+    .expect("schema");
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/id [:person/name \"Alice\"] \
+           :person/best [:person/name \"Bob\"] :person/tag [\"x\" \"y\"]}])",
+    )
+    .expect("data");
+    let q = |it: &mut Interpreter, query: &str| {
+        it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+            .unwrap()
+    };
+    // A tuple find, one tag at a time: a set's print order differs by backend.
+    let state = "[:find [?a ?b] :where [?e :person/name \"Alice\"] [?e :person/age ?a] \
+                 [?e :person/best ?f] [?f :person/name ?b]]";
+    let tags = "[:find ?t :where [?e :person/name \"Alice\"] [?e :person/tag ?t]]";
+    let before = q(it, state);
+    assert_eq!(before, "[30 \"Bob\"]");
+    let tag_count = |it: &mut Interpreter| {
+        it.eval_to_string(&format!(
+            "(count (mentat.store/q (mentat.store/db c) '{tags}))"
+        ))
+        .unwrap()
+    };
+    assert_eq!(tag_count(it), "2");
+    let report = it
+        .eval_to_string(
+            "(mentat.store/transact c \
+               [[:db/retract [:person/name \"Alice\"] :person/age 99] \
+                [:db/retract [:person/name \"Alice\"] :person/tag \"zzz\"] \
+                [:db/retract [:person/name \"Alice\"] :person/best [:person/name \"Alice\"]]])",
+        )
+        .expect("retract absent values");
+    assert!(
+        report.contains(":mentat.store/datoms-asserted 0"),
+        "{report}"
+    );
+    assert!(
+        report.contains(":mentat.store/datoms-retracted 0"),
+        "{report}"
+    );
+    assert_eq!(q(it, state), before, "nothing changed");
+    assert_eq!(tag_count(it), "2", "nothing changed");
+    // The log has no retraction for Alice.
+    let log = q(
+        it,
+        "[:find ?v ?added :where [?e :person/name \"Alice\"] [?e :person/tag ?v ?tx ?added]]",
+    );
+    assert!(!log.contains("false"), "{log}");
+    let log = q(
+        it,
+        "[:find ?v ?added :where [?e :person/name \"Alice\"] [?e :person/age ?v ?tx ?added]]",
+    );
+    assert!(!log.contains("false"), "{log}");
+    // The present values still retract, one datom each.
+    let report = it
+        .eval_to_string(
+            "(mentat.store/transact c \
+               [[:db/retract [:person/name \"Alice\"] :person/age 30] \
+                [:db/retract [:person/name \"Alice\"] :person/tag \"x\"] \
+                [:db/retract [:person/name \"Alice\"] :person/best [:person/name \"Bob\"]]])",
+        )
+        .expect("retract present values");
+    assert!(
+        report.contains(":mentat.store/datoms-retracted 3"),
+        "{report}"
+    );
+    assert_eq!(
+        q(
+            it,
+            "[:find [?t ...] :where [?e :person/name \"Alice\"] [?e :person/tag ?t]]"
+        ),
+        "[\"y\"]"
+    );
+    for a in [":person/age", ":person/best"] {
+        assert_eq!(
+            q(
+                it,
+                &format!("[:find ?x . :where [?e :person/name \"Alice\"] [?e {a} ?x]]")
+            ),
+            "nil",
+            "{a}"
+        );
+    }
+}

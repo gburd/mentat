@@ -1360,6 +1360,22 @@ fn execute_transaction_inner(
         }
     }
 
+    // A retraction of a datom that isn't live is a no-op (#362): it is not
+    // logged and not reported, as on the embedded engine and in Datomic. A
+    // datom asserted earlier in this transaction counts as live.
+    let mut kept = Vec::with_capacity(pending_datoms.len());
+    for (i, datom) in pending_datoms.iter().enumerate() {
+        let keep = datom.added
+            || pending_datoms[..i]
+                .iter()
+                .any(|d| d.added && d.e == datom.e && d.a == datom.a && d.v == datom.v)
+            // Presence in the current-state projection, whatever the cardinality.
+            || is_duplicate_cardinality_many(datom.e, datom.a, &datom.v, &qs)?;
+        kept.push(keep);
+    }
+    let mut kept = kept.into_iter();
+    pending_datoms.retain(|_| kept.next().unwrap_or(true));
+
     // Validate and insert all datoms.
     // If schema was installed (savepoint active), catch errors to rollback
     // the savepoint before propagating.
