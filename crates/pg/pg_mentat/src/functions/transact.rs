@@ -18,6 +18,19 @@ thread_local! {
     /// entry and checking it as a fast-path reduces that to a single DB query
     /// per transaction.
     static TX_STORE_ID: Cell<Option<i64>> = const { Cell::new(None) };
+
+    /// Schema cache of the store the current transaction writes (#337).
+    /// Attribute and ident resolution must read the target store's schema,
+    /// not the default store's.
+    static TX_CACHE: Cell<Option<&'static crate::cache::SchemaCache>> = const { Cell::new(None) };
+}
+
+/// The schema cache of the store being transacted (the default store outside
+/// a transaction).
+fn store_cache() -> &'static crate::cache::SchemaCache {
+    TX_CACHE
+        .with(|c| c.get())
+        .unwrap_or_else(crate::cache::get_cache)
 }
 
 /// RAII guard that tears down per-transaction context on drop.
@@ -31,6 +44,7 @@ struct TxContextGuard;
 impl Drop for TxContextGuard {
     fn drop(&mut self) {
         TX_STORE_ID.with(|f| f.set(None));
+        TX_CACHE.with(|c| c.set(None));
         crate::cache::end_tx_cache_bypass();
     }
 }
@@ -381,8 +395,8 @@ fn execute_speculative_transaction(
              IF p_schema = 'mentat' THEN
                  SELECT edn_t(p_edn::TEXT)::TEXT INTO _result;
              ELSE
-                 EXECUTE format('SELECT %I.transact($1::TEXT)::TEXT', p_schema)
-                     INTO _result USING p_edn;
+                 -- p_schema is mentat_<store>
+                 SELECT t(substr(p_schema, 8), p_edn::TEXT)::TEXT INTO _result;
              END IF;
              -- Intentionally raise to trigger subtransaction rollback
              RAISE EXCEPTION 'SPECULATIVE_OK:%', _result;
@@ -401,7 +415,7 @@ fn execute_speculative_transaction(
         .ok_or_else(|| "Speculative transaction returned NULL".to_string())?;
 
     // Invalidate caches since the subtransaction rollback may have left stale state
-    crate::cache::get_cache().invalidate();
+    crate::cache::get_cache_for_store(schema_to_store_name(schema)).invalidate();
     crate::functions::query::clear_stmt_cache();
 
     Ok(result)
@@ -513,7 +527,7 @@ fn execute_retract_entity_recursive(
 
             // Check if this is a ref with :db/isComponent = true
             if v_type_tag == crate::types::constants::type_tag::REF {
-                if let Some(attr_info) = crate::cache::get_cache().get_attribute(a) {
+                if let Some(attr_info) = store_cache().get_attribute(a) {
                     if attr_info.component {
                         if let TypedValue::Ref(target) = &v {
                             component_targets.push(*target);
@@ -628,7 +642,7 @@ fn execute_cas_fn(
     // Check cardinality -- CAS on cardinality-many with multiple values is an error
     if let Some(attr_info) = lookup_attribute_info(a) {
         if attr_info.cardinality == "many" && current_values.len() > 1 {
-            let attr_name = crate::cache::get_cache()
+            let attr_name = store_cache()
                 .get_ident(a)
                 .unwrap_or_else(|| format!("entid:{}", a));
             return Err(MentatError::CasFailed {
@@ -678,7 +692,7 @@ fn execute_cas_fn(
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let attr_name = crate::cache::get_cache()
+        let attr_name = store_cache()
             .get_ident(a)
             .unwrap_or_else(|| format!("entid:{}", a));
         return Err(MentatError::CasFailed {
@@ -895,24 +909,27 @@ fn execute_transaction_inner(
     // TX_STORE_ID is still None here — first call goes to the DB.
     let tx_store_id = get_store_id_from_schema(&qs)?;
     TX_STORE_ID.with(|f| f.set(Some(tx_store_id)));
+    TX_CACHE.with(|c| c.set(Some(crate::cache::get_cache_for_store(store_name_raw))));
     let _tx_ctx_guard = TxContextGuard;
     // --- End per-transaction context setup ---
 
     // Insert :db/txInstant datom for this transaction using typed column
+    // Straight into the store's narrow log (the `datoms` compat view routes
+    // to the default store only).
     Spi::run_with_args(
         &format!(
-            "INSERT INTO {}.datoms (e, a, value_type_tag, v_instant, tx, added) \
-             VALUES ($1, $2, $3, {}, $5, $6)",
+            "INSERT INTO {}.datoms_instant_new (store_id, e, a, v, tx, added) \
+             VALUES ($1, $2, $3, {}, $5, true) \
+             ON CONFLICT DO NOTHING",
             qs,
             sql_instant_from_micros("$4")
         ),
         &[
+            DatumWithOid::from(tx_store_id),
             DatumWithOid::from(tx_id),
             DatumWithOid::from(bootstrap_entids::DB_TX_INSTANT),
-            DatumWithOid::from(4_i16), // type_tag::INSTANT = 4
             DatumWithOid::from(tx_instant_micros),
             DatumWithOid::from(tx_id),
-            DatumWithOid::from(true),
         ],
     )?;
 
@@ -1480,7 +1497,7 @@ fn execute_transaction_inner(
             // the entire transaction (including schema changes). Invalidate
             // caches in case they were populated during schema installation.
             if has_schema_changes {
-                crate::cache::get_cache().invalidate();
+                store_cache().invalidate();
                 crate::functions::query::clear_stmt_cache();
             }
             Err(e)
@@ -1985,7 +2002,7 @@ fn install_schema_attributes(
     }
 
     // Invalidate schema cache after schema changes
-    crate::cache::get_cache().invalidate();
+    store_cache().invalidate();
 
     // Invalidate prepared statement cache since schema changes may
     // alter query plans (e.g., new attributes change subquery results).
@@ -2035,7 +2052,7 @@ fn resolve_entity_place(
             let ident_str = format!("{}", kw);
             // Try the cache first, then fall back to direct DB lookup in the
             // store's idents table.
-            let entid = crate::cache::get_cache()
+            let entid = store_cache()
                 .resolve_ident(&ident_str)
                 .or_else(|| {
                     Spi::get_one_with_args::<i64>(
@@ -2072,7 +2089,7 @@ fn resolve_entity_place(
             let a = resolve_attribute(&vec[0])?;
 
             // Validate the attribute has a unique constraint
-            let attr_ident_display = crate::cache::get_cache()
+            let attr_ident_display = store_cache()
                 .get_ident(a)
                 .unwrap_or_else(|| format!("entid:{}", a));
             let attr_info = lookup_attribute_info(a).ok_or_else(
@@ -2092,7 +2109,7 @@ fn resolve_entity_place(
             // Query for entity with this unique attribute value using typed columns
             let eid = check_unique_typed_value(a, &typed_val, schema)?.ok_or_else(
                 || -> Box<dyn std::error::Error + Send + Sync> {
-                    let attr_ident_display = crate::cache::get_cache()
+                    let attr_ident_display = store_cache()
                         .get_ident(a)
                         .unwrap_or_else(|| format!("entid:{}", a));
                     MentatError::LookupRefNotFound {
@@ -2121,11 +2138,11 @@ fn resolve_attribute(value: &edn::Value) -> Result<i64, Box<dyn std::error::Erro
         edn::Value::Keyword(kw) => {
             // Use Display format (:namespace/name) to match schema ident storage
             let ident_str = format!("{}", kw);
-            crate::cache::get_cache()
-                .resolve_ident(&ident_str)
-                .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+            store_cache().resolve_ident(&ident_str).ok_or_else(
+                || -> Box<dyn std::error::Error + Send + Sync> {
                     error::attribute_not_found(&ident_str).into()
-                })
+                },
+            )
         }
         other => Err(MentatError::InvalidAttribute {
             got_type: value_type_name(other).to_string(),
@@ -2143,7 +2160,7 @@ fn try_resolve_attribute(value: &edn::Value) -> Option<i64> {
         edn::Value::Integer(i) => Some(*i),
         edn::Value::Keyword(kw) => {
             let ident_str = format!("{}", kw);
-            crate::cache::get_cache().resolve_ident(&ident_str)
+            store_cache().resolve_ident(&ident_str)
         }
         _ => None,
     }
@@ -2264,14 +2281,14 @@ fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
 /// Look up the value_type of an attribute (using cache).
 /// Returns the value_type string (e.g., "string", "long", "ref") or None if not found.
 fn lookup_value_type(attr_id: i64) -> Option<String> {
-    crate::cache::get_cache()
+    store_cache()
         .get_attribute(attr_id)
         .map(|info| info.value_type)
 }
 
 /// Check if an attribute has fulltext=true (using cache).
 fn is_fulltext_attribute(attr_id: i64) -> bool {
-    crate::cache::get_cache()
+    store_cache()
         .get_attribute(attr_id)
         .map(|info| info.fulltext)
         .unwrap_or(false)
@@ -2279,7 +2296,7 @@ fn is_fulltext_attribute(attr_id: i64) -> bool {
 
 /// Look up attribute metadata from cache (or database if not cached)
 fn lookup_attribute_info(attr_id: i64) -> Option<crate::cache::AttributeInfo> {
-    crate::cache::get_cache().get_attribute(attr_id)
+    store_cache().get_attribute(attr_id)
 }
 
 /// Validate all constraints for a datom before insertion.
@@ -2292,7 +2309,7 @@ fn validate_datom_constraints(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let attr_info = lookup_attribute_info(datom.a).ok_or_else(
         || -> Box<dyn std::error::Error + Send + Sync> {
-            let ident_name = crate::cache::get_cache()
+            let ident_name = store_cache()
                 .get_ident(datom.a)
                 .unwrap_or_else(|| format!("entid:{}", datom.a));
             error::attribute_not_found(&ident_name).into()
@@ -2303,7 +2320,7 @@ fn validate_datom_constraints(
     let expected_type_tag = value_type_to_tag(&attr_info.value_type);
     let got_type_tag = datom.v.type_tag();
     if got_type_tag != expected_type_tag {
-        let ident_name = crate::cache::get_cache()
+        let ident_name = store_cache()
             .get_ident(datom.a)
             .unwrap_or_else(|| format!("entid:{}", datom.a));
         let got_type_name = tag_to_value_type_name(got_type_tag);
@@ -2327,7 +2344,7 @@ fn validate_datom_constraints(
                 .count();
 
             if count_in_tx > 1 {
-                let ident_name = crate::cache::get_cache()
+                let ident_name = store_cache()
                     .get_ident(datom.a)
                     .unwrap_or_else(|| format!("entid:{}", datom.a));
                 return Err(MentatError::CardinalityViolation {
@@ -2369,7 +2386,7 @@ fn validate_datom_constraints(
             // If we still see them here, it means two different non-tempid entities
             // are asserting the same identity value, which is a real conflict.
             // For :db.unique/value, always error on duplicates.
-            let ident_name = crate::cache::get_cache()
+            let ident_name = store_cache()
                 .get_ident(datom.a)
                 .unwrap_or_else(|| format!("entid:{}", datom.a));
             return Err(MentatError::UniqueConstraintViolation {
@@ -2398,7 +2415,7 @@ fn validate_datom_constraints(
                 // to existing_e already. If it wasn't remapped, it means the
                 // entity ID was a literal (not a tempid), so this is a real
                 // conflict regardless of unique type.
-                let ident_name = crate::cache::get_cache()
+                let ident_name = store_cache()
                     .get_ident(datom.a)
                     .unwrap_or_else(|| format!("entid:{}", datom.a));
                 return Err(MentatError::UniqueConstraintViolation {
@@ -2475,7 +2492,7 @@ fn retract_existing_cardinality_one(
     // Read the current value (if any) from the projection -- authoritative
     // and latest-tx-wins-correct, unlike a raw `added=true` scan of the
     // append-only log.
-    let existing = current_projection_value_for_ea(store_id, entity_id, attr_id, new_v)?;
+    let existing = current_projection_value_for_ea(schema, store_id, entity_id, attr_id, new_v)?;
 
     if let Some(old_v) = existing {
         if old_v == *new_v {
@@ -2493,6 +2510,7 @@ fn retract_existing_cardinality_one(
 /// cardinality-one attribute's type is fixed, so the current value lives in
 /// exactly one projection table). Returns None if no current value exists.
 fn current_projection_value_for_ea(
+    schema: &str,
     store_id: i64,
     entity_id: i64,
     attr_id: i64,
@@ -2516,7 +2534,7 @@ fn current_projection_value_for_ea(
         _ => "v::text".to_string(),
     };
     let query = format!(
-        "SELECT {value_expr} AS value FROM mentat.{table} \
+        "SELECT {value_expr} AS value FROM {schema}.{table} \
          WHERE store_id = $1 AND e = $2 AND a = $3 LIMIT 1"
     );
     Spi::connect(|client| {
@@ -2558,8 +2576,10 @@ fn is_duplicate_cardinality_many(
     // a row's existence means the value is currently asserted.
     let exists = match v {
         TypedValue::Ref(id) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_ref \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_ref \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2568,8 +2588,10 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Boolean(b) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_boolean \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_boolean \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2578,8 +2600,10 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Long(n) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_long \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_long \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2588,8 +2612,10 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Double(f) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_double \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_double \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2598,8 +2624,10 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Text(s) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_text \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_text \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2608,8 +2636,10 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Keyword(s) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_keyword \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_keyword \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2619,7 +2649,7 @@ fn is_duplicate_cardinality_many(
         ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<bool>(
             &format!(
-                "SELECT EXISTS(SELECT 1 FROM mentat.current_instant \
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_instant \
                  WHERE store_id = $1 AND e = $2 AND a = $3 AND v = {})",
                 sql_instant_from_micros("$4")
             ),
@@ -2633,8 +2663,10 @@ fn is_duplicate_cardinality_many(
         TypedValue::Uuid(u) => {
             let uuid_str = u.to_string();
             Spi::get_one_with_args::<bool>(
-                "SELECT EXISTS(SELECT 1 FROM mentat.current_uuid \
-                 WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4::UUID)",
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.current_uuid \
+                 WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4::UUID)"
+                ),
                 &[
                     DatumWithOid::from(store_id),
                     DatumWithOid::from(entity_id),
@@ -2644,8 +2676,10 @@ fn is_duplicate_cardinality_many(
             )
         }
         TypedValue::Bytes(b) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_bytes \
-             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {schema}.current_bytes \
+             WHERE store_id = $1 AND e = $2 AND a = $3 AND v = $4)"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2882,6 +2916,7 @@ pub(crate) fn get_store_id_from_schema(
     }
 
     // Slow path: extract store name and look up in the metadata table.
+    let schema = schema.trim_matches('"');
     let store_name = if schema == "mentat" {
         "default"
     } else if let Some(name) = schema.strip_prefix("mentat_") {
@@ -3055,8 +3090,9 @@ fn batch_insert_datoms(
                 return Ok(());
             }
             Spi::run(&format!(
-                "INSERT INTO mentat.{} (store_id,e,a,v,tx,added) VALUES {} \
+                "INSERT INTO {}.{} (store_id,e,a,v,tx,added) VALUES {} \
              ON CONFLICT (store_id,e,a,v,tx) DO UPDATE SET added = EXCLUDED.added",
+                schema,
                 table,
                 vals.join(",")
             ))?;
@@ -3142,8 +3178,8 @@ fn prune_projection_ea(
     let table = current_projection_table(type_hint);
     Spi::run_with_args(
         &format!(
-            "DELETE FROM mentat.{} WHERE store_id = $1 AND e = $2 AND a = $3",
-            table
+            "DELETE FROM {}.{} WHERE store_id = $1 AND e = $2 AND a = $3",
+            schema, table
         ),
         &[
             DatumWithOid::from(store_id),
@@ -3184,8 +3220,8 @@ fn prune_no_history_ea(
     let table = log_table_for(type_hint);
     Spi::run_with_args(
         &format!(
-            "DELETE FROM mentat.{} WHERE store_id = $1 AND e = $2 AND a = $3",
-            table
+            "DELETE FROM {}.{} WHERE store_id = $1 AND e = $2 AND a = $3",
+            schema, table
         ),
         &[
             DatumWithOid::from(store_id),
@@ -3214,8 +3250,8 @@ fn prune_no_history_eav(
     // batch insert uses, so it is safe to interpolate.
     Spi::run_with_args(
         &format!(
-            "DELETE FROM mentat.{} WHERE store_id = $1 AND e = $2 AND a = $3 AND v = {}",
-            table, v_sql
+            "DELETE FROM {}.{} WHERE store_id = $1 AND e = $2 AND a = $3 AND v = {}",
+            schema, table, v_sql
         ),
         &[
             DatumWithOid::from(store_id),
@@ -3300,8 +3336,8 @@ fn maintain_current_projection(
             .collect::<Vec<_>>()
             .join(",");
         Spi::run(&format!(
-            "DELETE FROM mentat.{} WHERE (store_id,e,a,v) IN (VALUES {})",
-            table, joined
+            "DELETE FROM {}.{} WHERE (store_id,e,a,v) IN (VALUES {})",
+            schema, table, joined
         ))?;
     }
     for (table, vals) in &upserts {
@@ -3315,9 +3351,9 @@ fn maintain_current_projection(
             .collect::<Vec<_>>()
             .join(",");
         Spi::run(&format!(
-            "INSERT INTO mentat.{} (store_id,e,a,v,tx) VALUES {} \
+            "INSERT INTO {}.{} (store_id,e,a,v,tx) VALUES {} \
              ON CONFLICT (store_id,e,a,v) DO UPDATE SET tx = EXCLUDED.tx",
-            table, joined
+            schema, table, joined
         ))?;
     }
 
@@ -3354,8 +3390,10 @@ fn check_unique_typed_value(
     // Query the appropriate type-specific table based on value type
     let result = match v {
         TypedValue::Ref(id) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_ref_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_ref_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),
@@ -3363,8 +3401,10 @@ fn check_unique_typed_value(
             ],
         ),
         TypedValue::Boolean(b) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_boolean_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_boolean_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),
@@ -3372,8 +3412,10 @@ fn check_unique_typed_value(
             ],
         ),
         TypedValue::Long(n) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_long_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_long_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),
@@ -3381,8 +3423,10 @@ fn check_unique_typed_value(
             ],
         ),
         TypedValue::Double(f) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_double_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_double_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),
@@ -3390,8 +3434,10 @@ fn check_unique_typed_value(
             ],
         ),
         TypedValue::Text(s) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_text_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_text_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),
@@ -3399,8 +3445,10 @@ fn check_unique_typed_value(
             ],
         ),
         TypedValue::Keyword(s) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_keyword_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_keyword_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),
@@ -3409,7 +3457,7 @@ fn check_unique_typed_value(
         ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM mentat.datoms_instant_new \
+                "SELECT e FROM {schema}.datoms_instant_new \
                  WHERE store_id = $1 AND a = $2 AND v = {} AND added = true LIMIT 1",
                 sql_instant_from_micros("$3")
             ),
@@ -3422,8 +3470,10 @@ fn check_unique_typed_value(
         TypedValue::Uuid(u) => {
             let uuid_str = u.to_string();
             Spi::get_one_with_args::<i64>(
-                "SELECT e FROM mentat.datoms_uuid_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3::UUID AND added = true LIMIT 1",
+                &format!(
+                    "SELECT e FROM {schema}.datoms_uuid_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3::UUID AND added = true LIMIT 1"
+                ),
                 &[
                     DatumWithOid::from(store_id),
                     DatumWithOid::from(attr_id),
@@ -3432,8 +3482,10 @@ fn check_unique_typed_value(
             )
         }
         TypedValue::Bytes(b) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_bytes_new \
-             WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema}.datoms_bytes_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_id),

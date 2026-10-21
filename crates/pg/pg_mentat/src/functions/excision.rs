@@ -44,8 +44,9 @@ fn excise_internal(
         return Ok(json!({"excised": 0, "datoms_removed": 0, "tx_entries_removed": 0}).to_string());
     }
 
-    let schema_name = get_schema_for_store(store);
+    let schema_name = crate::functions::store_management::quote_ident(&get_schema_for_store(store));
     let schema_prefix = format!("{}.", schema_name);
+    let store_id = crate::functions::transact::get_store_id_from_schema(&schema_name)?;
 
     // Check each entity: reject schema entities and verify partition allows excision
     for &eid in entity_ids {
@@ -91,8 +92,8 @@ fn excise_internal(
         .join(",");
 
     let ref_count = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM mentat.datoms_ref_new \
-         WHERE v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
+        "SELECT COUNT(*) FROM {schema_prefix}datoms_ref_new \
+         WHERE store_id = {store_id} AND v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
          AND e != ALL(ARRAY[{eid_list}]::BIGINT[]) \
          AND added = true"
     ))
@@ -103,8 +104,8 @@ fn excise_internal(
     if ref_count > 0 {
         // Collect referencing entities for the error message
         let referrers = Spi::get_one::<String>(&format!(
-            "SELECT array_agg(DISTINCT e)::TEXT FROM mentat.datoms_ref_new \
-             WHERE v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
+            "SELECT array_agg(DISTINCT e)::TEXT FROM {schema_prefix}datoms_ref_new \
+             WHERE store_id = {store_id} AND v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
              AND e != ALL(ARRAY[{eid_list}]::BIGINT[]) \
              AND added = true \
              LIMIT 10"
@@ -139,7 +140,8 @@ fn excise_internal(
     for table in &tables {
         // Count existing datoms for these entities in this table
         let count = Spi::get_one::<i64>(&format!(
-            "SELECT COUNT(*) FROM mentat.{table} WHERE e = ANY(ARRAY[{eid_list}]::BIGINT[])"
+            "SELECT COUNT(*) FROM {schema_prefix}{table} \
+             WHERE store_id = {store_id} AND e = ANY(ARRAY[{eid_list}]::BIGINT[])"
         ))
         .ok()
         .flatten()
@@ -147,7 +149,8 @@ fn excise_internal(
 
         if count > 0 {
             Spi::run(&format!(
-                "DELETE FROM mentat.{table} WHERE e = ANY(ARRAY[{eid_list}]::BIGINT[])"
+                "DELETE FROM {schema_prefix}{table} \
+                 WHERE store_id = {store_id} AND e = ANY(ARRAY[{eid_list}]::BIGINT[])"
             ))?;
             total_datoms_removed += count;
         }

@@ -56,13 +56,12 @@ pub fn expand_user_tx_fns(value: edn::Value, qs: &str) -> Result<edn::Value, Box
 fn lookup_db_fn(qs: &str, ident: &str) -> Result<Option<String>, BoxErr> {
     // Resolve through the store's own idents table (the cache may not have a
     // freshly defined fn yet) and read the live value from the current-state
-    // projection. Every store's datoms live in mentat.current_* keyed by
-    // store_id (resolved the same way the transactor resolves it).
+    // projection of the same store.
     let store_id = super::transact::get_store_id_from_schema(qs)?;
     let sql = format!(
         "SELECT t.v FROM {qs}.idents i \
          JOIN {qs}.idents f ON f.ident = $2 \
-         JOIN mentat.current_text t ON t.e = i.entid AND t.a = f.entid \
+         JOIN {qs}.current_text t ON t.e = i.entid AND t.a = f.entid \
          WHERE i.ident = $1 AND t.store_id = $3 \
          LIMIT 1"
     );
