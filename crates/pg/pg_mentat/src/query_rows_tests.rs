@@ -85,6 +85,44 @@ mod tests {
         assert_eq!(same, Some(true));
     }
 
+    /// 1.18.0: edn_q_rows fills a tuplestore batch by batch instead of a
+    /// Vec of every row. Same rows wherever it is called, in cursor order,
+    /// and past work_mem (the tuplestore spills to a temp file).
+    #[pg_test]
+    fn test_edn_q_rows_materialize_mode() {
+        setup();
+        // In the select list as well as in FROM.
+        let n = Spi::get_one::<i64>(
+            "SELECT count(*) FROM (SELECT edn_q_rows('[:find ?e :where [?e :qr/n _]]') AS r) s",
+        )
+        .expect("count");
+        assert_eq!(n, Some(2500));
+        // An empty result is zero rows.
+        let n = Spi::get_one::<i64>(
+            "SELECT count(*) FROM edn_q_rows('[:find ?e :where [?e :qr/n 99999]]')",
+        )
+        .expect("count");
+        assert_eq!(n, Some(0));
+        // :order is kept: rows come back in the cursor's order.
+        let first = Spi::get_one::<String>(
+            "SELECT string_agg(r->>0, ',' ORDER BY o) FROM edn_q_rows( \
+             '[:find ?n :order (desc ?n) :where [_ :qr/n ?n]]', '{\"limit\": 3}') \
+             WITH ORDINALITY AS t(r, o)",
+        )
+        .expect("order");
+        assert_eq!(first.as_deref(), Some("2500,2499,2498"));
+        // Spilled to disk (64kB work_mem), still the same rows as edn_q.
+        Spi::run("SET LOCAL work_mem = '64kB'").expect("guc");
+        let same = Spi::get_one::<bool>(
+            "SELECT (SELECT jsonb_agg(r ORDER BY r->>0) FROM \
+                     edn_q_rows('[:find ?e ?s :where [?e :qr/s ?s]]') r) \
+               = (SELECT jsonb_agg(x ORDER BY x->>0) FROM \
+                  jsonb_array_elements(edn_q('[:find ?e ?s :where [?e :qr/s ?s]]', '{}')->'results') x)",
+        )
+        .expect("cmp");
+        assert_eq!(same, Some(true));
+    }
+
     #[pg_test]
     fn test_result_limit_errors_name_the_guc() {
         setup();

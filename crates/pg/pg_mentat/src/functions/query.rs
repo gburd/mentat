@@ -11,6 +11,7 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::spi::OwnedPreparedStatement;
 use pgrx::JsonB;
+use pgrx::PgMemoryContexts;
 use serde_json::json;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1530,55 +1531,119 @@ pub(crate) fn mentat_query_internal(
     Ok(JsonB(response))
 }
 
-/// Execute a Datalog query and stream the result rows: one JSON array per
-/// row, in :find order, fetched from a cursor in batches of 1000 so the
-/// result is never materialized as one value (edn_q builds a single JSONB,
-/// which PostgreSQL caps at 1 GB).
+/// Execute a Datalog query and return the result rows: one JSON array per
+/// row, in :find order (edn_q builds a single JSONB, which PostgreSQL caps
+/// at 1 GB).
+///
+/// A materialize-mode set-returning function: rows are fetched from a cursor
+/// in batches of 1000 and appended to a tuplestore, which PostgreSQL keeps in
+/// memory up to work_mem and spills to a temp file past it. Each batch's SPI
+/// result and decoded values are freed before the next, so backend memory
+/// does not grow with the result size.
 ///
 /// Honours mentat.max_result_rows exactly like edn_q (a query that would
 /// return more rows fails rather than silently truncating), so the two
-/// never disagree; set it to 0 to stream an unbounded result. The inputs
+/// never disagree; set it to 0 for an unbounded result. The inputs
 /// (:in bindings, asOf / since / history, limit / offset) are edn_q's.
 ///
 /// ```sql
 /// SELECT r->>0 AS name FROM edn_q_rows('[:find ?n :where [_ :person/name ?n]]') r;
 /// ```
-#[pg_extern(name = "edn_q_rows")]
-pub fn mentat_query_rows(
+// The SQL is spelled out because the Rust signature (fcinfo, no return
+// value) is not the SQL one; it is the definition pgrx generated up to 1.17.
+#[pg_extern(sql = r#"
+CREATE FUNCTION "edn_q_rows"("query" TEXT, "inputs" jsonb DEFAULT '{}')
+RETURNS SETOF jsonb STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+"#)]
+// Not `pub`: only PostgreSQL calls it, with its own fcinfo.
+fn mentat_query_rows(
     query: &str,
-    inputs: default!(JsonB, "'{}'"),
-) -> Result<SetOfIterator<'static, JsonB>, Box<dyn std::error::Error + Send + Sync>> {
+    inputs: JsonB,
+    fcinfo: pg_sys::FunctionCallInfo,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use pg_sys::SetFunctionReturnMode::{SFRM_Materialize, SFRM_Materialize_Random};
+
+    // SAFETY: fcinfo is this call's; resultinfo is checked before use.
+    let rsinfo = unsafe {
+        let ri = (*fcinfo).resultinfo.cast::<pg_sys::ReturnSetInfo>();
+        if !pgrx::is_a(ri.cast(), pg_sys::NodeTag::T_ReturnSetInfo)
+            || (*ri).allowedModes & SFRM_Materialize as i32 == 0
+            || (*ri).expectedDesc.is_null()
+        {
+            return Err("edn_q_rows: set-valued function called in a context that \
+                        cannot accept a set"
+                .into());
+        }
+        &mut *ri
+    };
+
     let mut timer = crate::monitoring::QueryTimer::start(query);
     let pq = prepare_query(query, &inputs.0, "mentat.")?;
     timer.set_sql(&pq.sql);
 
-    // ponytail: the SPI connection lives for one call, so batches are
-    // fetched eagerly here and handed to the SRF as a Vec per batch; true
-    // row-at-a-time streaming across calls needs a detached cursor.
-    let rows = with_limit_hints(|| {
+    // The tuplestore and its descriptor live for the query. Sized by the
+    // caller's work_mem (read before the optimizer hints may raise it).
+    // SAFETY: econtext and expectedDesc are valid for a materialize-mode call.
+    let (store, desc) = unsafe {
+        let random = rsinfo.allowedModes & SFRM_Materialize_Random as i32 != 0;
+        PgMemoryContexts::For((*rsinfo.econtext).ecxt_per_query_memory).switch_to(|_| {
+            (
+                pg_sys::tuplestore_begin_heap(random, false, pg_sys::work_mem),
+                pg_sys::CreateTupleDescCopy(rsinfo.expectedDesc),
+            )
+        })
+    };
+
+    with_limit_hints(|| {
         Spi::connect(|client| {
             apply_optimizer_hints(client, &pq.complexity);
             let mut cursor = client
                 .try_open_cursor(pq.sql.as_str(), &pq.params)
                 .map_err(spi_exec_error)?;
-            let mut out: Vec<JsonB> = Vec::new();
+            // Decoded text and JSONB values of one batch; reset per batch.
+            let mut scratch = PgMemoryContexts::new("edn_q_rows batch");
+            let mut n = 0usize;
             loop {
                 let batch = cursor.fetch(1000).map_err(spi_exec_error)?;
                 if batch.is_empty() {
                     break;
                 }
-                for row in batch {
-                    if pq.max_rows.is_some_and(|m| out.len() >= m as usize) {
-                        return Err(pq.result_limit_error(pq.max_rows.unwrap_or(0)));
-                    }
-                    out.push(JsonB(pq.decode_row(&row)));
+                // SAFETY: SPI_tuptable is the batch just fetched (decoding
+                // runs no SPI); it is freed only after the batch is consumed.
+                let tuptable = unsafe { pg_sys::SPI_tuptable };
+                let res = unsafe {
+                    scratch.switch_to(|_| {
+                        for row in batch {
+                            if pq.max_rows.is_some_and(|m| n >= m as usize) {
+                                return Err(pq.result_limit_error(pq.max_rows.unwrap_or(0)));
+                            }
+                            let datum = JsonB(pq.decode_row(&row)).into_datum();
+                            let value = datum.unwrap_or(pg_sys::Datum::null());
+                            let isnull = datum.is_none();
+                            // Copies the row into the tuplestore's own context.
+                            pg_sys::tuplestore_putvalues(store, desc, &value, &isnull);
+                            n += 1;
+                        }
+                        Ok(())
+                    })
+                };
+                res?;
+                // SAFETY: nothing borrows the batch or the scratch values now.
+                unsafe {
+                    scratch.reset();
+                    pg_sys::SPI_freetuptable(tuptable);
                 }
             }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(out)
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
     })?;
+
+    rsinfo.returnMode = SFRM_Materialize;
+    rsinfo.setResult = store;
+    rsinfo.setDesc = desc;
     let _elapsed_ms = timer.finish();
-    Ok(SetOfIterator::new(rows))
+    Ok(())
 }
 
 /// Execute a Datalog query and return results as JSON (default store)
