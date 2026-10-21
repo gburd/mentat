@@ -371,13 +371,24 @@ mod testing {
         let expected = ValueTypeSet::of_numeric_types();
         assert_eq!(Some(&expected), cc.known_types.get(&y));
 
+        // The attribute is unknown, so the SQL checks ?y's type tag too (#179).
         let clauses = cc.wheres;
-        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses.len(), 2);
+        let column = cc.column_bindings.get(&y).unwrap()[0].clone();
         assert_eq!(
             clauses.0[0],
+            ColumnConstraint::HasTypes {
+                value: column.0.clone(),
+                value_types: ValueTypeSet::of_numeric_types(),
+                check_value: true,
+            }
+            .into()
+        );
+        assert_eq!(
+            clauses.0[1],
             ColumnConstraint::Inequality {
                 operator: Inequality::LessThan,
-                left: QueryValue::Column(cc.column_bindings.get(&y).unwrap()[0].clone()),
+                left: QueryValue::Column(column),
                 right: QueryValue::TypedValue(TypedValue::Long(10)),
             }
             .into()

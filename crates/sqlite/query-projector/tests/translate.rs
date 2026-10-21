@@ -446,8 +446,9 @@ fn test_numeric_less_than_unknown_attribute() {
     let SQLQuery { sql, args } = translate(&schema, query);
 
     // Although we infer numericness from numeric predicates, we've already assigned a table to the
-    // first pattern, and so this is _still_ `all_datoms`.
-    assert_eq!(sql, "SELECT DISTINCT `all_datoms00`.e AS `?x` FROM `all_datoms` AS `all_datoms00` WHERE `all_datoms00`.v < 10");
+    // first pattern, and so this is _still_ `all_datoms`. The type tag is checked, so only longs
+    // and doubles (tag 5) are compared (#179).
+    assert_eq!(sql, "SELECT DISTINCT `all_datoms00`.e AS `?x` FROM `all_datoms` AS `all_datoms00` WHERE (`all_datoms00`.value_type_tag = 5) AND `all_datoms00`.v < 10");
     assert_eq!(args, vec![]);
 }
 

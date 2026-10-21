@@ -2352,3 +2352,60 @@ fn test_plain_keyword_value_round_trips() {
         .expect("pull");
     assert!(format!("{pulled:?}").contains("plain"), "{pulled:?}");
 }
+
+// #179: a comparison over a value of unknown type applies to comparable values only.
+#[test]
+fn test_inequality_over_untyped_values() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :u/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :u/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :u/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+                {:db/ident :u/b :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
+                {:db/ident :u/r :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :u/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(
+            r#"[{:db/id "x" :u/id "e1" :u/n 5 :u/d 2.5 :u/b true :u/r "x"
+                 :u/t #inst "2020-01-01T00:00:00Z"}]"#,
+        )
+        .expect("data");
+    let vals = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_coll_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .iter()
+            .map(|b| format!("{b:?}"))
+            .collect();
+        v.sort();
+        v
+    };
+    // Longs and doubles only: not the string, the ref, the boolean or the instant.
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [?e :u/id "e1"] [?e ?a ?v] [(> ?v 1)]]"#),
+        ["Scalar(Double(2.5))", "Scalar(Long(5))"]
+    );
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [?e :u/id "e1"] [?e ?a ?v] [(<= ?v 2.5)]]"#),
+        ["Scalar(Double(2.5))"]
+    );
+    // An instant constant compares with instants only.
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [?e :u/id "e1"] [?e ?a ?v] [(< ?v #inst "2021-01-01T00:00:00Z")]]"#).len(),
+        1
+    );
+    // Over the whole store: no error (the bootstrap has keywords, strings, refs...).
+    assert!(store
+        .q_once("[:find ?v :where [_ ?a ?v] [(> ?v 4)]]", None)
+        .is_ok());
+    // A typed attribute is unchanged.
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [_ :u/n ?v] [(> ?v 1)]]"#),
+        ["Scalar(Long(5))"]
+    );
+}

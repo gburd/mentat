@@ -269,4 +269,60 @@ mod tests {
             vec!["5", "6"]
         );
     }
+
+    // #179: a comparison over a value of unknown type applies to comparable values only.
+    #[pg_test]
+    fn inequality_over_untyped_values() {
+        setup();
+        tx(
+            r#"[{:db/ident :mu/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                :db/unique :db.unique/identity :db/index true}
+               {:db/ident :mu/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+               {:db/ident :mu/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+               {:db/ident :mu/b :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
+               {:db/ident :mu/r :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+               {:db/ident :mu/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]"#,
+        );
+        tx(
+            r#"[{:db/id "x" :mu/id "e1" :mu/n 5 :mu/d 2.5 :mu/b true :mu/r "x"
+                :mu/t #inst "2020-01-01T00:00:00Z"}]"#,
+        );
+        let r = q(r#"[:find [?v ...] :where [?e :mu/id "e1"] [?e ?a ?v] [(> ?v 1)]]"#);
+        let mut got: Vec<String> = r["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+        got.sort();
+        assert_eq!(got, vec!["2.5", "5"]);
+        let r = q(r#"[:find [?v ...] :where [?e :mu/id "e1"] [?e ?a ?v] [(<= ?v 2.5)]]"#);
+        assert_eq!(r["result"].as_array().unwrap().len(), 1, "{r}");
+        let r = q(
+            r#"[:find [?v ...] :where [?e :mu/id "e1"] [?e ?a ?v] [(< ?v #inst "2021-01-01T00:00:00Z")]]"#,
+        );
+        assert_eq!(r["result"].as_array().unwrap().len(), 1, "{r}");
+        let e = error_message(
+            "SELECT edn_q('[:find ?v :where [_ ?a ?v] [(> ?v 4)]]'::TEXT, '{}'::jsonb)",
+        );
+        assert_eq!(e, "");
+        // A typed attribute is unchanged.
+        assert_eq!(
+            coll("[:find [?v ...] :where [_ :mu/n ?v] [(> ?v 1)]]"),
+            vec!["5"]
+        );
+        // Against a string, an untyped value still compares as text (no type error).
+        let r = q(r#"[:find [?v ...] :where [?e :mu/id "e1"] [?e ?a ?v] [(< ?v "e2")]]"#);
+        assert!(
+            r["result"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("e1")),
+            "{r}"
+        );
+        let e = error_message(
+            r#"SELECT edn_q('[:find ?v :where [?e :mu/id ?s] [?e ?a ?v] [(< ?v ?s)]]'::TEXT, '{}'::jsonb)"#,
+        );
+        assert_eq!(e, "");
+    }
 }

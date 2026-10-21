@@ -8,20 +8,36 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use core_traits::{TypedValue, ValueType};
+use core_traits::{TypedValue, ValueType, ValueTypeSet};
 
 use mentat_core::{HasSchema, Schema};
 
-use edn::query::{FnArg, NonIntegerConstant, PlainSymbol};
+use edn::query::{FnArg, NonIntegerConstant, PlainSymbol, Variable};
 
 use crate::clauses::ConjoiningClauses;
 
 use query_algebrizer_traits::errors::{AlgebrizerError, Result};
 
-use crate::types::{EmptyBecause, QueryValue};
+use crate::types::{ColumnConstraint, EmptyBecause, QueryValue};
 
 /// Argument resolution.
 impl ConjoiningClauses {
+    /// A comparison predicate's variable must be one of `types`. When its type isn't known to
+    /// be ([_ ?a ?v]), the SQL must also check the value's type tag, or `[(> ?v 1)]` would
+    /// compare strings, keywords and refs too (#179; Mozilla #520).
+    fn require_types_for_comparison(&mut self, var: &Variable, types: ValueTypeSet) {
+        let check = !self.known_type_set(var).is_subset(types);
+        self.narrow_types_for_var(var.clone(), types);
+        if let (true, Some(qa)) = (check, self.extracted_types.get(var)) {
+            let value = qa.0.clone();
+            self.wheres.add_intersection(ColumnConstraint::HasTypes {
+                value,
+                value_types: types,
+                check_value: true,
+            });
+        }
+    }
+
     /// Take a function argument and turn it into a `QueryValue` suitable for use in a concrete
     /// constraint.
     /// Additionally, do two things:
@@ -44,7 +60,7 @@ impl ConjoiningClauses {
                         bail!(AlgebrizerError::InputTypeDisagreement(var.name(), ValueType::Long, v.value_type()))
                     }
                 } else {
-                    self.constrain_var_to_numeric(var.clone());
+                    self.require_types_for_comparison(&var, ValueTypeSet::of_numeric_types());
                     self.column_bindings
                         .get(&var)
                         .and_then(|cols| cols.first().map(|col| QueryValue::Column(col.clone())))
@@ -85,7 +101,10 @@ impl ConjoiningClauses {
                     v.value_type()
                 )),
                 None => {
-                    self.constrain_var_to_type(var.clone(), ValueType::Instant);
+                    self.require_types_for_comparison(
+                        &var,
+                        ValueTypeSet::of_one(ValueType::Instant),
+                    );
                     self.column_bindings
                         .get(&var)
                         .and_then(|cols| cols.first().map(|col| QueryValue::Column(col.clone())))

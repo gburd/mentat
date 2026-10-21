@@ -620,11 +620,6 @@ impl ConjoiningClauses {
         self.narrow_types_for_var(variable, ValueTypeSet::of_one(ValueType::Long));
     }
 
-    /// Mark the given value as one of the set of numeric types.
-    fn constrain_var_to_numeric(&mut self, variable: Variable) {
-        self.narrow_types_for_var(variable, ValueTypeSet::of_numeric_types());
-    }
-
     pub(crate) fn can_constrain_var_to_type(
         &self,
         var: &Variable,

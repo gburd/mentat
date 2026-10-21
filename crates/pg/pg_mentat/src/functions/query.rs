@@ -7635,6 +7635,75 @@ fn build_predicate_clause(
         }
     }
 
+    // #179: an ordering comparison on a value of unknown type ([_ ?a ?v]) against a number
+    // or an instant applies to comparable values only, as on the embedded engine: numbers
+    // against a number, instants against an instant. Other values compare as NULL, so they
+    // don't match. Against anything else (a string) the text comparison below is kept.
+    let kinds: Vec<Option<&str>> = pred
+        .args
+        .iter()
+        .map(|a| match a {
+            FnArg::EntidOrInteger(_) | FnArg::Constant(NonIntegerConstant::Float(_)) => Some("num"),
+            FnArg::Constant(NonIntegerConstant::Instant(_)) => Some("instant"),
+            FnArg::Variable(v) if untyped_value_alias(v, var_to_alias, var_to_type).is_some() => {
+                None
+            }
+            FnArg::Variable(v) => {
+                let name = format!("{v}");
+                match var_to_type.get(name.as_str()) {
+                    Some(Some(t)) if matches!(t.as_str(), "long" | "double" | "ref") => Some("num"),
+                    Some(Some(t)) if t == "instant" => Some("instant"),
+                    _ if input_bindings
+                        .get(name.as_str())
+                        .is_some_and(|j| j.is_number()) =>
+                    {
+                        Some("num")
+                    }
+                    _ => Some("other"),
+                }
+            }
+            _ => Some("other"),
+        })
+        .collect();
+    let known: Vec<&str> = kinds.iter().flatten().copied().collect();
+    let comparable = kinds.contains(&None)
+        && (known.iter().all(|k| *k == "num") || known.iter().all(|k| *k == "instant"));
+    if matches!(op, "<" | ">" | "<=" | ">=") && comparable {
+        let instant = known.contains(&"instant");
+        let mut sides = Vec::with_capacity(2);
+        for arg in &pred.args {
+            sides.push(match arg {
+                FnArg::Constant(NonIntegerConstant::Instant(dt)) => format!(
+                    "to_timestamp({}::DOUBLE PRECISION / 1000000.0)",
+                    builder.bind_bigint(dt.timestamp_micros())
+                ),
+                FnArg::Variable(v) => match untyped_value_alias(v, var_to_alias, var_to_type) {
+                    Some(alias) if instant => format!("{alias}.v_instant"),
+                    Some(alias) => {
+                        format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)")
+                    }
+                    None => pred_arg_to_sql(
+                        arg,
+                        var_to_alias,
+                        var_to_type,
+                        computed,
+                        input_bindings,
+                        builder,
+                    )?,
+                },
+                _ => pred_arg_to_sql(
+                    arg,
+                    var_to_alias,
+                    var_to_type,
+                    computed,
+                    input_bindings,
+                    builder,
+                )?,
+            });
+        }
+        return Ok(format!("({} {} {})", sides[0], sql_op, sides[1]));
+    }
+
     let left = pred_arg_to_sql(
         &pred.args[0],
         var_to_alias,
@@ -7653,6 +7722,23 @@ fn build_predicate_clause(
     )?;
 
     Ok(format!("({} {} {})", left, sql_op, right))
+}
+
+/// The table alias of `v` when it is bound to a datom's value column and its type is not
+/// known from the schema (a pattern with a variable attribute).
+fn untyped_value_alias<'m>(
+    v: &edn::query::Variable,
+    var_to_alias: &'m HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+) -> Option<&'m str> {
+    let name = format!("{}", v);
+    match (
+        var_to_alias.get(name.as_str()),
+        var_to_type.get(name.as_str()),
+    ) {
+        (Some((alias, "v")), None | Some(None)) => Some(alias.as_str()),
+        _ => None,
+    }
 }
 
 /// Check if an inequality predicate has a type mismatch between variable and literal.
