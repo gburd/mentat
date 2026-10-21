@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use core_traits::{Entid, TypedValue};
+use edn::entities::Entity;
 use mentat_core::{IdentMap, Schema, TxReport};
 use mentat_db::db::TypedSQLValue;
 use mentat_db::{entids, NullWatcher, Partition, PartitionMap, SchemaBuilding};
@@ -357,35 +358,72 @@ impl<'c> DuckStore<'c> {
         let (gen, opened) = self.open_gen()?;
         let lock = write_lock(&self.schema);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.in_tx(|s| {
-            // The partition map is read inside the writing transaction; the
-            // schema is reused unless another writer changed it since `open`.
-            let partition_map = s.read_partition_map()?;
-            let schema = if s.generation()? == Some(gen) {
-                opened.schema
-            } else {
-                s.read()?.schema
-            };
-            let storing = DuckStoring {
-                conn: s.conn,
-                read: Some(partition_map.clone()),
-            };
-            let (report, _next_partition_map, next_schema, _w) = mentat_db::transact(
-                &storing,
-                partition_map,
-                &schema,
-                &schema,
-                NullWatcher(),
-                entities,
+        self.in_tx(|s| s.apply(entities, gen, &opened.schema))
+    }
+
+    /// Speculatively transact `edns` in order (Datomic `d/with`) and return
+    /// the last report. They run in one DuckDB transaction on this
+    /// connection that is always rolled back: no other connection sees them,
+    /// and nothing is left behind, on success or error (partition counters
+    /// and the schema generation included). Holds the store's write lock, as
+    /// `transact` does. DuckDB has no savepoints, so this can't nest inside
+    /// a transaction already open on the connection; the extension's
+    /// connections never have one.
+    pub fn with_speculative(&self, edns: &[&str]) -> Result<TxReport> {
+        let txs = edns
+            .iter()
+            .map(|edn| edn::parse::entities(edn))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let (gen, opened) = self.open_gen()?;
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let report = txs.into_iter().try_fold(None, |_, entities| {
+            self.apply(entities, gen, &opened.schema).map(Some)
+        });
+        let rolled_back = self.conn.execute_batch("ROLLBACK");
+        let report = report?;
+        rolled_back?;
+        report.ok_or_else(|| MentatError::NotYetImplemented("with: no tx-data".into()))
+    }
+
+    /// Apply `edn` inside the caller's DuckDB transaction (no BEGIN/COMMIT).
+    /// `schema` is the store's as of generation `gen`; it is reread if
+    /// another writer (or an earlier `apply` in this transaction) changed it.
+    fn apply(
+        &self,
+        entities: Vec<Entity<edn::ValueAndSpan>>,
+        gen: i64,
+        schema: &Schema,
+    ) -> Result<TxReport> {
+        // The partition map is read inside the writing transaction.
+        let partition_map = self.read_partition_map()?;
+        let reread;
+        let schema = if self.generation()? == Some(gen) {
+            schema
+        } else {
+            reread = self.read()?.schema;
+            &reread
+        };
+        let storing = DuckStoring {
+            conn: self.conn,
+            read: Some(partition_map.clone()),
+        };
+        let (report, _next_partition_map, next_schema, _w) = mentat_db::transact(
+            &storing,
+            partition_map,
+            schema,
+            schema,
+            NullWatcher(),
+            entities,
+        )?;
+        if next_schema.is_some() {
+            self.conn.execute(
+                "UPDATE meta SET value = ((hash(uuid()) >> 1)::BIGINT)::VARCHAR WHERE key = 'generation'",
+                &[],
             )?;
-            if next_schema.is_some() {
-                s.conn.execute(
-                    "UPDATE meta SET value = ((hash(uuid()) >> 1)::BIGINT)::VARCHAR WHERE key = 'generation'",
-                    &[],
-                )?;
-            }
-            Ok(report)
-        })
+        }
+        Ok(report)
     }
 
     /// Run a Datalog query with the shared JSON options

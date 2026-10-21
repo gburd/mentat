@@ -262,8 +262,10 @@ Runs a mino script with the `mentat.store/*` prims and returns the last value
 as EDN text. A no-arg `(mentat.store/open)` opens the `store` argument;
 `(mentat.store/open "other")` opens another store in the same database.
 `(mentat.store/q ...)` on an as-of / since db value runs temporal Datalog.
-`mentat.store/with` (speculative transact) is not supported on DuckDB stores
-and returns an error. The interpreter is `sandboxed()` (no `slurp`,
+`mentat.store/with` (speculative transact) applies the tx-data inside a DuckDB
+transaction on the call's connection and rolls it back, so no other connection
+sees it and nothing is left behind, on success or error. It takes the store's
+write lock while it runs, as `edn_t` does. The interpreter is `sandboxed()` (no `slurp`,
 `spit`, or other host filesystem prims) and bounded per call to 10M eval steps,
 64 MiB heap, and depth 1000. Each call gets a fresh interpreter (no state
 carries between calls). mino is pure Rust, so the feature adds no toolchain;
