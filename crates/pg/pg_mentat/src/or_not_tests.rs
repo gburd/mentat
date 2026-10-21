@@ -128,4 +128,32 @@ mod tests {
             got, expected, p2, p3, p5,
         );
     }
+
+    /// A :find variable bound only inside the `or` (in every arm), next to a
+    /// base pattern. Before 1.18.0 this failed with
+    /// ":db.error/unbound-variable :find variable ?v": the compiler built the
+    /// base query alone first, though only the per-arm queries are used.
+    #[pg_test]
+    fn pg_test_or_binds_find_var_with_base_pattern() {
+        setup();
+        let [_p1, _p2, _p3, p4, _p5] = setup_or_not_data();
+        // dave (p4) is the only superuser.
+        let raw = Spi::get_one::<String>(
+            "SELECT edn_q('[:find ?p ?v :where [?p :person/superuser? true] \
+             (or [?p :person/age ?v] [?p :person/name ?v])]', '{}')::TEXT",
+        )
+        .expect("q")
+        .expect("NULL");
+        let j: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        let mut rows: Vec<String> = j["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        rows.sort();
+        let mut want = vec![format!("[{p4},\"dave\"]"), format!("[{p4},18]")];
+        want.sort();
+        assert_eq!(rows, want);
+    }
 }

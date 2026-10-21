@@ -3041,32 +3041,32 @@ fn build_sql_from_datalog_enriched(
 
     let with_vars: Vec<String> = parsed.with.iter().map(|v| format!("{}", v)).collect();
 
-    // Build the base query (skip if we only have OR clauses)
-    let (base_sql, base_var_to_alias, base_var_to_type) =
-        if pattern_clauses.is_empty() && !or_joins.is_empty() {
-            // No base patterns, only OR clauses - will be handled below
-            (String::new(), HashMap::new(), HashMap::new())
-        } else {
-            build_extended_pattern_query(
-                &pattern_clauses,
-                &not_joins,
-                &predicates,
-                &fts_joins,
-                &extra_var_bindings,
-                find_vars,
-                &parsed.find_spec,
-                builder,
-                temporal,
-                &rule_cte_info,
-                &effective_bindings,
-                &enriched_bindings,
-                schema_prefix,
-                &store_id_param,
-                &get_else_clauses,
-                &missing_clauses,
-                &with_vars,
-            )?
-        };
+    // Build the base query. With an OR, each arm below is compiled with the
+    // base patterns instead, so the base query is not built (it would reject
+    // a :find variable bound only inside the OR).
+    let (base_sql, base_var_to_alias, base_var_to_type) = if !or_joins.is_empty() {
+        (String::new(), HashMap::new(), HashMap::new())
+    } else {
+        build_extended_pattern_query(
+            &pattern_clauses,
+            &not_joins,
+            &predicates,
+            &fts_joins,
+            &extra_var_bindings,
+            find_vars,
+            &parsed.find_spec,
+            builder,
+            temporal,
+            &rule_cte_info,
+            &effective_bindings,
+            &enriched_bindings,
+            schema_prefix,
+            &store_id_param,
+            &get_else_clauses,
+            &missing_clauses,
+            &with_vars,
+        )?
+    };
 
     // Handle OR-joins using Datalog union semantics.
     //
