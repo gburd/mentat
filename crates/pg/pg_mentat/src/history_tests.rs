@@ -616,4 +616,29 @@ mod tests {
         let q = "[:find ?e :rules [[(old-now ?e) [?e :hn/name \"old\"]]] :where (old-now ?e)]";
         assert_eq!(rows(q, serde_json::json!({})), [format!("[{c}]")]);
     }
+
+    /// An :in value for a variable bound only by a rule invocation constrains
+    /// it (it was ignored, returning every row of the rule).
+    #[pg_test]
+    fn test_hi_in_binding_for_rule_var() {
+        let (a, b, _c) = setup_renamed();
+        let q = "[:find ?e :in ?f :rules [[(fr ?e ?f) [?e :hn/friend ?f]]] :where (fr ?e ?f)]";
+        assert_eq!(
+            rows(q, serde_json::json!({"inputs": [a]})),
+            [format!("[{b}]")]
+        );
+        // A boolean :in value against a rule column bound to ?added.
+        let q = "[:find ?e :in ?op :rules [[(was-old ?e ?op) [?e :hn/name \"old\" _ ?op]]] \
+                 :where (was-old ?e ?op)]";
+        assert_eq!(
+            rows(q, serde_json::json!({"inputs": [false]})),
+            [format!("[{a}]")]
+        );
+        // The other rule column, bound by the :in entity.
+        let q = "[:find ?f :in ?e :rules [[(fr ?e ?f) [?e :hn/friend ?f]]] :where (fr ?e ?f)]";
+        assert_eq!(
+            rows(q, serde_json::json!({"inputs": [b]})),
+            [format!("[{a}]")]
+        );
+    }
 }

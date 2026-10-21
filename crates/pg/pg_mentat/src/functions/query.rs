@@ -1221,6 +1221,19 @@ fn scalar_input_constraint(
             let param = builder.bind_bool(b);
             format!("{alias}.added = {param}")
         }),
+        // A rule CTE column (colN): an entid, a ref value or an `added` flag,
+        // so compare as text, which fits any of its column types.
+        c if c.starts_with("col") => {
+            let text = match value {
+                serde_json::Value::Number(_) | serde_json::Value::Bool(_) => value.to_string(),
+                serde_json::Value::Array(arr) => {
+                    resolve_lookup_ref_to_eid(arr, schema_prefix)?.to_string()
+                }
+                _ => return None,
+            };
+            let param = builder.bind_text(text);
+            Some(format!("{alias}.{c}::TEXT = {param}"))
+        }
         _ => None,
     }
 }
