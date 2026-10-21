@@ -539,6 +539,8 @@ fn to_tx_report(report: &crate::TxReport) -> TxReport {
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
+        datoms_asserted: report.datoms_asserted as i64,
+        datoms_retracted: report.datoms_retracted as i64,
     }
 }
 

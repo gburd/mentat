@@ -346,7 +346,13 @@ fn json_to_tx_report(report: &str) -> Result<TxReport, String> {
             }
         }
     }
-    Ok(TxReport { tx_id, tempids })
+    let count = |k: &str| j.get(k).and_then(J::as_i64).unwrap_or(0);
+    Ok(TxReport {
+        tx_id,
+        tempids,
+        datoms_asserted: count("datoms_asserted"),
+        datoms_retracted: count("datoms_retracted"),
+    })
 }
 
 /// A `edn_q` JSON envelope as a mino value in Datomic result shape:

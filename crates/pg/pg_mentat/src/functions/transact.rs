@@ -1374,7 +1374,7 @@ fn execute_transaction_inner(
     let datom_result = insert_datoms(&pending_datoms, tx_id, &qs);
 
     match datom_result {
-        Ok(_datom_count) => {
+        Ok((datoms_asserted, datoms_retracted)) => {
             // All datoms inserted successfully. PostgreSQL's transaction
             // management will commit schema + datoms atomically.
 
@@ -1421,12 +1421,14 @@ fn execute_transaction_inner(
             let tx_data_json = format!("[{}]", tx_data_entries.join(","));
 
             Ok(format!(
-                "{{\"db-before\":{{\"basis-t\":{}}},\"db-after\":{{\"basis-t\":{}}},\"tx-data\":{},\"tempids\":{{{}}},\"schema_changed\":{}}}",
+                "{{\"db-before\":{{\"basis-t\":{}}},\"db-after\":{{\"basis-t\":{}}},\"tx-data\":{},\"tempids\":{{{}}},\"schema_changed\":{},\"datoms_asserted\":{},\"datoms_retracted\":{}}}",
                 basis_t_before,
                 tx_id,
                 tx_data_json,
                 tempids_json.join(","),
-                has_schema_changes
+                has_schema_changes,
+                datoms_asserted,
+                datoms_retracted
             ))
         }
         Err(e) => {
@@ -1461,11 +1463,13 @@ enum CardinalityOneResult {
 /// semantics. Returns the number of datoms processed.
 ///
 /// The `schema` parameter is the quoted PostgreSQL schema name.
+/// Returns how many datoms were asserted and retracted (#281): the rows written to the log,
+/// not counting skipped no-ops. The `:db/txInstant` datom is written elsewhere.
 fn insert_datoms(
     pending_datoms: &[PendingDatom],
     tx_id: i64,
     schema: &str,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>> {
     let datom_count = pending_datoms.len();
 
     // Collect all rows that need to be written to the type-specific tables.
@@ -1609,7 +1613,8 @@ fn insert_datoms(
         )?;
     }
 
-    Ok(datom_count)
+    let asserted = rows_to_insert.iter().filter(|r| r.4).count();
+    Ok((asserted, rows_to_insert.len() - asserted))
 }
 
 /// Collect schema-defining assertions for an entity.

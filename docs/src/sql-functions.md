@@ -52,7 +52,18 @@ removed in a future major release. Other functions keep their `mentat_` prefix.
 
 ### `mentat.t(edn)` / `edn_t(edn)`
 
-Execute a transaction. Returns a JSON transaction report with `tx_id`, `tx_instant`, and `tempids`.
+Execute a transaction. Returns a JSON transaction report:
+
+```json
+{"db-before": {"basis-t": 1000000000001}, "db-after": {"basis-t": 1000000000002},
+ "tx-data": [[e, a, v, tx, added], ...], "tempids": {"tempid-1": 1000003},
+ "schema_changed": false, "datoms_asserted": 2, "datoms_retracted": 0}
+```
+
+`datoms_asserted` / `datoms_retracted` count the datoms the transaction wrote,
+leaving out its `:db/txInstant`; both are 0 when the transaction changed
+nothing (e.g. it re-asserted values already there). The embedded engine's
+`TxReport` and the DuckDB extension's `edn_t` report the same counts.
 
 ```sql
 SELECT mentat.t('[

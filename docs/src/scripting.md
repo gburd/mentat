@@ -36,7 +36,7 @@ Datomic's split between a mutable connection and immutable database values:
 | `mentat.store/db` | read | db value at the current basis |
 | `mentat.store/as-of` | read | db value fixed at a past tx |
 | `mentat.store/since` | read | db value floored at a tx |
-| `mentat.store/transact` | write | commit EDN tx data, returns the tx report |
+| `mentat.store/transact` | write | commit EDN tx data, returns the tx report: `{:mentat.store/tx-id T :mentat.store/tempids {...} :mentat.store/datoms-asserted N :mentat.store/datoms-retracted M :mentat.store/db-after db}` (the counts leave out `:db/txInstant`; both 0 means nothing changed) |
 | `mentat.store/with` | write | speculative tx (savepoint, rolled back) |
 | `mentat.store/q` | read | run a Datalog query against a db value |
 | `mentat.store/pull` | read | pull a pattern for entity ids |

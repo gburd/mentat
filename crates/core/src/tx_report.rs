@@ -31,4 +31,35 @@ pub struct TxReport {
     /// existing entid, or is allocated a new entid.  (It is possible for multiple distinct string
     /// literal tempids to all unify to a single freshly allocated entid.)
     pub tempids: BTreeMap<String, Entid>,
+
+    /// How many datoms the transaction added to the log, and how many it retracted (#281).
+    /// Both leave out the transaction's own `:db/txInstant` datom, so `0, 0` means the
+    /// transaction changed nothing. A redundant assertion (the datom is already there) or a
+    /// retraction of an absent datom is not counted; replacing a cardinality-one value counts
+    /// one assertion and one retraction.
+    pub datoms_asserted: usize,
+    pub datoms_retracted: usize,
+}
+
+impl TxReport {
+    pub fn new(
+        tx_id: Entid,
+        tx_instant: DateTime<Utc>,
+        tempids: BTreeMap<String, Entid>,
+        datoms_asserted: usize,
+        datoms_retracted: usize,
+    ) -> TxReport {
+        TxReport {
+            tx_id,
+            tx_instant,
+            tempids,
+            datoms_asserted,
+            datoms_retracted,
+        }
+    }
+
+    /// True if the transaction asserted and retracted nothing (beyond its `:db/txInstant`).
+    pub fn is_empty(&self) -> bool {
+        self.datoms_asserted == 0 && self.datoms_retracted == 0
+    }
 }

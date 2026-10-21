@@ -2267,3 +2267,48 @@ fn test_string_predicates() {
         assert_eq!(err.to_string(), msg, "{pred}");
     }
 }
+
+// #281: the TxReport counts the datoms a transaction asserted and retracted.
+#[test]
+fn test_tx_report_counts() {
+    let mut store = Store::open("").expect("opened");
+    let counts = |r: &TxReport| (r.datoms_asserted, r.datoms_retracted);
+    let r = store
+        .transact(
+            r#"[{:db/ident :c/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :c/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+                {:db/ident :c/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    assert_eq!(counts(&r), (11, 0));
+    let r = store
+        .transact(r#"[{:db/id "a" :c/n 1 :c/m [1 2] :c/s "x"}]"#)
+        .expect("a");
+    assert_eq!(counts(&r), (4, 0));
+    let a = *r.tempids.get("a").unwrap();
+    for (tx, want) in [
+        // Re-asserting what is there, and retracting what isn't, change nothing.
+        (
+            format!("[[:db/add {a} :c/n 1] [:db/add {a} :c/m 2] [:db/add {a} :c/s \"x\"]]"),
+            (0, 0),
+        ),
+        (
+            format!("[[:db/retract {a} :c/n 7] [:db/retract {a} :c/m 9]]"),
+            (0, 0),
+        ),
+        ("[]".to_string(), (0, 0)),
+        // Replacing a cardinality-one value: one assertion, one retraction.
+        (format!("[[:db/add {a} :c/n 2]]"), (1, 1)),
+        (format!("[[:db/add {a} :c/s \"y\"]]"), (1, 1)),
+        (
+            format!("[[:db/add {a} :c/m 3] [:db/retract {a} :c/m 1]]"),
+            (1, 1),
+        ),
+        (format!("[[:db/retractEntity {a}]]"), (0, 4)),
+    ] {
+        let r = store.transact(tx.as_str()).expect(&tx);
+        assert_eq!(counts(&r), want, "{tx}");
+        assert_eq!(r.is_empty(), want == (0, 0), "{tx}");
+    }
+}

@@ -194,4 +194,37 @@ mod tests {
         );
         assert!(e.contains("requires exactly 2 arguments, got 1"), "{e}");
     }
+
+    // #281: the tx report counts asserted and retracted datoms, as on the embedded engine.
+    #[pg_test]
+    fn tx_report_counts() {
+        setup();
+        let counts = |r: &serde_json::Value| {
+            (
+                r["datoms_asserted"].as_i64().unwrap(),
+                r["datoms_retracted"].as_i64().unwrap(),
+            )
+        };
+        let r = tx("[{:db/ident :mc/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                     {:db/ident :mc/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}]");
+        assert_eq!(counts(&r), (6, 0));
+        let r = tx(r#"[[:db/add "a" :mc/n 1] [:db/add "a" :mc/m 1] [:db/add "a" :mc/m 2]]"#);
+        assert_eq!(counts(&r), (3, 0));
+        let a = r["tempids"]["a"].as_i64().unwrap();
+        for (t, want) in [
+            (
+                format!("[[:db/add {a} :mc/n 1] [:db/add {a} :mc/m 2]]"),
+                (0, 0),
+            ),
+            ("[]".to_string(), (0, 0)),
+            (format!("[[:db/add {a} :mc/n 2]]"), (1, 1)),
+            (
+                format!("[[:db/add {a} :mc/m 3] [:db/retract {a} :mc/m 1]]"),
+                (1, 1),
+            ),
+            (format!("[[:db/retractEntity {a}]]"), (0, 3)),
+        ] {
+            assert_eq!(counts(&tx(&t)), want, "{t}");
+        }
+    }
 }

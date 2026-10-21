@@ -117,7 +117,7 @@ impl Fake {
             tx,
             TxReport {
                 tx_id: tx,
-                tempids: Vec::new(),
+                ..Default::default()
             },
         ))
     }

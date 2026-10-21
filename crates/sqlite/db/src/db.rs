@@ -1050,6 +1050,10 @@ pub trait MentatStoring {
     /// Every live `[referrer a]` whose value is a ref to `e` (for
     /// `:db/retractEntity`, which retracts inbound references; issue #326).
     fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>>;
+
+    /// After `materialize_mentat_transaction`: how many datoms transaction `tx_id` asserts and
+    /// retracts, not counting its own `:db/txInstant` (see `TxReport::datoms_asserted`).
+    fn transaction_datom_counts(&self, tx_id: Entid) -> Result<(usize, usize)>;
 }
 
 /// A SQLite transaction is a store too (it derefs to its connection).
@@ -1108,6 +1112,9 @@ impl MentatStoring for rusqlite::Transaction<'_> {
     }
     fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
         (**self).referrers(e)
+    }
+    fn transaction_datom_counts(&self, tx_id: Entid) -> Result<(usize, usize)> {
+        (**self).transaction_datom_counts(tx_id)
     }
 }
 
@@ -1705,6 +1712,24 @@ impl MentatStoring for rusqlite::Connection {
             .query_and_then(rusqlite::params![e], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect();
         rows
+    }
+
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<(usize, usize)> {
+        // The same conditions `insert_transaction` uses to write the log.
+        let s = format!(
+            r#"
+            SELECT
+              (SELECT count(*) FROM temp.search_results
+               WHERE a0 IS NOT {tx_instant} AND added0 IS 1 AND
+                     ((rid IS NULL) OR ((rid IS NOT NULL) AND (v0 IS NOT v)))),
+              (SELECT count(*) FROM (SELECT DISTINCT e0, a0, v FROM temp.search_results
+               WHERE a0 IS NOT {tx_instant} AND rid IS NOT NULL AND
+                     ((added0 IS 0) OR
+                      (added0 IS 1 AND search_type IS ':db.cardinality/one' AND v0 IS NOT v))))"#,
+            tx_instant = entids::DB_TX_INSTANT
+        );
+        let (a, r): (i64, i64) = self.query_row(&s, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok((a as usize, r as usize))
     }
 }
 

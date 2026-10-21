@@ -1106,6 +1106,7 @@ where
         let mut aev_trie = into_aev_trie(self.schema, final_populations, inert_terms)?;
 
         let tx_instant;
+        let datom_counts;
         {
             // TODO: Don't use this block to scope borrowing the schema; instead, extract a helper function.
 
@@ -1204,6 +1205,7 @@ where
                     self.store.write_partition_map(&self.partition_map)?;
                 }
             }
+            datom_counts = self.store.transaction_datom_counts(self.tx_id)?;
         }
 
         self.watcher.done(&self.tx_id, self.schema)?;
@@ -1237,11 +1239,13 @@ where
             }
         }
 
-        Ok(TxReport {
-            tx_id: self.tx_id,
+        Ok(TxReport::new(
+            self.tx_id,
             tx_instant,
             tempids,
-        })
+            datom_counts.0,
+            datom_counts.1,
+        ))
     }
 }
 
