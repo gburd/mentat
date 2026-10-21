@@ -322,3 +322,18 @@ fn test_resolve_avs_does_not_scale_with_store() {
     });
     assert!(2 * big < 3 * small, "{small} -> {big} VM steps");
 }
+
+/// 500 existing titles of a :db/unique :db/fulltext attribute. FTS4 can't
+/// seek on text, so a statement with fulltext pairs scans fulltext_values
+/// once: 1k -> 10k fulltext values costs ~4x. Master scanned the attribute's
+/// datoms per statement (9.6x); scanning fulltext_values once per pair was
+/// 10x, and 45M steps at ~110k datoms.
+#[test]
+fn test_resolve_avs_fulltext_scans_fulltext_values_once() {
+    let (small, big) = ops_small_big(|_, title| {
+        (0..500)
+            .map(|i| (title, TypedValue::typed_string(format!("title {}", i * 2))))
+            .collect()
+    });
+    assert!(big < 5 * small, "{small} -> {big} VM steps");
+}

@@ -1224,26 +1224,28 @@ fn update_datoms(conn: &rusqlite::Connection, tx: Entid) -> Result<()> {
 /// many pairs SQLite drove the join from datoms: both O(store) per statement.
 /// CROSS JOIN fixes the order so `t` drives. Arm 1: one idx_datoms_avet
 /// (a, value_type_tag, v) seek per pair. Arm 2: fulltext datoms, whose `v` is a
-/// fulltext_values rowid, only for pairs whose attribute is :db/fulltext (set
-/// at install and never altered, so the schema table is authoritative); then
-/// one datoms seek per matching text. `+f.rowid` drops the INTEGER affinity
-/// that would otherwise stop that seek from using `v`.
-// shortcut: FTS4 can't seek `text = ?`, so each fulltext pair scans
-// fulltext_values; index the text if fulltext identity lookups at scale matter.
+/// fulltext_values rowid. FTS4 can't seek `text = ?`, so arm 2 scans
+/// fulltext_values once per statement, and only if some pair's attribute is
+/// :db/fulltext (the gate `g`; set at install and never altered, so the schema
+/// table is authoritative); then one datoms seek per matching text. `+f.rowid`
+/// drops the INTEGER affinity that would otherwise stop that seek from using `v`.
+// shortcut: a batch with any fulltext pair scans all of fulltext_values; index
+// the text if fulltext identity lookups at scale matter.
 fn resolve_avs_sql(count: usize) -> String {
     format!(
-        "WITH t(search_id, a, v, value_type_tag) AS (VALUES {}) \
+        "WITH t(search_id, a, v, value_type_tag) AS (VALUES {values}) \
          SELECT t.search_id, d.e FROM t CROSS JOIN datoms AS d \
          WHERE d.index_avet IS NOT 0 AND d.index_fulltext IS 0 \
            AND d.a = t.a AND d.value_type_tag = t.value_type_tag AND d.v = t.v \
          UNION ALL \
          SELECT t.search_id, d.e \
-         FROM t CROSS JOIN schema AS s CROSS JOIN fulltext_values AS f CROSS JOIN datoms AS d \
-         WHERE s.e = t.a AND s.a = {} AND s.v = 1 AND f.text = t.v \
+         FROM (SELECT 1 FROM t CROSS JOIN schema AS s WHERE s.e = t.a AND s.a = {ft} AND s.v = 1 LIMIT 1) AS g \
+           CROSS JOIN fulltext_values AS f CROSS JOIN t CROSS JOIN schema AS s CROSS JOIN datoms AS d \
+         WHERE t.v = f.text AND s.e = t.a AND s.a = {ft} AND s.v = 1 \
            AND d.index_avet IS NOT 0 AND d.index_fulltext IS NOT 0 \
            AND d.a = t.a AND d.value_type_tag = t.value_type_tag AND d.v = +f.rowid",
-        repeat_values(4, count),
-        entids::DB_FULLTEXT
+        values = repeat_values(4, count),
+        ft = entids::DB_FULLTEXT
     )
 }
 
@@ -2432,9 +2434,11 @@ mod tests {
         );
     }
 
-    /// `resolve_avs` must stay O(pairs x log store): `t` drives, both arms seek
-    /// datoms on v, and arm 2 never scans the datoms of an attribute. Checked
-    /// at 100k datoms for 1 and 500 pairs, with and without statistics.
+    /// `resolve_avs` must stay O(pairs x log store), plus one fulltext_values
+    /// scan when a pair is :db/fulltext: both arms seek datoms on v, arm 2
+    /// never scans the datoms of an attribute, and scans fulltext_values once,
+    /// behind the gate, seeking `t` per text. Checked at 100k datoms for 1 and
+    /// 500 pairs, with and without statistics.
     #[test]
     fn test_resolve_avs_plan() {
         let mut conn = TestConn::default();
@@ -2474,8 +2478,9 @@ mod tests {
                 .collect::<rusqlite::Result<_>>()
                 .unwrap();
             let plan = plan.join("\n");
-            // Arm 1 seeks on v. Arm 2 reaches fulltext_values only past the
-            // schema probe, so non-fulltext pairs skip it, and seeks datoms on v.
+            // Arm 1 seeks on v. Arm 2 scans fulltext_values once, inside the
+            // gate's loop (empty unless a pair is :db/fulltext), then seeks t
+            // by text and datoms on v.
             let lines: Vec<&str> = plan.lines().collect();
             let pos = |p: &str| {
                 lines
@@ -2496,8 +2501,22 @@ mod tests {
                     .all(|l| l.starts_with("SEARCH d ") && l.contains("v=?")),
                 "{count} pairs:\n{plan}"
             );
-            assert!(pos("SEARCH s ") < pos("SCAN f "), "{count} pairs:\n{plan}");
-            assert!(!plan.contains("BLOOM"), "{count} pairs:\n{plan}");
+            let f = pos("SCAN f ");
+            assert_eq!(
+                lines.iter().filter(|l| l.starts_with("SCAN f ")).count(),
+                1,
+                "{count} pairs:\n{plan}"
+            );
+            assert!(
+                pos("CO-ROUTINE g") < pos("SEARCH s ") && pos("SCAN g") < f,
+                "{count} pairs:\n{plan}"
+            );
+            let after_f = &lines[f + 1..];
+            assert!(
+                after_f.contains(&"SEARCH t USING AUTOMATIC COVERING INDEX (v=?)")
+                    && !after_f.iter().any(|l| l.starts_with("SCAN ")),
+                "{count} pairs:\n{plan}"
+            );
         }
     }
 
