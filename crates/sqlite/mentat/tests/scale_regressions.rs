@@ -434,3 +434,27 @@ fn test_reverse_pull_uses_the_vaet_index() {
         "Puller::referrers must keep the predicate that matches idx_datoms_vaet"
     );
 }
+
+/// #272: `fixtures/v1empty.db` and `v1toodle_empty.db` are a 2018 pre-release layout
+/// (`transactions` is a table, partitions in `parts`), older than the version 1 that
+/// `upgrade` handles. Opening one fails and leaves the file as it was.
+#[test]
+fn test_prerelease_v1_fixtures_are_refused_untouched() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+    for name in ["v1empty.db", "v1toodle_empty.db"] {
+        let (_dir, path) = temp_store(name);
+        std::fs::copy(fixtures.join(name), &path).expect("copy fixture");
+        let before = std::fs::read(&path).unwrap();
+        let err = Store::open(&path)
+            .err()
+            .unwrap_or_else(|| panic!("{name} opened"));
+        assert!(
+            err.to_string().contains("timelined_transactions"),
+            "{name}: {err}"
+        );
+        assert!(
+            std::fs::read(&path).unwrap() == before,
+            "{name} was modified"
+        );
+    }
+}
