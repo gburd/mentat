@@ -271,6 +271,8 @@ Aggregate functions wrap find variables:
 
 Non-aggregated variables in the find spec become the `GROUP BY` columns automatically.
 
+Over no rows, `count` and `count-distinct` return 0 and the other aggregates return nothing: a scalar or tuple find gives nil, a collection or relation find gives no values.
+
 ## Rules
 
 Rules are named, reusable query fragments. Define them in the `:in` clause with the `%` symbol and provide rule definitions as the corresponding input.

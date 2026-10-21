@@ -355,4 +355,72 @@ mod tests {
         .unwrap_or_default();
         assert_eq!(rows, 1);
     }
+
+    // #237: an aggregate over no rows is nil, for every find spec, as on the embedded engine
+    // and DuckDB; a count is 0. A grouped aggregate has no groups, so no rows.
+    #[pg_test]
+    fn aggregates_over_no_rows_are_nil() {
+        setup();
+        tx(
+            "[{:db/ident :ma/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+             {:db/ident :ma/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+             {:db/ident :ma/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
+             {:db/ident :ma/k :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        tx("[{:ma/k 1}]");
+        let empty = serde_json::json!([]);
+        for agg in ["sum", "avg", "min", "max", "count", "count-distinct"] {
+            let count = agg.starts_with("count");
+            for attr in [":ma/n", ":ma/d", ":ma/t"] {
+                if matches!(agg, "sum" | "avg") && attr == ":ma/t" {
+                    continue;
+                }
+                let r = q(&format!("[:find ({agg} ?v) . :where [_ {attr} ?v]]"));
+                let want = if count {
+                    serde_json::json!(0)
+                } else {
+                    serde_json::Value::Null
+                };
+                assert_eq!(r["result"], want, "{agg} {attr} scalar: {r}");
+                // :with takes the de-duplicating path.
+                let r = q(&format!(
+                    "[:find ({agg} ?v) . :with ?e :where [?e {attr} ?v]]"
+                ));
+                assert_eq!(r["result"], want, "{agg} {attr} with: {r}");
+                let r = q(&format!("[:find [({agg} ?v) ...] :where [_ {attr} ?v]]"));
+                let want = if count {
+                    serde_json::json!([0])
+                } else {
+                    empty.clone()
+                };
+                assert_eq!(r["result"], want, "{agg} {attr} coll: {r}");
+                let r = q(&format!("[:find [({agg} ?v)] :where [_ {attr} ?v]]"));
+                let want = if count {
+                    serde_json::json!([0])
+                } else {
+                    serde_json::Value::Null
+                };
+                assert_eq!(r["result"], want, "{agg} {attr} tuple: {r}");
+                let r = q(&format!("[:find ({agg} ?v) :where [_ {attr} ?v]]"));
+                let want = if count {
+                    serde_json::json!(0)
+                } else {
+                    empty.clone()
+                };
+                assert_eq!(r["result"], want, "{agg} {attr} rel: {r}");
+                let r = q(&format!(
+                    "[:find ?k ({agg} ?v) :where [?e :ma/k ?k] [?e {attr} ?v]]"
+                ));
+                assert_eq!(r["result"], empty, "{agg} {attr} grouped rel: {r}");
+            }
+        }
+        // With a nil aggregate in the find there is no row, even beside a count.
+        assert!(q("[:find [(sum ?v) (count ?v)] :where [_ :ma/n ?v]]")["result"].is_null());
+        // Over some rows they still aggregate.
+        tx("[{:ma/n 5}]");
+        assert_eq!(
+            q("[:find [(sum ?v) (count ?v)] :where [_ :ma/n ?v]]")["result"],
+            serde_json::json!([5, 1])
+        );
+    }
 }

@@ -420,6 +420,8 @@ fn re_project(mut inner: SelectQuery, projection: Projection, inner_distinct: bo
 
     use self::Projection::*;
 
+    // An aggregate other than count over no rows is nil, as in Datomic (#237): SQL returns
+    // one row with NULL for it, which we filter out. A count over no rows is 0.
     let nullable = match projection {
         Columns(ref columns) => columns
             .iter()

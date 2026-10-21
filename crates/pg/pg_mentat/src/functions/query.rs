@@ -6888,6 +6888,11 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             .any(|b| matches!(b, InputBinding::Relation { .. }));
     let keyed =
         use_projection && !may_multiply && tuple_is_row_key(patterns, &tuple_vars, schema_prefix);
+    // Over no rows an ungrouped SQL aggregate still returns one row, NULL for sum, avg, min
+    // and max. Those are nil in Datomic, so the find returns nothing (#237); a count is 0.
+    let nullable_aggregate = agg_cols
+        .iter()
+        .any(|(_, a)| !matches!(a.func.0 .0.as_str(), "count" | "count-distinct"));
 
     if keyed {
         // Every join row is a distinct tuple already: aggregate in place;
@@ -6901,6 +6906,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         let mut sql = format!("SELECT {}{body}", select_exprs.join(", "));
         if !group_by_exprs.is_empty() {
             sql.push_str(&format!(" GROUP BY {}", group_by_exprs.join(", ")));
+        } else if nullable_aggregate {
+            sql.push_str(" HAVING COUNT(*) > 0");
         }
         return Ok((sql, var_to_alias, var_to_type));
     }
@@ -6935,6 +6942,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     );
     if !groups.is_empty() {
         sql.push_str(&format!(" GROUP BY {}", groups.join(", ")));
+    } else if nullable_aggregate {
+        sql.push_str(" HAVING COUNT(*) > 0");
     }
     Ok((sql, var_to_alias, var_to_type))
 }

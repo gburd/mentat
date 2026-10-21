@@ -100,6 +100,15 @@ pub const QUERIES: &[&str] = &[
     "[:find (sum ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
     "[:find (max ?t) . :where [_ :p/born ?t]]",
+    // Aggregates over no rows (#237): nil, and 0 for a count. Nobody is 99.
+    "[:find (sum ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (avg ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (min ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (max ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (count ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (sum ?a) (count ?a) :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find [(sum ?h) (max ?h)] :where [_ :p/height ?h] [(> ?h 99)]]",
+    "[:find ?e (sum ?a) :where [?e :p/age ?a] [(> ?a 99)]]",
     // min/max over refs and tx ids (#249).
     "[:find (max ?tx) . :where [_ :p/age _ ?tx]]",
     "[:find (min ?tx) . :where [_ :p/age _ ?tx]]",

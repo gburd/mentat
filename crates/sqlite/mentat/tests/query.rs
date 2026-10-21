@@ -2459,3 +2459,83 @@ fn test_unattributed_integer_does_not_match_fulltext_rowid() {
         );
     }
 }
+
+// #237: an aggregate over no rows is nil, as in Datomic, for every find spec; a count is 0.
+// (A grouped aggregate has no groups, so no rows.)
+#[test]
+fn test_aggregates_over_no_rows_are_nil() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :z/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :z/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+                {:db/ident :z/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
+                {:db/ident :z/k :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    store.transact("[{:z/k 1}]").expect("data");
+    let run = |store: &mut Store, q: String| {
+        store
+            .q_once(&q, None)
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .results
+    };
+    let zero = Binding::Scalar(TypedValue::Long(0));
+    for (agg, attrs) in [
+        ("sum", &[":z/n", ":z/d"][..]),
+        ("avg", &[":z/n", ":z/d"]),
+        ("min", &[":z/n", ":z/d", ":z/t"]),
+        ("max", &[":z/n", ":z/d", ":z/t"]),
+        ("count", &[":z/n", ":z/d", ":z/t"]),
+    ] {
+        let count = agg == "count";
+        for attr in attrs {
+            let r = run(
+                &mut store,
+                format!("[:find ({agg} ?v) . :where [_ {attr} ?v]]"),
+            );
+            let want = QueryResults::Scalar(count.then(|| zero.clone()));
+            assert_eq!(r, want, "{agg} {attr} scalar");
+            let r = run(
+                &mut store,
+                format!("[:find [({agg} ?v) ...] :where [_ {attr} ?v]]"),
+            );
+            let want = QueryResults::Coll(if count { vec![zero.clone()] } else { vec![] });
+            assert_eq!(r, want, "{agg} {attr} coll");
+            let r = run(
+                &mut store,
+                format!("[:find [({agg} ?v)] :where [_ {attr} ?v]]"),
+            );
+            let want = QueryResults::Tuple(count.then(|| vec![zero.clone()]));
+            assert_eq!(r, want, "{agg} {attr} tuple");
+            let r = run(
+                &mut store,
+                format!("[:find ({agg} ?v) :where [_ {attr} ?v]]"),
+            );
+            assert_eq!(r.len(), count as usize, "{agg} {attr} rel: {r:?}");
+            let r = run(
+                &mut store,
+                format!("[:find ?k ({agg} ?v) :where [?e :z/k ?k] [?e {attr} ?v]]"),
+            );
+            assert!(r.is_empty(), "{agg} {attr} grouped rel: {r:?}");
+        }
+    }
+    // With a nil aggregate in the find there is no row, even beside a count.
+    let r = run(
+        &mut store,
+        "[:find [(sum ?v) (count ?v)] :where [_ :z/n ?v]]".into(),
+    );
+    assert_eq!(r, QueryResults::Tuple(None));
+    // Over some rows they still aggregate.
+    store.transact("[{:z/n 5}]").expect("data");
+    assert_eq!(
+        store
+            .q_once("[:find [(sum ?v) (count ?v)] :where [_ :z/n ?v]]", None)
+            .into_tuple_result()
+            .expect("tuple"),
+        Some(vec![
+            Binding::Scalar(TypedValue::Long(5)),
+            Binding::Scalar(TypedValue::Long(1))
+        ])
+    );
+}

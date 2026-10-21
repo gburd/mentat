@@ -100,6 +100,7 @@ fn duckdb_matches_sqlite() {
                     "includes?",
                     "?tx)",
                     "(max ?l)",
+                    "99)]]",
                 ]
                 .iter()
                 .any(|f| q.contains(f)) =>

@@ -163,8 +163,8 @@ impl SimpleAggregate {
     pub fn is_nullable(&self) -> bool {
         use self::SimpleAggregationOp::*;
         match self.op {
-            Avg | Max | Min => true,
-            Count | Sum => false,
+            Avg | Max | Min | Sum => true,
+            Count => false,
         }
     }
 }
