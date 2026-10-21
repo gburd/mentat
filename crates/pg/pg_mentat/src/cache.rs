@@ -1,4 +1,4 @@
-use crate::functions::store_management::get_schema_for_store;
+use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use parking_lot::RwLock;
 use pgrx::spi::Spi;
 use std::cell::Cell;
@@ -349,7 +349,7 @@ impl StoreCacheMap {
             return cache;
         }
 
-        let db_schema = get_schema_for_store(store_name);
+        let db_schema = quote_ident(&get_schema_for_store(store_name));
         let cache = Box::leak(Box::new(SchemaCache::new(
             db_schema,
             store_name.to_string(),

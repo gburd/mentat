@@ -1,5 +1,5 @@
 use crate::error::MentatError;
-use crate::functions::store_management::get_schema_for_store;
+use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::spi::SpiClient;
@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 /// Get store_id from a PostgreSQL schema name (e.g. "mentat" -> 0, "mentat_foo" -> lookup).
 /// This mirrors the logic in transact.rs but is local to pull.
 fn get_store_id_from_schema(schema: &str) -> Result<i64, PullError> {
+    let schema = schema.trim_matches('"');
     let store_name = if schema == "mentat" {
         "default"
     } else if let Some(name) = schema.strip_prefix("mentat_") {
@@ -55,6 +56,7 @@ fn get_store_id_from_schema(schema: &str) -> Result<i64, PullError> {
 /// `extra_select_prefix` allows prepending columns (e.g., "e, " for multi-entity queries).
 /// `where_clause` is the filter applied to each sub-select (excluding store_id which is always added).
 fn build_union_all_datoms_query(
+    db_schema: &str,
     store_id: i64,
     extra_select_prefix: &str,
     where_clause: &str,
@@ -82,51 +84,52 @@ fn build_union_all_datoms_query(
                    NULL::DOUBLE PRECISION AS v_double, NULL::TEXT AS v_text, \
                    NULL::TEXT AS v_keyword, \
                    NULL::BIGINT AS v_instant_micros, NULL::TEXT AS v_uuid, NULL::BYTEA AS v_bytes \
-            FROM mentat.current_ref \
+            FROM {sch}.current_ref \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{bool_tag}::SMALLINT, \
                    NULL, v, NULL, NULL, NULL, NULL, NULL, NULL, NULL \
-            FROM mentat.current_boolean \
+            FROM {sch}.current_boolean \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{long_tag}::SMALLINT, \
                    NULL, NULL, v, NULL, NULL, NULL, NULL, NULL, NULL \
-            FROM mentat.current_long \
+            FROM {sch}.current_long \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{double_tag}::SMALLINT, \
                    NULL, NULL, NULL, v, NULL, NULL, NULL, NULL, NULL \
-            FROM mentat.current_double \
+            FROM {sch}.current_double \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{instant_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, \
                    EXTRACT(EPOCH FROM v)::BIGINT * 1000000 + \
                    EXTRACT(MICROSECOND FROM v)::BIGINT % 1000000, NULL, NULL \
-            FROM mentat.current_instant \
+            FROM {sch}.current_instant \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{text_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, v, NULL, NULL, NULL, NULL \
-            FROM mentat.current_text \
+            FROM {sch}.current_text \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{kw_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, v, NULL, NULL, NULL \
-            FROM mentat.current_keyword \
+            FROM {sch}.current_keyword \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{uuid_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, v::TEXT, NULL \
-            FROM mentat.current_uuid \
+            FROM {sch}.current_uuid \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{bytes_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, v \
-            FROM mentat.current_bytes \
+            FROM {sch}.current_bytes \
             WHERE store_id = {sid} AND {whr} \
         ) AS _datoms {order}",
+        sch = db_schema,
         pfx = extra_select_prefix,
         sid = store_id,
         whr = whr,
@@ -347,7 +350,7 @@ pub fn mentat_pull(pattern: &str, entity_id: i64) -> Result<JsonB, PullError> {
 /// ```
 #[pg_extern]
 pub fn pull(store: &str, pattern: &str, entity_id: i64) -> Result<JsonB, PullError> {
-    let db_schema = get_schema_for_store(store);
+    let db_schema = quote_ident(&get_schema_for_store(store));
     let store_id = get_store_id_from_schema(&db_schema)?;
     let parsed = edn::parse::value(pattern).map_err(|e| -> PullError {
         MentatError::InvalidPullPattern {
@@ -420,7 +423,7 @@ pub fn mentat_pull_many(pattern: &str, entity_ids: Vec<i64>) -> Result<JsonB, Pu
 /// ```
 #[pg_extern]
 pub fn pull_many(store: &str, pattern: &str, entity_ids: Vec<i64>) -> Result<JsonB, PullError> {
-    let db_schema = get_schema_for_store(store);
+    let db_schema = quote_ident(&get_schema_for_store(store));
     let store_id = get_store_id_from_schema(&db_schema)?;
     let parsed = edn::parse::value(pattern).map_err(|e| -> PullError {
         MentatError::InvalidPullPattern {
@@ -539,6 +542,7 @@ fn pull_many_batched(
 
     Spi::connect(|client| {
         let datoms_subquery = build_union_all_datoms_query(
+            db_schema,
             store_id,
             "e, a, ",
             &format!("e IN ({eid_csv}) AND added = true"),
@@ -623,6 +627,7 @@ fn pull_many_batched(
                 .join(",");
 
             let comp_datoms_subquery = build_union_all_datoms_query(
+                db_schema,
                 store_id,
                 "e, a, ",
                 &format!("e IN ({comp_eid_csv}) AND added = true"),
@@ -1238,6 +1243,7 @@ fn pull_forward_attributes_batched(
         .join(",");
 
     let datoms_subquery = build_union_all_datoms_query(
+        db_schema,
         store_id,
         "a, ",
         &format!("e = {} AND added = true", entity_id),
@@ -1375,7 +1381,7 @@ fn pull_reverse_attributes_batched(
     // Reverse lookups are always ref-type, so query only datoms_ref_new.
     let query = format!(
         "SELECT s.ident, d.e \
-         FROM mentat.current_ref d \
+         FROM {schema}.current_ref d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND s.ident IN ({ident_csv}) \
                AND d.v = {entity_id} \
@@ -1441,6 +1447,7 @@ fn pull_wildcard(
     depth: usize,
 ) -> Result<(), PullError> {
     let datoms_subquery = build_union_all_datoms_query(
+        db_schema,
         store_id,
         "a, ",
         &format!("e = {} AND added = true", entity_id),
@@ -1821,7 +1828,7 @@ fn query_forward_refs(
     let escaped_ident = ident.replace('\'', "''");
     let query = format!(
         "SELECT d.v \
-         FROM mentat.current_ref d \
+         FROM {schema}.current_ref d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND d.e = {entity_id} \
                AND s.ident = '{escaped_ident}'",
@@ -1857,7 +1864,7 @@ fn query_reverse_refs(
     let escaped_ident = forward_ident.replace('\'', "''");
     let query = format!(
         "SELECT d.e \
-         FROM mentat.current_ref d \
+         FROM {schema}.current_ref d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND s.ident = '{escaped_ident}' \
                AND d.v = {entity_id}",
@@ -1909,7 +1916,7 @@ fn query_forward_refs_batched(
     // Batched forward refs only come from datoms_ref_new.
     let query = format!(
         "SELECT d.e, d.v \
-         FROM mentat.current_ref d \
+         FROM {schema}.current_ref d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND d.e IN ({eid_csv}) \
                AND s.ident = '{escaped_ident}' \
@@ -1950,6 +1957,7 @@ fn pull_all_attributes_for_recursive(
     depth: usize,
 ) -> Result<(), PullError> {
     let datoms_subquery = build_union_all_datoms_query(
+        db_schema,
         store_id,
         "a, ",
         &format!("e = {} AND added = true", entity_id),
