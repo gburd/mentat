@@ -1296,7 +1296,6 @@ impl MentatStoring for rusqlite::Connection {
                     })
                     .collect();
 
-                // TODO: cache these statements for selected values of `count`.
                 assert!(
                     bindings_per_statement * count <= max_vars,
                     "Too many values: {} * {} > {}",
@@ -1305,8 +1304,9 @@ impl MentatStoring for rusqlite::Connection {
                     max_vars
                 );
 
-                let s = resolve_avs_sql(count);
-                let mut stmt: rusqlite::Statement = self.prepare(s.as_str())?;
+                // Cached like the search inserts: callers batch at a steady size, and a
+                // 500-pair statement costs more to prepare than to run.
+                let mut stmt = self.prepare_cached(&resolve_avs_sql(count))?;
 
                 let m: Result<Vec<(i64, Entid)>> = stmt
                     .query_and_then(params_from_iter(&params), |row| -> Result<(i64, Entid)> {
