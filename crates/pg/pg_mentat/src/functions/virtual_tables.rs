@@ -37,6 +37,7 @@ fn extension_available(ext_name: &str) -> bool {
 ///
 /// Schema "mentat" maps to store_name "default"; "mentat_foo" maps to "foo".
 fn store_id_subquery(schema: &str) -> String {
+    let schema = schema.trim_matches('"');
     let store_name = if schema == "mentat" {
         "default".to_string()
     } else if let Some(name) = schema.strip_prefix("mentat_") {
@@ -929,16 +930,16 @@ $$ LANGUAGE plpgsql STABLE",
 ///
 /// Creates GIN trigram indexes on the text and keyword type-specific tables
 /// for fast LIKE/ILIKE and similarity searches.
-fn trigram_indexes_sql(_schema: &str, store_name: &str) -> String {
+fn trigram_indexes_sql(schema: &str, store_name: &str) -> String {
     format!(
         r"CREATE INDEX IF NOT EXISTS idx_{name}_trgm_text
-ON mentat.datoms_text_new USING GIN (v gin_trgm_ops)
+ON {schema}.datoms_text_new USING GIN (v gin_trgm_ops)
 WHERE added = true;
 
 CREATE INDEX IF NOT EXISTS idx_{name}_trgm_keyword
-ON mentat.datoms_keyword_new USING GIN (v gin_trgm_ops)
+ON {schema}.datoms_keyword_new USING GIN (v gin_trgm_ops)
 WHERE added = true",
-        name = store_name
+        name = store_name.to_lowercase()
     )
 }
 
@@ -946,12 +947,12 @@ WHERE added = true",
 /// or built-in tsvector support).
 ///
 /// Creates a GIN index on a generated tsvector column for full-text search.
-fn fulltext_index_sql(_schema: &str, store_name: &str) -> String {
+fn fulltext_index_sql(schema: &str, store_name: &str) -> String {
     format!(
         r"CREATE INDEX IF NOT EXISTS idx_{name}_fts_text
-ON mentat.datoms_text_new USING GIN (to_tsvector('english', COALESCE(v, '')))
+ON {schema}.datoms_text_new USING GIN (to_tsvector('english', COALESCE(v, '')))
 WHERE added = true",
-        name = store_name
+        name = store_name.to_lowercase()
     )
 }
 
@@ -976,48 +977,57 @@ pub fn create_virtual_tables_for_schema(
     schema: &str,
     store_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The generators name the default store's tables; a named store reads its
+    // own (#337). `schema` is quoted, so this is identity for `mentat`.
+    let in_store = |sql: String| -> String {
+        sql.replace("mentat.datoms_", &format!("{schema}.datoms_"))
+            .replace("mentat.current_", &format!("{schema}.current_"))
+    };
+    // The views embed the store's id by name: refresh them after a rename.
+    let run = |sql: String| Spi::run(&in_store(sql));
+
     // Core views
-    Spi::run(&entities_view_sql(schema))?;
-    Spi::run(&attributes_view_sql(schema))?;
-    Spi::run(&facts_view_sql(schema))?;
+    run(entities_view_sql(schema))?;
+    run(attributes_view_sql(schema))?;
+    run(facts_view_sql(schema))?;
 
     // Type-specific views
-    Spi::run(&type_specific_views_sql(schema))?;
+    run(type_specific_views_sql(schema))?;
 
     // Full-text search view
-    Spi::run(&searchable_text_view_sql(schema))?;
+    run(searchable_text_view_sql(schema))?;
 
     // Relationship navigation views
-    Spi::run(&entity_references_view_sql(schema))?;
-    Spi::run(&reverse_references_view_sql(schema))?;
-    Spi::run(&graph_edges_view_sql(schema))?;
+    run(entity_references_view_sql(schema))?;
+    run(reverse_references_view_sql(schema))?;
+    run(graph_edges_view_sql(schema))?;
 
     // Transaction history and temporal views
-    Spi::run(&tx_log_view_sql(schema))?;
-    Spi::run(&entity_history_view_sql(schema))?;
-    Spi::run(&recent_changes_view_sql(schema))?;
+    run(tx_log_view_sql(schema))?;
+    run(entity_history_view_sql(schema))?;
+    run(recent_changes_view_sql(schema))?;
 
     // Schema summary view
-    Spi::run(&schema_summary_view_sql(schema))?;
+    run(schema_summary_view_sql(schema))?;
 
     // Helper functions
-    Spi::run(&entities_with_attribute_fn_sql(schema))?;
-    Spi::run(&lookup_entity_fn_sql(schema))?;
-    Spi::run(&entity_value_fn_sql(schema))?;
-    Spi::run(&count_by_attribute_fn_sql(schema))?;
-    Spi::run(&find_text_fn_sql(schema))?;
+    run(entities_with_attribute_fn_sql(schema))?;
+    run(lookup_entity_fn_sql(schema))?;
+    run(entity_value_fn_sql(schema))?;
+    run(count_by_attribute_fn_sql(schema))?;
+    run(find_text_fn_sql(schema))?;
 
-    // Optional indexes on the SHARED narrow tables (mentat.datoms_*_new).
+    // Optional indexes on the store's narrow text tables.
     // They are tuning, not structure: the base install already ships the
     // full-text GIN index (sql/10_narrow_storage.sql). CREATE INDEX needs table
     // ownership, which a non-superuser on a trusted install doesn't have, so
     // skip them for a non-owner rather than failing create_store().
-    if owns_table("mentat.datoms_text_new")? {
+    if owns_table(&format!("{schema}.datoms_text_new"))? {
         if extension_available("pg_trgm") {
-            Spi::run(&trigram_indexes_sql(schema, store_name))?;
+            run(trigram_indexes_sql(schema, store_name))?;
         }
         // Full-text search indexes use built-in tsvector; always available in PG 12+.
-        Spi::run(&fulltext_index_sql(schema, store_name))?;
+        run(fulltext_index_sql(schema, store_name))?;
     }
 
     // NOTE: pg_vector support is planned for future implementation.
