@@ -67,7 +67,7 @@ gradle publishing are not in this repo. The C FFI (`crates/sqlite/ffi`) remains.
 | 248 | Document FFI concurrency responsibilities | The SDK docs it refers to don't exist. The C FFI header should say `Store` is not thread-safe: fold into #266's fix (§3) |
 | 256 | FFI store_open should return an error, not crash | `store_open` already returns via `translate_result(Store::open(uri), error)` (crates/sqlite/ffi/src/lib.rs:176). Remaining crash paths are panics: covered by #266 |
 
-## 3. Fix in 1.18.0 (10)
+## 3. Fix in 1.18.0 (11)
 
 | # | Title | What is still true today | Fix |
 |---|---|---|---|
@@ -78,6 +78,7 @@ gradle publishing are not in this repo. The C FFI (`crates/sqlite/ffi`) remains.
 | 267 | Support SQLite's LIKE for non-fulltext text search | Confirmed: embedded has no `like`; pg_mentat has `like`/`ilike` (query.rs:7444) | Add `like`/`ilike` (and, if cheap, `starts-with?`, `ends-with?`, `includes?`) to the embedded algebrizer, with the same argument rules and escaping as pg. Literal patterns first, as the issue suggests |
 | 264 | Migrate CLI parsing to rust-peg | `crates/sqlite/cli` still depends on `combine ~4.6` for its command parser | Port `command_parser.rs` to `peg` (already a dependency of `edn`), so `combine` leaves the dependency tree |
 | 272 | Sample databases in fixtures/ are out of date | `crates/sqlite/fixtures/v1*.db` are version-1 stores. Tests use them on purpose (upgrade and encryption tests) | Keep the v1 fixtures, but add a README in `fixtures/` that says why they're v1. Check `all_seattle.edn`/`cities.schema` still load. Then close |
+| 237 | Query projector is not handling NULL for aggregates over 0 rows | Probe 2026-10-21: `max`/`min` over no rows return nil (fixed), `count` returns 0, but `(sum ?n)` over no rows errors `bad SQL (value_type_tag, value) pair: (Null, 5)` | Return nil for every aggregate over no rows (Datomic), on all backends, with a test per aggregate |
 | 236 | WIP: nested pull | Nested map specs (`{:a [:b]}`) are rejected by the pull grammar today | Worker `pull` is implementing them on all three backends; close when it merges |
 | 244 | Worked example with a manually ordered list | Transaction functions now exist on every backend (#325/#333), which is how Datomic users keep an order attribute consistent | Add the worked example (a `:db/fn` that renumbers positions) to `docs/src/`, with a test that runs it |
 | 281 | Counts of assertions/retractions in TxReport | Confirmed: `TxReport { tx_id, tx_instant, tempids }`. pg's tx report and the scripting tx-report have `:mentat.store/db-after` but no counts | Add `datoms_asserted` / `datoms_retracted` counts (the transactor knows them) to the embedded `TxReport` and the pg/DuckDB tx reports, so callers can tell a no-op transaction |
@@ -329,3 +330,10 @@ docs/tutorial issue (#288) takes #160 and #231.
 3. **Now as well:** file the new issues for §4 and B5 (grouped as listed), and
    close each original with a link to its new issue. Of these, 290 (store size) and 250 (`tx-instant`) are the
    most useful to users. The others are design or hygiene work.
+
+# Status (2026-10-21, end of day)
+
+- Closed with evidence: 28 (Part A §1–§2) + 143 (Part B B1–B3) = 171.
+- Kept: 42 issues rewritten as 24 current issues, #338–#361, each linking back; the originals are closed.
+- Open for 1.18.0: #12, #119, #123, #145, #152, #179, #225 (Part B) and #236, #237, #244, #249, #253, #264, #266, #267, #272, #281, #286 (Part A); fixes in progress on branches `fix/mozilla-issues` and `feat/pull-asof-nested` (#236).
+- #337 (named stores, option b) is on `feat/pg-named-stores`.
