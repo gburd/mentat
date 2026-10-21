@@ -468,3 +468,23 @@ jobs:
             Automated descriptor bump for mentat ${{ github.ref_name }}
             (commit ${{ github.sha }}). Stable C API, floor DuckDB v1.5.6;
             the same binary is tested in DuckDB v1.5.6 and v2.0.0 (d54cbbe3).
+
+  # Queue a postgresql.org news article for moderation (never auto-published;
+  # see ci/announce.sh). Patch releases are skipped by the script unless their
+  # changes carry a "### Security" section.
+  announce:
+    name: Announce to PostgreSQL news/announce
+    needs: [gate, pgxn-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Announce to PostgreSQL news/announce
+        env:
+          PGORG_USER: ${{ secrets.PGORG_USER }}
+          PGORG_PASSWORD: ${{ secrets.PGORG_PASSWORD }}
+          PGORG_ORG_ID: ${{ secrets.PGORG_ORG_ID }}
+          PGORG_EMAIL_ID: ${{ secrets.PGORG_EMAIL_ID }}
+          PGORG_TAGS: ${{ secrets.PGORG_TAGS }}
+        # Without the PGORG_* secrets the script prints the draft for the
+        # maintainer to paste in by hand, and exits 0.
+        run: bash ci/announce.sh "${GITHUB_REF_NAME#v}"
