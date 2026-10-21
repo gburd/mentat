@@ -140,7 +140,9 @@ FROM edn_q_rows('[:find ?n ?a :where [?e :person/name ?n] [?e :person/age ?a]]')
 WHERE (r->>1)::int > 21;
 ```
 
-Rows are read from a cursor in batches of 1000. `mentat.max_result_rows`
+Rows are read from a cursor in batches of 1000 into a tuplestore, which
+PostgreSQL keeps in memory up to `work_mem` and spills to a temp file past
+it, so backend memory does not grow with the result. `mentat.max_result_rows`
 applies exactly as for `edn_q` (more rows than the limit is an error, not
 a silent truncation), so both functions give the same answer for the
 same settings; `SET LOCAL mentat.max_result_rows = 0` for an unbounded
