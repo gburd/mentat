@@ -829,6 +829,8 @@ mod property_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod pull_api_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod pull_basis_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod pull_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod query_comprehensive_tests;

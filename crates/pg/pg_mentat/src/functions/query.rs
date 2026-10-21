@@ -6621,9 +6621,25 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
             pat.push(']');
             let pat_param = builder.bind_text(pat);
-            // edn_pull(pattern TEXT, entity_id BIGINT) -> jsonb; cast to
-            // text so it flows through the TEXT result-column path.
-            select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+            // The pull reads the query's basis (before 1.18.0 it always read
+            // current state, so an as-of find-pull returned current values).
+            let mut opts = serde_json::Map::new();
+            if let Some(t) = temporal.as_of {
+                opts.insert("asOf".into(), json!(t));
+            }
+            if let Some(t) = temporal.since {
+                opts.insert("since".into(), json!(t));
+            }
+            // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to text
+            // so it flows through the TEXT result-column path.
+            if opts.is_empty() {
+                select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+            } else {
+                let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
+                select_exprs.push(format!(
+                    "edn_pull({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                ));
+            }
             if has_aggregates {
                 group_by_exprs.push(format!("{}", col_idx + 1));
             }

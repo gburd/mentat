@@ -44,6 +44,74 @@ fn get_store_id_from_schema(schema: &str) -> Result<i64, PullError> {
 // UNION ALL query builders for type-specific tables
 // ---------------------------------------------------------------------------
 
+/// The basis a pull reads: `None` = current state (the `current_<type>`
+/// projection), `AsOf(t)` = the state after tx `t`, `Since(t)` = the current
+/// datoms transacted after `t`. Set for the duration of one `pull` call by
+/// [`with_basis`]; every pull read goes through [`basis_table`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PullBasis {
+    AsOf(i64),
+    Since(i64),
+}
+
+thread_local! {
+    static PULL_BASIS: std::cell::Cell<Option<PullBasis>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the pull basis set, restoring the previous one after (pull
+/// may run re-entrantly via `edn_q`'s find-pull).
+fn with_basis<T>(basis: Option<PullBasis>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<PullBasis>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PULL_BASIS.with(|b| b.set(self.0));
+        }
+    }
+    let _restore = Restore(PULL_BASIS.with(|b| b.replace(basis)));
+    f()
+}
+
+/// Parse `{"asOf": T}` / `{"since": T}` pull options (edn_q's temporal keys).
+fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, PullError> {
+    let get = |k: &str| match options.get(k) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => v.as_i64().map(Some).ok_or_else(|| -> PullError {
+            format!(":db.error/invalid-pull-options \"{k}\" must be an integer tx id, got {v}")
+                .into()
+        }),
+    };
+    if !options.is_object() && !options.is_null() {
+        return Err(":db.error/invalid-pull-options options must be a JSON object".into());
+    }
+    match (get("asOf")?, get("since")?) {
+        (Some(_), Some(_)) => {
+            Err(":db.error/invalid-pull-options asOf and since are mutually exclusive".into())
+        }
+        (Some(t), None) => Ok(Some(PullBasis::AsOf(t))),
+        (None, Some(t)) => Ok(Some(PullBasis::Since(t))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The table (or subquery) of live `(store_id, e, a, v, tx)` rows for value
+/// type `ty` (`ref`, `text`, ...) on the current pull basis. As of T: the
+/// assertions with tx <= T that no retraction with a later tx <= T cancels
+/// (edn_q's as-of rule). Since T: the current datoms transacted after T.
+fn basis_table(ty: &str) -> String {
+    match PULL_BASIS.with(|b| b.get()) {
+        None => format!("mentat.current_{ty}"),
+        Some(PullBasis::AsOf(t)) => format!(
+            "(SELECT g.store_id, g.e, g.a, g.v, g.tx FROM mentat.datoms_{ty}_new g \
+             WHERE g.added AND g.tx <= {t} AND NOT EXISTS (SELECT 1 FROM mentat.datoms_{ty}_new r \
+             WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a AND r.v = g.v \
+             AND NOT r.added AND r.tx > g.tx AND r.tx <= {t}))"
+        ),
+        Some(PullBasis::Since(t)) => {
+            format!("(SELECT store_id, e, a, v, tx FROM mentat.current_{ty} WHERE tx > {t})")
+        }
+    }
+}
+
 /// Build a UNION ALL query across all type-specific tables that returns rows
 /// in the same column layout as the old wide datoms table:
 ///   (value_type_tag, v_ref, v_bool, v_long, v_double, v_text, v_keyword,
@@ -82,52 +150,61 @@ fn build_union_all_datoms_query(
                    NULL::DOUBLE PRECISION AS v_double, NULL::TEXT AS v_text, \
                    NULL::TEXT AS v_keyword, \
                    NULL::BIGINT AS v_instant_micros, NULL::TEXT AS v_uuid, NULL::BYTEA AS v_bytes \
-            FROM mentat.current_ref \
+            FROM {t_ref} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{bool_tag}::SMALLINT, \
                    NULL, v, NULL, NULL, NULL, NULL, NULL, NULL, NULL \
-            FROM mentat.current_boolean \
+            FROM {t_boolean} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{long_tag}::SMALLINT, \
                    NULL, NULL, v, NULL, NULL, NULL, NULL, NULL, NULL \
-            FROM mentat.current_long \
+            FROM {t_long} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{double_tag}::SMALLINT, \
                    NULL, NULL, NULL, v, NULL, NULL, NULL, NULL, NULL \
-            FROM mentat.current_double \
+            FROM {t_double} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{instant_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, \
                    EXTRACT(EPOCH FROM v)::BIGINT * 1000000 + \
                    EXTRACT(MICROSECOND FROM v)::BIGINT % 1000000, NULL, NULL \
-            FROM mentat.current_instant \
+            FROM {t_instant} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{text_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, v, NULL, NULL, NULL, NULL \
-            FROM mentat.current_text \
+            FROM {t_text} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{kw_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, v, NULL, NULL, NULL \
-            FROM mentat.current_keyword \
+            FROM {t_keyword} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{uuid_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, v::TEXT, NULL \
-            FROM mentat.current_uuid \
+            FROM {t_uuid} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
             SELECT {pfx}{bytes_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, v \
-            FROM mentat.current_bytes \
+            FROM {t_bytes} AS _t \
             WHERE store_id = {sid} AND {whr} \
         ) AS _datoms {order}",
         pfx = extra_select_prefix,
+        t_ref = basis_table("ref"),
+        t_boolean = basis_table("boolean"),
+        t_long = basis_table("long"),
+        t_double = basis_table("double"),
+        t_instant = basis_table("instant"),
+        t_text = basis_table("text"),
+        t_keyword = basis_table("keyword"),
+        t_uuid = basis_table("uuid"),
+        t_bytes = basis_table("bytes"),
         sid = store_id,
         whr = whr,
         order = order_clause,
@@ -335,6 +412,21 @@ type PullError = Box<dyn std::error::Error + Send + Sync>;
 #[pg_extern(name = "edn_pull")]
 pub fn mentat_pull(pattern: &str, entity_id: i64) -> Result<JsonB, PullError> {
     pull("default", pattern, entity_id)
+}
+
+/// `edn_pull(pattern, entity_id, options)`: [`mentat_pull`] on a historical
+/// basis. `options` takes edn_q's temporal keys: `{"asOf": T}` pulls the state
+/// after tx T, `{"since": T}` only the current datoms transacted after T; `{}`
+/// is the current state. (New in 1.18.0; before it pull always read current
+/// state.)
+#[pg_extern(name = "edn_pull")]
+pub fn mentat_pull_with_options(
+    pattern: &str,
+    entity_id: i64,
+    options: JsonB,
+) -> Result<JsonB, PullError> {
+    let basis = basis_from_options(&options.0)?;
+    with_basis(basis, || pull("default", pattern, entity_id))
 }
 
 /// Pull entity data using a pull pattern from a named store.
@@ -1375,12 +1467,13 @@ fn pull_reverse_attributes_batched(
     // Reverse lookups are always ref-type, so query only datoms_ref_new.
     let query = format!(
         "SELECT s.ident, d.e \
-         FROM mentat.current_ref d \
+         FROM {ref_table} d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND s.ident IN ({ident_csv}) \
                AND d.v = {entity_id} \
          ORDER BY s.ident, d.e",
         schema = db_schema,
+        ref_table = basis_table("ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1821,11 +1914,12 @@ fn query_forward_refs(
     let escaped_ident = ident.replace('\'', "''");
     let query = format!(
         "SELECT d.v \
-         FROM mentat.current_ref d \
+         FROM {ref_table} d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND d.e = {entity_id} \
                AND s.ident = '{escaped_ident}'",
         schema = db_schema,
+        ref_table = basis_table("ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1857,11 +1951,12 @@ fn query_reverse_refs(
     let escaped_ident = forward_ident.replace('\'', "''");
     let query = format!(
         "SELECT d.e \
-         FROM mentat.current_ref d \
+         FROM {ref_table} d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND s.ident = '{escaped_ident}' \
                AND d.v = {entity_id}",
         schema = db_schema,
+        ref_table = basis_table("ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1909,12 +2004,13 @@ fn query_forward_refs_batched(
     // Batched forward refs only come from datoms_ref_new.
     let query = format!(
         "SELECT d.e, d.v \
-         FROM mentat.current_ref d \
+         FROM {ref_table} d \
          JOIN {schema}.schema s ON d.a = s.entid \
          WHERE d.store_id = {store_id} AND d.e IN ({eid_csv}) \
                AND s.ident = '{escaped_ident}' \
          ORDER BY d.e",
         schema = db_schema,
+        ref_table = basis_table("ref"),
         store_id = store_id,
     );
 

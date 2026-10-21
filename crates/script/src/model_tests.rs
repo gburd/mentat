@@ -588,6 +588,14 @@ pub fn pull_reads_the_as_of_and_since_basis(it: &mut Interpreter) {
     assert!(later.contains(":person/age 31"), "{later}");
     assert!(!later.contains("Alice"), "{later}");
 
+    // entity on an as-of db shows the old value too.
+    let ent = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/entity {as_of} {alice}))"
+        ))
+        .unwrap();
+    assert_eq!(ent, "30", "entity as of T");
+
     // A find-pull inside q reads the db's basis too.
     let q_then = it
         .eval_to_string(&format!(

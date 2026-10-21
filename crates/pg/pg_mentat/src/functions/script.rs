@@ -11,12 +11,12 @@
 //! storage impl, (b) the `serde_json::Value` → mino `Value` conversion, and
 //! (c) the Task-1c sandboxing (`sandboxed()` + GUC limits + check hook).
 //!
-//! # Temporal honesty — pg_mentat's advantage
+//! # Temporal reads
 //!
-//! Unlike Mentat's SQLite algebrizer, pg_mentat's `edn_q` accepts
-//! `{"asOf": T}` / `{"since": T}` temporal inputs, so arbitrary Datalog `q`
-//! runs faithfully against a historical basis: an as-of/since db forwards its
-//! bound into the query inputs.
+//! pg_mentat's `edn_q` and `edn_pull` accept `{"asOf": T}` / `{"since": T}`
+//! options, so `q`, `pull`, `entity`, `read`, `entities` and `datoms` all run
+//! against a historical basis: an as-of/since db forwards its bound into the
+//! options.
 //!
 //! Gated behind the `script` feature; nothing here compiles for a default build.
 
@@ -163,12 +163,28 @@ impl ScriptBackend for PgBackend {
         Ok(query_result_value(&out.0))
     }
 
-    fn pull(&self, _db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String> {
-        let out = super::pull::mentat_pull(pattern_edn, eid).map_err(|e| e.to_string())?;
+    fn pull(&self, db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String> {
+        // The db's as-of / since bound (before 1.18.0 pull ignored it).
+        let opts = pgrx::JsonB(temporal_inputs(db));
+        let out = super::pull::mentat_pull_with_options(pattern_edn, eid, opts)
+            .map_err(|e| e.to_string())?;
         Ok(json_to_mino(&out.0))
     }
 
-    fn entity(&self, _db: &DbRef, eid: i64) -> Result<Value, String> {
+    fn entity(&self, db: &DbRef, eid: i64) -> Result<Value, String> {
+        // edn's entity view reads current state only; a historical db pulls
+        // `[*]` on its basis instead (the trait default does exactly that).
+        if db.as_of.is_some() || db.since.is_some() {
+            let pulled = self.pull(db, eid, "[*]")?;
+            let mut m = mino_rs::collections::map::PMap::empty()
+                .assoc(mentat_script::kw_ns("db", "id"), Value::Int(eid));
+            if let Value::Map(ref pm) = pulled {
+                for (k, v) in pm.entries() {
+                    m = m.assoc(k.clone(), v.clone());
+                }
+            }
+            return Ok(Value::Map(Gc::new(m)));
+        }
         let out = super::entity::mentat_entity(eid).map_err(|e| e.to_string())?;
         Ok(json_to_mino(&out.0))
     }
