@@ -861,9 +861,11 @@ mod tests {
                 &mut sqlite,
                 r#"[
             {  :db/ident       :foo/bar
-               :db/valueType   :db.type/long },
+               :db/valueType   :db.type/long
+               :db/cardinality :db.cardinality/one },
             {  :db/ident       :foo/baz
-               :db/valueType   :db.type/boolean }]"#,
+               :db/valueType   :db.type/boolean
+               :db/cardinality :db.cardinality/one }]"#,
             )
             .unwrap();
 
@@ -892,9 +894,11 @@ mod tests {
                 &mut sqlite,
                 r#"[
             {  :db/ident       :foo/bar
-               :db/valueType   :db.type/long },
+               :db/valueType   :db.type/long
+               :db/cardinality :db.cardinality/one },
             {  :db/ident       :foo/baz
-               :db/valueType   :db.type/boolean }]"#,
+               :db/valueType   :db.type/boolean
+               :db/cardinality :db.cardinality/one }]"#,
             )
             .expect("transaction expected to succeed");
 

@@ -793,6 +793,8 @@ mod lookup_ref_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod mixed_operation_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod mozilla_issue_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod multi_transaction_workflow_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod namespace_tests;

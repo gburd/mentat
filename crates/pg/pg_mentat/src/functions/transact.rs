@@ -1691,8 +1691,10 @@ fn collect_schema_assertion(
 
 /// Install new schema attributes into the store's schema and idents tables.
 ///
-/// For each entity that has at least :db/ident and :db/valueType, insert a row
-/// into <schema>.schema and <schema>.idents. This must happen before datoms are
+/// For each entity that asserts attribute properties, insert or update a row
+/// in <schema>.schema and <schema>.idents. A new attribute needs :db/ident,
+/// :db/valueType and :db/cardinality; an existing one keeps what is not
+/// asserted. This must happen before datoms are
 /// inserted so that foreign key constraints on datoms.a are satisfied.
 ///
 /// The `schema` parameter is the quoted PostgreSQL schema name.
@@ -1700,18 +1702,27 @@ fn install_schema_attributes(
     builders: &BTreeMap<i64, SchemaBuilder>,
     schema: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let cache = crate::cache::get_cache();
     for (&entid, builder) in builders {
-        // An entity is an ATTRIBUTE definition only if it asserts :db/valueType
-        // or :db/cardinality. A bare :db/ident with neither is just naming an
-        // entity (e.g. an enum value like :status/open, or a partition) -- a
-        // legitimate Datomic pattern, NOT an incomplete attribute. For those
-        // we install the ident mapping and move on. For a genuine attribute
-        // definition we fail loud on a missing piece rather than silently
-        // skipping it.
-        let is_attribute_definition = builder.value_type.is_some() || builder.cardinality.is_some();
+        // An entity is an ATTRIBUTE definition if it asserts any attribute
+        // property. A bare :db/ident is just naming an entity (e.g. an enum
+        // value like :status/open, or a partition) -- a legitimate Datomic
+        // pattern, NOT an incomplete attribute. For those we install the
+        // ident mapping and move on.
+        let is_attribute_definition = builder.value_type.is_some()
+            || builder.cardinality.is_some()
+            || builder.unique.is_some()
+            || builder.indexed.is_some()
+            || builder.fulltext.is_some()
+            || builder.component.is_some()
+            || builder.no_history.is_some();
+        // The schema as it was before this transaction: an attribute that
+        // already exists is being altered, and keeps what this transaction
+        // does not change (#286). Its ident may come from an earlier one.
+        let existing = cache.get_attribute(entid);
 
-        let ident = match &builder.ident {
-            Some(i) => i.clone(),
+        let ident = match builder.ident.clone().or_else(|| cache.get_ident(entid)) {
+            Some(i) => i,
             None => {
                 if is_attribute_definition {
                     return Err(MentatError::InvalidTransaction {
@@ -1729,7 +1740,7 @@ fn install_schema_attributes(
             }
         };
 
-        // A bare :db/ident (no valueType/cardinality): install the ident-only
+        // A bare :db/ident (no attribute property): install the ident-only
         // mapping for the named entity and skip attribute-column handling.
         if !is_attribute_definition {
             Spi::run_with_args(
@@ -1746,39 +1757,64 @@ fn install_schema_attributes(
             continue;
         }
 
-        let value_type = match &builder.value_type {
-            Some(vt) => vt.clone(),
-            None => {
+        let missing = |what: &str| -> Box<dyn std::error::Error + Send + Sync> {
+            MentatError::InvalidTransaction {
+                message: format!(
+                    "incomplete schema attribute definition for '{}': \
+                     missing {}. A schema attribute requires \
+                     :db/ident, :db/valueType, and :db/cardinality.",
+                    ident, what
+                ),
+            }
+            .into()
+        };
+        // As on the embedded engine: an existing attribute's type and
+        // fulltext flag cannot change (re-asserting the same value is fine).
+        if let Some(a) = &existing {
+            let changed = builder
+                .value_type
+                .as_ref()
+                .is_some_and(|vt| *vt != a.value_type)
+                || builder.fulltext.is_some_and(|f| f != a.fulltext);
+            if changed {
                 return Err(MentatError::InvalidTransaction {
                     message: format!(
-                        "incomplete schema attribute definition for '{}': \
-                         missing :db/valueType. A schema attribute requires \
-                         :db/ident, :db/valueType, and :db/cardinality.",
+                        "Schema alteration for existing attribute {} is not valid: \
+                         :db/valueType and :db/fulltext cannot change.",
                         ident
                     ),
                 }
                 .into());
             }
+        }
+        let value_type = match (&builder.value_type, &existing) {
+            (Some(vt), _) => vt.clone(),
+            (None, Some(a)) => a.value_type.clone(),
+            (None, None) => return Err(missing(":db/valueType")),
         };
-
-        let cardinality = match &builder.cardinality {
-            Some(c) => c.clone(),
-            None => {
-                return Err(MentatError::InvalidTransaction {
-                    message: format!(
-                        "incomplete schema attribute definition for '{}': \
-                         missing :db/cardinality. A schema attribute requires \
-                         :db/ident, :db/valueType, and :db/cardinality.",
-                        ident
-                    ),
-                }
-                .into());
-            }
+        let cardinality = match (&builder.cardinality, &existing) {
+            (Some(c), _) => c.clone(),
+            (None, Some(a)) => a.cardinality.clone(),
+            (None, None) => return Err(missing(":db/cardinality")),
         };
-        let indexed = builder.indexed.unwrap_or(false);
-        let fulltext = builder.fulltext.unwrap_or(false);
-        let component = builder.component.unwrap_or(false);
-        let no_history = builder.no_history.unwrap_or(false);
+        let old = existing.as_ref();
+        let unique = builder
+            .unique
+            .clone()
+            .or_else(|| old.and_then(|a| a.unique_constraint.clone()));
+        let indexed = builder.indexed.or(old.map(|a| a.indexed)).unwrap_or(false);
+        let fulltext = builder
+            .fulltext
+            .or(old.map(|a| a.fulltext))
+            .unwrap_or(false);
+        let component = builder
+            .component
+            .or(old.map(|a| a.component))
+            .unwrap_or(false);
+        let no_history = builder
+            .no_history
+            .or(old.map(|a| a.no_history))
+            .unwrap_or(false);
 
         // Insert into idents (keyword -> entid mapping)
         Spi::run_with_args(
@@ -1794,7 +1830,7 @@ fn install_schema_attributes(
         )?;
 
         // Build the unique_constraint DatumWithOid: either a text value or NULL.
-        let unique_datum = match &builder.unique {
+        let unique_datum = match &unique {
             Some(u) => DatumWithOid::from(u.as_str()),
             None => DatumWithOid::null::<String>(),
         };

@@ -2075,8 +2075,10 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/str]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 222 :db/ident :test/ref]
-                                 [:db/add 222 :db/valueType :db.type/ref]]"
+                                 [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]]"
         );
 
         // Test that we can assert metadata about the current transaction.
@@ -2238,12 +2240,6 @@ mod tests {
               :db/index false}]",
             Err("bad schema assertion: :db/fulltext true without :db/index true for :t/ft")
         );
-        // No ident: fall back to the entid.
-        assert_transact!(conn, "
-            [[:db/add 100 :db/valueType :db.type/long]
-             [:db/add 100 :db/cardinality :db.cardinality/one]
-             [:db/add 100 :db/isComponent true]]",
-              Err("bad schema assertion: :db/isComponent true without :db/valueType :db.type/ref for entid 100"));
     }
 
     // Unique is required!
@@ -2672,12 +2668,57 @@ mod tests {
                          [:db/retract 100 :db/ident :test/ident]]"
         );
 
-        // Trying to install an attribute without a :db/ident is allowed.
+        // Installing an attribute without a :db/ident is not allowed (#286).
         assert_transact!(
             conn,
             "[[:db/add 101 :db/valueType :db.type/long]
-                                 [:db/add 101 :db/cardinality :db.cardinality/many]]"
+                                 [:db/add 101 :db/cardinality :db.cardinality/many]]",
+            Err("bad schema assertion: incomplete schema attribute definition (entity 101): missing :db/ident. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.")
         );
+    }
+
+    // #286: a new attribute needs :db/ident, :db/valueType and :db/cardinality.
+    #[test]
+    fn test_new_attribute_needs_minimal_set() {
+        let mut conn = TestConn::default();
+        assert_transact!(conn,
+            "[[:db/add \"p\" :db/ident :test/prop] [:db/add \"p\" :db/valueType :db.type/string]]",
+            Err("bad schema assertion: incomplete schema attribute definition for ':test/prop': missing :db/cardinality. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality."));
+        assert_transact!(conn,
+            "[[:db/add \"p\" :db/ident :test/prop] [:db/add \"p\" :db/cardinality :db.cardinality/one]]",
+            Err("bad schema assertion: incomplete schema attribute definition for ':test/prop': missing :db/valueType. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality."));
+        assert_transact!(conn,
+            "[[:db/add \"p\" :db/valueType :db.type/string] [:db/add \"p\" :db/cardinality :db.cardinality/one]]",
+            Err("bad schema assertion: incomplete schema attribute definition (entity 65536): missing :db/ident. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality."));
+
+        // A bare ident is fine (it names an entity, not an attribute).
+        assert_transact!(conn, "[[:db/add \"p\" :db/ident :test/prop]]");
+        // The full set is fine, also when the ident came in an earlier transaction.
+        assert_transact!(conn,
+            "[[:db/add :test/prop :db/valueType :db.type/string] [:db/add :test/prop :db/cardinality :db.cardinality/one]]");
+        // Altering an existing attribute needs only the changed piece.
+        assert_transact!(conn, "[[:db/add :test/prop :db/index true]]");
+        assert_transact!(
+            conn,
+            "[[:db/add :test/prop :db/cardinality :db.cardinality/many]]"
+        );
+    }
+
+    // #286: a store whose attribute predates the rule (no :db/ident) still opens and alters.
+    #[test]
+    fn test_existing_half_defined_attribute_still_reads() {
+        let mut conn = TestConn::default();
+        conn.sqlite
+            .execute_batch(
+                "INSERT INTO datoms (e, a, v, value_type_tag, tx, index_avet, index_vaet, index_fulltext, unique_value)
+                 VALUES (101, 7, 25, 0, 268435457, 0, 1, 0, 0), (101, 8, 33, 0, 268435457, 0, 1, 0, 0);
+                 INSERT INTO schema (e, a, v, value_type_tag) VALUES (101, 7, 25, 0), (101, 8, 33, 0);",
+            )
+            .expect("insert a half-defined attribute");
+        let db = read_db(&conn.sqlite).expect("store opens");
+        assert!(db.schema.attribute_for_entid(101).is_some());
+        conn.schema = db.schema;
+        assert_transact!(conn, "[[:db/add 101 :db/index true]]");
     }
 
     #[test]
@@ -3003,6 +3044,7 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/fulltext]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/identity]
                                  [:db/add 111 :db/index true]
                                  [:db/add 111 :db/fulltext true]
@@ -3032,6 +3074,7 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/fulltext]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/identity]
                                  [:db/add 111 :db/index true]
                                  [:db/add 111 :db/fulltext true]
@@ -3076,6 +3119,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3105,6 +3149,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3138,6 +3183,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3168,6 +3214,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3200,6 +3247,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3222,10 +3270,12 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/unique_value]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/value]
                                  [:db/add 111 :db/index true]
                                  [:db/add 222 :db/ident :test/unique_identity]
                                  [:db/add 222 :db/valueType :db.type/long]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 222 :db/unique :db.unique/identity]
                                  [:db/add 222 :db/index true]
                                  [:db/add 333 :db/ident :test/not_unique]
@@ -3284,10 +3334,12 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/unique_value]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/value]
                                  [:db/add 111 :db/index true]
                                  [:db/add 222 :db/ident :test/unique_identity]
                                  [:db/add 222 :db/valueType :db.type/long]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 222 :db/unique :db.unique/identity]
                                  [:db/add 222 :db/index true]
                                  [:db/add 333 :db/ident :test/not_unique]
@@ -3296,6 +3348,7 @@ mod tests {
                                  [:db/add 333 :db/index true]
                                  [:db/add 444 :db/ident :test/ref]
                                  [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/unique :db.unique/identity]
                                  [:db/add 444 :db/index true]]"
         );
@@ -3418,12 +3471,15 @@ mod tests {
                                  [:db/add 222 :db/ident :test/component]
                                  [:db/add 222 :db/isComponent true]
                                  [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 333 :db/ident :test/unique]
                                  [:db/add 333 :db/unique :db.unique/identity]
                                  [:db/add 333 :db/index true]
                                  [:db/add 333 :db/valueType :db.type/long]
+                                 [:db/add 333 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/ident :test/dangling]
-                                 [:db/add 444 :db/valueType :db.type/ref]]"
+                                 [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]]"
         );
 
         // Check that we can explode map notation without :db/id.
@@ -3521,12 +3577,15 @@ mod tests {
                                  [:db/add 222 :db/ident :test/component]
                                  [:db/add 222 :db/isComponent true]
                                  [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 333 :db/ident :test/unique]
                                  [:db/add 333 :db/unique :db.unique/identity]
                                  [:db/add 333 :db/index true]
                                  [:db/add 333 :db/valueType :db.type/long]
+                                 [:db/add 333 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/ident :test/dangling]
-                                 [:db/add 444 :db/valueType :db.type/ref]]"
+                                 [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]]"
         );
 
         // Check that we can explode direct reversed notation, entids.
@@ -3655,12 +3714,15 @@ mod tests {
                                  [:db/add 222 :db/ident :test/component]
                                  [:db/add 222 :db/isComponent true]
                                  [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 333 :db/ident :test/unique]
                                  [:db/add 333 :db/unique :db.unique/identity]
                                  [:db/add 333 :db/index true]
                                  [:db/add 333 :db/valueType :db.type/long]
+                                 [:db/add 333 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/ident :test/dangling]
-                                 [:db/add 444 :db/valueType :db.type/ref]]"
+                                 [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]]"
         );
 
         // `tx-parser` should fail to parse direct reverse notation with nested value maps and
@@ -3757,8 +3819,8 @@ mod tests {
         assert_transact!(
             conn,
             r#"[
-            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity}
-            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity}
+            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
             {:db/ident :page/title :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
         ]"#
         );
@@ -3820,8 +3882,8 @@ mod tests {
         assert_transact!(
             conn,
             r#"[
-            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity}
-            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity}
+            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
             {:db/ident :page/title :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
         ]"#
         );

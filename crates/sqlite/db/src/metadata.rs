@@ -348,6 +348,51 @@ pub fn update_attribute_map_from_entid_triples(
     })
 }
 
+/// A new attribute needs :db/ident, :db/valueType and :db/cardinality (#286), as in Datomic and
+/// pg_mentat (same messages). Only checked for attributes a transaction installs: attributes
+/// already in `attribute_map` (which may predate the rule) can still be read and altered.
+fn require_minimal_attribute_set(
+    attribute_map: &AttributeMap,
+    assertions: &[EAV],
+    ident_set: &AddRetractAlterSet<Entid, symbols::Keyword>,
+    entid_map: &mentat_core::EntidMap,
+) -> Result<()> {
+    let mut new_attrs: BTreeMap<Entid, BTreeSet<Entid>> = BTreeMap::new();
+    for (e, a, _) in assertions {
+        if !attribute_map.contains_key(e) {
+            new_attrs.entry(*e).or_default().insert(*a);
+        }
+    }
+    for (e, attrs) in new_attrs {
+        let ident = ident_set
+            .asserted
+            .get(&e)
+            .or_else(|| ident_set.altered.get(&e).map(|(_, new)| new))
+            .or_else(|| entid_map.get(&e));
+        let ident = match ident {
+            Some(ident) => ident,
+            None => bail!(DbErrorKind::BadSchemaAssertion(format!(
+                "incomplete schema attribute definition (entity {}): missing :db/ident. \
+                 A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.",
+                e
+            ))),
+        };
+        for (a, name) in [
+            (entids::DB_VALUE_TYPE, ":db/valueType"),
+            (entids::DB_CARDINALITY, ":db/cardinality"),
+        ] {
+            if !attrs.contains(&a) {
+                bail!(DbErrorKind::BadSchemaAssertion(format!(
+                    "incomplete schema attribute definition for '{}': missing {}. \
+                     A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.",
+                    ident, name
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Update a `Schema` in place from the given `[e a typed_value added]` quadruples.
 ///
 /// This layer enforces that ident assertions of the form [entid :db/ident ...] (as distinct from
@@ -420,9 +465,11 @@ where
             .map(|kw| kw.to_string())
             .unwrap_or_else(|| format!("entid {}", e))
     };
+    let assertions: Vec<EAV> = asserted_triples.chain(altered_triples).collect();
+    require_minimal_attribute_set(&schema.attribute_map, &assertions, &ident_set, entid_map)?;
     let report = update_attribute_map_from_entid_triples(
         &mut schema.attribute_map,
-        asserted_triples.chain(altered_triples).collect(),
+        assertions,
         non_schema_retractions,
         &ident,
     )?;
