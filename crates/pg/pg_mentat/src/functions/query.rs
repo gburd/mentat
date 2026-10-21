@@ -2052,13 +2052,14 @@ fn mentat_query_view_internal(
 
         let mut result_rows: Vec<QueryViewRow> = Vec::new();
 
-        let mut row_num: i64 = 1;
-        for row in execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
-            Box::new(MentatError::InvalidQuery {
-                message: format!("SPI execution error: {}", e),
-                suggestion: None,
-            }) as Box<dyn std::error::Error + Send + Sync>
-        })? {
+        for (row_num, row) in (1i64..).zip(
+            execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
+                Box::new(MentatError::InvalidQuery {
+                    message: format!("SPI execution error: {}", e),
+                    suggestion: None,
+                }) as Box<dyn std::error::Error + Send + Sync>
+            })?,
+        ) {
             let mut cols: [Option<String>; 8] = Default::default();
             for idx in 0..num_cols {
                 let col_idx = (idx + 1) as usize;
@@ -2072,7 +2073,6 @@ fn mentat_query_view_internal(
             }
             let [c1, c2, c3, c4, c5, c6, c7, c8] = cols;
             result_rows.push((row_num, c1, c2, c3, c4, c5, c6, c7, c8));
-            row_num += 1;
         }
 
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(result_rows)
@@ -7093,6 +7093,7 @@ fn aggregate_call_sql(
 ///   * its entity is known and its attribute is cardinality-one, or
 ///   * its value is known and its attribute is :db/unique, or
 ///   * its entity, attribute and value are all known (the table's PK).
+///
 /// The tuple is a key iff every pattern's row is determined. The caller
 /// only asks for current-state queries (the projection holds one row per
 /// live (e, a, v)) with no joins that can repeat rows (fulltext / rules /
