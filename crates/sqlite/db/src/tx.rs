@@ -65,7 +65,7 @@ use mentat_core::util::Either;
 
 use core_traits::{attribute, now, Attribute, Entid, KnownEntid, TypedValue, ValueType};
 
-use mentat_core::{DateTime, Schema, TxReport, Utc};
+use mentat_core::{DateTime, HasSchema, Schema, TxReport, Utc};
 
 use crate::metadata;
 use crate::schema::SchemaBuilding;
@@ -123,9 +123,41 @@ where
     tx_id: Entid,
 }
 
+/// A value-position vector `[:attr v]` read as Datomic's lookup ref (#152): two elements, a
+/// keyword naming a `:db/unique` attribute, then a plain value. Datomic resolves the
+/// ambiguity with a list of values the same way: `[:a/b "x"]` is a lookup ref, and a list of
+/// lookup refs is a vector of them (`[[:a/b "x"] [:a/b "y"]]`).
+fn vector_lookup_ref<V: TransactableValue>(
+    schema: &Schema,
+    vs: &[ValuePlace<V>],
+) -> Option<entmod::LookupRef<V>> {
+    let [a, ValuePlace::Atom(v)] = vs else {
+        return None;
+    };
+    let a = match a {
+        ValuePlace::Entid(a @ entmod::EntidOrIdent::Ident(_)) => a.clone(),
+        ValuePlace::Atom(atom) => match atom.clone().into_entity_place().ok()? {
+            entmod::EntityPlace::Entid(a @ entmod::EntidOrIdent::Ident(_)) => a,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let entmod::EntidOrIdent::Ident(ref kw) = a else {
+        return None;
+    };
+    schema
+        .attribute_for_ident(kw)
+        .filter(|(attr, _)| attr.unique.is_some())?;
+    Some(entmod::LookupRef {
+        a: AttributePlace::Entid(a),
+        v: v.clone(),
+    })
+}
+
 /// Remove any :db/id value from the given map notation, converting the returned value into
 /// something suitable for the entity position rather than something suitable for a value position.
 pub fn remove_db_id<V: TransactableValue>(
+    schema: &Schema,
     map: &mut entmod::MapNotation<V>,
 ) -> Result<Option<entmod::EntityPlace<V>>> {
     // TODO: extract lazy defined constant.
@@ -138,7 +170,11 @@ pub fn remove_db_id<V: TransactableValue>(
             entmod::ValuePlace::TempId(e) => Some(entmod::EntityPlace::TempId(e)),
             entmod::ValuePlace::TxFunction(e) => Some(entmod::EntityPlace::TxFunction(e)),
             entmod::ValuePlace::Atom(v) => Some(v.into_entity_place()?),
-            entmod::ValuePlace::Vector(_) | entmod::ValuePlace::MapNotation(_) => {
+            entmod::ValuePlace::Vector(vs) => match vector_lookup_ref(schema, &vs) {
+                Some(lr) => Some(entmod::EntityPlace::LookupRef(lr)),
+                None => bail!(DbErrorKind::InputError(errors::InputError::BadDbId)),
+            },
+            entmod::ValuePlace::MapNotation(_) => {
                 bail!(DbErrorKind::InputError(errors::InputError::BadDbId))
             }
         }
@@ -594,8 +630,12 @@ where
                                 }
                             }
 
-                            entmod::ValuePlace::Vector(_) =>
-                                bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode vector value in :attr/_reversed notation for attribute {}", forward_a))),
+                            entmod::ValuePlace::Vector(ref vs) => match vector_lookup_ref(self.schema, vs) {
+                                Some(ref lookup_ref) =>
+                                    Ok(Either::Right(LookupRefOrTempId::LookupRef(self.intern_lookup_ref(lookup_ref)?))),
+                                None =>
+                                    bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode vector value in :attr/_reversed notation for attribute {}", forward_a))),
+                            },
 
                             entmod::ValuePlace::MapNotation(_) =>
                                 bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode map notation value in :attr/_reversed notation for attribute {}", forward_a))),
@@ -624,8 +664,9 @@ where
                 Entity::MapNotation(mut map_notation) => {
                     // :db/id is optional; if it's not given, we generate a special internal tempid
                     // to use for upserting.  This tempid will not be reported in the TxReport.
-                    let db_id: entmod::EntityPlace<V> = remove_db_id(&mut map_notation)?
-                        .unwrap_or_else(|| in_process.allocate_mentat_id());
+                    let db_id: entmod::EntityPlace<V> =
+                        remove_db_id(self.schema, &mut map_notation)?
+                            .unwrap_or_else(|| in_process.allocate_mentat_id());
 
                     // We're not nested, so :db/isComponent is not relevant.  We just explode the
                     // map notation.
@@ -813,6 +854,19 @@ where
                             }
 
                             entmod::ValuePlace::Vector(vs) => {
+                                if attribute.value_type == ValueType::Ref {
+                                    if let Some(lr) = vector_lookup_ref(self.schema, &vs) {
+                                        deque.push_front(Entity::AddOrRetract {
+                                            op,
+                                            e: e.clone(),
+                                            a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(
+                                                a,
+                                            )),
+                                            v: entmod::ValuePlace::LookupRef(lr),
+                                        });
+                                        continue;
+                                    }
+                                }
                                 if !attribute.multival {
                                     bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode vector value for attribute {} that is not :db.cardinality :db.cardinality/many", a)));
                                 }
@@ -844,7 +898,7 @@ where
                                 // :db/id is optional; if it's not given, we generate a special internal tempid
                                 // to use for upserting.  This tempid will not be reported in the TxReport.
                                 let db_id: Option<entmod::EntityPlace<V>> =
-                                    remove_db_id(&mut map_notation)?;
+                                    remove_db_id(self.schema, &mut map_notation)?;
                                 let mut dangling = db_id.is_none();
                                 let db_id: entmod::EntityPlace<V> =
                                     db_id.unwrap_or_else(|| in_process.allocate_mentat_id());

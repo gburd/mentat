@@ -64,8 +64,8 @@ fn duckdb_matches_sqlite() {
         counts.push((a.datoms_asserted, a.datoms_retracted));
     }
 
-    // The last two transactions: a no-op, then a replacement and a new value.
-    assert_eq!(counts[counts.len() - 2..], [(0, 0), (2, 1)]);
+    // A no-op, then a replacement and a new value, then three new refs.
+    assert_eq!(counts[counts.len() - 3..], [(0, 0), (2, 1), (3, 0)]);
 
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>, ordered: bool| {

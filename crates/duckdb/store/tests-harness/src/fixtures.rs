@@ -53,8 +53,10 @@ pub const TXS: &[&str] = &[
     r#"[{:p/name "Dan" :p/height 1.9}]"#,
     r#"[{:p/name "Eve" :p/age 25 :p/blob #bytes 010203}]"#,
     // No-ops, a cardinality-one replacement, a retraction of an absent value (#281).
-    r#"[{:p/name "Eve" :p/age 25} [:db/retract (lookup-ref :p/name "Eve") :p/age 99] [:db/retract (lookup-ref :p/name "Eve") :p/nick "x"]]"#,
+    r#"[{:p/name "Eve" :p/age 25} [:db/retract [:p/name "Eve"] :p/age 99] [:db/retract [:p/name "Eve"] :p/nick "x"]]"#,
     r#"[{:p/name "Eve" :p/age 26} {:p/name "Bob" :p/nick ["Bobby"]}]"#,
+    // [a v] lookup refs as entity, :db/id, cardinality-one and -many ref values (#152).
+    r#"[{:db/id [:p/name "Eve"] :p/boss [:p/name "Carol"] :p/likes [[:p/name "Bob"] [:p/name "Dan"]]}]"#,
 ];
 
 pub const QUERIES: &[&str] = &[

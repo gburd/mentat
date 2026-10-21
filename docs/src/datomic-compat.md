@@ -19,7 +19,7 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
 | Tempids | Yes | Yes | **Complete** |
-| Lookup refs | Yes | Yes | **Complete** |
+| Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs. The embedded engine and DuckDB accept the vector form since 1.18.0 |
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
 | Negative tempids | Yes | No | N/A -- use string tempids |

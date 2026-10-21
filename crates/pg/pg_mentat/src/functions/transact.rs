@@ -1114,15 +1114,11 @@ fn execute_transaction_inner(
 
                 let e = resolve_entity_place(&entity_vec[1], &mut tempid_map, &qs)?;
                 let a = resolve_attribute(&entity_vec[2])?;
-                // Check if attribute is ref-type; if so, resolve value as entity reference
-                let v = if lookup_value_type(a).as_deref() == Some("ref") {
-                    encode_ref_value(&entity_vec[3], &mut tempid_map, &qs)?
-                } else {
-                    encode_value(&entity_vec[3])?
-                };
                 let added = matches!(op, OpType::Add);
-
-                pending_datoms.push(PendingDatom { e, a, v, added });
+                for value in exploded_values(a, &entity_vec[3]) {
+                    let v = encode_attr_value(a, value, &mut tempid_map, &qs)?;
+                    pending_datoms.push(PendingDatom { e, a, v, added });
+                }
             }
             edn::Value::Map(ref map) => {
                 // Reuse entity ID from Pass 1 if one was pre-allocated,
@@ -1150,19 +1146,15 @@ fn execute_transaction_inner(
                     }
 
                     let a = resolve_attribute(attr_key)?;
-                    // Check if attribute is ref-type; if so, resolve value as entity reference
-                    let v = if lookup_value_type(a).as_deref() == Some("ref") {
-                        encode_ref_value(attr_value, &mut tempid_map, &qs)?
-                    } else {
-                        encode_value(attr_value)?
-                    };
-
-                    pending_datoms.push(PendingDatom {
-                        e,
-                        a,
-                        v,
-                        added: true,
-                    });
+                    for value in exploded_values(a, attr_value) {
+                        let v = encode_attr_value(a, value, &mut tempid_map, &qs)?;
+                        pending_datoms.push(PendingDatom {
+                            e,
+                            a,
+                            v,
+                            added: true,
+                        });
+                    }
                 }
             }
             // Fail loud: a vector beginning with a keyword that reached here
@@ -2092,6 +2084,54 @@ fn encode_ref_value(
 ) -> Result<TypedValue, Box<dyn std::error::Error + Send + Sync>> {
     let entity_id = resolve_entity_place(value, tempid_map, schema)?;
     Ok(TypedValue::Ref(entity_id))
+}
+
+/// Encode `value` for attribute `a`: a ref attribute resolves it as an entity reference.
+fn encode_attr_value(
+    a: i64,
+    value: &edn::Value,
+    tempid_map: &mut BTreeMap<String, i64>,
+    schema: &str,
+) -> Result<TypedValue, Box<dyn std::error::Error + Send + Sync>> {
+    if lookup_value_type(a).as_deref() == Some("ref") {
+        encode_ref_value(value, tempid_map, schema)
+    } else {
+        encode_value(value)
+    }
+}
+
+/// The values a value-position vector stands for, as on the embedded engine (#152): on a
+/// cardinality-many attribute a vector is a list of values (nested vectors flatten), except
+/// that `[:unique/attr v]` on a ref attribute is one lookup ref. Anything else is one value.
+fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
+    fn is_lookup_ref(v: &edn::Value) -> bool {
+        match v {
+            edn::Value::Vector(pair) if pair.len() == 2 => match &pair[0] {
+                edn::Value::Keyword(kw) => crate::cache::get_cache()
+                    .get_attribute_by_ident(&format!("{kw}"))
+                    .is_some_and(|attr| attr.unique_constraint.is_some()),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    fn flatten<'v>(v: &'v edn::Value, refs: bool, out: &mut Vec<&'v edn::Value>) {
+        match v {
+            edn::Value::Vector(vs) if !(refs && is_lookup_ref(v)) => {
+                vs.iter().for_each(|x| flatten(x, refs, out))
+            }
+            _ => out.push(v),
+        }
+    }
+    let Some(info) = lookup_attribute_info(a) else {
+        return vec![value];
+    };
+    if info.cardinality != "many" {
+        return vec![value];
+    }
+    let mut out = Vec::new();
+    flatten(value, info.value_type == "ref", &mut out);
+    out
 }
 
 /// Look up the value_type of an attribute (using cache).

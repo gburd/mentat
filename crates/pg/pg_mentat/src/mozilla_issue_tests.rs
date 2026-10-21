@@ -227,4 +227,46 @@ mod tests {
             assert_eq!(counts(&tx(&t)), want, "{t}");
         }
     }
+
+    // #152: `[a v]` lookup refs in entity, :db/id and value position, and a list of them
+    // for a cardinality-many ref; a vector of values for any cardinality-many attribute.
+    #[pg_test]
+    fn vector_lookup_refs() {
+        setup();
+        tx(
+            r#"[{:db/ident :ml/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                :db/unique :db.unique/identity :db/index true}
+               {:db/ident :ml/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+               {:db/ident :ml/ref :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+               {:db/ident :ml/refs :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+               {:db/ident :ml/kws :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}]"#,
+        );
+        tx(r#"[{:ml/id "e1"} {:ml/id "e2"} {:ml/id "e3"}]"#);
+        for t in [
+            r#"[[:db/add [:ml/id "e1"] :ml/n 5]]"#,
+            r#"[{:db/id [:ml/id "e2"] :ml/n 6}]"#,
+            r#"[{:ml/id "x" :ml/ref [:ml/id "e1"]}]"#,
+            r#"[{:ml/id "y" :ml/refs [[:ml/id "e1"] [:ml/id "e2"]]}]"#,
+            r#"[[:db/add [:ml/id "y"] :ml/refs [:ml/id "e3"]]]"#,
+            r#"[{:ml/id "z" :ml/kws [:k/a :k/b]}]"#,
+        ] {
+            assert_eq!(transact(t), "", "{t}");
+        }
+        assert_eq!(
+            coll(r#"[:find [?b ...] :where [?x :ml/id "y"] [?x :ml/refs ?r] [?r :ml/id ?b]]"#),
+            vec!["e1", "e2", "e3"]
+        );
+        assert_eq!(
+            coll(r#"[:find [?b ...] :where [?x :ml/id "x"] [?x :ml/ref ?r] [?r :ml/id ?b]]"#),
+            vec!["e1"]
+        );
+        assert_eq!(
+            coll(r#"[:find [?k ...] :where [?x :ml/id "z"] [?x :ml/kws ?k]]"#).len(),
+            2
+        );
+        assert_eq!(
+            coll(r#"[:find [?n ...] :where [_ :ml/n ?n]]"#),
+            vec!["5", "6"]
+        );
+    }
 }

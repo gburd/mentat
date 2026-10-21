@@ -346,3 +346,83 @@ fn test_retract_entity_with_fulltext_value() {
         .expect("retractEntity");
     assert_eq!(datom_count(&store, a), 0);
 }
+
+// #152: Datomic's `[a v]` lookup refs, in entity position, :db/id, value position (a
+// cardinality-one ref), a list of them (cardinality-many), and reverse notation.
+#[test]
+fn test_vector_lookup_refs() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :t/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :t/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :t/ref :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :t/refs :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                {:db/ident :t/kws :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(r#"[{:t/id "e1"} {:t/id "e2"} {:t/id "e3"}]"#)
+        .expect("data");
+    for tx in [
+        r#"[[:db/add [:t/id "e1"] :t/n 5]]"#,
+        r#"[{:db/id [:t/id "e2"] :t/n 6}]"#,
+        r#"[{:t/id "x" :t/ref [:t/id "e1"]}]"#,
+        r#"[{:t/id "y" :t/refs [[:t/id "e1"] [:t/id "e2"]]}]"#,
+        r#"[[:db/add [:t/id "y"] :t/refs [:t/id "e3"]]]"#,
+        r#"[{:t/id "e3" :t/_ref [:t/id "e2"]}]"#,
+        // Not a lookup ref: a keyword attribute gets a list of keywords.
+        r#"[{:t/id "z" :t/kws [:k/a :k/b]}]"#,
+    ] {
+        store.transact(tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
+    }
+    let q = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_rel_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .rows()
+            .map(|r| format!("{:?}", r))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        q(r#"[:find ?i ?n :where [?e :t/id ?i] [?e :t/n ?n]]"#),
+        [
+            r#"[Scalar(String("e1")), Scalar(Long(5))]"#,
+            r#"[Scalar(String("e2")), Scalar(Long(6))]"#
+        ]
+    );
+    assert_eq!(
+        q(r#"[:find ?a ?b :where [?x :t/id ?a] [?x :t/ref ?r] [?r :t/id ?b]]"#),
+        [
+            r#"[Scalar(String("e2")), Scalar(String("e3"))]"#,
+            r#"[Scalar(String("x")), Scalar(String("e1"))]"#
+        ]
+    );
+    assert_eq!(
+        q(r#"[:find ?b :where [?x :t/id "y"] [?x :t/refs ?r] [?r :t/id ?b]]"#),
+        [
+            r#"[Scalar(String("e1"))]"#,
+            r#"[Scalar(String("e2"))]"#,
+            r#"[Scalar(String("e3"))]"#
+        ]
+    );
+    assert_eq!(
+        q(r#"[:find ?k :where [?x :t/id "z"] [?x :t/kws ?k]]"#).len(),
+        2
+    );
+    // A lookup ref that matches nothing, or a non-unique attribute, is an error.
+    assert!(store
+        .transact(r#"[[:db/add [:t/id "nope"] :t/n 1]]"#)
+        .is_err());
+    assert!(store.transact(r#"[[:db/add [:t/n 5] :t/n 1]]"#).is_err());
+    // A vector of values for a cardinality-one attribute is still rejected.
+    assert!(store.transact(r#"[{:t/id "x" :t/ref [1 2]}]"#).is_err());
+    // (lookup-ref a v) keeps working.
+    store
+        .transact(r#"[[:db/add (lookup-ref :t/id "e3") :t/n 7]]"#)
+        .expect("lookup-ref");
+}
