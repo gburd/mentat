@@ -96,9 +96,16 @@ fn duckdb_matches_sqlite() {
     for q in ORDERED {
         check("ordered", q, None, true);
     }
-    // As-of every transaction, since every transaction.
+    // As-of every transaction, since every transaction. The pulls too: a
+    // find-pull reads the query's basis (before 1.18.0 it read current state).
+    let pulls = QUERIES.iter().filter(|q| q.contains("(pull "));
+    let temporal: Vec<&str> = QUERIES[..12]
+        .iter()
+        .copied()
+        .chain(pulls.copied())
+        .collect();
     for &t in &tx_ids {
-        for q in &QUERIES[..12] {
+        for q in &temporal {
             check(&format!("asOf {t}"), q, Some(TemporalBound::AsOf(t)), false);
             check(
                 &format!("since {t}"),
