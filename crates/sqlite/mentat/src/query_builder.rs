@@ -131,6 +131,17 @@ impl<'a> QueryBuilder<'a> {
 mod test {
     use super::{QueryBuilder, Store, TypedValue};
 
+    // #225: the builder holds Datalog query text, named `query` (Mozilla renamed it from
+    // `sql` in 013629dec); the text runs as given.
+    #[test]
+    fn test_query_is_datalog_text() {
+        let mut store = Store::open("").expect("store connection");
+        let text = "[:find ?e . :where [?e :db/ident :db/ident]]";
+        let mut builder = QueryBuilder::new(&mut store, text);
+        assert_eq!(builder.query, text);
+        assert!(builder.execute_scalar().expect("scalar").is_some());
+    }
+
     #[test]
     fn test_scalar_query() {
         let mut store = Store::open("").expect("store connection");
