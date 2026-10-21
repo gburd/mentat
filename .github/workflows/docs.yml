@@ -20,9 +20,10 @@ on:
 permissions:
   contents: read
 
+# Never cancel a Pages deploy half-way; superseded PR builds may be cancelled.
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -43,7 +44,7 @@ jobs:
         run: mdbook build
 
       - name: Upload artifact
-        if: vars.PAGES_ENABLED == 'true' && github.event_name != 'pull_request'
+        if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/master'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/book
@@ -51,7 +52,7 @@ jobs:
   deploy:
     name: Deploy to Pages
     needs: build
-    if: vars.PAGES_ENABLED == 'true' && github.event_name != 'pull_request'
+    if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       pages: write
