@@ -27,7 +27,7 @@ use rusqlite::types::{ToSql, ToSqlOutput};
 use rusqlite::TransactionBehavior;
 
 use crate::bootstrap;
-use crate::{repeat_values, to_namespaced_keyword};
+use crate::repeat_values;
 use mentat_sql::SqlValue;
 
 use edn::{DateTime, Utc, Uuid, Value};
@@ -754,7 +754,7 @@ impl TypedSQLValue for TypedValue {
                 }
                 Ok(TypedValue::Uuid(u))
             }
-            (13, SqlValue::Text(x)) => to_namespaced_keyword(&x).map(|k| k.into()),
+            (13, SqlValue::Text(x)) => crate::to_keyword(&x).map(|k| k.into()),
             (15, SqlValue::Blob(x)) => Ok(TypedValue::Bytes(x.into())),
             (_, value) => bail!(DbErrorKind::BadSQLValuePair(value, value_type_tag)),
         }
@@ -1945,6 +1945,8 @@ mod tests {
     extern crate env_logger;
 
     use std::borrow::Borrow;
+
+    use crate::to_namespaced_keyword;
 
     use super::*;
     use crate::debug::{tempids, TestConn};

@@ -2312,3 +2312,43 @@ fn test_tx_report_counts() {
         assert_eq!(r.is_empty(), want == (0, 0), "{tx}");
     }
 }
+
+// #123: a non-namespaced keyword value reads back (it transacted, then failed to read).
+#[test]
+fn test_plain_keyword_value_round_trips() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :t/k :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(r#"[{:db/id "a" :t/k [:plain :ns/name]}]"#)
+        .expect("data");
+    let mut ks: Vec<String> = store
+        .q_once("[:find [?k ...] :where [_ :t/k ?k]]", None)
+        .into_coll_result()
+        .expect("read back")
+        .into_iter()
+        .map(|b| match b {
+            Binding::Scalar(TypedValue::Keyword(k)) => k.to_string(),
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    ks.sort();
+    assert_eq!(ks, vec![":ns/name", ":plain"]);
+    // As a query constant, and through pull.
+    assert_eq!(
+        store
+            .q_once("[:find ?e . :where [?e :t/k :plain]]", None)
+            .into_scalar_result()
+            .expect("constant")
+            .is_some(),
+        true
+    );
+    let pulled = store
+        .q_once("[:find (pull ?e [:t/k]) . :where [?e :t/k :plain]]", None)
+        .into_scalar_result()
+        .expect("pull");
+    assert!(format!("{pulled:?}").contains("plain"), "{pulled:?}");
+}

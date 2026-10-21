@@ -55,6 +55,8 @@ pub const TXS: &[&str] = &[
     // No-ops, a cardinality-one replacement, a retraction of an absent value (#281).
     r#"[{:p/name "Eve" :p/age 25} [:db/retract [:p/name "Eve"] :p/age 99] [:db/retract [:p/name "Eve"] :p/nick "x"]]"#,
     r#"[{:p/name "Eve" :p/age 26} {:p/name "Bob" :p/nick ["Bobby"]}]"#,
+    // A non-namespaced keyword value (#123).
+    r#"[{:p/name "Dan" :p/role [:plain]}]"#,
     // [a v] lookup refs as entity, :db/id, cardinality-one and -many ref values (#152).
     r#"[{:db/id [:p/name "Eve"] :p/boss [:p/name "Carol"] :p/likes [[:p/name "Bob"] [:p/name "Dan"]]}]"#,
 ];
@@ -75,6 +77,8 @@ pub const QUERIES: &[&str] = &[
     // Value equality for every type.
     "[:find ?n :where [?e :p/alive false] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/role :r/dev] [?e :p/name ?n]]",
+    "[:find ?n ?r :where [?e :p/role ?r] [?e :p/name ?n]]",
+    "[:find ?n :where [?e :p/role :plain] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/id #uuid \"22222222-2222-4222-8222-222222222222\"] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/born ?t] [(< ?t #inst \"1992-01-01T00:00:00.000Z\")] [?e :p/name ?n]]",
     "[:find ?b :where [_ :p/blob ?b]]",
