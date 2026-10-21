@@ -404,9 +404,9 @@ fn q_takes_in_inputs() {
     m::q_takes_in_inputs(&mut faked());
 }
 // q_mixed_inputs, history_patterns_see_added, cas_and_retract_entity,
-// retracting_an_absent_value_is_a_no_op, q_runs_against_as_of_and_since,
-// pull_reads_the_as_of_and_since_basis and pull_nested_map_specs and the
-// as-of / since (#364) tests need a
+// retracting_an_absent_value_is_a_no_op, rename_and_retract_logs_one_retraction,
+// q_runs_against_as_of_and_since, pull_reads_the_as_of_and_since_basis and
+// pull_nested_map_specs and the as-of / since (#364) tests need a
 // real engine (Datalog joins, the log, tx fns, temporal Datalog): run on the
 // SQLite, DuckDB and pg backends only.
 #[test]

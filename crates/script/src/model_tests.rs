@@ -1179,3 +1179,52 @@ pub fn retracting_an_absent_value_is_a_no_op(it: &mut Interpreter) {
         );
     }
 }
+
+/// Issue #12 (Mozilla #818): renaming a unique identity value and explicitly retracting the
+/// old value in the same transaction retracts the old value once. The report counts one
+/// retraction and the log holds one, on every backend.
+pub fn rename_and_retract_logs_one_retraction(it: &mut Interpreter) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :t/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+             :db/unique :db.unique/identity :db/index true}])",
+    )
+    .expect("schema");
+    it.eval_to_string("(mentat.store/transact c [{:t/id \"One\"}])")
+        .expect("data");
+    let report = it
+        .eval_to_string(
+            "(mentat.store/transact c \
+               [[:db/add [:t/id \"One\"] :t/id \"Two\"] \
+                [:db/retract [:t/id \"One\"] :t/id \"One\"]])",
+        )
+        .expect("rename and retract");
+    assert!(
+        report.contains(":mentat.store/datoms-asserted 1"),
+        "{report}"
+    );
+    assert!(
+        report.contains(":mentat.store/datoms-retracted 1"),
+        "{report}"
+    );
+    let q = |it: &mut Interpreter, query: &str| {
+        it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+            .unwrap()
+    };
+    // One assertion and one retraction of "One". (A Datalog result is a set, so this can't
+    // see two identical log rows; the report's count, the rows written, can.)
+    let log = q(
+        it,
+        "[:find ?added (count ?tx) :where [?e :t/id \"One\" ?tx ?added]]",
+    );
+    assert!(
+        log.contains("[false 1]") && log.contains("[true 1]"),
+        "{log}"
+    );
+    assert_eq!(
+        q(it, "[:find ?e . :where [?e :t/id \"One\"]]"),
+        "nil",
+        "\"One\" is retracted"
+    );
+}

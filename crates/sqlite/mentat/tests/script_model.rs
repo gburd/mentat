@@ -46,6 +46,7 @@ model_test!(q_mixed_inputs);
 model_test!(history_patterns_see_added);
 model_test!(cas_and_retract_entity);
 model_test!(retracting_an_absent_value_is_a_no_op);
+model_test!(rename_and_retract_logs_one_retraction);
 model_test!(transaction_functions);
 
 #[test]

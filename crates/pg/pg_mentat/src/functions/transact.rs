@@ -1604,6 +1604,16 @@ fn insert_datoms(
         }
     }
 
+    // Dedup by the full PK (e, a, v, tx, added). Some transaction paths queue
+    // the same datom twice: :db.fn/cas pushes a retraction of the old value,
+    // and so does an explicit :db/retract of the value a cardinality-one
+    // assertion replaces (#12); the replace logic above queues it again.
+    // The log holds one row and the report counts one retraction.
+    let mut seen = std::collections::HashSet::new();
+    rows_to_insert.retain(|(e, a, v, tx, added)| {
+        seen.insert((*e, *a, typed_value_sql_literal(v), *tx, *added))
+    });
+
     // Flush all collected datoms via one batch INSERT per type table.
     batch_insert_datoms(&rows_to_insert, schema)?;
 
@@ -2758,24 +2768,8 @@ fn batch_insert_datoms(
         return Ok(());
     }
 
-    // Dedup by the full PK (e, a, v, tx, added). Some transaction paths can
-    // queue the same datom twice -- e.g. :db.fn/cas pushes a retraction of
-    // the old value, and the cardinality-one replace logic in insert_datoms
-    // independently queues the same retraction. Identical datoms are
-    // idempotent, but a single INSERT ... ON CONFLICT (store_id,e,a,v,tx)
-    // cannot list the same key twice ("cannot affect row a second time").
-    // Collapse duplicates before building the batch.
-    use std::collections::HashSet;
-    let mut seen: HashSet<(i64, i64, String, i64, bool)> = HashSet::new();
-    let mut deduped: Vec<&(i64, i64, TypedValue, i64, bool)> = Vec::with_capacity(rows.len());
-    for row in rows {
-        let (e, a, v, tx, added) = row;
-        let key = (*e, *a, typed_value_sql_literal(v), *tx, *added);
-        if seen.insert(key) {
-            deduped.push(row);
-        }
-    }
-    let rows: &[&(i64, i64, TypedValue, i64, bool)] = &deduped;
+    // `rows` has no duplicates (insert_datoms collapses them): a single
+    // INSERT ... ON CONFLICT cannot list the same key twice.
 
     // TX_STORE_ID fast-path: no DB query after the first call in this tx.
     let store_id = get_store_id_from_schema(schema)?;

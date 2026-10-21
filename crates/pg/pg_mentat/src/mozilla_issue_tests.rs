@@ -325,4 +325,34 @@ mod tests {
         );
         assert_eq!(e, "");
     }
+
+    // #12: renaming a unique identity value and retracting the old value in the same
+    // transaction logs one retraction of the old value, and the report counts one.
+    #[pg_test]
+    fn rename_and_retract_logs_one_retraction_row() {
+        setup();
+        tx(
+            r#"[{:db/ident :mr/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                :db/unique :db.unique/identity :db/index true}]"#,
+        );
+        tx(r#"[{:mr/id "One"}]"#);
+        let r = tx(
+            r#"[[:db/add [:mr/id "One"] :mr/id "Two"] [:db/retract [:mr/id "One"] :mr/id "One"]]"#,
+        );
+        assert_eq!(
+            (
+                r["datoms_asserted"].as_i64(),
+                r["datoms_retracted"].as_i64()
+            ),
+            (Some(1), Some(1)),
+            "{r}"
+        );
+        let rows = Spi::get_one::<i64>(
+            "SELECT count(*) FROM mentat.datoms d JOIN mentat.idents i ON i.entid = d.a \
+             WHERE i.ident = ':mr/id' AND d.v_text = 'One' AND NOT d.added",
+        )
+        .expect("count")
+        .unwrap_or_default();
+        assert_eq!(rows, 1);
+    }
 }
