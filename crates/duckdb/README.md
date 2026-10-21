@@ -75,9 +75,9 @@ section again.
 
 This crate is **extension-only**. The `loadable-extension` feature replaces the
 DuckDB C API functions; opening a normal DuckDB `Connection` from this crate
-panics with "API not initialized". The extension's one connection is cloned
+panics with "API not initialized". The extension's connections are cloned
 from the entrypoint's (the database handle DuckDB passes the entrypoint is
-valid only during that call), and every mentat call runs on it, one at a time.
+valid only during that call); see "Transactions and connections" for the pool.
 
 ## Workspace wiring
 
@@ -479,7 +479,6 @@ keep them.
   `(fulltext ...)` queries aren't supported.
 - Stores live in the database the extension was loaded into, not in another
   `ATTACH`ed database.
-- Mentat calls run one at a time (one connection).
 - **A closed database stays open in the process**
   ([#363](https://codeberg.org/gregburd/mentat/issues/363)). Since 1.18.0
   each database the extension is loaded into has its own connection pool, so
