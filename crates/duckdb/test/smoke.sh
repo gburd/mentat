@@ -79,7 +79,7 @@ SELECT 'since=' || string_agg(a, ',' ORDER BY a)
 SELECT 'pull=' || (edn_pull('$DB', '[*]', getvariable('alice')::BIGINT) LIKE '%":person/name":"Alice"%');
 SELECT 'pull_id=' || ((edn_pull('$DB', '[*]', getvariable('alice')::BIGINT)::JSON->>':db/id') = getvariable('alice'));
 SELECT 'pull_attrs=' || (edn_pull('$DB', '[:person/age]', getvariable('alice')::BIGINT)::JSON->>':person/age');
-SELECT 'pull_asof=' || (p::JSON->>':person/age') FROM edn_q('$DB', '[:find (pull ?e [:person/age]) . :where [?e :person/name "Alice"]]',
+SELECT 'pull_asof=' || p FROM edn_q('$DB', '[:find (pull ?e [:person/age]) . :where [?e :person/name "Alice"]]',
                                                     '{"asOf": ' || getvariable('tx1') || '}') AS t(p);
 SELECT 'boss_schema=' || (edn_t('$DB', '[{:db/ident :person/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%');
 SET VARIABLE bob = (SELECT e FROM edn_q('$DB', '[:find ?e . :where [?e :person/name "Bob"]]', NULL) AS t(e));
@@ -128,7 +128,7 @@ expect "since=31"
 expect "pull=true"
 expect "pull_id=true"
 expect "pull_attrs=31"
-expect "pull_asof=30"
+expect "pull_asof={:person/age 30}"
 expect "boss_schema=true"
 expect "boss=true"
 expect "pull_nested=Alice"

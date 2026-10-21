@@ -125,11 +125,11 @@ SELECT (edn_pull(getvariable('db'), '[:person/age]', getvariable('alice')::BIGIN
 31
 
 # A find-pull reads the query's basis: as of tx1 Alice's age is still 30
-# (before 1.18.0 it came back as the current 31).
+# (before 1.18.0 it came back as the current 31). A pull cell is EDN.
 query I
-SELECT p::JSON->>':person/age' FROM edn_q(getvariable('db'), '[:find (pull ?e [:person/age]) . :where [?e :person/name "Alice"]]', '{"asOf": ' || getvariable('tx1') || '}') AS t(p);
+SELECT p FROM edn_q(getvariable('db'), '[:find (pull ?e [:person/age]) . :where [?e :person/name "Alice"]]', '{"asOf": ' || getvariable('tx1') || '}') AS t(p);
 ----
-30
+{:person/age 30}
 
 # Map specs nest the target's pull under the ref, with its :db/id (pg's shape).
 statement ok
