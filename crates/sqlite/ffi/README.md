@@ -20,3 +20,18 @@ General development flow while working on the Android SDK is:
 
 ## iOS SDK
 TODO, contribute via [issue #732](https://github.com/mozilla/mentat/issues/732).
+
+## Panics and threads
+
+No panic unwinds into C. Each `extern "C"` function catches panics. A panic
+is reported through the `ExternError` out parameter where the function has
+one (the message starts with `mentat panicked: `); the function then returns
+a null pointer, 0, 0.0 or nothing. `typed_value_value_type` is the exception:
+it aborts the process, because `ValueType` has no spare value to return.
+
+A `Store` handle, and every handle made from it (`InProgress`, the builders,
+`QueryBuilder`, result sets, iterators), must not be used from two threads at
+once. The SQLite connection and the store's caches are not synchronised. If
+threads share a store, serialise every call on it with your own lock, or open
+one `Store` per thread on the same file. Transaction observer callbacks run on
+a thread owned by Mentat and must not call back into the same `Store`.
