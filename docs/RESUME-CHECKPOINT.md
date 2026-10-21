@@ -425,3 +425,40 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   ~/.cache/mentat/g.sh (git with retry). The Codeberg->GitHub push mirror
   can lag; trigger it with `tea api -X POST /repos/gregburd/mentat/push_mirrors-sync`.
 - EC2 (kiwi 505435643998): all mentat-* resources deleted.
+
+## v1.17.1 RELEASED (2026-10-21): tag b67bb394, DuckDB extension loads into DuckDB 2.0
+- 15aaf81b: another agent's change, reviewed and fixed. The DuckDB extension
+  is on the stable C API (USE_UNSTABLE_C_API dropped; footer C_STRUCT, floor
+  v1.5.6). 1.17.0 (C_STRUCT_UNSTABLE) is refused by DuckDB 2.0. The registry
+  builds with 2.0 since community-extensions#3079: commit d54cbbe3, reported
+  as v2.0.0, since 2026-10-20 (it was b15358c3 / v2.0.0-alpha46057 before).
+  2.0's duckdb_ext_api_v1 = v1.5.6's 546 entries + 2 appended; duckdb-rs
+  1.10506 uses the same 546.
+- crates/duckdb/test/cross-version.sh: footer check, smoke under v1.5.6 and
+  2.0 CLIs, SQLLogicTest + concurrency under py duckdb 1.5.6 and
+  2.0.0.dev2610192346. scripts/duckdb-clis.sh builds the 2.0 CLI at
+  V20_COMMIT. That takes ~20 min cold on a GitHub runner, so the CLIs are
+  cached (key duckdb-cli-v1.5.6-d54cbbe3df-*).
+  WHEN THE REGISTRY MOVES ITS PIN: update V20_COMMIT, the cache keys in
+  ci.yml/release.yml/forgejo ci.yml, and the dev wheel in cross-version.sh.
+- Not merged: the .envrc edits (personal direnv: project_steering,
+  project_mcp, git_policy allow-force-push) are still uncommitted in the
+  tree; improv-suggested.diff (a scratch copy of the diff) is in the trash.
+- b67bb394 release: Cargo.lock also gets rustls-webpki 0.103.16 and
+  webpki-roots 1.0.10 (RUSTSEC-2026-0382/0381, which failed cargo deny). They
+  come only via the ureq build-dependency of libduckdb-sys.
+- Qualified on Debian 12 EC2:
+  - pgrx +script pg13-19: 1945/0/1 each;
+  - pg15-19 packages: a 1.17.0 db upgrades, smoke passes, the upgraded
+    install matches a fresh one (pg_proc/objects), and a non-superuser can
+    CREATE EXTENSION; GLIBC_2.34;
+  - DuckDB harness and cross-version both pass.
+  GitHub CI is green (test-duckdb took 33 min cold).
+- Shipped: GitHub Release (8 assets; the DuckDB asset footer is C_STRUCT),
+  PGXN 1.17.1, crates.io 20 crates 1.17.1.
+- Registry: #3072 (1.17.0) MERGED 2026-10-20 21:05 by lghavami. The v2.0.0
+  path now serves 1.17.0, which does NOT load in 2.0. The v1.5.6 path still
+  serves 1.10.3. New PR #3162 "Update mentat to 1.17.1" (fork branch
+  mentat-1.17.1). The fork build is green on 4 platforms, and its
+  linux_amd64 artifact is C_STRUCT and loads in duckdb 2.0.
+- EC2 (kiwi 505435643998): all mentat-* resources deleted.
