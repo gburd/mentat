@@ -335,8 +335,14 @@ DECLARE
     old_schema TEXT;
     new_ns OID;
     srr TEXT;
-    ext OID := (SELECT oid FROM pg_extension WHERE extname = 'pg_mentat');
+    ext OID;
+    old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
+    -- Names resolve in pg_catalog only while this block runs; the caller's
+    -- path is restored at the end (not SET LOCAL: that lasts to the end of
+    -- the script's transaction).
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    ext := (SELECT oid FROM pg_extension WHERE extname = 'pg_mentat');
     FOR st IN
         SELECT s.store_id, s.store_name, s.schema_name, n.oid AS ns, n.nspowner
           FROM mentat.stores s
@@ -357,7 +363,7 @@ BEGIN
         -- 'mentat_' + 56 characters is the 63-character identifier limit.
         -- 1.17 took names up to 63 and PostgreSQL cut the schema name short,
         -- so the row no longer names its schema.
-        IF length(st.store_name) > 56 THEN
+        IF pg_catalog.length(st.store_name) > 56 THEN
             RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: store names are limited to 56 '
                           'characters. See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name;
             CONTINUE;
@@ -376,15 +382,15 @@ BEGIN
             CONTINUE;
         END IF;
         -- Cut to 63 characters, so it can never truncate to the store's own name.
-        old_schema := left(st.schema_name, 63 - length('_pre118')) || '_pre118';
+        old_schema := pg_catalog.left(st.schema_name, 63 - pg_catalog.length('_pre118')) || '_pre118';
         IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = old_schema) THEN
             RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: schema % already exists. '
                           'See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name, old_schema;
             CONTINUE;
         END IF;
 
-        EXECUTE format('ALTER SCHEMA %I RENAME TO %I', st.schema_name, old_schema);
-        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %s', st.schema_name, st.nspowner::regrole);  -- regrole: already quoted
+        EXECUTE pg_catalog.format('ALTER SCHEMA %I RENAME TO %I', st.schema_name, old_schema);
+        EXECUTE pg_catalog.format('CREATE SCHEMA %I AUTHORIZATION %s', st.schema_name, st.nspowner::regrole);  -- regrole: already quoted
         new_ns := (SELECT oid FROM pg_namespace WHERE nspname = st.schema_name);
         PERFORM mentat._create_store_layout(st.schema_name, st.store_id);
 
@@ -392,11 +398,11 @@ BEGIN
         -- not reach other backends. The installing role holds TRIGGER on this
         -- table: in replica mode a trigger it made cannot fire as superuser
         -- (only the table's owner can mark a trigger ALWAYS).
-        srr := current_setting('session_replication_role');
-        PERFORM set_config('session_replication_role', 'replica', true);
+        srr := pg_catalog.current_setting('session_replication_role');
+        PERFORM pg_catalog.set_config('session_replication_role', 'replica', true);
         INSERT INTO mentat.cache_generation (store_name, gen) VALUES (st.store_name, 1)
         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1;
-        PERFORM set_config('session_replication_role', srr, true);
+        PERFORM pg_catalog.set_config('session_replication_role', srr, true);
 
         -- The store's views and helper functions, as create_store makes them.
         -- In the extension's own schema, wherever it was installed.
@@ -408,7 +414,7 @@ BEGIN
         -- pg_dump must dump it.
         FOR rec IN
             SELECT o.type, o.identity
-              FROM pg_depend d, LATERAL pg_identify_object(d.classid, d.objid, 0) o
+              FROM pg_depend d, LATERAL pg_catalog.pg_identify_object(d.classid, d.objid, 0) o
              WHERE d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext AND d.deptype = 'e'
                AND ((d.classid = 'pg_class'::regclass
                      AND (SELECT relnamespace FROM pg_class WHERE oid = d.objid) = new_ns)
@@ -417,7 +423,7 @@ BEGIN
                  OR (d.classid = 'pg_namespace'::regclass AND d.objid = new_ns))
              ORDER BY d.classid = 'pg_namespace'::regclass
         LOOP
-            EXECUTE format('ALTER EXTENSION pg_mentat DROP %s %s', rec.type, rec.identity);
+            EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat DROP %s %s', rec.type, rec.identity);
         END LOOP;
 
         PERFORM mentat._store_grants(st.schema_name);
@@ -427,8 +433,9 @@ BEGIN
         RAISE WARNING 'pg_mentat upgrade: rebuilt named store "%" in a new, empty schema %. Its old tables '
                       'are in schema % and were not copied: see "Upgrading from 1.17" in '
                       'docs/src/multi-tenancy.md. DROP SCHEMA % CASCADE once you no longer need them.',
-                      st.store_name, st.schema_name, old_schema, quote_ident(old_schema);
+                      st.store_name, st.schema_name, old_schema, pg_catalog.quote_ident(old_schema);
     END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
 $migrate$;
 
