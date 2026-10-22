@@ -426,4 +426,51 @@ mod tests {
         );
         Spi::run("SELECT drop_store('twincase')").expect("drop twin");
     }
+
+    // regrole output is already quoted. Formatting it with %I (or
+    // quote_ident) quoted it twice: GRANT ... TO """App-User""" failed, so
+    // with such a role among the default store's grantees (the installing role
+    // of a trusted install) every create_store failed, and the upgrade's
+    // OWNER TO / AUTHORIZATION failed for a store owned by one.
+    #[pg_test]
+    fn role_names_that_need_quoting() {
+        setup();
+        Spi::run(
+            "CREATE ROLE \"App-User\" NOLOGIN; \
+             GRANT USAGE ON SCHEMA mentat TO \"App-User\" WITH GRANT OPTION; \
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA mentat TO \"App-User\" WITH GRANT OPTION; \
+             GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA mentat TO \"App-User\" WITH GRANT OPTION",
+        )
+        .expect("installer-like role");
+        // Grantee path: the store gets "App-User"'s grants.
+        Spi::run("SELECT create_store('quoted_role')").expect("create_store");
+        let usage: bool = Spi::get_one(
+            "SELECT has_schema_privilege('App-User', 'mentat_quoted_role', 'USAGE WITH GRANT OPTION')",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(usage);
+        // Owner path (what the upgrade does): objects made by another role are
+        // handed to the schema's owner.
+        Spi::run(
+            "ALTER SCHEMA mentat_quoted_role OWNER TO \"App-User\"; \
+             SELECT mentat._store_grants('mentat_quoted_role')",
+        )
+        .expect("_store_grants for a quoted owner");
+        let foreign: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_class WHERE relnamespace = \
+               (SELECT oid FROM pg_namespace WHERE nspname = 'mentat_quoted_role') \
+             AND relkind IN ('r', 'v', 'S') AND relowner <> '\"App-User\"'::regrole",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(foreign, 0, "every table, view and sequence is App-User's");
+        // And the owner can use it.
+        tx("quoted_role", SCHEMA_TX);
+        Spi::run("SET LOCAL ROLE \"App-User\"").expect("set role");
+        tx("quoted_role", "[{:p/name \"by-app-user\"}]");
+        assert_eq!(sorted(names("quoted_role")), vec!["by-app-user"]);
+        Spi::run("RESET ROLE").expect("reset role");
+        Spi::run("SELECT drop_store('quoted_role')").expect("drop");
+    }
 }
