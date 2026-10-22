@@ -318,6 +318,74 @@ mod tests {
         }
     }
 
+    // #362: in one transaction, a retraction of a live value of each type is applied and one
+    // of an absent value is dropped. (The liveness check is one query per value type.)
+    #[pg_test]
+    fn retractions_of_every_value_type() {
+        setup();
+        let types = [
+            ("ref", "{r}", ":db/ident"),
+            ("boolean", "true", "false"),
+            ("long", "7", "8"),
+            ("double", "0.1", "0.2"),
+            (
+                "instant",
+                r#"#inst "2020-01-01T00:00:00.000001Z""#,
+                r#"#inst "2021-01-01T00:00:00Z""#,
+            ),
+            ("string", r#""it's""#, r#""its""#),
+            ("keyword", ":k/a", ":k/b"),
+            (
+                "uuid",
+                r#"#uuid "550e8400-e29b-41d4-a716-446655440000""#,
+                r#"#uuid "550e8400-e29b-41d4-a716-446655440001""#,
+            ),
+            ("bytes", "#bytes 0a0b", "#bytes 0c"),
+        ];
+        let schema: String = types
+            .iter()
+            .map(|(t, ..)| {
+                format!("{{:db/ident :mt/{t} :db/valueType :db.type/{t} :db/cardinality :db.cardinality/many}}")
+            })
+            .collect();
+        tx(&format!("[{schema}]"));
+        let r = tx(r#"[{:db/id "r" :db/doc "r"}]"#)["tempids"]["r"]
+            .as_i64()
+            .unwrap();
+        let vals = |i: usize| -> Vec<String> {
+            types
+                .iter()
+                .map(|t| [t.1, t.2][i].replace("{r}", &r.to_string()))
+                .collect()
+        };
+        let (live, absent) = (vals(0), vals(1));
+        let adds: String = types
+            .iter()
+            .zip(&live)
+            .map(|((t, ..), v)| format!(":mt/{t} {v} "))
+            .collect();
+        let e = tx(&format!(r#"[{{:db/id "e" {adds}}}]"#))["tempids"]["e"]
+            .as_i64()
+            .unwrap();
+        let mut t = String::from("[");
+        for (((ty, ..), l), a) in types.iter().zip(&live).zip(&absent) {
+            t.push_str(&format!(
+                "[:db/retract {e} :mt/{ty} {l}] [:db/retract {e} :mt/{ty} {a}]"
+            ));
+        }
+        t.push(']');
+        let rep = tx(&t);
+        assert_eq!(
+            rep["datoms_retracted"].as_i64(),
+            Some(types.len() as i64),
+            "{rep}"
+        );
+        assert_eq!(
+            coll(&format!("[:find [?a ...] :where [{e} ?a _]]")),
+            Vec::<String>::new()
+        );
+    }
+
     // #152: `[a v]` lookup refs in entity, :db/id and value position, and a list of them
     // for a cardinality-many ref; a vector of values for any cardinality-many attribute.
     #[pg_test]

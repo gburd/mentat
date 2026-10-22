@@ -1363,18 +1363,14 @@ fn execute_transaction_inner(
     // A retraction of a datom that isn't live is a no-op (#362): it is not
     // logged and not reported, as on the embedded engine and in Datomic. A
     // datom asserted earlier in this transaction counts as live.
-    let mut kept = Vec::with_capacity(pending_datoms.len());
-    for (i, datom) in pending_datoms.iter().enumerate() {
-        let keep = datom.added
-            || pending_datoms[..i]
-                .iter()
-                .any(|d| d.added && d.e == datom.e && d.a == datom.a && d.v == datom.v)
-            // Presence in the current-state projection, whatever the cardinality.
-            || is_duplicate_cardinality_many(datom.e, datom.a, &datom.v, &qs)?;
-        kept.push(keep);
+    let dead = dead_retractions(&pending_datoms, &qs)?;
+    if !dead.is_empty() {
+        let mut i = 0;
+        pending_datoms.retain(|_| {
+            i += 1;
+            !dead.contains(&(i - 1))
+        });
     }
-    let mut kept = kept.into_iter();
-    pending_datoms.retain(|_| kept.next().unwrap_or(true));
 
     // Validate and insert all datoms.
     // If schema was installed (savepoint active), catch errors to rollback
@@ -2596,6 +2592,76 @@ fn is_duplicate_cardinality_many(
     .unwrap_or(false);
 
     Ok(exists)
+}
+
+/// The indexes of the retractions in `datoms` whose datom is not live: neither asserted
+/// earlier in the transaction nor present in the current-state projection (#362). One query
+/// per value type, whatever the number of retractions; the probes are bound as arrays, and
+/// only the misses (usually none) come back.
+fn dead_retractions(
+    datoms: &[PendingDatom],
+    schema: &str,
+) -> Result<std::collections::HashSet<usize>, Box<dyn std::error::Error + Send + Sync>> {
+    use std::collections::{HashMap, HashSet};
+    let mut dead = HashSet::new();
+    if datoms.iter().all(|d| d.added) {
+        return Ok(dead);
+    }
+    let key = |d: &PendingDatom| (d.e, d.a, d.v.type_tag(), typed_value_sql_literal(&d.v));
+    let mut asserted = HashSet::new();
+    // projection table -> (indexes, e, a, v as text) to look up
+    type Probe = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<String>);
+    let mut probes: HashMap<&'static str, Probe> = HashMap::new();
+    for (i, d) in datoms.iter().enumerate() {
+        if d.added {
+            asserted.insert(key(d));
+            continue;
+        }
+        if !asserted.is_empty() && asserted.contains(&key(d)) {
+            continue;
+        }
+        let p = probes.entry(current_projection_table(&d.v)).or_default();
+        p.0.push(i as i64);
+        p.1.push(d.e);
+        p.2.push(d.a);
+        p.3.push(match &d.v {
+            TypedValue::Ref(n) | TypedValue::Long(n) | TypedValue::Instant(n) => n.to_string(),
+            TypedValue::Boolean(b) => b.to_string(),
+            // {:?} keeps every digit; PostgreSQL reads "inf", "-inf" and "NaN".
+            TypedValue::Double(f) => format!("{f:?}"),
+            TypedValue::Text(s) | TypedValue::Keyword(s) => s.clone(),
+            TypedValue::Uuid(u) => u.to_string(),
+            TypedValue::Bytes(b) => hex::encode(b),
+        });
+    }
+    let store_id = get_store_id_from_schema(schema)?;
+    for (table, (idx, es, as_, vs)) in probes {
+        let v = match table {
+            "current_ref" | "current_long" => "t.v::bigint",
+            "current_boolean" => "t.v::boolean",
+            "current_double" => "t.v::double precision",
+            "current_instant" => "to_timestamp(t.v::double precision / 1000000.0)",
+            "current_uuid" => "t.v::uuid",
+            "current_bytes" => "decode(t.v, 'hex')",
+            _ => "t.v",
+        };
+        let sql = format!(
+            "SELECT array_agg(t.i) FROM unnest($2::bigint[], $3::bigint[], $4::bigint[], $5::text[]) \
+             AS t(i, e, a, v) WHERE NOT EXISTS (SELECT 1 FROM mentat.{table} AS c \
+             WHERE c.store_id = $1 AND c.e = t.e AND c.a = t.a AND c.v = {v})"
+        );
+        let args = [
+            DatumWithOid::from(store_id),
+            DatumWithOid::from(idx),
+            DatumWithOid::from(es),
+            DatumWithOid::from(as_),
+            DatumWithOid::from(vs),
+        ];
+        if let Some(missed) = Spi::get_one_with_args::<Vec<i64>>(&sql, &args)? {
+            dead.extend(missed.into_iter().map(|i| i as usize));
+        }
+    }
+    Ok(dead)
 }
 
 /// Map a type tag back to a human-readable value type name (for error messages).
