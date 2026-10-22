@@ -1,33 +1,34 @@
 -- pg_mentat 1.17.1 -> 1.18.0 upgrade.
 --
--- Named stores (#337). create_store(name) used to build the pre-1.5 wide
--- layout in mentat_<name> (a wide `datoms` table plus schema / idents /
--- partitions / transactions / fulltext), which the transactor had not
--- written to since 1.5.0: the first t() into such a store failed with
--- `relation "mentat_<name>.current_instant" does not exist`. Before 1.17.0
--- create_store() itself failed on every call. So an old named store can hold
--- only rows inserted by hand.
+-- Each section below belongs to one change.
+
+-- ===========================================================================
+-- Named stores (#337).
+--
+-- create_store(name) used to build the pre-1.5 wide layout in mentat_<name>
+-- (a wide `datoms` table plus schema / idents / partitions / transactions /
+-- fulltext), which the transactor had not written to since 1.5.0: the first
+-- t() into such a store failed with `relation "mentat_<name>.current_instant"
+-- does not exist`. Before 1.17.0 create_store() itself failed on every call.
+-- So an old named store can hold only rows inserted by hand.
 --
 -- 1.18.0 gives a named store the default store's full layout in its schema
 -- (sql/30_store_layout.sql, the same functions a fresh install has), and
 -- create_store() / t() / q() / pull() / entity() / log() all use it. This
--- script installs those functions and rebuilds every old named store:
+-- section installs those functions and rebuilds every old named store:
 --
 --   * the old schema is renamed to mentat_<name>_pre118 and kept, never
---     dropped: anything inserted into it by hand stays readable there;
---   * a fresh mentat_<name> gets the new layout, owned by the old schema's
---     owner, with the default store's grants;
---   * rows from the old wide `datoms` table go into the narrow log, the
---     attributes in its `schema` / `idents` tables and its transactions are
---     copied, the partition sequences are moved past every id copied, and
---     the current-state projection is rebuilt from the copied log;
+--     dropped and never read: rows inserted into it by hand stay there for
+--     the owner to copy (docs/src/multi-tenancy.md has the queries);
+--   * a fresh, empty mentat_<name> gets the new layout, owned by the old
+--     schema's owner, with the default store's grants;
 --   * the store's views and helper functions are recreated and its objects
 --     are taken out of the extension (an upgrade script's objects would
 --     otherwise become extension members, which drop_store could not drop);
---   * a NOTICE names each store rebuilt and what was copied. Drop
---     mentat_<name>_pre118 when you no longer need it.
+--   * a message names each store rebuilt, and each store skipped and why.
 --
 -- A store already on the new layout (it has current_instant) is left alone.
+-- ===========================================================================
 
 -- ---------------------------------------------------------------------------
 -- The layout functions (identical to sql/30_store_layout.sql).
@@ -313,6 +314,18 @@ $fn$;
 
 -- ---------------------------------------------------------------------------
 -- Rebuild pre-1.18 named stores.
+--
+-- This runs as the bootstrap superuser, so it trusts nothing that the
+-- installing role or a store's owner controls:
+--   * mentat.stores is writable by the installing role (27_dump_config.sql).
+--     Only a row shaped like one create_store() made is rebuilt: schema
+--     mentat_<name>, a valid store name, an ordinary `datoms` table with a
+--     value_type_tag column (the old wide layout).
+--   * The old schema belongs to the store's owner, who can replace any table
+--     in it with a view or a function. So this block never reads a relation
+--     in it: it renames the schema and copies nothing. Rows inserted there by
+--     hand stay for the owner to copy (docs/src/multi-tenancy.md).
+-- A store it cannot rebuild is skipped with a WARNING; the upgrade goes on.
 -- ---------------------------------------------------------------------------
 DO $migrate$
 DECLARE
@@ -320,99 +333,64 @@ DECLARE
     rec RECORD;
     old_schema TEXT;
     new_ns OID;
-    n BIGINT;
-    n_datoms BIGINT;
-    n_attrs BIGINT;
+    srr TEXT;
     ext OID := (SELECT oid FROM pg_extension WHERE extname = 'pg_mentat');
 BEGIN
     FOR st IN
-        SELECT s.store_id, s.store_name, s.schema_name, n.nspowner
+        SELECT s.store_id, s.store_name, s.schema_name, n.oid AS ns, n.nspowner
           FROM mentat.stores s
-          JOIN pg_namespace n ON n.nspname = s.schema_name
-         WHERE s.schema_name <> 'mentat'
-           AND to_regclass(format('%I.current_instant', s.schema_name)) IS NULL
+          LEFT JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE s.schema_name IS DISTINCT FROM 'mentat'
          ORDER BY s.store_id
     LOOP
+        IF st.schema_name IS DISTINCT FROM 'mentat_' || st.store_name
+           OR st.store_name !~ '^[A-Za-z_][A-Za-z0-9_]*$' THEN
+            -- Not a create_store() row: a store_id row for Row-Level Security,
+            -- or edited by hand. Say so only if it names an existing schema.
+            IF st.ns IS NOT NULL THEN
+                RAISE WARNING 'pg_mentat upgrade: mentat.stores row "%" names schema %, which create_store() '
+                              'would not have made; left alone.', st.store_name, st.schema_name;
+            END IF;
+            CONTINUE;
+        END IF;
+        -- Registered, but its schema was dropped by hand: nothing to rebuild.
+        CONTINUE WHEN st.ns IS NULL;
+        -- Already on the 1.18 layout.
+        CONTINUE WHEN EXISTS (SELECT 1 FROM pg_class
+                               WHERE relnamespace = st.ns AND relname = 'current_instant' AND relkind = 'r');
+        IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid
+                        WHERE c.relnamespace = st.ns AND c.relname = 'datoms' AND c.relkind = 'r'
+                          AND a.attname = 'value_type_tag' AND NOT a.attisdropped) THEN
+            RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: schema % does not hold the '
+                          'pre-1.18 layout. See "Upgrading from 1.17" in docs/src/multi-tenancy.md.',
+                          st.store_name, st.schema_name;
+            CONTINUE;
+        END IF;
         old_schema := st.schema_name || '_pre118';
         IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = old_schema) THEN
-            RAISE EXCEPTION 'pg_mentat upgrade: cannot rebuild store "%": schema % already exists. '
-                            'Rename or drop it and run the upgrade again.', st.store_name, old_schema;
+            RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: schema % already exists. '
+                          'See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name, old_schema;
+            CONTINUE;
         END IF;
+
         EXECUTE format('ALTER SCHEMA %I RENAME TO %I', st.schema_name, old_schema);
         EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %s', st.schema_name, st.nspowner::regrole);  -- regrole: already quoted
         new_ns := (SELECT oid FROM pg_namespace WHERE nspname = st.schema_name);
         PERFORM mentat._create_store_layout(st.schema_name, st.store_id);
 
-        -- Attributes, idents and transactions from the old schema.
-        n_attrs := 0;
-        IF to_regclass(format('%I.schema', old_schema)) IS NOT NULL THEN
-            EXECUTE format(
-                'INSERT INTO %I.schema (entid, ident, value_type, cardinality, unique_constraint, '
-                '                        indexed, fulltext, component, no_history) '
-                'SELECT entid, ident, value_type, cardinality, unique_constraint, '
-                '       indexed, fulltext, component, no_history FROM %I.schema '
-                'ON CONFLICT DO NOTHING', st.schema_name, old_schema);
-            GET DIAGNOSTICS n_attrs = ROW_COUNT;
-        END IF;
-        IF to_regclass(format('%I.idents', old_schema)) IS NOT NULL THEN
-            EXECUTE format('INSERT INTO %I.idents (ident, entid) SELECT ident, entid FROM %I.idents '
-                           'ON CONFLICT DO NOTHING', st.schema_name, old_schema);
-            EXECUTE format('SELECT setval(%L, GREATEST((SELECT last_value FROM %I.partition_db_seq), '
-                           '(SELECT max(entid) FROM %I.idents WHERE entid BETWEEN 100 AND 999999)))',
-                           format('%I.partition_db_seq', st.schema_name), st.schema_name, old_schema);
-        END IF;
-        IF to_regclass(format('%I.transactions', old_schema)) IS NOT NULL THEN
-            EXECUTE format('INSERT INTO %I.transactions (tx, tx_instant) SELECT tx, tx_instant '
-                           'FROM %I.transactions ON CONFLICT DO NOTHING', st.schema_name, old_schema);
-            EXECUTE format('SELECT setval(%L, GREATEST((SELECT last_value FROM %I.partition_tx_seq), '
-                           '(SELECT max(tx) FROM %I.transactions WHERE tx BETWEEN 1000000000000 AND 1999999999999)))',
-                           format('%I.partition_tx_seq', st.schema_name), st.schema_name, st.schema_name);
-        END IF;
-
-        -- Wide datoms -> narrow log, by value_type_tag (tags as in
-        -- sql/10_narrow_storage.sql). Rows with a NULL value are skipped.
-        n_datoms := 0;
-        IF to_regclass(format('%I.datoms', old_schema)) IS NOT NULL THEN
-            FOR rec IN
-                SELECT * FROM (VALUES
-                    (0, 'ref', 'v_ref'), (1, 'boolean', 'v_bool'), (2, 'long', 'v_long'),
-                    (3, 'double', 'v_double'), (4, 'instant', 'v_instant'), (7, 'text', 'v_text'),
-                    (8, 'keyword', 'v_keyword'), (10, 'uuid', 'v_uuid'), (11, 'bytes', 'v_bytes')
-                ) AS m(tag, ty, col)
-            LOOP
-                EXECUTE format(
-                    'INSERT INTO %I.datoms_%s_new (store_id, e, a, v, tx, added) '
-                    'SELECT $1, e, a, %I, tx, added FROM %I.datoms '
-                    'WHERE value_type_tag = $2 AND %I IS NOT NULL ON CONFLICT DO NOTHING',
-                    st.schema_name, rec.ty, rec.col, old_schema, rec.col)
-                USING st.store_id, rec.tag;
-                GET DIAGNOSTICS n = ROW_COUNT;
-                n_datoms := n_datoms + n;
-            END LOOP;
-            -- Never re-issue a user-partition id the copied rows use.
-            EXECUTE format('SELECT setval(%L, GREATEST((SELECT last_value FROM %I.partition_user_seq), '
-                           '(SELECT max(e) FROM %I.datoms WHERE e BETWEEN 1000001 AND 999999999999)))',
-                           format('%I.partition_user_seq', st.schema_name), st.schema_name, old_schema);
-        END IF;
-
-        -- The projection from the copied log, latest tx wins (the rule of
-        -- mentat.rebuild_current_projection, which reads the default schema).
-        FOR rec IN SELECT unnest(ARRAY['ref', 'boolean', 'long', 'double', 'instant',
-                                       'text', 'keyword', 'uuid', 'bytes']) AS ty
-        LOOP
-            EXECUTE format(
-                'INSERT INTO %1$I.current_%2$s (store_id, e, a, v, tx) '
-                'SELECT store_id, e, a, v, tx FROM ( '
-                '  SELECT DISTINCT ON (store_id, e, a, v) store_id, e, a, v, tx, added '
-                '    FROM %1$I.datoms_%2$s_new ORDER BY store_id, e, a, v, tx DESC) l '
-                'WHERE l.added ON CONFLICT DO NOTHING', st.schema_name, rec.ty);
-        END LOOP;
-
+        -- 1.17 stores have no cache_generation row, so schema changes would
+        -- not reach other backends. The installing role holds TRIGGER on this
+        -- table: in replica mode a trigger it made cannot fire as superuser
+        -- (only the table's owner can mark a trigger ALWAYS).
+        srr := current_setting('session_replication_role');
+        PERFORM set_config('session_replication_role', 'replica', true);
         INSERT INTO mentat.cache_generation (store_name, gen) VALUES (st.store_name, 1)
         ON CONFLICT (store_name) DO UPDATE SET gen = mentat.cache_generation.gen + 1;
+        PERFORM set_config('session_replication_role', srr, true);
 
         -- The store's views and helper functions, as create_store makes them.
-        PERFORM public.create_virtual_tables(st.store_name);
+        -- In the extension's own schema, wherever it was installed.
+        PERFORM @extschema@.create_virtual_tables(st.store_name);
 
         -- Objects an extension script creates become members of the
         -- extension. A store's schema is user data, as it is when
@@ -434,9 +412,14 @@ BEGIN
 
         PERFORM mentat._store_grants(st.schema_name);
 
-        RAISE NOTICE 'pg_mentat: rebuilt named store "%" in schema % (copied % datoms, % attributes); '
-                     'the old layout is kept in schema %. DROP SCHEMA % CASCADE once you no longer need it.',
-                     st.store_name, st.schema_name, n_datoms, n_attrs, old_schema, old_schema;
+        RAISE NOTICE 'pg_mentat upgrade: rebuilt named store "%" in a new, empty schema %. Its old tables '
+                     'are in schema % and were not copied: see "Upgrading from 1.17" in '
+                     'docs/src/multi-tenancy.md. DROP SCHEMA % CASCADE once you no longer need them.',
+                     st.store_name, st.schema_name, old_schema, quote_ident(old_schema);
     END LOOP;
 END
 $migrate$;
+
+-- ===========================================================================
+-- End of the named stores (#337) section.
+-- ===========================================================================
