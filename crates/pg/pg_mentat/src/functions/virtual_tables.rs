@@ -882,22 +882,29 @@ $$ LANGUAGE plpgsql STABLE",
 // Optional extension-dependent indexes
 // ---------------------------------------------------------------------------
 
-/// Generate SQL for optional trigram indexes (requires pg_trgm extension).
+/// SQL for an optional GIN trigram index (requires pg_trgm) on one of the
+/// store's text tables, for fast LIKE/ILIKE and similarity searches. `trgm`
+/// is pg_trgm's schema, quoted (extension_schema).
 ///
-/// Creates GIN trigram indexes on the text and keyword type-specific tables
-/// for fast LIKE/ILIKE and similarity searches. `trgm` is pg_trgm's schema,
-/// quoted (extension_schema).
-fn trigram_indexes_sql(schema: &str, store_name: &str, trgm: &str) -> String {
+/// Named for the table, not the store: the index is in the store's own
+/// schema. A store name in it truncated to the same 63 characters for both
+/// tables once the name reached 53, and each rename_store added two more.
+fn trigram_index_sql(schema: &str, table: &str, trgm: &str) -> String {
     format!(
-        r"CREATE INDEX IF NOT EXISTS idx_{name}_trgm_text
-ON {schema}.datoms_text_new USING GIN (v {trgm}.gin_trgm_ops)
-WHERE added = true;
-
-CREATE INDEX IF NOT EXISTS idx_{name}_trgm_keyword
-ON {schema}.datoms_keyword_new USING GIN (v {trgm}.gin_trgm_ops)
-WHERE added = true",
-        name = store_name.to_lowercase()
+        "CREATE INDEX IF NOT EXISTS idx_{table}_trgm ON {schema}.{table} \
+         USING GIN (v {trgm}.gin_trgm_ops) WHERE added = true"
     )
+}
+
+/// Whether `table` already has a gin_trgm_ops index, under any name.
+fn has_trigram_index(table: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
+           JOIN pg_catalog.pg_opclass o ON o.oid = i.indclass[0] \
+          WHERE i.indrelid = $1::pg_catalog.regclass AND o.opcname = 'gin_trgm_ops')",
+        &[DatumWithOid::from(table)],
+    )?
+    .unwrap_or(false))
 }
 
 /// The store's views and helper functions, in creation order. Every
@@ -951,7 +958,6 @@ fn owns_table(table: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sy
 /// invoked directly to regenerate views for an existing store.
 pub fn create_virtual_tables_for_schema(
     schema: &str,
-    store_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The views embed the store's id by name: refresh them after a rename.
     for sql in views_and_functions_sql(schema) {
@@ -965,7 +971,12 @@ pub fn create_virtual_tables_for_schema(
     // have, so skip them for a non-owner rather than failing.
     if let Some(trgm) = extension_schema("pg_trgm") {
         if owns_table(&format!("{schema}.datoms_text_new"))? {
-            Spi::run(&trigram_indexes_sql(schema, store_name, &trgm))?;
+            for table in ["datoms_text_new", "datoms_keyword_new"] {
+                // One is enough: a rename, or one the user made, keeps its own.
+                if !has_trigram_index(&format!("{schema}.{table}"))? {
+                    Spi::run(&trigram_index_sql(schema, table, &trgm))?;
+                }
+            }
         }
     }
 
@@ -1000,7 +1011,7 @@ pub fn create_virtual_tables(
     let schema_name = get_schema_for_store(store_name);
     let quoted_schema = quote_ident(&schema_name);
 
-    create_virtual_tables_for_schema(&quoted_schema, store_name)?;
+    create_virtual_tables_for_schema(&quoted_schema)?;
 
     Ok(format!(
         "Virtual tables created for store '{}'.",
@@ -1126,15 +1137,12 @@ mod tests {
     }
 
     #[test]
-    fn test_trigram_indexes_sql_uses_type_specific_tables() {
-        let sql = trigram_indexes_sql("mentat", "default", "public");
+    fn test_trigram_index_sql_uses_type_specific_tables() {
+        let sql = trigram_index_sql("mentat_s", "datoms_text_new", "public");
         assert!(sql.contains("v public.gin_trgm_ops"));
-        let sql = trigram_indexes_sql("mentat", "default", "\"Ext Schema\"");
+        let sql = trigram_index_sql("mentat_s", "datoms_keyword_new", "\"Ext Schema\"");
         assert!(sql.contains("v \"Ext Schema\".gin_trgm_ops"));
-        assert!(sql.contains("idx_default_trgm_text"));
-        assert!(sql.contains("idx_default_trgm_keyword"));
-        assert!(sql.contains("mentat.datoms_text_new"));
-        assert!(sql.contains("mentat.datoms_keyword_new"));
+        assert!(sql.contains("idx_datoms_keyword_new_trgm ON mentat_s.datoms_keyword_new"));
     }
 
     // The generators used to name mentat.datoms_* and a str::replace moved
@@ -1151,7 +1159,7 @@ mod tests {
             "\"mentat_A_mentat\"",
         ] {
             let mut sql = views_and_functions_sql(schema).join(";\n");
-            sql.push_str(&trigram_indexes_sql(schema, "x", "public"));
+            sql.push_str(&trigram_index_sql(schema, "datoms_text_new", "public"));
             let mut n = 0;
             for t in ["datoms_", "transactions", "schema s", "idents"] {
                 for (at, _) in sql.match_indices(&format!(".{t}")) {

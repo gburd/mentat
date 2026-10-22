@@ -197,7 +197,7 @@ pub fn create_store(
     crate::cache::invalidate_store_cache(store_name);
 
     // Create virtual table views (entities, attributes, facts, etc.)
-    crate::functions::virtual_tables::create_virtual_tables_for_schema(&quoted_schema, store_name)?;
+    crate::functions::virtual_tables::create_virtual_tables_for_schema(&quoted_schema)?;
 
     Spi::run_with_args(
         "SELECT mentat._store_grants($1)",
@@ -362,7 +362,7 @@ pub fn rename_store(
     crate::cache::invalidate_store_cache(old_name);
     crate::cache::invalidate_store_cache(new_name);
     // The virtual-table views and functions find the store's id by name.
-    crate::functions::virtual_tables::create_virtual_tables_for_schema(&quoted_new, new_name)?;
+    crate::functions::virtual_tables::create_virtual_tables_for_schema(&quoted_new)?;
 
     Ok(format!("Store '{}' renamed to '{}'.", old_name, new_name))
 }
