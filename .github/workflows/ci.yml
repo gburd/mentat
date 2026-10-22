@@ -322,11 +322,25 @@ jobs:
       - name: Load + query in DuckDB v1.5.6 and v2.0 (smoke, SQLLogicTest, concurrency)
         working-directory: crates/duckdb
         run: EXT=build/debug/mentat.duckdb_extension CLIS="$GITHUB_WORKSPACE/duckdb-cli" bash test/cross-version.sh
+      # The import tests read SQLite files through DuckDB's sqlite extension,
+      # which DuckDB installs into ~/.duckdb/extensions on first use: cached,
+      # keyed on the harness's duckdb crate pin (which fixes the DuckDB version).
+      - name: duckdb crate pin (extension cache key)
+        id: duckdb-pin
+        run: echo "pin=$(sed -n 's/^duckdb = { version = "\([^"]*\)".*/\1/p' crates/duckdb/store/tests-harness/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - name: Cache DuckDB's extensions (sqlite, for the import tests)
+        uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-ext-${{ runner.os }}-${{ steps.duckdb-pin.outputs.pin }}
       # The DuckDB storage backend outside the extension, on a bundled DuckDB:
-      # the differential test against the SQLite engine and the scripting
-      # model suite. A separate workspace (duckdb `bundled` vs the
-      # extension's `loadable-extension`).
-      - name: DuckDB store tests (differential vs SQLite, model suite)
+      # the differential test against the SQLite engine, the scripting model
+      # suite and mentat_import. A separate workspace (duckdb `bundled` vs the
+      # extension's `loadable-extension`). MENTAT_REQUIRE_SQLITE_EXT: fail,
+      # don't skip, if the sqlite extension won't load.
+      - name: DuckDB store tests (differential vs SQLite, model suite, import)
+        env:
+          MENTAT_REQUIRE_SQLITE_EXT: "1"
         run: cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml
 
   # --- Nix flake: builds the SQLite CLI + one extension major -----------

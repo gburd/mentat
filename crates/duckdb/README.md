@@ -450,7 +450,9 @@ keep them.
   transactions and 60 queries (now, as-of and since every transaction) on the
   SQLite engine and on DuckDB, the shared scripting model suite, persistence and
   WAL-replay tests, and `mentat_import` of a SQLite store (needs DuckDB's
-  `sqlite` extension, autoinstalled from extensions.duckdb.org on first run).
+  `sqlite` extension, autoinstalled from extensions.duckdb.org on first run;
+  where it can't load, the import tests skip with a message, or fail with
+  `MENTAT_REQUIRE_SQLITE_EXT=1`, which CI sets).
   `cargo test --manifest-path crates/duckdb/store/tests-harness/Cargo.toml`.
 - `test/import-1.10.py` — end to end: the real 1.10.x extension (under a
   v1.5.6 CLI, in its own process) writes a store, this build imports it, and

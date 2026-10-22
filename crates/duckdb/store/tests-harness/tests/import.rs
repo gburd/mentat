@@ -50,8 +50,40 @@ fn edge_data() -> String {
     )
 }
 
+/// Whether DuckDB's sqlite extension (which every test here needs) loads:
+/// installed from extensions.duckdb.org on first use. Offline, the tests
+/// skip with a message, unless `MENTAT_REQUIRE_SQLITE_EXT=1` (CI sets it, so
+/// CI never skips silently).
+fn sqlite_ext() -> bool {
+    static OK: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    let ok = OK.get_or_init(|| {
+        Connection::open_in_memory()
+            .and_then(|c| c.execute_batch("INSTALL sqlite; LOAD sqlite"))
+            .map_err(|e| e.to_string())
+    });
+    match ok {
+        Ok(()) => true,
+        Err(e) if std::env::var("MENTAT_REQUIRE_SQLITE_EXT").as_deref() == Ok("1") => {
+            panic!("DuckDB's sqlite extension won't load (MENTAT_REQUIRE_SQLITE_EXT=1): {e}")
+        }
+        Err(e) => {
+            // Straight to stderr: libtest captures eprintln! of a passing test.
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIPPED (set MENTAT_REQUIRE_SQLITE_EXT=1 to fail instead): \
+                 DuckDB's sqlite extension won't load: {e}"
+            );
+            false
+        }
+    }
+}
+
 #[test]
 fn imported_store_matches_the_sqlite_store() {
+    if !sqlite_ext() {
+        return;
+    }
     // Every SQLite file a test opens is made in a TempDir, never in the tree.
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("old.mentat");
@@ -227,6 +259,9 @@ fn rusqlite_like_doubles(sqlite: &mentat::Store) -> Vec<f64> {
 
 #[test]
 fn import_refuses_a_store_with_data_and_non_mentat_files() {
+    if !sqlite_ext() {
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     let good = dir.path().join("good.mentat");
     mentat::Store::open(good.to_str().unwrap())
@@ -309,6 +344,9 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
 /// itself all work, and the legacy indexes are dropped once it's detached.
 #[test]
 fn stores_open_while_a_sqlite_mentat_file_is_attached() {
+    if !sqlite_ext() {
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     let old = dir.path().join("old.mentat");
     mentat::Store::open(old.to_str().unwrap())
@@ -391,6 +429,9 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
 /// queries other stores: each import's ATTACH must not fail them.
 #[test]
 fn other_stores_work_during_an_import() {
+    if !sqlite_ext() {
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     let old = dir.path().join("old.mentat");
     let mut sqlite = mentat::Store::open(old.to_str().unwrap()).unwrap();
@@ -441,6 +482,9 @@ fn other_stores_work_during_an_import() {
 /// good file and takes transactions.
 #[test]
 fn a_failed_or_panicking_import_leaves_nothing_behind() {
+    if !sqlite_ext() {
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     let (good, bad) = (
         dir.path().join("good.mentat"),
@@ -500,6 +544,9 @@ fn a_failed_or_panicking_import_leaves_nothing_behind() {
 /// text, not copy the rowid as if it were the string.
 #[test]
 fn a_retracted_fulltext_attribute_keeps_its_history_text() {
+    if !sqlite_ext() {
+        return;
+    }
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().join("ft.mentat");
     let mut sqlite = mentat::Store::open(path.to_str().unwrap()).unwrap();
