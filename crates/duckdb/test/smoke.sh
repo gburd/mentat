@@ -158,8 +158,9 @@ expect_err() {
 expect_err "SELECT edn_eval('$DB', '(slurp \"/etc/passwd\")');" "unbound symbol: slurp"
 expect_err "SELECT * FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '{\"bogus\":1}');" 'unknown option "bogus"'
 expect_err "SELECT * FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '{nope');" "not valid JSON"
-# (With or without DuckDB's sqlite extension at hand: either way it names mentat_import.)
-expect_err "SELECT mentat_import('imp', '/nonexistent/old.mentat');" "mentat_import"
+# With or without DuckDB's sqlite extension at hand (can't open / needs the
+# extension). Not just "mentat_import": an unregistered function matches that.
+expect_err "SELECT mentat_import('imp', '/nonexistent/old.mentat');" "mentat_import: can't open\\|mentat_import needs"
 expect_err "SELECT * FROM mentat_hello();" "mentat_hello does not exist"
 expect_err "SELECT mentat_transact('$DB', '[]');" "mentat_transact does not exist"
 expect_err "SELECT * FROM mentat_query('$DB', '[:find ?e :where [?e _ _]]', '{}');" "mentat_query does not exist"

@@ -16,7 +16,7 @@ OLD_EXT is a 1.10.x mentat.duckdb_extension built for DuckDB v1.5.6 (the
 release asset mentat-duckdb-v1.5.6-linux_amd64); OLD_CLI is the v1.5.6 CLI
 that loads it (default: duckdb on PATH). This interpreter's duckdb package
 loads NEW_EXT and needs the sqlite extension installed (`INSTALL sqlite`).
-The queries and tx-data are the store harness's (tests/differential.rs)."""
+The queries and tx-data are the store harness's (src/fixtures.rs)."""
 import json
 import os
 import re
@@ -28,7 +28,7 @@ import tempfile
 OLD, NEW = sys.argv[1], sys.argv[2]
 OLD_CLI = sys.argv[3] if len(sys.argv) > 3 else "duckdb"
 HERE = os.path.dirname(os.path.abspath(__file__))
-diff = open(os.path.join(HERE, "../store/tests-harness/tests/differential.rs")).read()
+diff = open(os.path.join(HERE, "../store/tests-harness/src/fixtures.rs")).read()
 TXS = re.findall(r'r#"(.*?)"#', diff.split("pub const TXS")[1].split("];")[0], re.S)
 QS = [json.loads(q) for q in re.findall(r'^\s*("\[.*\]"),$',
                                        diff.split("pub const QUERIES")[1].split("];")[0], re.M)]

@@ -269,12 +269,10 @@ impl DuckStore<'_> {
             })?
             .ok_or_else(|| err(format!("mentat_import: {path}: no result for {sql}")))
         };
+        // The attach opens the file lazily: a missing or non-SQLite file
+        // fails here.
         let version: i64 = one("PRAGMA user_version")
-            .map_err(|e| {
-                err(format!(
-                    "mentat_import: {path} is not a SQLite database: {e}"
-                ))
-            })?
+            .map_err(|e| err(format!("mentat_import: can't open {path} as SQLite: {e}")))?
             .parse()
             .unwrap_or(0);
         // known_parts.idx (the partition high-water marks) came with version

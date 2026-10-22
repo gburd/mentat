@@ -9,23 +9,37 @@
 // specific language governing permissions and limitations under the License.
 
 //! Test-only (feature `failpoints`, which the test harness enables and the
-//! extension never does): panic at a named point, to test that a panic
-//! leaves no transaction open and nothing attached.
+//! extension never does): run a hook, or panic, at a named point, to test
+//! that a panic leaves no transaction open and nothing attached, and to look
+//! at state mid-operation.
 
 use std::cell::RefCell;
 
+type Hook = (&'static str, Box<dyn FnOnce()>);
+
 thread_local! {
-    static ARMED: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+    static ARMED: RefCell<Option<Hook>> = const { RefCell::new(None) };
 }
 
 /// Panic at the next `hit(name)` on this thread (once).
 pub fn arm(name: &'static str) {
-    ARMED.with(|a| *a.borrow_mut() = Some(name));
+    run_at(name, move || panic!("failpoint {name}"));
+}
+
+/// Run `f` at the next `hit(name)` on this thread (once).
+pub fn run_at(name: &'static str, f: impl FnOnce() + 'static) {
+    ARMED.with(|a| *a.borrow_mut() = Some((name, Box::new(f))));
 }
 
 pub(crate) fn hit(name: &str) {
-    if ARMED.with(|a| a.borrow().is_some_and(|n| n == name)) {
-        ARMED.with(|a| *a.borrow_mut() = None);
-        panic!("failpoint {name}");
+    let f = ARMED.with(|a| {
+        let mut a = a.borrow_mut();
+        match a.as_ref() {
+            Some((n, _)) if *n == name => a.take().map(|(_, f)| f),
+            _ => None,
+        }
+    });
+    if let Some(f) = f {
+        f();
     }
 }

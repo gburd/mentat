@@ -7,13 +7,9 @@
 use duckdb::Connection;
 use mentat::Queryable;
 use mentat_duckdb_store::{failpoints, DuckStore, SqlConn};
+use mentat_duckdb_store_tests::fixtures::{norm, QUERIES, TXS};
 use mentat_duckdb_store_tests::DuckConn;
 use mentat_query_algebrizer::TemporalBound;
-
-#[path = "differential.rs"]
-#[allow(dead_code)]
-mod differential;
-use differential::{norm, QUERIES, TXS};
 
 /// Values at the edges of what the import must carry bit for bit.
 const EDGES: &str = r#"[{:db/ident :x/d :db/valueType :db.type/double :db/cardinality :db.cardinality/many}
@@ -272,11 +268,18 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
     let dc = DuckConn::new(&c);
     let conn = &dc as &dyn SqlConn;
 
-    // Not a file.
+    // Not a file: refused, and not created (a read-write attach would
+    // create an empty one).
+    let missing = dir.path().join("missing.mentat");
     let e = DuckStore::new(conn, "a")
-        .import_sqlite(dir.path().join("missing.mentat").to_str().unwrap())
+        .import_sqlite(missing.to_str().unwrap())
         .unwrap_err();
-    assert!(e.to_string().contains("mentat_import"), "{e}");
+    assert!(e.to_string().contains("mentat_import: can't open"), "{e}");
+    assert!(
+        !missing.exists(),
+        "the import created {}",
+        missing.display()
+    );
 
     // A SQLite file that isn't a mentat store.
     let other = dir.path().join("other.db");
@@ -613,4 +616,59 @@ fn a_retracted_fulltext_attribute_keeps_its_history_text() {
             ("s:hello world".to_string(), 10, true)
         ]
     );
+}
+
+/// The source is attached READ_ONLY: mid-import, a write through the
+/// import's attach fails, and afterwards the file is byte for byte as it was,
+/// with no files beside it.
+#[test]
+fn the_source_is_read_only() {
+    if !sqlite_ext() {
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("old.mentat");
+    let mut st = mentat::Store::open(path.to_str().unwrap()).unwrap();
+    st.transact(TXS[0]).unwrap();
+    // Checkpointed and closed: one file, no -wal/-shm.
+    st.sqlite_mut()
+        .execute_batch("PRAGMA journal_mode = DELETE")
+        .unwrap();
+    drop(st);
+    let files = || -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(files(), ["old.mentat"]);
+    let before = std::fs::read(&path).unwrap();
+
+    let c = Connection::open_in_memory().unwrap();
+    let dc = DuckConn::new(&c);
+    let s = DuckStore::new(&dc as &dyn SqlConn, "ro");
+    // From another connection (attaches are database-wide), while the
+    // import holds its attach.
+    let other: &'static Connection = Box::leak(Box::new(c.try_clone().unwrap()));
+    let src = format!("{}_import_src", s.schema_name());
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let seen2 = seen.clone();
+    failpoints::run_at("import", move || {
+        let w = other
+            .prepare(&format!(
+                "SELECT count(*) FROM sqlite_query('{src}', 'DELETE FROM known_parts RETURNING part')"
+            ))
+            .and_then(|mut st| st.query_row([], |r| r.get::<_, i64>(0)));
+        *seen2.borrow_mut() = Some(w.map_err(|e| e.to_string()));
+    });
+    s.import_sqlite(path.to_str().unwrap()).unwrap();
+    let w = seen.borrow_mut().take().expect("the hook didn't run");
+    assert!(
+        w.as_ref().is_err_and(|e| e.contains("readonly")),
+        "a write through the import's attach: {w:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the source changed");
+    assert_eq!(files(), ["old.mentat"]);
 }
