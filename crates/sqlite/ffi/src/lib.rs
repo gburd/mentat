@@ -2614,6 +2614,15 @@ mod tests {
             return;
         };
         unsafe {
+            // The abort is the expected outcome; don't leave a core file behind.
+            #[cfg(unix)]
+            libc::setrlimit(
+                libc::RLIMIT_CORE,
+                &libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                },
+            );
             let got = match case.as_str() {
                 "entid_for_unknown_attribute" => {
                     let mut err = ExternError::default();
