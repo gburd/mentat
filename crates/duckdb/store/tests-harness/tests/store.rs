@@ -539,6 +539,66 @@ fn pre_1_18_fulltext_table_is_upgraded_on_open() {
     assert_eq!(recorded, 1);
 }
 
+/// A 1.15-1.17 store (an old, empty `fulltext_values` table) opened
+/// read-only -- the whole file, or ATTACHed READ_ONLY -- answers plain
+/// queries: `open` doesn't try to upgrade it. Its `(fulltext ...)` queries
+/// find nothing until it's opened writable once.
+#[test]
+fn pre_1_18_store_opens_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.duckdb");
+    let names = "[:find ?n :where [_ :person/name ?n]]";
+    let fts = "[:find ?n :where [(fulltext $ :person/bio \"darkness\") [[?e]]] [?e :person/name ?n]]";
+    {
+        let c = Connection::open(&path).unwrap();
+        let s = seeded(&c);
+        s.transact(
+            "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+        )
+        .unwrap();
+        s.transact(r#"[{:person/name "Alice" :person/bio "Hello darkness"}]"#)
+            .unwrap();
+        // The 1.15-1.17 layout.
+        c.execute_batch(
+            "DROP VIEW mentat.fulltext_values; \
+             CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
+             DELETE FROM mentat.meta WHERE key = 'fulltext_values_view'; \
+             UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
+        )
+        .unwrap();
+    }
+    let want = vec![vec!["Alice".to_string()], vec!["Bob".to_string()]];
+    {
+        let c = Connection::open_with_flags(
+            &path,
+            duckdb::Config::default()
+                .access_mode(duckdb::AccessMode::ReadOnly)
+                .unwrap(),
+        )
+        .unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "default").unwrap();
+        assert_eq!(q(&s, names), want);
+        assert_eq!(q(&s, fts), Vec::<Vec<String>>::new());
+    }
+    {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&format!("ATTACH '{}' AS old (READ_ONLY)", path.display()))
+            .unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "old.").unwrap();
+        assert_eq!(q(&s, names), want);
+    }
+    // Writable once: upgraded, and fulltext finds the old text. (A new
+    // generation, so this thread's cached schema doesn't skip the upgrade.)
+    let c = Connection::open(&path).unwrap();
+    c.execute_batch("UPDATE mentat.meta SET value = '2' WHERE key = 'generation'")
+        .unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "default").unwrap();
+    assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
+}
+
 /// `'db.name'` addresses store `name` in an ATTACHed database: every row
 /// lands in that file, not in the main one; the store reopens from the file
 /// (also from an un-checkpointed WAL), under another ATTACH name, and when the
