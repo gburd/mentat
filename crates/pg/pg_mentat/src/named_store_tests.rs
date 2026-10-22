@@ -1095,4 +1095,23 @@ mod tests {
         .unwrap();
         assert_eq!(wide, 4);
     }
+
+    // materialize(store, ...) worked out the view's columns with the default
+    // store's mentat_query_sql: an attribute only the named store defines
+    // failed with ":p/name is not registered".
+    #[pg_test]
+    fn materialize_infers_columns_from_the_store() {
+        setup();
+        Spi::run("SELECT create_store('mvc_s')").expect("create");
+        tx("mvc_s", SCHEMA_TX);
+        tx("mvc_s", "[{:p/name \"only-here\" :p/age 3}]");
+        Spi::run(
+            "SELECT materialize('mvc_s', 'mvc_v', '[:find ?n ?a :where [?e :p/name ?n] [?e :p/age ?a]]')",
+        )
+        .expect("materialize on an attribute the default store lacks");
+        let row = json("SELECT to_jsonb(v) FROM mentat_mvc_s.mvc_v v");
+        assert_eq!(row["n"], serde_json::json!("only-here"), "{row}");
+        assert_eq!(row["a"], serde_json::json!("3"), "{row}");
+        Spi::run("SELECT drop_store('mvc_s')").expect("drop");
+    }
 }
