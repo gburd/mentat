@@ -110,7 +110,9 @@ BEGIN
     IF p_schema = 'mentat' THEN
         RAISE EXCEPTION 'mentat._create_store_layout: the default store''s schema is created by CREATE EXTENSION';
     END IF;
-    IF to_regnamespace(p_schema) IS NULL THEN
+    -- By name, never a text -> regnamespace cast: that folds an unquoted
+    -- name to lower case and would find mentat_mystore for mentat_MyStore.
+    IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = p_schema) THEN
         EXECUTE format('CREATE SCHEMA %I', p_schema);
     END IF;
 
@@ -217,12 +219,14 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
+    ns OID;
     owner_oid OID;
     r RECORD;
     a RECORD;
     kind TEXT;
 BEGIN
-    SELECT nspowner INTO owner_oid FROM pg_namespace WHERE nspname = p_schema;
+    -- The schema's oid by exact name (see _create_store_layout).
+    SELECT oid, nspowner INTO ns, owner_oid FROM pg_namespace WHERE nspname = p_schema;
     IF owner_oid IS NULL THEN
         RAISE EXCEPTION 'schema % does not exist', p_schema;
     END IF;
@@ -230,7 +234,7 @@ BEGIN
     FOR r IN
         SELECT c.oid, c.relname, c.relkind, c.relowner
           FROM pg_class c
-         WHERE c.relnamespace = p_schema::regnamespace AND c.relkind IN ('r', 'v', 'm', 'S')
+         WHERE c.relnamespace = ns AND c.relkind IN ('r', 'v', 'm', 'S')
     LOOP
         kind := CASE r.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
                                WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END;
@@ -239,7 +243,7 @@ BEGIN
         END IF;
     END LOOP;
     FOR r IN
-        SELECT p.oid FROM pg_proc p WHERE p.pronamespace = p_schema::regnamespace AND p.proowner <> owner_oid
+        SELECT p.oid FROM pg_proc p WHERE p.pronamespace = ns AND p.proowner <> owner_oid
     LOOP
         EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.oid::regprocedure, owner_oid::regrole);
     END LOOP;
@@ -258,7 +262,7 @@ BEGIN
         SELECT d.relname, d.relkind, s.relacl, s.relowner
           FROM pg_class d
           JOIN pg_class s ON s.relname = d.relname AND s.relnamespace = 'mentat'::regnamespace
-         WHERE d.relnamespace = p_schema::regnamespace AND d.relkind IN ('r', 'v', 'S')
+         WHERE d.relnamespace = ns AND d.relkind IN ('r', 'v', 'S')
            AND s.relacl IS NOT NULL
     LOOP
         kind := CASE r.relkind WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END;
