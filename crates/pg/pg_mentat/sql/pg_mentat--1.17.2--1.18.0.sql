@@ -35,6 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_current_uuid_tx    ON mentat.current_uuid    (sto
 CREATE INDEX IF NOT EXISTS idx_current_bytes_tx   ON mentat.current_bytes   (store_id, tx);
 CREATE INDEX IF NOT EXISTS idx_current_boolean_tx ON mentat.current_boolean (store_id, tx);
 
+-- === named-stores ===
 -- ===========================================================================
 -- Named stores (#337).
 --
