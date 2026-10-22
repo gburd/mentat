@@ -19,20 +19,20 @@ description = "mentat's storage on DuckDB tables (the DuckDB extension's backend
 script = ["dep:mino-rs", "dep:mentat_script"]
 
 [dependencies]
-core_traits = { package = "mentat_core_traits", path = "../../core-traits", version = "=1.17.1" }
-db_traits = { package = "mentat_db_traits", path = "../../sqlite/db-traits", version = "=1.17.1" }
-edn = { package = "mentat_edn", path = "../../edn", version = "=1.17.1" }
-mentat_core = { path = "../../core", version = "=1.17.1" }
-mentat_db = { path = "../../sqlite/db", version = "=1.17.1" }
-mentat_query_algebrizer = { path = "../../sqlite/query-algebrizer", version = "=1.17.1" }
-mentat_query_projector = { path = "../../sqlite/query-projector", version = "=1.17.1" }
-mentat_query_pull = { path = "../../sqlite/query-pull", version = "=1.17.1" }
-mentat_sql = { path = "../../sqlite/sql", version = "=1.17.1" }
-mentat_transaction = { path = "../../sqlite/transaction", version = "=1.17.1" }
-public_traits = { package = "mentat_public_traits", path = "../../sqlite/public-traits", version = "=1.17.1" }
+core_traits = { package = "mentat_core_traits", path = "../../core-traits", version = "=1.17.2" }
+db_traits = { package = "mentat_db_traits", path = "../../sqlite/db-traits", version = "=1.17.2" }
+edn = { package = "mentat_edn", path = "../../edn", version = "=1.17.2" }
+mentat_core = { path = "../../core", version = "=1.17.2" }
+mentat_db = { path = "../../sqlite/db", version = "=1.17.2" }
+mentat_query_algebrizer = { path = "../../sqlite/query-algebrizer", version = "=1.17.2" }
+mentat_query_projector = { path = "../../sqlite/query-projector", version = "=1.17.2" }
+mentat_query_pull = { path = "../../sqlite/query-pull", version = "=1.17.2" }
+mentat_sql = { path = "../../sqlite/sql", version = "=1.17.2" }
+mentat_transaction = { path = "../../sqlite/transaction", version = "=1.17.2" }
+public_traits = { package = "mentat_public_traits", path = "../../sqlite/public-traits", version = "=1.17.2" }
 serde_json = "1"
-mino-rs = { path = "../../mino", optional = true, version = "=1.17.1" }
-mentat_script = { path = "../../script", optional = true, version = "=1.17.1" }
+mino-rs = { path = "../../mino", optional = true, version = "=1.17.2" }
+mentat_script = { path = "../../script", optional = true, version = "=1.17.2" }
 
 [lints]
 workspace = true

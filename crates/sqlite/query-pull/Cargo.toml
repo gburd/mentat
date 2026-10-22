@@ -14,7 +14,7 @@ sqlcipher = ["rusqlite/sqlcipher"]
 [dependencies.query_pull_traits]
 package = "mentat_query_pull_traits"
 path = "../query-pull-traits"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.rusqlite]
 version = "~0.40"
@@ -23,29 +23,29 @@ features = ["limits", "bundled"]
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.mentat_db]
 path = "../db"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.mentat_sql]
 path = "../sql"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [lints]
 workspace = true

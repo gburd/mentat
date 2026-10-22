@@ -1,0 +1,13 @@
+-- pg_mentat 1.17.1 -> 1.17.2 upgrade.
+--
+-- No schema or data change. 1.17.2 is a security release: the install script
+-- (CREATE EXTENSION) now resolves every call it makes while it runs in
+-- pg_catalog. pg_mentat is a trusted extension, so its script runs as the
+-- bootstrap superuser, and it used to call format(), array_length() and
+-- jsonb_build_object() through the search path, where a database owner could
+-- have placed a function of the same name before installing. Databases
+-- installed with an earlier version have already run that script; see the
+-- 1.17.2 release notes for how to check one.
+--
+-- This edge runs no code, so it can't be hijacked the same way. It keeps
+-- the versions in step.
