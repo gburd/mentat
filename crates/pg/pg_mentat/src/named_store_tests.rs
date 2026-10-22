@@ -888,11 +888,22 @@ mod tests {
         tx("default", "[{:p/name \"in-default\"}]");
         let query = "[:find [?n ...] :where [_ :p/name ?n]]";
         Spi::run(&format!("SELECT subscribe('sb_s', 'sb_names', '{query}')")).expect("subscribe");
+        // Statement triggers on the store's datoms view fire once per t(),
+        // after its data is written. They used to fire on the txInstant row,
+        // written first, so a subscription sent the previous transaction's
+        // result.
+        Spi::run(
+            "CREATE TABLE public.sb_fired (n BIGINT); \
+             CREATE FUNCTION public.sb_fired() RETURNS trigger LANGUAGE plpgsql AS $$ \
+               BEGIN INSERT INTO public.sb_fired SELECT count(*) FROM mentat_sb_s.current_text; \
+               RETURN NULL; END $$; \
+             CREATE TRIGGER sb_fired AFTER INSERT OR UPDATE OR DELETE ON mentat_sb_s.datoms \
+               FOR EACH STATEMENT EXECUTE FUNCTION public.sb_fired()",
+        )
+        .expect("counting trigger");
         tx("sb_s", "[{:p/name \"in-named\"}]");
-        // The trigger fires on the txInstant row, which t() writes first: it
-        // sees the store as of the previous transaction. A second one that
-        // leaves the result alone makes "what it sent" well defined.
-        tx("sb_s", "[{:p/age 1}]");
+        let fired = json("SELECT jsonb_agg(n) FROM public.sb_fired");
+        assert_eq!(fired, serde_json::json!([1]), "fired once, after the data");
         let sent = text("SELECT current_setting('mentat.sub_hash_sb_names', true)");
         let named = text(&format!(
             "SELECT md5(q('sb_s', '{query}', '{{}}'::jsonb)::text)"
@@ -901,9 +912,37 @@ mod tests {
             "SELECT md5(edn_q('{query}', '{{}}'::jsonb)::text)"
         ));
         assert_ne!(named, dflt);
-        assert_eq!(sent, named, "the trigger evaluated another store");
+        assert_eq!(
+            sent, named,
+            "the trigger evaluated another store, or ran early"
+        );
         Spi::run("SELECT unsubscribe('sb_s', 'sb_names')").expect("unsubscribe");
+        Spi::run("DROP TRIGGER sb_fired ON mentat_sb_s.datoms").expect("drop counting trigger");
         Spi::run("SELECT drop_store('sb_s')").expect("drop");
+    }
+
+    // The default store's mentat.datoms view: its statement triggers fire
+    // once per t(), after the data, too (t() used to send the txInstant row
+    // through it first).
+    #[pg_test]
+    fn default_store_view_triggers_fire_after_the_data() {
+        // Before setup(): other tests' bootstrap writes through this view,
+        // and taking the lock after ours would deadlock with them.
+        Spi::run("LOCK TABLE mentat.datoms IN SHARE ROW EXCLUSIVE MODE").expect("lock");
+        setup();
+        tx("default", SCHEMA_TX);
+        Spi::run(
+            "CREATE TABLE public.df_fired (n BIGINT); \
+             CREATE FUNCTION public.df_fired() RETURNS trigger LANGUAGE plpgsql AS $$ \
+               BEGIN INSERT INTO public.df_fired SELECT count(*) FROM mentat.current_text \
+                 WHERE store_id = 0 AND v = 'df-name'; RETURN NULL; END $$; \
+             CREATE TRIGGER df_fired AFTER INSERT OR UPDATE OR DELETE ON mentat.datoms \
+               FOR EACH STATEMENT EXECUTE FUNCTION public.df_fired()",
+        )
+        .expect("counting trigger");
+        tx("default", "[{:p/name \"df-name\"}]");
+        let fired = json("SELECT jsonb_agg(n) FROM public.df_fired");
+        assert_eq!(fired, serde_json::json!([1]), "once, after the data");
     }
 
     // The subscription trigger baked in the store's name: after rename_store
@@ -923,7 +962,6 @@ mod tests {
         tx("sbr_a", "[{:p/name \"before\"}]");
         Spi::run("SELECT rename_store('sbr_a', 'sbr_b')").expect("rename");
         tx("sbr_b", "[{:p/name \"after\"}]");
-        tx("sbr_b", "[{:p/age 1}]");
         // The trigger ran q() on the renamed store (see
         // subscribe_on_a_named_store_queries_that_store for the hash).
         let sent = text("SELECT current_setting('mentat.sub_hash_sbr_names', true)");
@@ -1007,13 +1045,10 @@ mod tests {
             sorted(v)
         };
         tx("mvr_a", "[{:p/name \"two\"}]");
-        // The trigger fires on the txInstant row, written first: the view
-        // trails by one transaction (as subscriptions do).
-        tx("mvr_a", "[{:p/age 1}]");
+        // Refreshed after the transaction's data is in, not one behind.
         assert_eq!(rows("mentat_mvr_a"), vec!["one", "two"]);
         Spi::run("SELECT rename_store('mvr_a', 'mvr_b')").expect("rename");
         tx("mvr_b", "[{:p/name \"three\"}]");
-        tx("mvr_b", "[{:p/age 2}]");
         assert_eq!(rows("mentat_mvr_b"), vec!["one", "three", "two"]);
         Spi::run("SELECT refresh('mvr_b', 'mvr_names')").expect("refresh under the new name");
         let listed = json("SELECT list_matviews('mvr_b')");
