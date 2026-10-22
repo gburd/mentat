@@ -27,18 +27,27 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 
 ### Lookup refs in a list of values
 
-For a cardinality-many ref attribute, a two-element vector is ambiguous: it
-can be one lookup ref or a list of two values. Every backend reads it the way
-DataScript does: when the first element is the ident of a
-`:db.unique/identity` attribute, the vector is one lookup ref. Otherwise it is
-a list of values. A `:db.unique/value` attribute does not make it a lookup ref.
+A lookup ref `[:attr v]` names the entity whose `:attr` is `v`, for any
+`:db/unique` attribute (`:db.unique/identity` or `:db.unique/value`), in
+`:db/id`, entity position, reverse notation, and as the value of a
+cardinality-one ref.
+
+The whole value of a cardinality-many ref attribute is the one ambiguous
+place: a two-element vector there can be one lookup ref or a list of two
+values. Every backend reads it the way DataScript does: when the first
+element is the ident of a `:db.unique/identity` attribute, the vector is one
+lookup ref. Otherwise it is a list of values, and each vector in that list is
+a lookup ref (any `:db/unique` attribute; one that doesn't resolve is an
+error).
 
 ```clojure
-;; :user/id is :db.unique/identity
-{:form/owners [:user/id "u1"]}                 ; one ref: the entity with :user/id "u1"
+;; :user/id is :db.unique/identity, :user/email is :db.unique/value
+{:form/owners [:user/id "u1"]}                   ; one ref: the entity with :user/id "u1"
 {:form/owners [[:user/id "u1"] [:user/id "u2"]]} ; two refs, one per lookup ref
-;; :user/email is :db.unique/value, :user/name is not unique
-{:form/fields [:user/email :user/name]}        ; two refs, to the two attribute entities
+{:form/owners [[:user/email "a@x"]]}             ; one ref, by :user/email
+{:db/id [:user/email "a@x"] :user/name "A"}      ; :db/id may use either kind
+;; :user/name is not unique
+{:form/fields [:user/email :user/name]}          ; two refs, to the two attribute entities
 ```
 
 `:db/ident` is itself `:db.unique/identity`, so `[:db/ident :user/name]` is a

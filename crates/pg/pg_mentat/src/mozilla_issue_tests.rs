@@ -579,6 +579,48 @@ mod tests {
         );
     }
 
+    // #152: outside the ambiguous place (the whole value of a cardinality-many ref), any
+    // :db/unique attribute makes `[a v]` a lookup ref, as in Datomic, and each vector in a
+    // ref's list of values is a lookup ref (it made empty tempid entities).
+    #[pg_test]
+    fn unique_value_lookup_refs() {
+        setup();
+        tx(
+            r#"[{:db/ident :mu/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                :db/unique :db.unique/value :db/index true}
+               {:db/ident :mu/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+               {:db/ident :mu/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+               {:db/ident :mu/likes :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        );
+        tx(r#"[{:mu/id "a"} {:mu/id "b"}]"#);
+        for t in [
+            r#"[{:db/id [:mu/id "a"] :mu/n 1}]"#,
+            r#"[[:db/add [:mu/id "b"] :mu/n 2]]"#,
+            r#"[{:mu/id "x" :mu/boss [:mu/id "a"]}]"#,
+        ] {
+            assert_eq!(transact(t), "", "{t}");
+        }
+        let r = tx(r#"[{:db/id "z" :mu/id "z" :mu/likes [[:mu/id "a"] [:mu/id "b"]]}]"#);
+        assert_eq!(r["tempids"].as_object().unwrap().len(), 1, "{r}");
+        assert_eq!(
+            coll(r#"[:find [?b ...] :where [?e :mu/id "z"] [?e :mu/likes ?r] [?r :mu/id ?b]]"#),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            coll(r#"[:find [?b ...] :where [?e :mu/id "x"] [?e :mu/boss ?r] [?r :mu/id ?b]]"#),
+            vec!["a"]
+        );
+        assert_eq!(coll("[:find [?n ...] :where [_ :mu/n ?n]]"), vec!["1", "2"]);
+        // An inner vector that isn't a lookup ref that resolves is an error.
+        for t in [
+            r#"[{:db/id "w" :mu/likes [[:mu/id "nope"]]}]"#,
+            r#"[{:db/id "w" :mu/likes [[:mu/n 1]]}]"#,
+            r#"[{:db/id "w" :mu/likes [[:mu/id "a" "b"]]}]"#,
+        ] {
+            assert_ne!(transact(t), "", "{t}");
+        }
+    }
+
     // #179: a comparison over a value of unknown type applies to comparable values only.
     #[pg_test]
     fn inequality_over_untyped_values() {

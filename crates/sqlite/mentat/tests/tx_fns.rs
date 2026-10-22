@@ -600,3 +600,74 @@ fn test_vector_of_idents_on_a_ref_list() {
         [":user/id", ":user/name"]
     );
 }
+
+// #152: outside the ambiguous place (the whole value of a cardinality-many ref), any
+// :db/unique attribute makes `[a v]` a lookup ref, as in Datomic: :db/id, entity position,
+// reverse notation, a cardinality-one ref, and each vector in a ref's list of values.
+#[test]
+fn test_unique_value_lookup_refs() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :p/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/value :db/index true}
+                {:db/ident :p/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :p/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :p/likes :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(r#"[{:p/id "a"} {:p/id "b"} {:p/id "c"}]"#)
+        .expect("data");
+    for tx in [
+        r#"[{:db/id [:p/id "a"] :p/n 1}]"#,
+        r#"[[:db/add [:p/id "b"] :p/n 2]]"#,
+        r#"[{:p/id "x" :p/boss [:p/id "a"]}]"#,
+        r#"[[:db/add [:p/id "c"] :p/boss [:p/id "b"]]]"#,
+        r#"[{:p/id "y" :p/_boss [:p/id "c"]}]"#,
+    ] {
+        store.transact(tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
+    }
+    let r = store
+        .transact(r#"[{:db/id "z" :p/id "z" :p/likes [[:p/id "a"] [:p/id "b"]]}]"#)
+        .expect("list of lookup refs");
+    // No tempids for "a" and "b": they are lookup refs, not new entities.
+    assert_eq!(r.tempids.keys().collect::<Vec<_>>(), ["z"]);
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (3, 0));
+    let rows = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_rel_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .rows()
+            .map(|r| format!("{:?}", r))
+            .collect();
+        v.sort();
+        v
+    };
+    let s = |a: &str, b: &str| format!(r#"[Scalar(String("{a}")), Scalar(String("{b}"))]"#);
+    // c's boss was b, then y (reverse notation; :p/boss is cardinality-one).
+    assert_eq!(
+        rows("[:find ?i ?b :where [?e :p/id ?i] [?e :p/boss ?r] [?r :p/id ?b]]"),
+        [s("c", "y"), s("x", "a")]
+    );
+    assert_eq!(
+        rows("[:find ?i ?n :where [?e :p/id ?i] [?e :p/n ?n]]"),
+        [
+            r#"[Scalar(String("a")), Scalar(Long(1))]"#,
+            r#"[Scalar(String("b")), Scalar(Long(2))]"#
+        ]
+    );
+    assert_eq!(
+        rows(r#"[:find ?i ?b :where [?e :p/id "z"] [?e :p/id ?i] [?e :p/likes ?r] [?r :p/id ?b]]"#),
+        [s("z", "a"), s("z", "b")]
+    );
+    // An inner vector that isn't a lookup ref that resolves is an error, not new entities.
+    for tx in [
+        r#"[{:db/id "w" :p/likes [[:p/id "nope"]]}]"#,
+        r#"[{:db/id "w" :p/likes [[:p/n 1]]}]"#,
+        r#"[{:db/id "w" :p/likes [[:p/id "a" "b"]]}]"#,
+    ] {
+        assert!(store.transact(tx).is_err(), "{tx}");
+    }
+}

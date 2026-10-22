@@ -2207,11 +2207,13 @@ fn encode_attr_value(
 }
 
 /// The values a value-position vector stands for, as on the embedded engine (#152): on a
-/// cardinality-many attribute a vector is a list of values (nested vectors flatten), except
-/// that `[:identity/attr v]` on a ref attribute is one lookup ref (DataScript's rule: only a
-/// :db.unique/identity attribute). Anything else is one value.
+/// cardinality-many attribute a vector is a list of values (nested vectors flatten). On a
+/// cardinality-many ref, `[:identity/attr v]` is one lookup ref (DataScript's rule for the
+/// ambiguity: only a :db.unique/identity attribute), and otherwise each element is one value,
+/// so an inner vector is a lookup ref on any :db/unique attribute (resolve_entity_place).
+/// Anything else is one value; a lookup ref in any other place may use any unique attribute.
 fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
-    fn is_lookup_ref(v: &edn::Value) -> bool {
+    fn is_identity_lookup_ref(v: &edn::Value) -> bool {
         match v {
             edn::Value::Vector(pair) if pair.len() == 2 => match &pair[0] {
                 // named-stores: per-store cache
@@ -2223,11 +2225,9 @@ fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
             _ => false,
         }
     }
-    fn flatten<'v>(v: &'v edn::Value, refs: bool, out: &mut Vec<&'v edn::Value>) {
+    fn flatten<'v>(v: &'v edn::Value, out: &mut Vec<&'v edn::Value>) {
         match v {
-            edn::Value::Vector(vs) if !(refs && is_lookup_ref(v)) => {
-                vs.iter().for_each(|x| flatten(x, refs, out))
-            }
+            edn::Value::Vector(vs) => vs.iter().for_each(|x| flatten(x, out)),
             _ => out.push(v),
         }
     }
@@ -2237,9 +2237,17 @@ fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
     if info.cardinality != "many" {
         return vec![value];
     }
-    let mut out = Vec::new();
-    flatten(value, info.value_type == "ref", &mut out);
-    out
+    match value {
+        edn::Value::Vector(_) if info.value_type == "ref" && is_identity_lookup_ref(value) => {
+            vec![value]
+        }
+        edn::Value::Vector(vs) if info.value_type == "ref" => vs.iter().collect(),
+        _ => {
+            let mut out = Vec::new();
+            flatten(value, &mut out);
+            out
+        }
+    }
 }
 
 /// Look up the value_type of an attribute (using cache).

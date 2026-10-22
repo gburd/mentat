@@ -124,14 +124,14 @@ where
 }
 
 /// A value-position vector `[:attr v]` read as Datomic's lookup ref (#152): two elements, a
-/// keyword naming a `:db.unique/identity` attribute, then a plain value. This is DataScript's
-/// rule for the ambiguity with a list of values: `[:a/id "x"]` is a lookup ref, and a list of
-/// lookup refs is a vector of them (`[[:a/id "x"] [:a/id "y"]]`). A `:db.unique/value`
-/// attribute does not qualify. To give a cardinality-many ref the two idents
-/// `[:a/id :b/c]`, write the first as a lookup ref: `[[:db/ident :a/id] :b/c]`.
+/// keyword naming a `:db/unique` attribute, then a plain value. With `identity_only`, only a
+/// `:db.unique/identity` attribute qualifies: that is DataScript's rule for the one ambiguous
+/// place, the whole value of a cardinality-many ref, where `[:a/b :c/d]` may also be a list
+/// of two idents. A list of lookup refs is a vector of them (`[[:a/id "x"] [:a/id "y"]]`).
 fn vector_lookup_ref<V: TransactableValue>(
     schema: &Schema,
     vs: &[ValuePlace<V>],
+    identity_only: bool,
 ) -> Option<entmod::LookupRef<V>> {
     let [a, ValuePlace::Atom(v)] = vs else {
         return None;
@@ -149,7 +149,11 @@ fn vector_lookup_ref<V: TransactableValue>(
     };
     schema
         .attribute_for_ident(kw)
-        .filter(|(attr, _)| attr.unique == Some(attribute::Unique::Identity))?;
+        .filter(|(attr, _)| match attr.unique {
+            Some(attribute::Unique::Identity) => true,
+            Some(attribute::Unique::Value) => !identity_only,
+            None => false,
+        })?;
     Some(entmod::LookupRef {
         a: AttributePlace::Entid(a),
         v: v.clone(),
@@ -172,7 +176,7 @@ pub fn remove_db_id<V: TransactableValue>(
             entmod::ValuePlace::TempId(e) => Some(entmod::EntityPlace::TempId(e)),
             entmod::ValuePlace::TxFunction(e) => Some(entmod::EntityPlace::TxFunction(e)),
             entmod::ValuePlace::Atom(v) => Some(v.into_entity_place()?),
-            entmod::ValuePlace::Vector(vs) => match vector_lookup_ref(schema, &vs) {
+            entmod::ValuePlace::Vector(vs) => match vector_lookup_ref(schema, &vs, false) {
                 Some(lr) => Some(entmod::EntityPlace::LookupRef(lr)),
                 None => bail!(DbErrorKind::InputError(errors::InputError::BadDbId)),
             },
@@ -632,7 +636,7 @@ where
                                 }
                             }
 
-                            entmod::ValuePlace::Vector(ref vs) => match vector_lookup_ref(self.schema, vs) {
+                            entmod::ValuePlace::Vector(ref vs) => match vector_lookup_ref(self.schema, vs, false) {
                                 Some(ref lookup_ref) =>
                                     Ok(Either::Right(LookupRefOrTempId::LookupRef(self.intern_lookup_ref(lookup_ref)?))),
                                 None =>
@@ -858,8 +862,11 @@ where
                             }
 
                             entmod::ValuePlace::Vector(vs) => {
-                                if attribute.value_type == ValueType::Ref {
-                                    if let Some(lr) = vector_lookup_ref(self.schema, &vs) {
+                                let is_ref = attribute.value_type == ValueType::Ref;
+                                if is_ref {
+                                    if let Some(lr) =
+                                        vector_lookup_ref(self.schema, &vs, attribute.multival)
+                                    {
                                         deque.push_front(Entity::AddOrRetract {
                                             op,
                                             e: e.clone(),
@@ -876,6 +883,17 @@ where
                                 }
 
                                 for vv in vs {
+                                    // In a ref's list of values, a vector is a lookup ref
+                                    // (any :db/unique attribute), not a nested list.
+                                    let vv = match vv {
+                                        entmod::ValuePlace::Vector(inner) if is_ref => {
+                                            match vector_lookup_ref(self.schema, &inner, false) {
+                                                Some(lr) => entmod::ValuePlace::LookupRef(lr),
+                                                None => bail!(DbErrorKind::NotYetImplemented(format!("A vector in the values of ref attribute {} must be a lookup ref [:unique/attr value]", a))),
+                                            }
+                                        }
+                                        vv => vv,
+                                    };
                                     deque.push_front(Entity::AddOrRetract {
                                         op,
                                         e: e.clone(),
