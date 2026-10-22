@@ -17,9 +17,10 @@
 -- create_store() / t() / q() / pull() / entity() / log() all use it. This
 -- section installs those functions and rebuilds every old named store:
 --
---   * the old schema is renamed to mentat_<name>_pre118 and kept, never
---     dropped and never read: rows inserted into it by hand stay there for
---     the owner to copy (docs/src/multi-tenancy.md has the queries);
+--   * the old schema is renamed to mentat_<name>_pre118 (cut to 63
+--     characters) and kept, never dropped and never read: rows inserted
+--     into it by hand stay there for the owner to copy
+--     (docs/src/multi-tenancy.md has the queries);
 --   * a fresh, empty mentat_<name> gets the new layout, owned by the old
 --     schema's owner, with the default store's grants;
 --   * the store's views and helper functions are recreated and its objects
@@ -353,6 +354,14 @@ BEGIN
             END IF;
             CONTINUE;
         END IF;
+        -- 'mentat_' + 56 characters is the 63-character identifier limit.
+        -- 1.17 took names up to 63 and PostgreSQL cut the schema name short,
+        -- so the row no longer names its schema.
+        IF length(st.store_name) > 56 THEN
+            RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: store names are limited to 56 '
+                          'characters. See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name;
+            CONTINUE;
+        END IF;
         -- Registered, but its schema was dropped by hand: nothing to rebuild.
         CONTINUE WHEN st.ns IS NULL;
         -- Already on the 1.18 layout.
@@ -366,7 +375,8 @@ BEGIN
                           st.store_name, st.schema_name;
             CONTINUE;
         END IF;
-        old_schema := st.schema_name || '_pre118';
+        -- Cut to 63 characters, so it can never truncate to the store's own name.
+        old_schema := left(st.schema_name, 63 - length('_pre118')) || '_pre118';
         IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = old_schema) THEN
             RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: schema % already exists. '
                           'See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name, old_schema;
