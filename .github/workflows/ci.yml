@@ -44,6 +44,10 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
+      # pg_mentat's install script runs as superuser (trusted extension):
+      # no call made while it runs may resolve through the search path.
+      - name: pg_mentat script-time calls are pg_catalog-qualified
+        run: python3 scripts/pg/check-script-search-path.py
 
   clippy:
     name: clippy (-D warnings)
