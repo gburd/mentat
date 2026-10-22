@@ -2,6 +2,7 @@
 --
 -- Each section below belongs to one change.
 
+-- === named-stores ===
 -- ===========================================================================
 -- Named stores (#337).
 --
