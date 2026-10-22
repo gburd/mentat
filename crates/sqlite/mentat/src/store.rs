@@ -336,8 +336,9 @@ impl Store {
         }
     }
 
-    /// Run a Datalog query seeing only datoms transacted after transaction `tx`
-    /// (`since`). Typically used with a history pattern `[?e ?a ?v ?tx ?added]`.
+    /// Run a Datalog query on Datomic's `since tx`: a pattern sees the current
+    /// datoms transacted after `tx`; a history pattern `[?e ?a ?v ?tx ?added]`
+    /// sees every datom after `tx`, retractions too.
     pub fn q_once_since<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>
     where
         T: Into<Option<QueryInputs>>,

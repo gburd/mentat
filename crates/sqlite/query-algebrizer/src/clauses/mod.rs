@@ -182,7 +182,8 @@ pub struct ConjoiningClauses {
 
     /// An optional temporal bound applied to *every* pattern in this CC (and its
     /// sub-CCs): `as-of T` reconstructs current state at tx T; `since T` keeps
-    /// only datoms transacted after T. `None` means "current basis", the default.
+    /// the current datoms transacted after T (a history pattern: every datom
+    /// after T). `None` means "current basis", the default.
     pub temporal: Option<TemporalBound>,
 
     /// Attributes of `datoms` patterns in this CC whose value place is a
