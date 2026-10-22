@@ -24,6 +24,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
   (default: none, so every retraction reaches the caches and observers, as
   before). The SQLite store implements both; the DuckDB store implements
   `transaction_datom_counts` (it has no caches or observers).
+- **`mentat_script::TxReport` has two new public fields, `datoms_asserted`
+  and `datoms_retracted` (#281).** Code that builds one with a struct
+  literal stops compiling.
 
 ### Added
 
@@ -38,8 +41,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
   - Scripting tx report (every backend): `:mentat.store/datoms-asserted` and
     `:mentat.store/datoms-retracted` (`nil` when not counted).
 - **`[:unique/attr v]` lookup refs in transactions on the embedded engine and
-  DuckDB (#152)**, as pg_mentat already took them: in entity position,
-  `:db/id`, reverse notation and a ref attribute's value. Before, only
+  DuckDB (#152)**, as pg_mentat already took them in entity position,
+  `:db/id` and a ref attribute's value; the embedded engine and DuckDB also
+  take them in reverse notation (pg has no reverse notation in transactions). Before, only
   `(lookup-ref a v)` worked there and `[[:db/add [:t/id "e1"] :t/n 5]]` was a
   parse error. pg_mentat now takes a vector of values for a
   cardinality-many attribute (`{:a/many [1 2]}`), which it rejected.
@@ -62,6 +66,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
   - In list form, `[:db/add e a v]` takes one value, as in Datomic, so on a
     ref attribute (cardinality-one or -many) a vector `v` is a lookup ref on
     any `:db/unique` attribute, and an error if it doesn't resolve.
+    **This breaks embedded and DuckDB callers** that passed several refs in
+    one list-form op: `[:db/add e :ref/many [a b]]` (entids, tempids such as
+    `["t1" "t2"]`, or idents) and `[a]` were accepted through 1.17.2 and are
+    now errors. Use map form (`{:db/id e :ref/many [a b]}`) or one
+    `:db/add` per value. pg_mentat already rejected them. On a non-ref
+    cardinality-many attribute, `[:db/add e :nums [1 2]]` still adds both
+    values.
   - In map form, the whole value of a cardinality-many ref follows
     DataScript: a two-element vector whose first element names a
     `:db.unique/identity` attribute is one lookup ref; otherwise it is a list
@@ -78,8 +89,8 @@ and the project follows [Semantic Versioning](https://semver.org/).
     to the `:p/id` attribute plus two new empty entities.
 - **`[:db/cas e a v v]` with `v` current is a no-op, as in Datomic.** It
   asserts nothing and retracts nothing (the report counts 0 and 0). Through
-  1.17.2 pg_mentat deleted the value, and since the add/retract conflict
-  check below both engines rejected it. A mismatch still fails.
+  1.17.2 pg_mentat deleted the value and the embedded engine rejected it
+  as an add/retract conflict. A mismatch still fails.
 - **pg_mentat's `tx-data` lists the datoms the transaction changed (#281)**, as
   in Datomic: a cardinality-one replacement shows the old value retracted and
   the new one asserted, and a re-assertion of a value already there is left
@@ -116,13 +127,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
   `to_timestamp(double)`, which loses a microsecond outside roughly
   1932-2100 (`#inst "9999-12-31T23:59:59.999999Z"` was stored as
   10000-01-01). On pg13, where `EXTRACT` returns double precision, reads
-  were off by up to 5 microseconds far from 1970. A card-one replacement
+  were off by up to 20 microseconds far from 1970. A card-one replacement
   of a fractional-second instant left two live values, since the old
   value was read rounded to the second. Pull, entity, `attribute_values`,
   `retract_entity` and `export_edn` read `.700001` as `01.700001`. Every
-  conversion now goes through one exact write and one exact read. An
-  instant stored by an earlier version with a lost microsecond keeps its
-  stored value.
+  conversion now goes through one exact write and one exact read.
+
+  **Upgrade note:** no migration rewrites instants already stored. One that
+  an earlier version stored with a lost microsecond (outside roughly
+  1932-2100, or any fractional second written through a path that rounded)
+  keeps the stored value, and 1.18.0 reads it exactly. So a query, a
+  `:db/retract` or a `:db/cas` that names the *original* `#inst` no longer
+  matches it: the retract silently retracts nothing, and on a
+  cardinality-many attribute a re-assertion adds a second value next to
+  the stored one. Read the stored value back (pull or q) and use that, or
+  re-assert the intended value on a cardinality-one attribute, which
+  replaces it.
 - **A retraction of an absent value is a no-op on every backend (#362).** On
   the embedded engine and DuckDB, `[:db/retract e :a 7]` on a
   cardinality-one attribute holding 1 retracted the 1; it also emptied the
