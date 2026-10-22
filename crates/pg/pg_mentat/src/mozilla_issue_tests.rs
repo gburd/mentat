@@ -417,6 +417,38 @@ mod tests {
         );
     }
 
+    // #368, #369: asserting and retracting the same datom in one transaction is a conflict,
+    // in either order, as on the embedded engine (AddRetractConflict) and in Datomic.
+    #[pg_test]
+    fn add_and_retract_of_one_datom_conflict() {
+        setup();
+        tx(
+            "[{:db/ident :mk/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+             {:db/ident :mk/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        let a = tx(r#"[{:db/id "a" :mk/m [1 2] :mk/n 5}]"#)["tempids"]["a"]
+            .as_i64()
+            .unwrap();
+        for t in [
+            format!("[[:db/retract {a} :mk/m 1] [:db/add {a} :mk/m 1]]"),
+            format!("[[:db/add {a} :mk/m 5] [:db/retract {a} :mk/m 5]]"),
+            format!("[[:db/add {a} :mk/n 7] [:db/retract {a} :mk/n 7]]"),
+            format!("[[:db/cas {a} :mk/n 5 5]]"),
+            format!("[[:db/retractEntity {a}] [:db/add {a} :mk/m 2]]"),
+        ] {
+            let e = transact(&t);
+            assert!(e.contains("AddRetractConflict"), "{t}: {e}");
+        }
+        assert_eq!(
+            coll(&format!("[:find [?v ...] :where [{a} :mk/m ?v]]")),
+            vec!["1", "2"]
+        );
+        assert_eq!(
+            coll(&format!("[:find [?v ...] :where [{a} :mk/n ?v]]")),
+            vec!["5"]
+        );
+    }
+
     // #152: `[a v]` lookup refs in entity, :db/id and value position, and a list of them
     // for a cardinality-many ref; a vector of values for any cardinality-many attribute.
     #[pg_test]

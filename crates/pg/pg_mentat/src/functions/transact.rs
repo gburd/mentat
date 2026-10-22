@@ -1360,9 +1360,37 @@ fn execute_transaction_inner(
         }
     }
 
+    // A transaction is a set of datoms: asserting and retracting the same one is a
+    // conflict, in either order (#368, #369), as on the embedded engine and in Datomic.
+    // Without this, retract-then-add deleted the value and add-then-retract failed inside
+    // the batch INSERT.
+    if pending_datoms.iter().any(|d| !d.added) {
+        let key = |d: &PendingDatom| (d.e, d.a, d.v.type_tag(), typed_value_sql_literal(&d.v));
+        let asserted: std::collections::HashSet<_> =
+            pending_datoms.iter().filter(|d| d.added).map(key).collect();
+        if let Some(d) = pending_datoms
+            .iter()
+            .find(|d| !d.added && asserted.contains(&key(d)))
+        {
+            // named-stores: per-store cache
+            let attr = crate::cache::get_cache()
+                .get_ident(d.a)
+                .unwrap_or_else(|| d.a.to_string());
+            return Err(MentatError::InvalidTransaction {
+                message: format!(
+                    "cardinality conflicts: AddRetractConflict {{ e: {}, a: {}, vs: {{{}}} }}: \
+                     a transaction cannot assert and retract the same datom",
+                    d.e,
+                    attr,
+                    format_typed_value(&d.v)
+                ),
+            }
+            .into());
+        }
+    }
+
     // A retraction of a datom that isn't live is a no-op (#362): it is not
-    // logged and not reported, as on the embedded engine and in Datomic. A
-    // datom asserted earlier in this transaction counts as live.
+    // logged and not reported, as on the embedded engine and in Datomic.
     let dead = dead_retractions(&pending_datoms, &qs)?;
     if !dead.is_empty() {
         let mut i = 0;
@@ -2604,10 +2632,10 @@ fn is_duplicate_cardinality_many(
     Ok(exists)
 }
 
-/// The indexes of the retractions in `datoms` whose datom is not live: neither asserted
-/// earlier in the transaction nor present in the current-state projection (#362). One query
-/// per value type, whatever the number of retractions; the probes are bound as arrays, and
-/// only the misses (usually none) come back.
+/// The indexes of the retractions in `datoms` whose datom is not live: not in the
+/// current-state projection (#362). (A retraction of a datom the transaction also asserts is
+/// rejected before this.) One query per value type, whatever the number of retractions; the
+/// probes are bound as arrays, and only the misses (usually none) come back.
 fn dead_retractions(
     datoms: &[PendingDatom],
     schema: &str,
@@ -2617,19 +2645,10 @@ fn dead_retractions(
     if datoms.iter().all(|d| d.added) {
         return Ok(dead);
     }
-    let key = |d: &PendingDatom| (d.e, d.a, d.v.type_tag(), typed_value_sql_literal(&d.v));
-    let mut asserted = HashSet::new();
     // projection table -> (indexes, e, a, v as text) to look up
     type Probe = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<String>);
     let mut probes: HashMap<&'static str, Probe> = HashMap::new();
-    for (i, d) in datoms.iter().enumerate() {
-        if d.added {
-            asserted.insert(key(d));
-            continue;
-        }
-        if !asserted.is_empty() && asserted.contains(&key(d)) {
-            continue;
-        }
+    for (i, d) in datoms.iter().enumerate().filter(|(_, d)| !d.added) {
         let p = probes.entry(current_projection_table(&d.v)).or_default();
         p.0.push(i as i64);
         p.1.push(d.e);
