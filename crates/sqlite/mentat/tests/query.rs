@@ -2211,7 +2211,7 @@ fn test_string_predicates() {
     // A pattern bound with :in.
     let inputs = QueryInputs::with_value_sequence(vec![(
         Variable::from_valid_name("?p"),
-        TypedValue::typed_string("%e%").into(),
+        TypedValue::typed_string("%e%"),
     )]);
     let mut v: Vec<_> = store
         .q_once(
@@ -2338,14 +2338,11 @@ fn test_plain_keyword_value_round_trips() {
     ks.sort();
     assert_eq!(ks, vec![":ns/name", ":plain"]);
     // As a query constant, and through pull.
-    assert_eq!(
-        store
-            .q_once("[:find ?e . :where [?e :t/k :plain]]", None)
-            .into_scalar_result()
-            .expect("constant")
-            .is_some(),
-        true
-    );
+    assert!(store
+        .q_once("[:find ?e . :where [?e :t/k :plain]]", None)
+        .into_scalar_result()
+        .expect("constant")
+        .is_some());
     let pulled = store
         .q_once("[:find (pull ?e [:t/k]) . :where [?e :t/k :plain]]", None)
         .into_scalar_result()
