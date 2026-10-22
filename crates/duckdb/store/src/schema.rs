@@ -29,11 +29,13 @@
 //!   drop them.
 //! - `known_parts."end"`: `end` is reserved in DuckDB.
 //! - Fulltext (`:db/fulltext`): a fulltext value is stored as a plain string
-//!   in `datoms` (SQLite stores a rowid into its FTS4 table). The
-//!   `fulltext_values` view keys each distinct text by itself, so the
-//!   engine's `datoms.v = fulltext_values.rowid` join holds; `(fulltext ...)`
-//!   tokenizes at query time (`mentat_query_sql`'s `fts` module). Stores from
-//!   before 1.18 had an unused `fulltext_values` table; `open` replaces it.
+//!   in `datoms` (SQLite stores a rowid into its FTS4 table), and
+//!   `(fulltext ...)` tokenizes at query time (`mentat_query_sql`'s `fts`
+//!   module). The engine's DuckDB SQL reads `fulltext_values` as a subquery
+//!   over `datoms` that keys each distinct text by itself; the
+//!   `fulltext_values` view is the same, for SQL users. Stores from before
+//!   1.18 had an unused, empty `fulltext_values` table; `open` replaces it
+//!   when the database is writable.
 
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
@@ -119,7 +121,8 @@ pub fn create_statements(s: &str) -> Vec<String> {
     ]
 }
 
-/// Every distinct fulltext text, keyed by itself (see module docs).
+/// Every distinct fulltext text, keyed by itself (see module docs; the
+/// engine inlines the same query, `mentat_query_sql::source_alias_push_sql`).
 pub fn fulltext_values_view(s: &str) -> String {
     format!(
         "CREATE VIEW {s}.fulltext_values AS SELECT DISTINCT v_s AS rowid, v_s AS text \

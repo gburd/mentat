@@ -468,15 +468,16 @@ fn pre_1_18_fulltext_table_is_upgraded_on_open() {
 }
 
 /// A pre-1.18 store (an old `fulltext_values` table and legacy indexes) opened
-/// read-only -- the whole file, or ATTACHed READ_ONLY -- answers plain
-/// queries: `open` doesn't try to upgrade it. Its `(fulltext ...)` queries
-/// find nothing until it's opened writable once.
+/// read-only -- the whole file, or ATTACHed READ_ONLY -- answers queries,
+/// `(fulltext ...)` included: `open` doesn't try to upgrade it, and fulltext
+/// reads the texts from `datoms`.
 #[test]
 fn pre_1_18_store_opens_read_only() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("old.duckdb");
     let names = "[:find ?n :where [_ :person/name ?n]]";
-    let fts = "[:find ?n :where [(fulltext $ :person/bio \"darkness\") [[?e]]] [?e :person/name ?n]]";
+    let fts =
+        "[:find ?n :where [(fulltext $ :person/bio \"darkness\") [[?e]]] [?e :person/name ?n]]";
     {
         let c = Connection::open(&path).unwrap();
         let s = seeded(&c);
@@ -507,7 +508,7 @@ fn pre_1_18_store_opens_read_only() {
         let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
         let s = DuckStore::new(conn, "default").unwrap();
         assert_eq!(q(&s, names), want);
-        assert_eq!(q(&s, fts), Vec::<Vec<String>>::new());
+        assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
     }
     {
         let c = Connection::open_in_memory().unwrap();
@@ -516,6 +517,7 @@ fn pre_1_18_store_opens_read_only() {
         let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
         let s = DuckStore::new(conn, "old.").unwrap();
         assert_eq!(q(&s, names), want);
+        assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
     }
     // Writable once: upgraded, and fulltext finds the old text. (A new
     // generation, so this thread's cached schema doesn't skip the upgrade.)

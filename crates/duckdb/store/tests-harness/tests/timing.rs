@@ -63,3 +63,49 @@ fn point_lookup_breakdown() {
         })
     );
 }
+
+/// `(fulltext ...)` over 100k texts of one attribute, with another fulltext
+/// attribute holding 100k more (run with --ignored --nocapture).
+#[test]
+#[ignore]
+fn fulltext_100k() {
+    let c = Connection::open_in_memory().unwrap();
+    let dc = DuckConn::new(&c);
+    let s = DuckStore::new(&dc as &dyn SqlConn, "default").unwrap();
+    s.transact(
+        "[{:db/ident :u/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}
+          {:db/ident :u/note :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+    )
+    .unwrap();
+    for chunk in 0..10 {
+        let mut tx = String::from("[");
+        for i in chunk * 10_000..(chunk + 1) * 10_000 {
+            let bio = if i % 100 == 0 {
+                "Hello darkness my old friend"
+            } else {
+                "The quick brown fox jumps over the lazy dog"
+            };
+            tx.push_str(&format!(
+                "{{:u/bio \"{bio} {i}\" :u/note \"note number {i} lorem ipsum\"}} "
+            ));
+        }
+        tx.push(']');
+        s.transact(&tx).unwrap();
+    }
+    for q in [
+        "[:find (count ?e) . :where [(fulltext $ :u/bio \"darkness\") [[?e]]]]",
+        "[:find (count ?e) . :where [(fulltext $ :u/bio \"\\\"hello dark*\\\" NOT fox\") [[?e]]]]",
+    ] {
+        s.q(q, None, None).unwrap();
+        let n = 5;
+        let t0 = Instant::now();
+        let mut out = String::new();
+        for _ in 0..n {
+            out = format!("{:?}", s.q(q, None, None).unwrap().results);
+        }
+        println!(
+            "{:.1} ms  {q} -> {out}",
+            t0.elapsed().as_secs_f64() * 1e3 / n as f64
+        );
+    }
+}

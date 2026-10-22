@@ -264,8 +264,8 @@ impl<'c> DuckStore<'c> {
     ///   view `(fulltext ...)` queries join.
     ///
     /// A read-only database (`duckdb -readonly`, `ATTACH ... (READ_ONLY)`)
-    /// is left as it is: every query still works, except `(fulltext ...)`
-    /// on a pre-1.18 store (no rows match the old, empty table).
+    /// is left as it is; every query still works (`(fulltext ...)` reads the
+    /// texts from `datoms`, not this table or view).
     fn upgrade(&self) -> Result<()> {
         let read_only = self.conn.query_opt(
             "SELECT readonly::INTEGER FROM duckdb_databases() WHERE database_name = ?",
