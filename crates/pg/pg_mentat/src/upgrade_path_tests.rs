@@ -32,7 +32,13 @@ fn every_version_reaches_the_newest_by_upgrade_scripts() {
         .find_map(|l| l.strip_prefix("default_version = '"))
         .and_then(|l| l.strip_suffix('\''))
         .unwrap();
-    for from in edges.keys().cloned().chain([default.to_string()]) {
+    // Every version any script mentions, as a start or a target, plus the
+    // control file's default: a version that only appears as a target (the
+    // latest release, before its next edge exists) must reach the newest too.
+    let mut versions: HashSet<String> = edges.keys().cloned().collect();
+    versions.extend(edges.values().flatten().cloned());
+    versions.insert(default.to_string());
+    for from in versions {
         let (mut seen, mut todo) = (HashSet::new(), vec![from.clone()]);
         while let Some(v) = todo.pop() {
             if seen.insert(v.clone()) {
