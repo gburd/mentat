@@ -119,6 +119,11 @@ impl SchemaCache {
         }
     }
 
+    /// The quoted PostgreSQL schema this cache loads from.
+    pub fn db_schema(&self) -> &str {
+        &self.db_schema
+    }
+
     /// Bulk-load all schema attributes and idents from the database.
     ///
     /// Called automatically on the first cache miss.  Uses two queries to

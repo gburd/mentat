@@ -603,10 +603,16 @@ pub fn suggest_closest(target: &str, candidates: &[String]) -> Option<String> {
 /// Retrieve available attribute idents from the schema cache for use in error
 /// messages and "did you mean?" suggestions.
 pub fn get_available_attributes() -> Vec<String> {
+    get_available_attributes_in("mentat")
+}
+
+/// The attribute idents of the store in `db_schema` (quoted), for error
+/// messages and "did you mean?" suggestions.
+fn get_available_attributes_in(db_schema: &str) -> Vec<String> {
     let result: Result<Vec<String>, _> = pgrx::spi::Spi::connect(|client| {
         let mut idents = Vec::new();
         let rows = client.select(
-            "SELECT ident FROM mentat.schema ORDER BY ident LIMIT 50",
+            &format!("SELECT ident FROM {db_schema}.schema ORDER BY ident LIMIT 50"),
             None,
             &[],
         )?;
@@ -620,9 +626,10 @@ pub fn get_available_attributes() -> Vec<String> {
     result.unwrap_or_default()
 }
 
-/// Build an `AttributeNotFound` error with automatic suggestion.
-pub fn attribute_not_found(attr: &str) -> MentatError {
-    let available = get_available_attributes();
+/// Build an `AttributeNotFound` error with automatic suggestion, from the
+/// attributes of the store in `db_schema` (quoted).
+pub fn attribute_not_found(attr: &str, db_schema: &str) -> MentatError {
+    let available = get_available_attributes_in(db_schema);
     let suggestion = suggest_closest(attr, &available);
     MentatError::AttributeNotFound {
         attr: attr.to_string(),
