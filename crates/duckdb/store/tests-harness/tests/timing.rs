@@ -92,10 +92,22 @@ fn fulltext_100k() {
         tx.push(']');
         s.transact(&tx).unwrap();
     }
-    for q in [
-        "[:find (count ?e) . :where [(fulltext $ :u/bio \"darkness\") [[?e]]]]",
-        "[:find (count ?e) . :where [(fulltext $ :u/bio \"\\\"hello dark*\\\" NOT fox\") [[?e]]]]",
-    ] {
+    let words = |n: usize, op: &str| (0..n).map(|i| format!("w{i}")).collect::<Vec<_>>().join(op);
+    let big = std::env::var("MENTAT_TIMING_BIG").is_ok();
+    let mut queries = vec![
+        "darkness".to_string(),
+        "\\\"hello dark*\\\" NOT fox".to_string(),
+    ];
+    if big {
+        queries.extend([
+            "the quick brown fox jumps over lazy dog".to_string(),
+            words(4095, " "),
+            words(4095, " OR "),
+        ]);
+    }
+    for ft in queries {
+        let q = format!("[:find (count ?e) . :where [(fulltext $ :u/bio \"{ft}\") [[?e]]]]");
+        let q = q.as_str();
         s.q(q, None, None).unwrap();
         let n = 5;
         let t0 = Instant::now();
@@ -104,8 +116,9 @@ fn fulltext_100k() {
             out = format!("{:?}", s.q(q, None, None).unwrap().results);
         }
         println!(
-            "{:.1} ms  {q} -> {out}",
-            t0.elapsed().as_secs_f64() * 1e3 / n as f64
+            "{:.1} ms  {} -> {out}",
+            t0.elapsed().as_secs_f64() * 1e3 / n as f64,
+            &q[..q.len().min(110)]
         );
     }
 }

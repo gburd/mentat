@@ -522,11 +522,15 @@ expression"), as on SQLite, and so is one nested past SQLite's limits. The
 results.
 
 The value is stored as a plain string in `datoms` and tokenized at query
-time with DuckDB's built-in regex functions, so there is no index to keep up
-to date and no extension to load. The price is a scan of the attribute's
-values on every query (100k texts: about 0.3 s). `?score` is always `0.0`,
-as on SQLite, and a search term bound from another pattern matches when the
-text contains all of its tokens. Differences from SQLite:
+time with DuckDB's built-in string and regex functions, so there is no index
+to keep up to date and no extension to load. The price is a scan of the
+attribute's values on every query: each text is lower-cased and checked for
+the query's words as substrings, and only a text that has them is tokenized
+for the exact match. Over 100k texts a one-word query takes about 80 ms (a
+word in every text: about 0.4 s), and SQLite's longest query (4095 words)
+about 0.5 s. `?score` is always `0.0`, as on SQLite, and a search term bound
+from another pattern matches when the text contains all of its tokens.
+Differences from SQLite:
 
 - `NEAR` and `NEAR/n` are `AND`: the distance isn't checked.
 - Case folding is DuckDB's `lower()` plus the 12 folds SQLite makes that it

@@ -13,12 +13,18 @@
 //! The FTS4 query (enhanced syntax: `AND`, `OR`, `NOT`, `NEAR`, implicit
 //! AND, parentheses, `"phrases"`, `prefix*`, `^first`, `text:`) is lexed as
 //! SQLite's `fts3_expr.c` reads it and parsed with its precedence (NEAR, NOT,
-//! AND, OR). Each phrase becomes a regex over the text's tokens, found in SQL
-//! with SQLite's own `unicode61` (`remove_diacritics=0`) token characters: a
-//! letter or number by SQLite's table (`fts_unicode61`), then more of those
-//! or one of the 25 diacritics it keeps in a token (within U+0300-U+0331). A
-//! text is matched as `' tok1 tok2 ... '`, so a phrase is a substring match
-//! on whole tokens.
+//! AND, OR). A text's tokens are found in SQL with SQLite's own `unicode61`
+//! (`remove_diacritics=0`) token characters: a letter or number by SQLite's
+//! table (`fts_unicode61`), then more of those or one of the 25 diacritics it
+//! keeps in a token (within U+0300-U+0331). A text is matched as
+//! `' tok1 tok2 ... '`, so a phrase is a substring match on whole tokens.
+//!
+//! However many phrases a query has, each text is folded once for a
+//! prefilter (every word of a needed phrase is a substring of the folded
+//! text), and only a text that passes is folded again and tokenized, once,
+//! for the exact check (see `push_duckdb_match`). The SQL holds the token
+//! class once and each word a few times, so 4095 ANDed words (SQLite's
+//! limit) make a statement of about 280 KB, not 50 MB.
 //!
 //! shortcut: where this still differs from SQLite FTS4 (use the SQLite
 //! engine, or DuckDB's `fts` extension, if one matters):
@@ -46,7 +52,7 @@ use crate::{push_comparand, ColumnOrExpression, Comparand};
 
 /// One word of a phrase: its token, whether it is a prefix (`tok*`), and
 /// whether it must be the text's first token (`^tok`).
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Word {
     token: String,
     prefix: bool,
@@ -491,79 +497,221 @@ fn push_tokens(out: &mut dyn QueryBuilder, x: &ColumnOrExpression) -> BuildQuery
     Ok(())
 }
 
-/// `x`'s tokens as `' tok1 tok2 '`.
-fn push_token_text(out: &mut dyn QueryBuilder, x: &ColumnOrExpression) -> BuildQueryResult {
-    out.push_sql("(' ' || array_to_string(");
-    push_tokens(out, x)?;
-    out.push_sql(", ' ') || ' ')");
-    Ok(())
+/// Query text `s` as a SQL value folded as `push_folded` folds the texts:
+/// in SQL, unless it is ASCII (where `lower()` only maps A-Z, and the
+/// `translate()` folds are all non-ASCII). `s` is tokens, spaces and the
+/// pattern pieces `^`, `[^ ]*`, which folding leaves alone; a token never
+/// holds a quote, but it is escaped anyway.
+fn folded_lit(s: &str) -> String {
+    let s = s.replace('\'', "''");
+    if s.is_ascii() {
+        format!("'{}'", s.to_ascii_lowercase())
+    } else {
+        format!("translate(lower('{s}'), '{FOLD_FROM}', '{FOLD_TO}')")
+    }
 }
 
-fn push_node(
-    out: &mut dyn QueryBuilder,
-    text: &ColumnOrExpression,
-    node: &Node,
-) -> BuildQueryResult {
-    match node {
-        Node::Empty => out.push_sql("false"),
-        // No words (`""`), or `^` on a word after the first: no text matches.
-        Node::Phrase(words) if words.is_empty() || words.iter().skip(1).any(|w| w.first) => {
-            out.push_sql("false")
-        }
-        Node::Phrase(words) => {
-            // Each word is one token: token characters only, never a regex
-            // metacharacter (those are ASCII punctuation), so it is spliced
-            // into the pattern. It is folded and inlined as a SQL literal,
-            // not bound: the pattern is then a constant DuckDB folds, so the
-            // regex compiles once, not per row.
-            out.push_sql("regexp_matches(");
-            push_token_text(out, text)?;
-            out.push_sql(if words[0].first { ", '^ '" } else { ", ' '" });
-            for w in words {
-                let lit = format!("'{}'", w.token.replace('\'', "''"));
-                out.push_sql(&format!(
-                    " || translate(lower({lit}), '{FOLD_FROM}', '{FOLD_TO}')"
-                ));
-                out.push_sql(if w.prefix { " || '[^ ]* '" } else { " || ' '" });
+/// `parts` joined by `op`, each distinct one once (`a AND a` is `a`).
+fn join(parts: impl IntoIterator<Item = String>, op: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let parts: Vec<String> = parts
+        .into_iter()
+        .filter(|p| seen.insert(p.clone()))
+        .collect();
+    match parts.len() {
+        1 => parts.into_iter().next().unwrap_or_default(),
+        _ => format!("({})", parts.join(op)),
+    }
+}
+
+/// Whether a phrase can match at all: no words (`""`), or `^` on a word
+/// after the first, matches no text.
+fn matchable(words: &[Word]) -> bool {
+    !words.is_empty() && !words.iter().skip(1).any(|w| w.first)
+}
+
+/// A matchable phrase as a regex over `' tok1 tok2 '`: `' a b '`, `'^ a '`
+/// if `^`-anchored, `' a[^ ]* '` for a prefix. Tokens are letters, digits
+/// and combining marks, never a regex metacharacter (all ASCII punctuation),
+/// and folding doesn't make one.
+fn phrase_re(words: &[Word]) -> String {
+    let mut re = String::from(if words[0].first { "^ " } else { " " });
+    for w in words {
+        re.push_str(&w.token);
+        re.push_str(if w.prefix { "[^ ]* " } else { " " });
+    }
+    re
+}
+
+/// The most bytes of alternatives joined into one regex (RE2 rejects a
+/// program much past a few hundred KB).
+const REGEX_BYTES: usize = 32 * 1024;
+
+/// `regexp_matches(col, '(?:a|b|...)')` over `alts`, in runs of at most
+/// `REGEX_BYTES`; a run of one alternative is `one` of it instead. One
+/// alternation is far cheaper than an OR of thousands of conditions, which
+/// DuckDB evaluates one by one on every text none of them matches.
+fn alternation(alts: Vec<(String, String)>, col: &str) -> Vec<String> {
+    let mut runs: Vec<Vec<(String, String)>> = vec![];
+    let mut len = 0;
+    for alt in alts {
+        len += alt.0.len() + 1;
+        match runs.last_mut() {
+            Some(run) if len <= REGEX_BYTES => run.push(alt),
+            _ => {
+                len = alt.0.len() + 1;
+                runs.push(vec![alt]);
             }
-            out.push_sql(")");
-        }
-        Node::And(xs) | Node::Or(xs) | Node::Near(xs) => {
-            let op = if matches!(node, Node::Or(_)) {
-                " OR "
-            } else {
-                " AND "
-            };
-            out.push_sql("(");
-            for (i, x) in xs.iter().enumerate() {
-                if i > 0 {
-                    out.push_sql(op);
-                }
-                push_node(out, text, x)?;
-            }
-            out.push_sql(")");
-        }
-        Node::Not(l, r) => {
-            out.push_sql("(");
-            push_node(out, text, l)?;
-            out.push_sql(" AND NOT ");
-            push_node(out, text, r)?;
-            out.push_sql(")");
         }
     }
-    Ok(())
+    runs.into_iter()
+        .map(|mut run| match run.len() {
+            1 => run.remove(0).1,
+            _ => {
+                let re: Vec<String> = run.into_iter().map(|(re, _)| re).collect();
+                format!(
+                    "regexp_matches({col}, {})",
+                    folded_lit(&format!("(?:{})", re.join("|")))
+                )
+            }
+        })
+        .collect()
+}
+
+/// An OR's operands, its matchable phrases first, as `sql` makes them,
+/// except that the phrases go through `phrase` and then `alternation`.
+fn or_parts(
+    xs: &[Node],
+    sql: fn(&Node) -> String,
+    phrase: impl Fn(&[Word]) -> (String, String),
+    col: &str,
+) -> String {
+    let mut alts = vec![];
+    let mut rest = vec![];
+    for x in xs {
+        match x {
+            Node::Phrase(words) if matchable(words) => alts.push(phrase(words)),
+            x => rest.push(sql(x)),
+        }
+    }
+    join(alternation(alts, col).into_iter().chain(rest), " OR ")
+}
+
+/// `node` as SQL over `mentat_t`, a text's tokens as `' tok1 tok2 '`. A
+/// phrase is one folded literal: `contains` for `' a b '` (`' a b'` if the
+/// last word is a prefix), `starts_with` if it is `^`-anchored, and a regex
+/// only when a word before the last is a prefix (`' a[^ ]* b '`).
+fn exact(node: &Node) -> String {
+    match node {
+        Node::Empty => "false".into(),
+        Node::Phrase(words) if !matchable(words) => "false".into(),
+        Node::Phrase(words) => {
+            if words[..words.len() - 1].iter().any(|w| w.prefix) {
+                return format!(
+                    "regexp_matches(mentat_t, {})",
+                    folded_lit(&phrase_re(words))
+                );
+            }
+            let mut text = String::new();
+            for w in words {
+                text.push(' ');
+                text.push_str(&w.token);
+            }
+            if !words[words.len() - 1].prefix {
+                text.push(' ');
+            }
+            let f = if words[0].first {
+                "starts_with"
+            } else {
+                "contains"
+            };
+            format!("{f}(mentat_t, {})", folded_lit(&text))
+        }
+        Node::And(xs) | Node::Near(xs) => join(xs.iter().map(exact), " AND "),
+        Node::Or(xs) => or_parts(
+            xs,
+            exact,
+            |words| (phrase_re(words), exact(&Node::Phrase(words.to_vec()))),
+            "mentat_t",
+        ),
+        Node::Not(l, r) => format!("({} AND NOT {})", exact(l), exact(r)),
+    }
+}
+
+/// The most words of one phrase the prefilter checks: enough to rule out
+/// most texts, and a long phrase stays one short condition.
+const PREFILTER_WORDS: usize = 8;
+
+/// A cheap condition, over `mentat_f` (the folded text), that every text
+/// `node` matches meets: each word of a phrase is a substring of it (a token
+/// is a piece of the folded text). In an OR, one word per phrase, the
+/// longest.
+fn prefilter(node: &Node) -> String {
+    let has = |w: &Word| format!("contains(mentat_f, {})", folded_lit(&w.token));
+    match node {
+        Node::Empty => "false".into(),
+        Node::Phrase(words) if !matchable(words) => "false".into(),
+        Node::Phrase(words) => join(
+            words
+                .iter()
+                .map(has)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .take(PREFILTER_WORDS),
+            " AND ",
+        ),
+        Node::And(xs) | Node::Near(xs) => join(xs.iter().map(prefilter), " AND "),
+        Node::Or(xs) => or_parts(
+            xs,
+            prefilter,
+            |words| {
+                let w = words
+                    .iter()
+                    .max_by_key(|w| w.token.len())
+                    .expect("matchable");
+                (w.token.clone(), has(w))
+            },
+            "mentat_f",
+        ),
+        Node::Not(l, _) => prefilter(l),
+    }
 }
 
 /// `text MATCH query` on DuckDB. A constant query is parsed as FTS4 syntax; a
 /// query taken from another column at run time matches when the text has all
 /// of its tokens (FTS4's reading of plain words).
+///
+/// A constant query folds each text once and checks the prefilter on it;
+/// only a text that passes is tokenized, once, for the exact check. Each
+/// condition sits in a `CASE WHEN`, where DuckDB stops an AND at its first
+/// false operand and an OR at its first true one. (`list_transform([x],
+/// lambda v: ...)[1]` names a value; a subquery column wouldn't: DuckDB
+/// pushes the filter through it and computes the column once per use.)
 pub(crate) fn push_duckdb_match(
     out: &mut dyn QueryBuilder,
     text: &ColumnOrExpression,
     query: &ColumnOrExpression,
 ) -> BuildQueryResult {
     if let ColumnOrExpression::Value(TypedValue::String(q)) = query {
-        return push_node(out, text, &parse(q)?);
+        let node = parse(q)?;
+        let pre = prefilter(&node);
+        if pre == "false" {
+            out.push_sql("false");
+            return Ok(());
+        }
+        out.push_sql("CASE WHEN list_transform([");
+        push_folded(out, text)?;
+        out.push_sql(&format!(
+            "], lambda mentat_f: CASE WHEN {pre} THEN true ELSE false END)[1] \
+             THEN list_transform([' ' || array_to_string("
+        ));
+        push_tokens(out, text)?;
+        out.push_sql(&format!(
+            ", ' ') || ' '], lambda mentat_t: CASE WHEN {} THEN true ELSE false END)[1] \
+             ELSE false END",
+            exact(&node)
+        ));
+        return Ok(());
     }
     out.push_sql("(list_has_all(");
     push_tokens(out, text)?;
@@ -717,5 +865,102 @@ mod tests {
         assert_eq!(p(&parens(100_000)), "ERR");
         assert_eq!(p(&nots(100_000)), "ERR");
         assert_eq!(p(&format!("{}a", "(a NOT ".repeat(100_000))), "ERR");
+    }
+
+    fn sql(q: &str) -> String {
+        let mut b = mentat_sql::SQLiteQueryBuilder::new();
+        b.set_dialect(mentat_sql::Dialect::DuckDb);
+        let text = ColumnOrExpression::ExistingColumn("t".into());
+        let query = ColumnOrExpression::Value(TypedValue::typed_string(q));
+        push_duckdb_match(&mut b, &text, &query).unwrap();
+        b.finish().sql
+    }
+
+    /// Each text is folded and tokenized once, whatever the query: the 12 KB
+    /// token class is in the SQL once, so 4095 ANDed words (an 8 KB query)
+    /// stay a short statement. Each phrase is one literal, so a long phrase
+    /// is not a deep `||` chain.
+    #[test]
+    fn duckdb_sql_tokenizes_once() {
+        let re = token_re();
+        for q in [
+            "a".to_string(),
+            vec!["a"; 4095].join(" "),
+            (0..4095)
+                .map(|i| format!("w{i}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            format!("\"{}\"", vec!["a"; 10_000].join(" ")),
+            "\"hel* dark*\" OR x NOT y".into(),
+            (0..4095)
+                .map(|i| format!("w{i}"))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        ] {
+            let s = sql(&q);
+            assert_eq!(s.matches(re).count(), 1, "{}", &q[..q.len().min(40)]);
+            assert!(s.len() < re.len() + 40 * q.len() + 500, "{} bytes", s.len());
+        }
+        assert_eq!(
+            sql(&vec!["a"; 4095].join(" "))
+                .matches("contains(mentat_t, ' a ')")
+                .count(),
+            1
+        );
+        let long = sql(&format!("\"{}\"", vec!["a"; 10_000].join(" ")));
+        assert!(long.contains(&format!("contains(mentat_t, '{} ')", " a".repeat(10_000))));
+        assert_eq!(
+            long.matches("||").count(),
+            2,
+            "only the tokens' ' ' || ... || ' '"
+        );
+        // Nothing can match: no SQL over the texts at all.
+        assert_eq!(sql("\"\""), "false");
+        assert_eq!(sql("---"), "false");
+    }
+
+    /// The exact check per phrase, and the prefilter in front of it.
+    #[test]
+    fn duckdb_phrases() {
+        let s = sql("\"Hello dark*\" NOT fox");
+        assert!(s.contains("contains(mentat_t, ' hello dark')"), "{s}");
+        assert!(s.contains("NOT contains(mentat_t, ' fox ')"), "{s}");
+        assert!(
+            s.contains("(contains(mentat_f, 'dark') AND contains(mentat_f, 'hello'))"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("mentat_f, 'fox'"),
+            "a NOT's right side is not required: {s}"
+        );
+        assert!(sql("^a b").contains("starts_with(mentat_t, ' a ')"));
+        assert!(sql("\"a* b\"").contains("regexp_matches(mentat_t, ' a[^ ]* b ')"));
+        assert!(sql("\"^a* b\"").contains("regexp_matches(mentat_t, '^ a[^ ]* b ')"));
+        // A non-ASCII word is folded by DuckDB, like the text.
+        assert!(sql("Σ").contains("contains(mentat_t, translate(lower(' Σ '), "));
+        // An OR of phrases is one alternation, in the prefilter (each
+        // phrase's longest word) and in the exact check.
+        let s = sql("a OR \"bb c\" OR d*");
+        assert!(s.contains("regexp_matches(mentat_f, '(?:a|bb|d)')"), "{s}");
+        assert!(
+            s.contains("regexp_matches(mentat_t, '(?: a | bb c | d[^ ]* )')"),
+            "{s}"
+        );
+        // Other operands stay beside it.
+        let s = sql("a OR b OR (c d)");
+        assert!(s.contains("(regexp_matches(mentat_f, '(?:a|b)') OR (contains(mentat_f, 'c') AND contains(mentat_f, 'd')))"), "{s}");
+        // A lone phrase in an OR is not an alternation.
+        assert!(sql("a OR (c d)").contains("(contains(mentat_f, 'a') OR "));
+        // 4095 ORed words: a few regexes, not 4095 conditions.
+        let s = sql(&(0..4095)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" OR "));
+        assert!(
+            s.matches("regexp_matches").count() <= 4,
+            "{}",
+            s.matches("regexp_matches").count()
+        );
+        assert!(!s.contains("contains("), "no per-word conditions");
     }
 }
