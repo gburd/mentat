@@ -259,7 +259,8 @@ DECLARE
     a RECORD;
     kind TEXT;
 BEGIN
-    -- The schema's oid by exact name (see _create_store_layout).
+    -- The schema's oid by exact name (see _create_store_layout). Role names
+    -- come from regrole output, which is already quoted: %s, never %I.
     SELECT oid, nspowner INTO ns, owner_oid FROM pg_namespace WHERE nspname = p_schema;
     IF owner_oid IS NULL THEN
         RAISE EXCEPTION 'schema % does not exist', p_schema;
@@ -273,13 +274,13 @@ BEGIN
         kind := CASE r.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
                                WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END;
         IF r.relowner <> owner_oid THEN
-            EXECUTE format('ALTER %s %I.%I OWNER TO %I', kind, p_schema, r.relname, owner_oid::regrole);
+            EXECUTE format('ALTER %s %I.%I OWNER TO %s', kind, p_schema, r.relname, owner_oid::regrole);
         END IF;
     END LOOP;
     FOR r IN
         SELECT p.oid FROM pg_proc p WHERE p.pronamespace = ns AND p.proowner <> owner_oid
     LOOP
-        EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.oid::regprocedure, owner_oid::regrole);
+        EXECUTE format('ALTER ROUTINE %s OWNER TO %s', r.oid::regprocedure, owner_oid::regrole);
     END LOOP;
 
     FOR a IN
@@ -288,7 +289,7 @@ BEGIN
         CONTINUE WHEN a.grantee = owner_oid
                    OR a.grantee = (SELECT nspowner FROM pg_namespace WHERE nspname = 'mentat');
         EXECUTE format('GRANT %s ON SCHEMA %I TO %s%s', a.privilege_type, p_schema,
-                       CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE quote_ident(a.grantee::regrole::text) END,
+                       CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END,
                        CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END);
     END LOOP;
 
@@ -303,7 +304,7 @@ BEGIN
         FOR a IN SELECT * FROM aclexplode(r.relacl) LOOP
             CONTINUE WHEN a.grantee = owner_oid OR a.grantee = r.relowner;
             EXECUTE format('GRANT %s ON %s %I.%I TO %s%s', a.privilege_type, kind, p_schema, r.relname,
-                           CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE quote_ident(a.grantee::regrole::text) END,
+                           CASE a.grantee WHEN 0 THEN 'PUBLIC' ELSE a.grantee::regrole::text END,
                            CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END);
         END LOOP;
     END LOOP;
@@ -338,7 +339,7 @@ BEGIN
                             'Rename or drop it and run the upgrade again.', st.store_name, old_schema;
         END IF;
         EXECUTE format('ALTER SCHEMA %I RENAME TO %I', st.schema_name, old_schema);
-        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I', st.schema_name, st.nspowner::regrole);
+        EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %s', st.schema_name, st.nspowner::regrole);  -- regrole: already quoted
         new_ns := (SELECT oid FROM pg_namespace WHERE nspname = st.schema_name);
         PERFORM mentat._create_store_layout(st.schema_name, st.store_id);
 
