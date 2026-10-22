@@ -105,8 +105,8 @@ impl ScriptBackend for DuckBackend {
         Ok(TxReport {
             tx_id: r.tx_id,
             tempids: r.tempids.into_iter().collect(),
-            datoms_asserted: r.datoms_asserted as i64,
-            datoms_retracted: r.datoms_retracted as i64,
+            datoms_asserted: r.datoms_asserted.map(|n| n as i64),
+            datoms_retracted: r.datoms_retracted.map(|n| n as i64),
         })
     }
 
@@ -123,8 +123,8 @@ impl ScriptBackend for DuckBackend {
             TxReport {
                 tx_id: r.tx_id,
                 tempids: r.tempids.into_iter().collect(),
-                datoms_asserted: r.datoms_asserted as i64,
-                datoms_retracted: r.datoms_retracted as i64,
+                datoms_asserted: r.datoms_asserted.map(|n| n as i64),
+                datoms_retracted: r.datoms_retracted.map(|n| n as i64),
             },
         ))
     }

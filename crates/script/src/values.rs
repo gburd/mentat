@@ -23,7 +23,7 @@ pub struct DbRef {
 }
 
 /// A backend-independent transaction report: the tx id, tempid resolutions, and how many
-/// datoms the transaction asserted and retracted (#281).
+/// datoms the transaction asserted and retracted (#281; `None`, shown as nil: not counted).
 ///
 /// Each backend converts its native report (mentat `TxReport`, pg engine JSON)
 /// into this shape; the shared layer projects it to the `:mentat.store/*` map.
@@ -31,8 +31,8 @@ pub struct DbRef {
 pub struct TxReport {
     pub tx_id: i64,
     pub tempids: Vec<(String, i64)>,
-    pub datoms_asserted: i64,
-    pub datoms_retracted: i64,
+    pub datoms_asserted: Option<i64>,
+    pub datoms_retracted: Option<i64>,
 }
 
 /// A namespaced keyword `Value`, e.g. `:mentat.store/conn`.
@@ -116,11 +116,11 @@ pub fn tx_report_value(report: &TxReport, db_after: Option<Value>) -> Value {
         )
         .assoc(
             kw_ns("mentat.store", "datoms-asserted"),
-            Value::Int(report.datoms_asserted),
+            report.datoms_asserted.map_or(Value::Nil, Value::Int),
         )
         .assoc(
             kw_ns("mentat.store", "datoms-retracted"),
-            Value::Int(report.datoms_retracted),
+            report.datoms_retracted.map_or(Value::Nil, Value::Int),
         );
     if let Some(db) = db_after {
         m = m.assoc(kw_ns("mentat.store", "db-after"), db);
@@ -220,14 +220,23 @@ mod tests {
         let r = TxReport {
             tx_id: 268435458,
             tempids: vec![("t".to_string(), 268435460)],
-            datoms_asserted: 2,
-            datoms_retracted: 1,
+            datoms_asserted: Some(2),
+            datoms_retracted: Some(1),
         };
         let s = print_str(&tx_report_value(&r, None));
         assert!(s.contains(":mentat.store/tx-id 268435458"), "{s}");
         assert!(s.contains(":mentat.store/datoms-asserted 2"), "{s}");
         assert!(s.contains(":mentat.store/datoms-retracted 1"), "{s}");
         assert!(s.contains("\"t\" 268435460"), "{s}");
+        // Not counted: nil.
+        let r = TxReport {
+            datoms_asserted: None,
+            datoms_retracted: None,
+            ..r
+        };
+        let s = print_str(&tx_report_value(&r, None));
+        assert!(s.contains(":mentat.store/datoms-asserted nil"), "{s}");
+        assert!(s.contains(":mentat.store/datoms-retracted nil"), "{s}");
     }
 
     #[test]

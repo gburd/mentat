@@ -346,7 +346,7 @@ fn json_to_tx_report(report: &str) -> Result<TxReport, String> {
             }
         }
     }
-    let count = |k: &str| j.get(k).and_then(J::as_i64).unwrap_or(0);
+    let count = |k: &str| j.get(k).and_then(J::as_i64);
     Ok(TxReport {
         tx_id,
         tempids,

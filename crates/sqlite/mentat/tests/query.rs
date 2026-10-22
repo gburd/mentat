@@ -2272,7 +2272,7 @@ fn test_string_predicates() {
 #[test]
 fn test_tx_report_counts() {
     let mut store = Store::open("").expect("opened");
-    let counts = |r: &TxReport| (r.datoms_asserted, r.datoms_retracted);
+    let counts = |r: &TxReport| (r.datoms_asserted.unwrap(), r.datoms_retracted.unwrap());
     let r = store
         .transact(
             r#"[{:db/ident :c/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}

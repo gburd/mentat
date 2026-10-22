@@ -433,7 +433,7 @@ impl MentatStoring for DuckStoring<'_> {
         )?)
     }
 
-    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<(usize, usize)> {
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<Option<(usize, usize)>> {
         // The same conditions `insert_transaction` uses to write the log.
         let s = format!(
             "SELECT
@@ -449,7 +449,7 @@ impl MentatStoring for DuckStoring<'_> {
             .conn
             .query_rows(&s, &[], |r| Ok((r.get_i64(0)?, r.get_i64(1)?)))?;
         let (a, r) = rows.first().copied().unwrap_or((0, 0));
-        Ok((a as usize, r as usize))
+        Ok(Some((a as usize, r as usize)))
     }
 }
 

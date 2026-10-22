@@ -491,6 +491,24 @@ mod tests {
             .contains("not valid JSON"));
     }
 
+    // #281: counts a store didn't take are JSON null.
+    #[test]
+    fn uncounted_tx_report_is_null() {
+        use mentat::FromMicros;
+        let r = TxReport::new(
+            1,
+            mentat::DateTime::<mentat::Utc>::from_micros(0),
+            Default::default(),
+            None,
+            None,
+        );
+        let j: Json = serde_json::from_str(&tx_report_json(&r)).unwrap();
+        assert_eq!(
+            (&j["datoms_asserted"], &j["datoms_retracted"]),
+            (&Json::Null, &Json::Null)
+        );
+    }
+
     /// End to end over a real store file: tx-report, every result shape, the
     /// inputs contract, as-of, pull and eval.
     #[test]

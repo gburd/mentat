@@ -162,7 +162,11 @@ fn test_cas_to_the_same_value_is_a_no_op() {
         format!("[[:db/cas {e} :t/tags \"a\" \"a\"]]"),
     ] {
         let r = store.transact(&tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
-        assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 0), "{tx}");
+        assert_eq!(
+            (r.datoms_asserted, r.datoms_retracted),
+            (Some(0), Some(0)),
+            "{tx}"
+        );
     }
     assert_eq!(val(&store, e), Some(10));
     assert_eq!(datom_count(&store, e), 2);
@@ -530,7 +534,7 @@ fn test_retract_of_absent_value_keeps_cache_and_observers_quiet() {
             "[[:db/retract {a} :r/n 1] [:db/retract {a} :r/m 7]]"
         ))
         .expect("retract present");
-    assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 1));
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(0), Some(1)));
     assert_eq!(n(&store), None);
     let (tx, changes) = heard
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -633,7 +637,7 @@ fn test_unique_value_lookup_refs() {
         .expect("list of lookup refs");
     // No tempids for "a" and "b": they are lookup refs, not new entities.
     assert_eq!(r.tempids.keys().collect::<Vec<_>>(), ["z"]);
-    assert_eq!((r.datoms_asserted, r.datoms_retracted), (3, 0));
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(3), Some(0)));
     let rows = |q: &str| -> Vec<String> {
         let mut v: Vec<String> = store
             .q_once(q, None)
@@ -707,7 +711,7 @@ fn test_sub_microsecond_instants() {
             "[[:db/retract {a} :r/t #inst \"2020-01-01T00:00:00.0000027Z\"]]"
         ))
         .expect("retract absent");
-    assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 0));
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(0), Some(0)));
     assert_eq!(cached(&mut store), Some(stored.clone()));
     assert_eq!(queried(&store), Some(stored.into()));
 
@@ -716,7 +720,7 @@ fn test_sub_microsecond_instants() {
             "[[:db/retract {a} :r/t #inst \"2020-01-01T00:00:00.0000017Z\"]]"
         ))
         .expect("retract present");
-    assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 1));
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(0), Some(1)));
     assert_eq!(cached(&mut store), None);
     assert_eq!(queried(&store), None);
 

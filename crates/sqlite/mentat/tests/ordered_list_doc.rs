@@ -78,7 +78,11 @@ fn ordered_list_doc_runs_as_written() {
             (Ok(r), None) => {
                 if body.starts_with("[[:list/move") {
                     // The prose: three positions written, three retracted.
-                    assert_eq!((r.datoms_asserted, r.datoms_retracted), (3, 3), "{body}");
+                    assert_eq!(
+                        (r.datoms_asserted, r.datoms_retracted),
+                        (Some(3), Some(3)),
+                        "{body}"
+                    );
                 }
             }
             (Err(e), Some(want)) => {

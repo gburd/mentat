@@ -40,10 +40,10 @@ pub struct TxReport {
     /// Both leave out the transaction's own `:db/txInstant` datom, so `0, 0` means the
     /// transaction changed nothing. A redundant assertion (the datom is already there) or a
     /// retraction of an absent datom is not counted; replacing a cardinality-one value counts
-    /// one assertion and one retraction. Both are `usize::MAX` ("not counted") from a store
-    /// whose `MentatStoring` doesn't implement `transaction_datom_counts`.
-    pub datoms_asserted: usize,
-    pub datoms_retracted: usize,
+    /// one assertion and one retraction. Both are `None` (not counted) from a store whose
+    /// `MentatStoring` doesn't implement `transaction_datom_counts`.
+    pub datoms_asserted: Option<usize>,
+    pub datoms_retracted: Option<usize>,
 }
 
 impl TxReport {
@@ -51,8 +51,8 @@ impl TxReport {
         tx_id: Entid,
         tx_instant: DateTime<Utc>,
         tempids: BTreeMap<String, Entid>,
-        datoms_asserted: usize,
-        datoms_retracted: usize,
+        datoms_asserted: Option<usize>,
+        datoms_retracted: Option<usize>,
     ) -> TxReport {
         TxReport {
             tx_id,
@@ -66,6 +66,6 @@ impl TxReport {
     /// True if the transaction asserted and retracted nothing (beyond its `:db/txInstant`).
     /// False when the store did not count.
     pub fn is_empty(&self) -> bool {
-        self.datoms_asserted == 0 && self.datoms_retracted == 0
+        self.datoms_asserted == Some(0) && self.datoms_retracted == Some(0)
     }
 }

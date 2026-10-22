@@ -61,7 +61,7 @@ fn duckdb_matches_sqlite() {
             "tx {i}: datom counts differ"
         );
         tx_ids.push(a.tx_id);
-        counts.push((a.datoms_asserted, a.datoms_retracted));
+        counts.push((a.datoms_asserted.unwrap(), a.datoms_retracted.unwrap()));
     }
 
     // A no-op, then a replacement and a new value, a keyword, then three new refs.

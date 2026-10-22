@@ -1055,11 +1055,11 @@ pub trait MentatStoring {
     /// After `materialize_mentat_transaction`: how many datoms transaction `tx_id` asserts and
     /// retracts, not counting its own `:db/txInstant` (see `TxReport::datoms_asserted`).
     ///
-    /// The default (for a store written before 1.18.0) does not count: it reports
-    /// `(usize::MAX, usize::MAX)`, so `TxReport::is_empty` is false rather than claiming a
-    /// transaction changed nothing. The SQLite and DuckDB stores override it.
-    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<(usize, usize)> {
-        Ok((usize::MAX, usize::MAX))
+    /// The default (for a store written before 1.18.0) does not count: it reports `None`, so
+    /// the report's counts are `None` and `TxReport::is_empty` is false rather than claiming
+    /// a transaction changed nothing. The SQLite and DuckDB stores override it.
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<Option<(usize, usize)>> {
+        Ok(None)
     }
 
     /// After `materialize_mentat_transaction`: the retractions in the last transaction that
@@ -1129,7 +1129,7 @@ impl MentatStoring for rusqlite::Transaction<'_> {
     fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
         (**self).referrers(e)
     }
-    fn transaction_datom_counts(&self, tx_id: Entid) -> Result<(usize, usize)> {
+    fn transaction_datom_counts(&self, tx_id: Entid) -> Result<Option<(usize, usize)>> {
         (**self).transaction_datom_counts(tx_id)
     }
     fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
@@ -1733,7 +1733,7 @@ impl MentatStoring for rusqlite::Connection {
         rows
     }
 
-    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<(usize, usize)> {
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<Option<(usize, usize)>> {
         // The same conditions `insert_transaction` uses to write the log.
         let s = format!(
             r#"
@@ -1748,7 +1748,7 @@ impl MentatStoring for rusqlite::Connection {
             tx_instant = entids::DB_TX_INSTANT
         );
         let (a, r): (i64, i64) = self.query_row(&s, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok((a as usize, r as usize))
+        Ok(Some((a as usize, r as usize)))
     }
 
     fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
@@ -2819,7 +2819,7 @@ mod tests {
         .expect("transacts");
         assert_eq!(
             (report.datoms_asserted, report.datoms_retracted),
-            (usize::MAX, usize::MAX)
+            (None, None)
         );
         assert!(!report.is_empty());
     }

@@ -1340,8 +1340,8 @@ where
             self.tx_id,
             tx_instant,
             tempids,
-            datom_counts.0,
-            datom_counts.1,
+            datom_counts.map(|c| c.0),
+            datom_counts.map(|c| c.1),
         ))
     }
 }
