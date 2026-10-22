@@ -47,7 +47,10 @@ where-fns backed by the per-attribute tables those helpers make
 `geom-contains`, `geom-intersects`) raise `:db.error/unsupported` on a named
 store. `fulltext`, `fuzzy`, the trigram where-fns and `bm25-match` read the
 store's own tables; `mentat.create_fts_index` indexes the default store's
-table only. `subscribe('acme', ...)` re-runs its query against `acme`.
+table only. `subscribe('acme', ...)` re-runs its query against `acme`, and
+a `(pull ?e [...])` in a `q('acme', ...)` find pulls from `acme`.
+Subscriptions and materialized views move with `rename_store` and go away
+with `drop_store`.
 
 **Permissions.** The role that calls `create_store` owns the new schema and
 everything in it. Every role with a privilege on the default store's
