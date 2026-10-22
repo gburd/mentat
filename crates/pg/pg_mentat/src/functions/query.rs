@@ -6707,9 +6707,19 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
             pat.push(']');
             let pat_param = builder.bind_text(pat);
-            // edn_pull(pattern TEXT, entity_id BIGINT) -> jsonb; cast to
-            // text so it flows through the TEXT result-column path.
-            select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+            // named-stores: edn_pull reads the default store; a named store
+            // pulls from its own schema with pull(store, pattern, entity_id).
+            let pull_store = store_name_from_prefix(schema_prefix);
+            if pull_store != "default" {
+                let store_param = builder.bind_text(pull_store.to_string());
+                select_exprs.push(format!(
+                    "pull({store_param}, {pat_param}, {entity_expr})::TEXT"
+                ));
+            } else {
+                // edn_pull(pattern TEXT, entity_id BIGINT) -> jsonb; cast to
+                // text so it flows through the TEXT result-column path.
+                select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+            } // named-stores: end
             if has_aggregates {
                 group_by_exprs.push(format!("{}", col_idx + 1));
             }
