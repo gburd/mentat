@@ -241,38 +241,22 @@ pub fn materialize(
     let schema = get_schema_for_store(store_name);
     let quoted_schema = quote_ident(&schema);
 
-    // Infer columns from the Datalog query using mentat_query_sql
-    let query_info = Spi::connect(|client| {
-        let mut rows = client.select(
-            "SELECT mentat_query_sql($1, '{}'::jsonb)",
-            None,
-            &[DatumWithOid::from(datalog_query)],
-        )?;
-        match rows.next() {
-            Some(row) => {
-                let result: Option<JsonB> = row.get::<JsonB>(1)?;
-                Ok::<_, pgrx::spi::SpiError>(result)
-            }
-            None => Ok(None),
-        }
-    })?;
+    // Infer columns from the Datalog query, compiled against the store's
+    // own schema (the default store's may not have its attributes).
+    let JsonB(query_info) = crate::functions::query::mentat_query_sql_store(
+        store_name,
+        datalog_query,
+        JsonB(json!({})),
+    )?;
 
-    let columns = match &query_info {
-        Some(JsonB(info)) => {
-            if let Some(cols) = info.get("columns").and_then(|c| c.as_array()) {
-                cols.iter()
-                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<_>>()
-            } else {
-                return Err(Box::new(MentatError::InvalidQuery {
-                    message: "Could not extract column names from query.".to_string(),
-                    suggestion: None,
-                }));
-            }
-        }
+    let columns = match query_info.get("columns").and_then(|c| c.as_array()) {
+        Some(cols) => cols
+            .iter()
+            .filter_map(|c| c.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>(),
         None => {
             return Err(Box::new(MentatError::InvalidQuery {
-                message: "Query SQL generation returned no results.".to_string(),
+                message: "Could not extract column names from query.".to_string(),
                 suggestion: None,
             }));
         }
