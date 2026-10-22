@@ -116,9 +116,17 @@ COMMENT ON FUNCTION public.mentat_eval(TEXT) IS 'Deprecated since 1.9.0: use edn
 struct PgBackend;
 
 impl ScriptBackend for PgBackend {
-    fn open(&mut self, _path: Option<&str>) -> Result<i64, String> {
-        // Exactly one database; a trivial conn handle.
-        Ok(1)
+    fn open(&mut self, path: Option<&str>) -> Result<i64, String> {
+        // Every method below reads and writes the default store, so a
+        // script naming another store would silently use the default one.
+        match path {
+            None | Some("") | Some("default") => Ok(1),
+            Some(name) => Err(format!(
+                ":db.error/unsupported edn_eval can't open store '{name}': in 1.18.0 scripts \
+                 run on the default store only (issue #389). Use (mentat.store/open), or \
+                 t() / q() / pull() / entity() with the store name from SQL."
+            )),
+        }
     }
 
     fn close(&mut self, _conn: i64) -> Result<(), String> {

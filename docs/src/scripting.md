@@ -10,8 +10,11 @@ The same surface is available on both backends:
 - **Embedded** — `mentat::ScriptInterpreter` (in the `mentat` crate) runs mino
   scripts against SQLite-backed `Store`s.
 - **PostgreSQL** — the SQL function `edn_eval(TEXT)` runs a script against the
-  current database. It is behind the optional `script` cargo feature (off by
-  default). `mentat_eval(TEXT)` is its deprecated pre-1.9.0 name.
+  current database's default store. It is behind the optional `script` cargo
+  feature (off by default). `mentat_eval(TEXT)` is its deprecated pre-1.9.0
+  name. `(mentat.store/open)` and `(mentat.store/open "default")` open the
+  default store; any other name is `:db.error/unsupported` in 1.18.0 (named
+  stores in scripts: issue #389).
 
 ## The Datomic-style model
 
