@@ -182,7 +182,8 @@ pub struct ConjoiningClauses {
 
     /// An optional temporal bound applied to *every* pattern in this CC (and its
     /// sub-CCs): `as-of T` reconstructs current state at tx T; `since T` keeps
-    /// only datoms transacted after T. `None` means "current basis", the default.
+    /// the current datoms transacted after T (a history pattern: every datom
+    /// after T). `None` means "current basis", the default.
     pub temporal: Option<TemporalBound>,
 
     /// Attributes of `datoms` patterns in this CC whose value place is a
@@ -192,14 +193,50 @@ pub struct ConjoiningClauses {
     pub value_filtered_attributes: BTreeSet<Entid>,
 }
 
-/// A whole-query temporal bound (`as-of` / `since`). See `ConjoiningClauses::temporal`.
+/// A whole-query temporal bound (`as-of` / `since`), with Datomic's meaning.
+/// A current-state pattern sees datoms; a history pattern
+/// (`[?e ?a ?v ?tx ?added]`) sees the log, retractions too, with the same tx
+/// bounds. See `ConjoiningClauses::temporal`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TemporalBound {
-    /// Reconstruct current state as of transaction `T`: for each pattern, the
-    /// latest assertion at or before `T` with no later retraction at or before `T`.
+    /// The state as of transaction `T`: assertions with `tx <= T` that no
+    /// retraction at or before `T` cancels. History: `tx <= T`.
     AsOf(i64),
-    /// Only datoms transacted strictly after `T` (`tx > T`).
+    /// The current datoms transacted after `T`: assertions with `tx > T` that
+    /// no retraction cancels. History: `tx > T`.
     Since(i64),
+    /// Both (`(since (as-of db T) S)`): assertions with `since < tx <= as_of`
+    /// that no retraction at or before `as_of` cancels. History:
+    /// `since < tx <= as_of`.
+    AsOfSince { as_of: i64, since: i64 },
+}
+
+impl TemporalBound {
+    /// The bound for an as-of and/or since basis; `None` when neither is set.
+    pub fn new(as_of: Option<i64>, since: Option<i64>) -> Option<TemporalBound> {
+        match (as_of, since) {
+            (Some(as_of), Some(since)) => Some(TemporalBound::AsOfSince { as_of, since }),
+            (Some(t), None) => Some(TemporalBound::AsOf(t)),
+            (None, Some(t)) => Some(TemporalBound::Since(t)),
+            (None, None) => None,
+        }
+    }
+
+    /// The upper bound `T` (`tx <= T`), if any.
+    pub fn as_of(self) -> Option<i64> {
+        match self {
+            TemporalBound::AsOf(t) | TemporalBound::AsOfSince { as_of: t, .. } => Some(t),
+            TemporalBound::Since(_) => None,
+        }
+    }
+
+    /// The lower bound `S` (`tx > S`), if any.
+    pub fn since(self) -> Option<i64> {
+        match self {
+            TemporalBound::Since(s) | TemporalBound::AsOfSince { since: s, .. } => Some(s),
+            TemporalBound::AsOf(_) => None,
+        }
+    }
 }
 
 impl PartialEq for ConjoiningClauses {

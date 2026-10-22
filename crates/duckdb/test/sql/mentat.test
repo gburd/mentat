@@ -124,6 +124,28 @@ SELECT (edn_pull(getvariable('db'), '[:person/age]', getvariable('alice')::BIGIN
 ----
 31
 
+# A find-pull reads the query's basis: as of tx1 Alice's age is still 30
+# (before 1.18.0 it came back as the current 31). A pull cell is EDN.
+query I
+SELECT p FROM edn_q(getvariable('db'), '[:find (pull ?e [:person/age]) . :where [?e :person/name "Alice"]]', '{"asOf": ' || getvariable('tx1') || '}') AS t(p);
+----
+{:person/age 30}
+
+# Map specs nest the target's pull under the ref, with its :db/id (pg's shape).
+statement ok
+SELECT edn_t(getvariable('db'), '[{:db/ident :person/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]');
+
+statement ok
+SET VARIABLE bob = (SELECT e FROM edn_q(getvariable('db'), '[:find ?e . :where [?e :person/name "Bob"]]', NULL) AS t(e));
+
+statement ok
+SELECT edn_t(getvariable('db'), '[[:db/add ' || getvariable('bob') || ' :person/boss ' || getvariable('alice') || ']]');
+
+query I
+SELECT edn_pull(getvariable('db'), '[{:person/boss [:person/name]}]', getvariable('bob')::BIGINT)::JSON->':person/boss'->>':person/name';
+----
+Alice
+
 # edn_eval: a no-arg (mentat.store/open) opens db_path; the write is visible
 # to a subsequent edn_q.
 query I

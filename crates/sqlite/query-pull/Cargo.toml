@@ -47,5 +47,9 @@ version = "=1.17.2"
 path = "../sql"
 version = "=1.17.2"
 
+[dependencies.mentat_query_algebrizer]
+path = "../query-algebrizer"
+version = "=1.17.2"
+
 [lints]
 workspace = true

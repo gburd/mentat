@@ -447,3 +447,152 @@ fn test_reverse_pull() {
     let empty: StructuredMap = Vec::<(Keyword, Binding)>::new().into();
     assert_eq!(none, empty.into());
 }
+
+// Map specs `{:attr [sub-pattern]}`: follow a ref and pull the sub-pattern on
+// each target. Each nested map carries `:db/id` (pg_mentat's edn_pull shape);
+// cardinality-one nests a map, cardinality-many and reverse a vector of maps.
+#[test]
+fn test_nested_map_pull() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :person/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :person/friend :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                {:db/ident :person/pet :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :pet/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    let r = store
+        .transact(
+            r#"[{:db/id "rex" :pet/name "Rex"}
+                {:db/id "alice" :person/name "Alice" :person/pet "rex"}
+                {:db/id "bob" :person/name "Bob" :person/friend "alice"}
+                {:db/id "carol" :person/name "Carol" :person/friend ["alice" "bob"]}]"#,
+        )
+        .expect("data");
+    let id = |k: &str| r.tempids[k];
+    let (alice, bob, carol, rex) = (id("alice"), id("bob"), id("carol"), id("rex"));
+    let t1 = r.tx_id;
+
+    let ref_ = |e: Entid| Binding::Scalar(TypedValue::Ref(e));
+    let s = |v: &str| Binding::Scalar(v.into());
+    let map = |kvs: Vec<(Keyword, Binding)>| -> Binding {
+        let m: StructuredMap = kvs.into();
+        m.into()
+    };
+    let db_id = kw!(:db/id);
+
+    // Cardinality-many forward, with a cardinality-one map spec inside it.
+    let carol_now = store
+        .pull(
+            carol,
+            "[:person/name {:person/friend [:person/name {:person/pet [:pet/name]}]}]",
+        )
+        .expect("pull");
+    let (lo, hi) = if alice < bob {
+        (alice, bob)
+    } else {
+        (bob, alice)
+    };
+    let friend = |e: Entid| -> Binding {
+        if e == alice {
+            map(vec![
+                (db_id.clone(), ref_(alice)),
+                (kw!(:person/name), s("Alice")),
+                (
+                    kw!(:person/pet),
+                    map(vec![(db_id.clone(), ref_(rex)), (kw!(:pet/name), s("Rex"))]),
+                ),
+            ])
+        } else {
+            map(vec![
+                (db_id.clone(), ref_(bob)),
+                (kw!(:person/name), s("Bob")),
+            ])
+        }
+    };
+    let expected: StructuredMap = vec![
+        (kw!(:person/name), s("Carol")),
+        (
+            kw!(:person/friend),
+            Binding::Vec(ValueRc::new(vec![friend(lo), friend(hi)])),
+        ),
+    ]
+    .into();
+    assert_eq!(carol_now, expected);
+
+    // Reverse: who has Alice as a friend, with their names.
+    let alice_rev = store
+        .pull(alice, "[{:person/_friend [:person/name]}]")
+        .expect("pull");
+    let who = match alice_rev.get(&kw!(:person/_friend)) {
+        Some(Binding::Vec(vs)) => vs
+            .iter()
+            .map(|b| match b {
+                Binding::Map(m) => m.get(&kw!(:person/name)).cloned().unwrap(),
+                other => panic!("{other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("expected a vec of maps, got {other:?}"),
+    };
+    assert_eq!(who.len(), 2);
+    assert!(
+        who.contains(&s("Bob")) && who.contains(&s("Carol")),
+        "{who:?}"
+    );
+
+    // `*` with a map spec: the spec's nesting replaces the plain ref.
+    let alice_star = store
+        .pull(alice, "[* {:person/pet [:pet/name]}]")
+        .expect("pull");
+    assert_eq!(alice_star.get(&kw!(:person/name)), Some(&s("Alice")));
+    assert_eq!(
+        alice_star.get(&kw!(:person/pet)),
+        Some(&map(vec![
+            (db_id.clone(), ref_(rex)),
+            (kw!(:pet/name), s("Rex"))
+        ]))
+    );
+
+    // A map spec on an entity without the ref is absent, not empty.
+    let rex_pull = store
+        .pull(rex, "[:pet/name {:person/pet [:pet/name]}]")
+        .expect("pull");
+    assert_eq!(rex_pull.get(&kw!(:person/pet)), None);
+
+    // As a find-pull, and on an as-of basis: Rex renamed after t1.
+    store
+        .transact(&format!("[[:db/add {rex} :pet/name \"Max\"]]"))
+        .expect("rename");
+    let q = r#"[:find (pull ?e [{:person/pet [:pet/name]}]) . :where [?e :person/name "Alice"]]"#;
+    let pet_name = |out: Option<Binding>| match out {
+        Some(Binding::Map(m)) => match m.get(&kw!(:person/pet)) {
+            Some(Binding::Map(p)) => p.get(&kw!(:pet/name)).cloned(),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        pet_name(store.q_once(q, None).into_scalar_result().expect("q")),
+        Some(s("Max"))
+    );
+    assert_eq!(
+        pet_name(
+            store
+                .q_once_as_of(q, None, t1)
+                .into_scalar_result()
+                .expect("q")
+        ),
+        Some(s("Rex"))
+    );
+    let then = store
+        .pull_as_of(alice, "[{:person/pet [:pet/name]}]", t1)
+        .expect("pull as-of");
+    assert_eq!(
+        then.get(&kw!(:person/pet)),
+        Some(&map(vec![
+            (db_id.clone(), ref_(rex)),
+            (kw!(:pet/name), s("Rex"))
+        ]))
+    );
+}

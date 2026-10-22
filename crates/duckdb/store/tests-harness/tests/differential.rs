@@ -59,11 +59,7 @@ fn duckdb_matches_sqlite() {
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>, ordered: bool| {
         use mentat::Queryable;
-        let a = match temporal {
-            Some(TemporalBound::AsOf(t)) => sqlite.q_once_as_of(q, None, t),
-            Some(TemporalBound::Since(t)) => sqlite.q_once_since(q, None, t),
-            None => sqlite.q_once(q, None),
-        };
+        let a = sqlite.q_once_temporal(q, None, temporal);
         let b = duck.q(q, None, temporal);
         let f = if ordered { norm_ordered } else { norm };
         match (a, b) {
@@ -96,9 +92,21 @@ fn duckdb_matches_sqlite() {
     for q in ORDERED {
         check("ordered", q, None, true);
     }
-    // As-of every transaction, since every transaction.
-    for &t in &tx_ids {
-        for q in &QUERIES[..12] {
+    // As-of every transaction, since every transaction. The pulls too: a
+    // find-pull reads the query's basis (before 1.18.0 it read current state).
+    let pulls = QUERIES.iter().filter(|q| q.contains("(pull "));
+    let temporal: Vec<&str> = QUERIES[..12]
+        .iter()
+        .copied()
+        .chain(pulls.copied())
+        .collect();
+    // And both bounds: since the previous tx, as of this one.
+    for (i, &t) in tx_ids.iter().enumerate() {
+        let window = i.checked_sub(1).map(|p| TemporalBound::AsOfSince {
+            as_of: t,
+            since: tx_ids[p],
+        });
+        for q in &temporal {
             check(&format!("asOf {t}"), q, Some(TemporalBound::AsOf(t)), false);
             check(
                 &format!("since {t}"),
@@ -106,6 +114,9 @@ fn duckdb_matches_sqlite() {
                 Some(TemporalBound::Since(t)),
                 false,
             );
+            if let Some(w) = window {
+                check(&format!("{w:?}"), q, Some(w), false);
+            }
         }
     }
     assert!(

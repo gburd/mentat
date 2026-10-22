@@ -540,3 +540,547 @@ pub fn transaction_functions(it: &mut Interpreter) {
         .expect_err("slurp must be unavailable");
     assert!(err.contains("txfn-error"), "{err}");
 }
+
+/// `pull`, `entities` and a find-pull `q` on an as-of / since db read that
+/// basis. Alice's age changes after T: as-of T must show the old value, since
+/// T only the new one. Before 1.18.0 pg and DuckDB returned the current value
+/// here and the embedded engine refused.
+pub fn pull_reads_the_as_of_and_since_basis(it: &mut Interpreter) {
+    seed_people(it);
+    let alice = person(it, "Alice");
+    let t: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {alice} :person/age 31] {{:person/name \"Carol\"}}])"
+    ))
+    .unwrap();
+    let as_of = format!("(mentat.store/as-of (mentat.store/db c) {t})");
+    let since = format!("(mentat.store/since (mentat.store/db c) {t})");
+
+    let now = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/pull (mentat.store/db c) {alice} '[:person/age]))"
+        ))
+        .unwrap();
+    assert_eq!(now, "31");
+    let then = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/pull {as_of} {alice} '[:person/name :person/age]))"
+        ))
+        .unwrap();
+    assert_eq!(then, "30", "as-of T pulls the value before the change");
+    let then_name = it
+        .eval_to_string(&format!(
+            "(:person/name (mentat.store/pull {as_of} {alice} '[:person/name]))"
+        ))
+        .unwrap();
+    assert_eq!(then_name, "\"Alice\"");
+
+    // since T: only what was asserted after T, so the new age and no name.
+    let later = it
+        .eval_to_string(&format!(
+            "(mentat.store/pull {since} {alice} '[:person/name :person/age])"
+        ))
+        .unwrap();
+    assert!(later.contains(":person/age 31"), "{later}");
+    assert!(!later.contains("Alice"), "{later}");
+
+    // entity on an as-of db shows the old value too.
+    let ent = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/entity {as_of} {alice}))"
+        ))
+        .unwrap();
+    assert_eq!(ent, "30", "entity as of T");
+
+    // A find-pull inside q reads the db's basis too.
+    let q_then = it
+        .eval_to_string(&format!(
+            "(:person/age (mentat.store/q {as_of} \
+               '[:find (pull ?e [:person/age]) . :where [?e :person/name \"Alice\"]]))"
+        ))
+        .unwrap();
+    assert_eq!(q_then, "30", "find-pull under as-of");
+
+    // entities: Carol did not exist as of T.
+    let ents = |it: &mut Interpreter, db: &str| {
+        it.eval_to_string(&format!(
+            "(count (mentat.store/entities {db} :person/name))"
+        ))
+        .unwrap()
+    };
+    assert_eq!(ents(it, "(mentat.store/db c)"), "3");
+    assert_eq!(ents(it, &as_of), "2");
+    assert_eq!(ents(it, &since), "1");
+}
+
+/// Map specs in a pull pattern, `{:attr [sub-pattern]}`, forward
+/// (cardinality-one and -many) and reverse, nested, on every backend. Each
+/// nested map carries `:db/id`; on an as-of db the nesting reads that basis.
+pub fn pull_nested_map_specs(it: &mut Interpreter) {
+    seed_people(it);
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/ident :person/best :db/valueType :db.type/ref \
+           :db/cardinality :db.cardinality/one}])",
+    )
+    .unwrap();
+    let (alice, bob) = (person(it, "Alice"), person(it, "Bob"));
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {bob} :person/best {alice}]])"
+    ))
+    .unwrap();
+    let t: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {alice} :person/age 31]])"
+    ))
+    .unwrap();
+    let pull = |it: &mut Interpreter, db: &str, e: &str, pat: &str, path: &str| {
+        it.eval_to_string(&format!(
+            "(get-in (mentat.store/pull {db} {e} '{pat}) {path})"
+        ))
+        .unwrap()
+    };
+    let now = "(mentat.store/db c)";
+    let then = format!("(mentat.store/as-of (mentat.store/db c) {t})");
+
+    // Cardinality-many forward: a vector of maps.
+    let pat = "[:person/name {:person/friend [:person/name :person/age]}]";
+    assert_eq!(
+        pull(it, now, &alice, pat, "[:person/friend 0 :person/name]"),
+        "\"Bob\""
+    );
+    assert_eq!(pull(it, now, &alice, pat, "[:person/friend 0 :db/id]"), bob);
+    assert_eq!(pull(it, now, &alice, pat, "[:person/name]"), "\"Alice\"");
+    // Cardinality-one forward: one map, nested two deep.
+    let pat = "[{:person/best [:person/age {:person/friend [:person/name]}]}]";
+    assert_eq!(pull(it, now, &bob, pat, "[:person/best :db/id]"), alice);
+    assert_eq!(pull(it, now, &bob, pat, "[:person/best :person/age]"), "31");
+    assert_eq!(
+        pull(
+            it,
+            now,
+            &bob,
+            pat,
+            "[:person/best :person/friend 0 :person/name]"
+        ),
+        "\"Bob\""
+    );
+    // ...and on an as-of db: Alice's age before the change.
+    assert_eq!(
+        pull(it, &then, &bob, pat, "[:person/best :person/age]"),
+        "30"
+    );
+    // Reverse: who has Bob as a friend.
+    let pat = "[{:person/_friend [:person/name]}]";
+    assert_eq!(
+        pull(it, now, &bob, pat, "[:person/_friend 0 :person/name]"),
+        "\"Alice\""
+    );
+    assert_eq!(
+        pull(it, now, &bob, pat, "[:person/_friend 0 :db/id]"),
+        alice
+    );
+    // No ref: the key is absent.
+    assert_eq!(
+        pull(
+            it,
+            now,
+            &alice,
+            "[{:person/best [:person/name]}]",
+            "[:person/best]"
+        ),
+        "nil"
+    );
+    // A find-pull with a map spec.
+    assert_eq!(
+        it.eval_to_string(
+            "(get-in (mentat.store/q (mentat.store/db c) \
+               '[:find (pull ?e [{:person/best [:person/name]}]) . :where [?e :person/name \"Bob\"]]) \
+               [:person/best :person/name])"
+        )
+        .unwrap(),
+        "\"Alice\""
+    );
+}
+
+/// t1: n 1, tags p q, s "a"; t2: n 2, tag p retracted, s retracted;
+/// t3: n 3, tag r. Returns (x, t1, t2, t3).
+fn seed_t364(it: &mut Interpreter) -> (String, i64, i64, i64) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :t364/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :t364/tag :db/valueType :db.type/string :db/cardinality :db.cardinality/many} \
+            {:db/ident :t364/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    let basis = |it: &mut Interpreter| -> i64 {
+        it.eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/id \"x\" :t364/n 1 :t364/s \"a\"} \
+           [:db/add \"x\" :t364/tag \"p\"] [:db/add \"x\" :t364/tag \"q\"]])",
+    )
+    .unwrap();
+    let t1 = basis(it);
+    let x = it
+        .eval_to_string("(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :t364/n _]])")
+        .unwrap();
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/n 2] [:db/retract {x} :t364/tag \"p\"] \
+           [:db/retract {x} :t364/s \"a\"]])"
+    ))
+    .unwrap();
+    let t2 = basis(it);
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/n 3] [:db/add {x} :t364/tag \"r\"]])"
+    ))
+    .unwrap();
+    (x, t1, t2, basis(it))
+}
+
+/// `(as-of (since db S) T)` etc.: `None` leaves that bound off.
+fn db_on(as_of: Option<i64>, since: Option<i64>) -> String {
+    let mut d = "(mentat.store/db c)".to_string();
+    if let Some(t) = as_of {
+        d = format!("(mentat.store/as-of {d} {t})");
+    }
+    if let Some(s) = since {
+        d = format!("(mentat.store/since {d} {s})");
+    }
+    d
+}
+
+/// `q` as a sorted vector, so expected values are exact.
+fn q_sorted(it: &mut Interpreter, d: &str, query: &str) -> String {
+    it.eval_to_string(&format!("(vec (sort (mentat.store/q {d} '{query})))"))
+        .unwrap_or_else(|e| panic!("{d} {query}: {e}"))
+}
+
+const Q364_N: &str = "[:find [?v ...] :where [_ :t364/n ?v]]";
+const Q364_TAG: &str = "[:find [?v ...] :where [_ :t364/tag ?v]]";
+const Q364_S: &str = "[:find [?v ...] :where [_ :t364/s ?v]]";
+const Q364_HIST: &str = "[:find ?v ?added :where [_ :t364/n ?v _ ?added]]";
+
+fn check_q364(it: &mut Interpreter, d: &str, n: &str, tag: &str, s: &str) {
+    assert_eq!(q_sorted(it, d, Q364_N), n, "{d} :t364/n");
+    assert_eq!(q_sorted(it, d, Q364_TAG), tag, "{d} :t364/tag");
+    assert_eq!(q_sorted(it, d, Q364_S), s, "{d} :t364/s");
+}
+
+/// As of T hides a value retracted at or before T, cardinality-one and
+/// -many, replaced or plainly retracted (Datomic's as-of). Before 1.18.0
+/// pg's edn_q showed retracted values unless a newer cardinality-one value
+/// replaced them.
+pub fn as_of_hides_retracted_values(it: &mut Interpreter) {
+    let (_, t1, t2, t3) = seed_t364(it);
+    check_q364(
+        it,
+        &db_on(Some(t1), None),
+        "[1]",
+        "[\"p\" \"q\"]",
+        "[\"a\"]",
+    );
+    check_q364(it, &db_on(Some(t2), None), "[2]", "[\"q\"]", "[]");
+    check_q364(it, &db_on(Some(t3), None), "[3]", "[\"q\" \"r\"]", "[]");
+    // A history pattern as of T is the log up to T, retractions included.
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t2), None), Q364_HIST),
+        "[[1 false] [1 true] [2 true]]"
+    );
+}
+
+/// A value retracted and asserted again later: hidden as of the retraction,
+/// visible again as of the re-assertion, and `since` the retraction shows it
+/// (the live assertion is the later one).
+pub fn as_of_sees_a_value_reasserted_after_retraction(it: &mut Interpreter) {
+    let (x, t1, t2, t3) = seed_t364(it);
+    // t4: tag "p" (retracted at t2) is asserted again.
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/tag \"p\"]])"
+    ))
+    .unwrap();
+    let t4: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let tags = |it: &mut Interpreter, d: &str| q_sorted(it, d, Q364_TAG);
+    assert_eq!(tags(it, &db_on(Some(t1), None)), "[\"p\" \"q\"]");
+    assert_eq!(tags(it, &db_on(Some(t2), None)), "[\"q\"]");
+    assert_eq!(tags(it, &db_on(Some(t3), None)), "[\"q\" \"r\"]");
+    assert_eq!(tags(it, &db_on(Some(t4), None)), "[\"p\" \"q\" \"r\"]");
+    assert_eq!(tags(it, &db_on(None, Some(t3))), "[\"p\"]");
+    assert_eq!(tags(it, &db_on(None, Some(t1))), "[\"p\" \"r\"]");
+    assert_eq!(tags(it, &db_on(Some(t4), Some(t2))), "[\"p\" \"r\"]");
+    assert_eq!(tags(it, &db_on(Some(t3), Some(t1))), "[\"r\"]");
+
+    // Retract and re-assert "q" in one transaction. Datomic and the embedded
+    // transactor refuse it (add/retract conflict); pg accepts it and the
+    // retraction wins (a transactor difference, not a read-rule one). Either
+    // way, as of that transaction reads what current state reads.
+    let same = it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/retract {x} :t364/tag \"q\"] [:db/add {x} :t364/tag \"q\"]])"
+    ));
+    if same.is_ok() {
+        let now = "(mentat.store/db c)";
+        let t5: i64 = it
+            .eval_to_string(&format!("(:mentat.store/basis-tx {now})"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(tags(it, &db_on(Some(t5), None)), tags(it, now));
+    }
+}
+
+/// `missing?` and `get-else` read the db's basis like any pattern: as of t1
+/// :t364/s is "a"; it was retracted at t2. Since S they see only the current
+/// datoms transacted after S, so a value asserted at or before S is missing.
+pub fn missing_and_get_else_read_the_basis(it: &mut Interpreter) {
+    let (x, t1, t2, _) = seed_t364(it);
+    let missing = "[:find [?e ...] :where [?e :t364/n _] [(missing? $ ?e :t364/s)]]";
+    let get_else = "[:find [?s ...] :where [?e :t364/n _] [(get-else $ ?e :t364/s \"none\") ?s]]";
+    let ex = format!("[{x}]");
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), missing), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), missing), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), get_else), "[\"a\"]");
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), get_else), "[\"none\"]");
+
+    // t4: :t364/s "b"; t5: :t364/n 4. Now s is live, so since t4 (s asserted
+    // at t4, n at t5) differs from current state.
+    let basis = |it: &mut Interpreter| -> i64 {
+        it.eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/s \"b\"]])"
+    ))
+    .unwrap();
+    let t4 = basis(it);
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/n 4]])"
+    ))
+    .unwrap();
+    let t5 = basis(it);
+    assert_eq!(q_sorted(it, &db_on(None, None), get_else), "[\"b\"]");
+    assert_eq!(q_sorted(it, &db_on(None, None), missing), "[]");
+    assert_eq!(q_sorted(it, &db_on(None, Some(t4)), get_else), "[\"none\"]");
+    assert_eq!(q_sorted(it, &db_on(None, Some(t4)), missing), ex);
+    assert_eq!(
+        q_sorted(it, &db_on(None, Some(t4 - 1)), get_else),
+        "[\"b\"]"
+    );
+    assert_eq!(q_sorted(it, &db_on(None, Some(t4 - 1)), missing), "[]");
+    // Both bounds: as of t5, since t4.
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t5), Some(t4)), get_else),
+        "[\"none\"]"
+    );
+    assert_eq!(q_sorted(it, &db_on(Some(t5), Some(t4)), missing), ex);
+}
+
+/// Datomic's `since S` (issue #364): the current datoms whose tx is after S,
+/// so a value added after S and since replaced is gone. Before 1.18.0
+/// `since t1` below returned [1 2 3] on SQLite and DuckDB (retraction rows
+/// counted) and [2 3] on pg (replaced values counted). A 5-place history
+/// pattern under since still reads the log after S, retractions included.
+pub fn since_reads_current_datoms_added_after_t(it: &mut Interpreter) {
+    let (x, t1, t2, t3) = seed_t364(it);
+    check_q364(it, &db_on(None, Some(t1)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(None, Some(t2)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(None, Some(t3)), "[]", "[]", "[]");
+    assert_eq!(
+        q_sorted(it, &db_on(None, Some(t1)), Q364_HIST),
+        "[[1 false] [2 false] [2 true] [3 true]]"
+    );
+    // read and pull agree with q.
+    let since = db_on(None, Some(t1));
+    assert_eq!(
+        it.eval_to_string(&format!("(mentat.store/read {since} {x} :t364/n)"))
+            .unwrap(),
+        "3"
+    );
+    assert_eq!(
+        it.eval_to_string(&format!(
+            "(let [m (mentat.store/pull {since} {x} '[:t364/n :t364/tag :t364/s])] \
+               [(:t364/n m) (vec (sort (:t364/tag m))) (:t364/s m)])"
+        ))
+        .unwrap(),
+        "[3 [\"r\"] nil]"
+    );
+}
+
+/// `(since (as-of db T) S)`: the assertions with S < tx <= T not retracted by
+/// T, in either order, for q, pull, read and entities; a history pattern sees
+/// the log with S < tx <= T. Before 1.18.0 pg raised "mutually exclusive" and
+/// SQLite and DuckDB dropped `since`.
+pub fn as_of_and_since_together(it: &mut Interpreter) {
+    let (x, t1, t2, t3) = seed_t364(it);
+    check_q364(it, &db_on(Some(t2), Some(t1)), "[2]", "[]", "[]");
+    check_q364(it, &db_on(Some(t3), Some(t1)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(Some(t3), Some(t2)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(Some(t1), Some(t1)), "[]", "[]", "[]");
+    // Order doesn't matter.
+    let swapped =
+        format!("(mentat.store/as-of (mentat.store/since (mentat.store/db c) {t1}) {t2})");
+    assert_eq!(q_sorted(it, &swapped, Q364_N), "[2]");
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t2), Some(t1)), Q364_HIST),
+        "[[1 false] [2 true]]"
+    );
+
+    let pull = |it: &mut Interpreter, d: &str| {
+        it.eval_to_string(&format!(
+            "(let [m (mentat.store/pull {d} {x} '[:t364/n :t364/tag :t364/s])] \
+               [(:t364/n m) (vec (sort (:t364/tag m))) (:t364/s m)])"
+        ))
+        .unwrap_or_else(|e| panic!("pull {d}: {e}"))
+    };
+    assert_eq!(pull(it, &db_on(Some(t2), Some(t1))), "[2 [] nil]");
+    assert_eq!(pull(it, &db_on(Some(t3), Some(t1))), "[3 [\"r\"] nil]");
+    let ents = |it: &mut Interpreter, d: &str| {
+        it.eval_to_string(&format!("(count (mentat.store/entities {d} :t364/tag))"))
+            .unwrap()
+    };
+    assert_eq!(ents(it, &db_on(Some(t2), Some(t1))), "0");
+    assert_eq!(ents(it, &db_on(Some(t3), Some(t1))), "1");
+    let read = |it: &mut Interpreter, d: &str| {
+        it.eval_to_string(&format!("(mentat.store/read {d} {x} :t364/n)"))
+            .unwrap()
+    };
+    assert_eq!(read(it, &db_on(Some(t2), Some(t1))), "2");
+    assert_eq!(read(it, &db_on(Some(t1), Some(t1))), "nil");
+    let entity = it
+        .eval_to_string(&format!(
+            "(:t364/n (mentat.store/entity {} {x}))",
+            db_on(Some(t2), Some(t1))
+        ))
+        .unwrap();
+    assert_eq!(entity, "2");
+}
+
+/// A pull pattern naming an attribute the schema doesn't have pulls nothing
+/// for it, on every backend (Datomic does the same). Before 1.18.0 the
+/// embedded backend's script `pull` raised "unknown attribute".
+pub fn pull_of_an_unknown_attribute_is_empty(it: &mut Interpreter) {
+    seed(it);
+    let eid = eid_of(it, "Alice");
+    let pulled = it
+        .eval_to_string(&format!(
+            "(dissoc (mentat.store/pull (mentat.store/db c) {eid} '[:no/such :person/name]) :db/id)"
+        ))
+        .unwrap();
+    assert_eq!(pulled, "{:person/name \"Alice\"}");
+    let none = it
+        .eval_to_string(&format!(
+            "(dissoc (mentat.store/pull (mentat.store/db c) {eid} '[:no/such]) :db/id)"
+        ))
+        .unwrap();
+    assert_eq!(none, "{}");
+}
+
+/// t1: :t364or/n 1, :t364or/m 10; t2: n 2; t3: n 3; t4: n 1 again.
+/// Returns (x, [t1, t2, t3, t4]).
+fn seed_t364_or(it: &mut Interpreter) -> (String, [i64; 4]) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :t364or/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :t364or/m :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    let basis = |it: &mut Interpreter| -> i64 {
+        it.eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    it.eval_to_string("(mentat.store/transact c [{:db/id \"x\" :t364or/n 1 :t364or/m 10}])")
+        .unwrap();
+    let t1 = basis(it);
+    let x = it
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :t364or/m _]])",
+        )
+        .unwrap();
+    let mut ts = [t1, 0, 0, 0];
+    for (i, n) in [2, 3, 1].into_iter().enumerate() {
+        it.eval_to_string(&format!(
+            "(mentat.store/transact c [[:db/add {x} :t364or/n {n}]])"
+        ))
+        .unwrap();
+        ts[i + 1] = basis(it);
+    }
+    (x, ts)
+}
+
+/// An `or` (and an `or-join`, and an `or` inside `not`) reads the db's
+/// basis like any pattern, with Datomic's as-of / since meaning. Before
+/// 1.18.0 SQLite and DuckDB answered an `or` whose arms are plain patterns
+/// on the same table from current state under as-of and since.
+pub fn or_reads_the_basis(it: &mut Interpreter) {
+    let (x, [t1, t2, t3, t4]) = seed_t364_or(it);
+    let or = "[:find [?v ...] :where (or [?e :t364or/n ?v] [?e :t364or/m ?v])]";
+    let cases: [(Option<i64>, Option<i64>, &str); 9] = [
+        (None, None, "[1 10]"),
+        (Some(t1), None, "[1 10]"),
+        (Some(t2), None, "[2 10]"),
+        (Some(t3), None, "[3 10]"),
+        (None, Some(t1), "[1]"),
+        (None, Some(t3), "[1]"),
+        (None, Some(t4), "[]"),
+        (Some(t2), Some(t1), "[2]"),
+        (Some(t3), Some(t2), "[3]"),
+    ];
+    for (as_of, since, want) in cases {
+        assert_eq!(
+            q_sorted(it, &db_on(as_of, since), or),
+            want,
+            "{as_of:?} {since:?}"
+        );
+    }
+
+    // A fully unified or-join (the same shape as an `or`).
+    let or_join = "[:find [?e ...] :where (or-join [?e] [?e :t364or/n 2] [?e :t364or/n 3])]";
+    let ex = format!("[{x}]");
+    assert_eq!(q_sorted(it, &db_on(None, None), or_join), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), or_join), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), or_join), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), None), or_join), ex);
+    assert_eq!(q_sorted(it, &db_on(None, Some(t1)), or_join), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t2)), or_join), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t3)), or_join), "[]");
+}
+
+/// An `or` inside `not` reads the db's basis (as [`or_reads_the_basis`]).
+/// Not run on pg, which refuses `(not (or ...))` on any basis.
+pub fn not_or_reads_the_basis(it: &mut Interpreter) {
+    let (x, [t1, t2, t3, _]) = seed_t364_or(it);
+    let ex = format!("[{x}]");
+    let not_n =
+        "[:find [?e ...] :where [?e :t364or/m _] (not (or [?e :t364or/n 2] [?e :t364or/n 3]))]";
+    assert_eq!(q_sorted(it, &db_on(None, None), not_n), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), not_n), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), not_n), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t3), None), not_n), "[]");
+    // Since t3 :t364or/m (asserted at t1) is outside the window, so the `or`
+    // can't match and `not` keeps x.
+    let not_m =
+        "[:find [?e ...] :where [?e :t364or/n _] (not (or [?e :t364or/m 10] [?e :t364or/m 11]))]";
+    assert_eq!(q_sorted(it, &db_on(None, None), not_m), "[]");
+    assert_eq!(q_sorted(it, &db_on(None, Some(t3)), not_m), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t1)), not_m), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), None), not_m), "[]");
+}

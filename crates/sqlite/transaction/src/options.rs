@@ -19,7 +19,8 @@
 //! not one). A scalar `?x` takes a JSON value; `[?x ...]` an array;
 //! `[?a ?b]` an array (one row); `[[?a ?b]]` an array of arrays. A JSON
 //! integer bound to an entity variable becomes a ref, else a long; `":kw"` is
-//! a keyword; any other string a string. `asOf` and `since` are exclusive.
+//! a keyword; any other string a string. `asOf` and `since` may be combined:
+//! the datoms with `since < tx <= asOf` (Datomic's `(since (as-of db T) S)`).
 
 use serde_json::Value as Json;
 
@@ -69,12 +70,8 @@ pub fn options_from_json(
             }
         }
     }
-    let temporal = match (as_of, since) {
-        (Some(_), Some(_)) => return err("\"asOf\" and \"since\" are mutually exclusive".into()),
-        (Some(t), None) => Some(TemporalBound::AsOf(t)),
-        (None, Some(t)) => Some(TemporalBound::Since(t)),
-        (None, None) => None,
-    };
+    // Both: Datomic's `(since (as-of db T) S)`, S < tx <= T.
+    let temporal = TemporalBound::new(as_of, since);
     let inputs = match inputs {
         Some(vals) => inputs_from_json(schema, query, vals)?,
         None => QueryInputs::default(),

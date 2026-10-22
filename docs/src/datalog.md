@@ -399,13 +399,17 @@ Options are passed in the JSON `inputs` parameter:
 | Key | Type | Description |
 |-----|------|-------------|
 | `"inputs"` | array | Positional input values (first is always `null` for `$`) |
-| `"as_of"` | integer | Transaction ID for point-in-time query |
-| `"since"` | integer | Transaction ID for "changes since" query |
+| `"asOf"` | integer | The database as of this transaction: values retracted at or before it are hidden |
+| `"since"` | integer | The current datoms transacted after this transaction (Datomic's `since`); a history pattern `[?e ?a ?v ?tx ?added]` sees every datom after it, retractions too |
+| `"history"` | boolean | Every pattern reads the log, assertions and retractions |
 | `"limit"` | integer | Maximum result rows |
+| `"offset"` | integer | Skip this many result rows |
+
+`asOf` and `since` may be combined.
 
 ```sql
 SELECT edn_q(
   '[:find ?name :where [?e :person/name ?name]]',
-  '{"as_of": 1000, "limit": 10}'
+  '{"asOf": 1000, "limit": 10}'
 );
 ```

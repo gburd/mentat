@@ -16,15 +16,14 @@
 //! immutable snapshot map carrying its conn, basis-tx, and any as-of/since
 //! bound (see `mentat_script::db_value`). Reads take a db value.
 //!
-//! # Temporal honesty
-//!
-//! Mentat's algebrizer has no as-of query rewriting, so:
+//! # Temporal reads
 //!
 //!   * `datoms`/`entity`/`read` on the **current** basis use the live `datoms`
-//!     table; `since T` uses `debug::datoms_after`; `as-of T` is reconstructed
-//!     by replaying `transactions_after` up to and including T.
-//!   * `q` (arbitrary Datalog) is only supported on the current basis; on an
-//!     as-of/since db it returns an honest error.
+//!     table; `since S` uses `debug::datoms_after`; `as-of T` (with or without
+//!     `since S`) is reconstructed by replaying `transactions_after` up to and
+//!     including T, keeping the live assertions made after S.
+//!   * `q`, `pull` and `entities` run on any basis: the engine's temporal
+//!     Datalog and the basis-aware pull read the transaction log.
 //!
 //! # inst/uuid representation
 //!
@@ -45,13 +44,13 @@ use mino_rs::collections::vector::PVec;
 use mino_rs::symbol::Symbol;
 use mino_rs::{Gc, Value};
 
-use core_traits::{Binding, Entid, StructuredMap, TypedValue};
+use core_traits::{Binding, StructuredMap, TypedValue};
 use edn::entities::EntidOrIdent;
 use mentat_core::{HasSchema, Keyword};
 use mentat_db::debug;
 use mentat_script::{DbRef, ScriptBackend, TxReport};
 use mentat_transaction::query::{QueryOutput, QueryResults};
-use mentat_transaction::{Pullable, Queryable};
+use mentat_transaction::Queryable;
 
 use crate::store::Store;
 
@@ -271,31 +270,22 @@ impl ScriptBackend for MentatBackend {
         // Issue #328: an as-of/since db runs the query as temporal Datalog.
         // The embedded engine has had a historical query rewrite since 1.8.0
         // (Store::q_once_as_of / q_once_since); the old refusal predated it.
-        let out = match (db.as_of, db.since) {
-            (Some(t), _) => store.q_once_as_of(query_edn, query_inputs, t),
-            (None, Some(t)) => store.q_once_since(query_edn, query_inputs, t),
-            (None, None) => store.q_once(query_edn, query_inputs),
-        }
-        .map_err(|e| e.to_string())?;
+        let basis = crate::TemporalBound::new(db.as_of, db.since);
+        let out = store
+            .q_once_temporal(query_edn, query_inputs, basis)
+            .map_err(|e| e.to_string())?;
         Ok(query_output_value(out))
     }
 
     fn pull(&self, db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String> {
-        if db.as_of.is_some() || db.since.is_some() {
-            return Err(
-                "pull against an as-of/since basis is not supported; use entity/read/datoms on \
-                 this db (which reconstruct the basis)."
-                    .into(),
-            );
-        }
         let map = self.stores.borrow();
         let store = map
             .get(&db.conn)
             .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
-        let schema = store.conn().current_schema();
-        let attr_entids = pull_attr_entids(&schema, pattern_edn)?;
+        // An as-of / since db pulls that basis (before 1.18.0 this refused).
+        let basis = crate::TemporalBound::new(db.as_of, db.since);
         let sm = store
-            .pull_attributes_for_entity(eid, attr_entids.iter().copied())
+            .pull_temporal(eid, pattern_edn, basis)
             .map_err(|e| e.to_string())?;
         Ok(structured_map_value(&sm))
     }
@@ -407,31 +397,15 @@ impl ScriptBackend for MentatBackend {
     }
 
     fn entities(&self, db: &DbRef, attr: &str) -> Result<Value, String> {
-        if db.as_of.is_some() || db.since.is_some() {
-            return Err("not supported on an as-of/since basis; use datoms.".into());
-        }
-        let map = self.stores.borrow();
-        let store = map
-            .get(&db.conn)
-            .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
-        let query = format!("[:find ?e :where [?e {attr} _]]");
-        let out = store.q_once(&query, None).map_err(|e| e.to_string())?;
-        // Project the relation of eids to a set of the scalar eids.
-        match out.results {
-            QueryResults::Rel(rel) => {
-                let mut set = PSet::empty();
-                for row in rel.rows() {
-                    if let Some(b) = row.iter().next() {
-                        set = set.conj(binding_value(b.clone()));
-                    }
-                }
-                Ok(Value::Set(Gc::new(set)))
+        // `q` runs as temporal Datalog on an as-of / since db.
+        let mut set = PSet::empty();
+        let eids = self.q(db, &format!("[:find [?e ...] :where [?e {attr} _]]"))?;
+        if let Value::Vector(ref v) = eids {
+            for e in v.iter() {
+                set = set.conj(e.clone());
             }
-            other => Ok(query_output_value(QueryOutput {
-                spec: out.spec,
-                results: other,
-            })),
         }
+        Ok(Value::Set(Gc::new(set)))
     }
 
     fn resolve_eid(&self, db: &DbRef, arg: &Value) -> Result<i64, String> {
@@ -506,7 +480,9 @@ fn basis_datoms(db: &DbRef, store: &Store) -> Result<Vec<(i64, Keyword, edn::Val
         const TX0: i64 = 0x1000_0000;
         let txns = debug::transactions_after(sqlite, &*schema, TX0 - 1)
             .map_err(|e| format!("transactions_after: {e}"))?;
-        let mut live: BTreeMap<(i64, String, String), (i64, Keyword, edn::Value)> = BTreeMap::new();
+        // (e, a, printed v) -> (e, a, v, tx of the live assertion)
+        type Live = BTreeMap<(i64, String, String), (i64, Keyword, edn::Value, i64)>;
+        let mut live = Live::new();
         for group in &txns.0 {
             for d in &group.0 {
                 if d.tx > t {
@@ -520,12 +496,18 @@ fn basis_datoms(db: &DbRef, store: &Store) -> Result<Vec<(i64, Keyword, edn::Val
                         live.remove(&key);
                     }
                     _ => {
-                        live.insert(key, (e, a, d.v.clone()));
+                        live.insert(key, (e, a, d.v.clone(), d.tx));
                     }
                 }
             }
         }
-        Ok(live.into_values().collect())
+        // `(since (as-of db T) S)`: only the live assertions made after S.
+        let since = db.since.unwrap_or(i64::MIN);
+        Ok(live
+            .into_values()
+            .filter(|(_, _, _, tx)| *tx > since)
+            .map(|(e, a, v, _)| (e, a, v))
+            .collect())
     } else if let Some(s) = db.since {
         let ds =
             debug::datoms_after(sqlite, &*schema, s).map_err(|e| format!("datoms_after: {e}"))?;
@@ -542,41 +524,6 @@ fn basis_datoms(db: &DbRef, store: &Store) -> Result<Vec<(i64, Keyword, edn::Val
             .map(|d| (eid(&d.e), to_kw(&d.a), d.v))
             .collect())
     }
-}
-
-/// Parse a minimal pull pattern (EDN text) into a list of attribute entids.
-/// Supports a vector of attr keywords and the `*` wildcard.
-fn pull_attr_entids(schema: &mentat_core::Schema, pattern_edn: &str) -> Result<Vec<Entid>, String> {
-    let (pattern, _) =
-        mino_rs::reader::read_one(pattern_edn).map_err(|e| format!("bad pull pattern: {e}"))?;
-    let items = match &pattern {
-        Value::Vector(v) => v.iter().cloned().collect::<Vec<_>>(),
-        _ => return Err("pattern must be a vector of attribute keywords (or [*])".into()),
-    };
-    let mut out = Vec::new();
-    for item in items {
-        match item {
-            Value::Sym(ref s) if &*s.name == "*" && s.ns.is_none() => {
-                for entid in schema.attribute_map.keys() {
-                    out.push(*entid);
-                }
-            }
-            Value::Keyword(ref sym) => {
-                let kw = sym_to_keyword(sym);
-                match schema.get_entid(&kw) {
-                    Some(k) => out.push(k.0),
-                    None => return Err(format!("unknown attribute {kw}")),
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unsupported pull item {} (only attr keywords and * are supported)",
-                    mino_rs::printer::print_str(&other)
-                ))
-            }
-        }
-    }
-    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

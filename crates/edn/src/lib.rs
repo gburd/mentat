@@ -381,7 +381,7 @@ peg::parser!(grammar grammar() for str {
     rule find_elem() -> query::Element
         = __ v:variable() __ { query::Element::Variable(v) }
         / __ "(" __ "the" v:variable() ")" __ { query::Element::Corresponding(v) }
-        / __ "(" __ "pull" var:variable() "[" patterns:pull_attribute()+ "]" __ ")" __ { query::Element::Pull(query::Pull { var, patterns }) }
+        / __ "(" __ "pull" var:variable() patterns:pull_pattern() ")" __ { query::Element::Pull(query::Pull { var, patterns }) }
         / __ "(" func:query_function() args:fn_arg()* ")" __ { query::Element::Aggregate(query::Aggregate { func, args }) }
 
     rule find_spec() -> query::FindSpec
@@ -390,29 +390,40 @@ peg::parser!(grammar grammar() for str {
         / __ "[" f:find_elem() __ "..." __ "]" __ { query::FindSpec::FindColl(f) }
         / __ "[" fs:find_elem()+ "]" __ { query::FindSpec::FindTuple(fs) }
 
-    rule pull_attribute() -> query::PullAttributeSpec
-        = __ "*" __ { query::PullAttributeSpec::Wildcard }
-        / __ k:raw_backward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
+    /// A pull pattern on its own, e.g. `[:person/name {:person/friend [*]}]`.
+    pub rule pull_pattern() -> Vec<query::PullAttributeSpec>
+        = __ "[" patterns:pull_attribute()+ "]" __ { patterns.into_iter().flatten().collect() }
+
+    // One pattern item; a map spec `{:a [..] :b [..]}` yields one spec per entry.
+    rule pull_attribute() -> Vec<query::PullAttributeSpec>
+        = __ "*" __ { vec![query::PullAttributeSpec::Wildcard] }
+        / a:pull_keyword() alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
+            vec![query::PullAttributeSpec::Attribute(query::NamedPullAttribute {
+                alias: alias.map(::std::rc::Rc::new),
+                ..a
+            })]
+        }
+        / __ "{" es:pull_map_entry()+ "}" __ { es }
+
+    rule pull_map_entry() -> query::PullAttributeSpec
+        = a:pull_keyword() p:pull_pattern() { query::PullAttributeSpec::Nested(a, p) }
+
+    rule pull_keyword() -> query::NamedPullAttribute
+        = __ k:raw_backward_namespaced_keyword() __ {
             // Reverse pull, e.g. `:person/_friends`. Store the *forward* ident
             // (k.to_reversed()) for schema lookup and mark it reverse.
-            let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k.to_reversed()));
-            let alias = alias.map(::std::rc::Rc::new);
-            query::PullAttributeSpec::Attribute(
-                query::NamedPullAttribute {
-                    attribute,
-                    alias,
-                    reverse: true,
-                })
+            query::NamedPullAttribute {
+                attribute: query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k.to_reversed())),
+                alias: None,
+                reverse: true,
+            }
         }
-        / __ k:raw_forward_namespaced_keyword() __ alias:(":as" __ alias:raw_forward_keyword() __ { alias })? {
-            let attribute = query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k));
-            let alias = alias.map(::std::rc::Rc::new);
-            query::PullAttributeSpec::Attribute(
-                query::NamedPullAttribute {
-                    attribute,
-                    alias,
-                    reverse: false,
-                })
+        / __ k:raw_forward_namespaced_keyword() __ {
+            query::NamedPullAttribute {
+                attribute: query::PullConcreteAttribute::Ident(::std::rc::Rc::new(k)),
+                alias: None,
+                reverse: false,
+            }
         }
 
     rule limit() -> query::Limit
@@ -810,5 +821,9 @@ pub mod parse {
     pub fn parse_query(input: &str) -> Result<crate::query::ParsedQuery, ParseError> {
         crate::depth::check_nesting(input, crate::depth::MAX_NESTING)?;
         grammar::parse_query(input)
+    }
+    pub fn pull_pattern(input: &str) -> Result<Vec<crate::query::PullAttributeSpec>, ParseError> {
+        crate::depth::check_nesting(input, crate::depth::MAX_NESTING)?;
+        grammar::pull_pattern(input)
     }
 }

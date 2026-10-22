@@ -248,8 +248,8 @@ fn resolve_store_id(schema_prefix: &str) -> Result<i64, Box<dyn std::error::Erro
 /// NULLs for the others, replicating the old wide-row layout.
 ///
 /// `store_id_param` is the $N placeholder for the store_id parameter.
-fn build_datoms_union_subquery(store_id_param: &str) -> String {
-    build_datoms_union_subquery_opt(store_id_param, false)
+fn build_datoms_union_subquery(store_id_param: &str, schema_prefix: &str) -> String {
+    build_datoms_union_subquery_opt(store_id_param, false, schema_prefix)
 }
 
 /// UNION-ALL over the nine type tables. When `use_projection` is true, reads
@@ -257,13 +257,17 @@ fn build_datoms_union_subquery(store_id_param: &str) -> String {
 /// `true AS added`) instead of the append-only log tables. Used for
 /// variable-typed-attribute patterns where the type isn't known at compile
 /// time so a single typed table can't be selected.
-fn build_datoms_union_subquery_opt(store_id_param: &str, use_projection: bool) -> String {
+fn build_datoms_union_subquery_opt(
+    store_id_param: &str,
+    use_projection: bool,
+    schema_prefix: &str,
+) -> String {
     // Pick log vs projection table names and the `added` column expression.
     let t = |log: &str, cur: &str| -> String {
         if use_projection {
-            format!("mentat.{cur}")
+            format!("{schema_prefix}{cur}")
         } else {
-            format!("mentat.{log}")
+            format!("{schema_prefix}{log}")
         }
     };
     let added = if use_projection { "true" } else { "added" };
@@ -337,12 +341,28 @@ fn build_datoms_union_subquery_opt(store_id_param: &str, use_projection: bool) -
 /// Build a FROM-clause fragment for a single datoms-like table alias.
 ///
 /// This generates `(UNION ALL subquery) AS alias` with store_id filtering.
-fn build_datoms_from_fragment(alias: &str, store_id_param: &str, use_projection: bool) -> String {
+fn build_datoms_from_fragment(
+    alias: &str,
+    store_id_param: &str,
+    use_projection: bool,
+    schema_prefix: &str,
+) -> String {
     format!(
         "{} AS {}",
-        build_datoms_union_subquery_opt(store_id_param, use_projection),
+        build_datoms_union_subquery_opt(store_id_param, use_projection, schema_prefix),
         alias
     )
+}
+
+/// The schema prefix (`mentat.`) of the narrow `datoms_<type>_new` /
+/// `current_<type>` tables a query on store `schema_prefix` reads. Every
+/// read of those tables -- a pattern's FROM and its as-of anti-join alike --
+/// takes the prefix from here, so they always read the same schema.
+// named-stores: every store's rows sit in mentat's tables today, keyed by
+// store_id; feat/pg-named-stores moves them into each store's schema. Return
+// `schema_prefix` here then (value_type_to_table_info takes it too).
+fn narrow_tables_prefix(_schema_prefix: &str) -> &str {
+    "mentat."
 }
 
 // ============================================================================
@@ -441,17 +461,42 @@ fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
     }
 }
 
-/// The table + liveness filter that answers "does e have a live value for
-/// attribute a" (get-else, missing?): the current-state projection for
-/// current-time queries -- the log with `AND added` would also match
-/// superseded assertions (a replaced cardinality-one value) -- and the log
-/// otherwise.
-fn attr_lookup_table(value_type: &str, temporal: &TemporalOption) -> String {
-    let current = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+/// The table that answers "does e have a live value for attribute a"
+/// (`missing?`), as `<table> AS g WHERE <live>`: the rows live on the
+/// query's basis, from the projection or the log (Datomic's as-of / since
+/// rule, as in [`temporal_conditions`]). It reads a value, not the log, so
+/// {"history": true} doesn't apply (get-else likewise).
+fn attr_lookup_table(
+    value_type: &str,
+    temporal: &TemporalOption,
+    tables_prefix: &str,
+    store_id_param: &str,
+    builder: &mut SqlBuilder<'_>,
+) -> String {
     match value_type_to_table_info(value_type) {
-        Some(info) if current => info.current_table.to_string(),
-        _ => format!(
-            "(SELECT * FROM mentat.{} WHERE added)",
+        Some(info) => {
+            let from = if reads_projection(temporal, false) {
+                info.current_table
+            } else {
+                info.table
+            };
+            let live = temporal_conditions(
+                temporal,
+                false,
+                "g",
+                Some(&TypedTableInfo {
+                    value_column: "v",
+                    ..info
+                }),
+                tables_prefix,
+                store_id_param,
+                builder,
+            );
+            let live: String = live.iter().map(|c| format!(" AND {c}")).collect();
+            format!("{from} AS g WHERE true{live}")
+        }
+        None => format!(
+            "(SELECT * FROM {tables_prefix}{} WHERE added) AS g WHERE true",
             typed_table_for_value_type(value_type)
         ),
     }
@@ -819,21 +864,48 @@ struct TemporalOption {
     history: bool,
 }
 
-/// Parse temporal options from the inputs JSON parameter.
-fn parse_temporal_options(inputs: &serde_json::Value) -> TemporalOption {
+/// Parse temporal options from the inputs JSON parameter. An unknown key
+/// (e.g. the old docs' `as_of`) or a non-integer `asOf` / `since` is an
+/// error: before 1.18.0 it was ignored and the query read current state.
+fn parse_temporal_options(
+    inputs: &serde_json::Value,
+) -> Result<TemporalOption, Box<dyn std::error::Error + Send + Sync>> {
+    use serde_json::Value as J;
+    let invalid = |message: String| -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(MentatError::InvalidQuery {
+            message,
+            suggestion: Some(
+                "Options are {\"inputs\": [..], \"asOf\": tx, \"since\": tx, \
+                 \"history\": bool, \"limit\": n, \"offset\": n}."
+                    .to_string(),
+            ),
+        })
+    };
     let mut opts = TemporalOption::default();
-    if let Some(obj) = inputs.as_object() {
-        if let Some(as_of) = obj.get("asOf").and_then(|v| v.as_i64()) {
-            opts.as_of = Some(as_of);
-        }
-        if let Some(since) = obj.get("since").and_then(|v| v.as_i64()) {
-            opts.since = Some(since);
-        }
-        if let Some(history) = obj.get("history").and_then(|v| v.as_bool()) {
-            opts.history = history;
+    let Some(obj) = inputs.as_object() else {
+        return Ok(opts);
+    };
+    for (k, v) in obj {
+        match (k.as_str(), v) {
+            (_, J::Null) | ("inputs" | "limit" | "offset", _) => {}
+            ("asOf" | "since", v) => {
+                let t = v
+                    .as_i64()
+                    .ok_or_else(|| invalid(format!("\"{k}\" must be an integer tx id, got {v}")))?;
+                if k == "asOf" {
+                    opts.as_of = Some(t);
+                } else {
+                    opts.since = Some(t);
+                }
+            }
+            ("history", J::Bool(b)) => opts.history = *b,
+            ("history", v) => {
+                return Err(invalid(format!("\"history\" must be a boolean, got {v}")))
+            }
+            (other, _) => return Err(invalid(format!("unknown option \"{other}\""))),
         }
     }
-    opts
+    Ok(opts)
 }
 
 /// Pagination options parsed from the inputs JSON parameter.
@@ -1281,7 +1353,7 @@ fn prepare_query<'a>(
     let _parsed_value = parse::value(query)?;
     let parsed = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(inputs);
+    let temporal = parse_temporal_options(inputs)?;
     let input_bindings = parse_input_bindings(&parsed, inputs)?;
     let enriched = parse_input_bindings_v2(&parsed.in_bindings, inputs);
     let has_aggregates = find_spec_has_aggregates(&parsed.find_spec);
@@ -1637,7 +1709,7 @@ fn mentat_explain_internal(
     let _parsed_value = parse::value(query)?;
     let parsed_query = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
+    let temporal = parse_temporal_options(&inputs.0)?;
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     // Collection / tuple / relation :in bindings (issue #330). Built exactly as
     // the executing path (prepare_query) builds them, so EXPLAIN shows the plan
@@ -1830,7 +1902,7 @@ fn mentat_query_sql_internal(
     let _parsed_value = parse::value(query)?;
     let parsed_query = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
+    let temporal = parse_temporal_options(&inputs.0)?;
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     // Collection / tuple / relation :in bindings (issue #330), same as the
     // executing path, so the returned SQL is the SQL edn_q runs.
@@ -1931,7 +2003,7 @@ fn mentat_query_view_internal(
     let _parsed_value = parse::value(query)?;
     let parsed_query = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
+    let temporal = parse_temporal_options(&inputs.0)?;
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     // Collection / tuple / relation :in bindings (issue #330): without them a
     // collection-:in query_view returned rows as if the input were absent.
@@ -2205,6 +2277,101 @@ fn element_to_var_name(elem: &Element) -> Option<String> {
 // still reads current state (those paths bind no `added` var yet).
 fn reads_history(temporal: &TemporalOption, pattern: &edn::query::Pattern) -> bool {
     temporal.history || pattern.added != PatternNonValuePlace::Placeholder
+}
+
+/// Whether a pattern reads the current-state projection (`current_<type>`)
+/// rather than the log: current-time and since-only reads of a non-history
+/// pattern. The live datoms added after S are exactly the projection rows
+/// with tx > S, so since needs no retraction check (issue #364).
+fn reads_projection(temporal: &TemporalOption, history: bool) -> bool {
+    temporal.as_of.is_none() && !history
+}
+
+/// The temporal WHERE conditions for one log-table pattern alias, with
+/// Datomic's as-of / since meaning (issue #364):
+///
+///   * History (`history`: a 5-place pattern or {"history": true}): the log in
+///     the window, retractions too: `tx > since`, `tx <= asOf`.
+///   * Otherwise the live assertions in the window: `added`, the same tx
+///     bounds, and no retraction of the same (e, a, v) after this row (and at
+///     or before `asOf`). So `since S` is the current datoms added after S,
+///     and as-of T hides a value retracted at or before T whether or not a new
+///     value replaced it.
+///
+/// `typed` is the pattern's typed table info (its log table, and the alias
+/// column its `v` lands in), or `None` for the nine-way UNION (attribute or
+/// type unknown). `tables_prefix` is the schema the pattern reads
+/// ([`narrow_tables_prefix`]); the anti-join reads the same one.
+fn temporal_conditions(
+    temporal: &TemporalOption,
+    history: bool,
+    alias: &str,
+    typed: Option<&TypedTableInfo>,
+    tables_prefix: &str,
+    store_id_param: &str,
+    builder: &mut SqlBuilder<'_>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if reads_projection(temporal, history) {
+        // The projection: every row is live; since S keeps tx > S.
+        if let Some(s) = temporal.since {
+            let p = builder.bind_bigint(s);
+            out.push(format!("{alias}.tx > {p}"));
+        }
+        return out;
+    }
+    if !history {
+        out.push(format!("{alias}.added = true"));
+    }
+    let upper = temporal.as_of.map(|t| builder.bind_bigint(t));
+    if let Some(p) = &upper {
+        out.push(format!("{alias}.tx <= {p}"));
+    }
+    if let Some(s) = temporal.since {
+        let p = builder.bind_bigint(s);
+        out.push(format!("{alias}.tx > {p}"));
+    }
+    if history {
+        return out;
+    }
+    let retractions = match typed {
+        Some(t) => {
+            debug_assert!(
+                t.table.starts_with(tables_prefix),
+                "{} read under {tables_prefix}",
+                t.table
+            );
+            format!("{} AS r WHERE r.store_id = {store_id_param} AND", t.table)
+        }
+        None => format!(
+            "{} AS r WHERE",
+            build_datoms_union_subquery(store_id_param, tables_prefix)
+        ),
+    };
+    // A typed table has one `v` column; the UNION carries one per type.
+    let same_v = match typed {
+        Some(t) => format!("r.v = {alias}.{}", t.value_column),
+        None => format!(
+            "r.value_type_tag = {alias}.value_type_tag \
+             AND r.v_ref IS NOT DISTINCT FROM {alias}.v_ref \
+             AND r.v_bool IS NOT DISTINCT FROM {alias}.v_bool \
+             AND r.v_long IS NOT DISTINCT FROM {alias}.v_long \
+             AND r.v_double IS NOT DISTINCT FROM {alias}.v_double \
+             AND r.v_text IS NOT DISTINCT FROM {alias}.v_text \
+             AND r.v_keyword IS NOT DISTINCT FROM {alias}.v_keyword \
+             AND r.v_instant IS NOT DISTINCT FROM {alias}.v_instant \
+             AND r.v_uuid IS NOT DISTINCT FROM {alias}.v_uuid \
+             AND r.v_bytes IS NOT DISTINCT FROM {alias}.v_bytes"
+        ),
+    };
+    let r_upper = upper
+        .map(|p| format!(" AND r.tx <= {p}"))
+        .unwrap_or_default();
+    out.push(format!(
+        "NOT EXISTS (SELECT 1 FROM {retractions} r.e = {alias}.e AND r.a = {alias}.a \
+         AND {same_v} AND NOT r.added AND r.tx > {alias}.tx{r_upper})"
+    ));
+    out
 }
 
 /// Extract a variable name string from a PatternNonValuePlace, if it is a variable.
@@ -6075,73 +6242,16 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         // it to its transactions table the same way.)
         let history = reads_history(temporal, pattern);
 
-        // Temporal filtering per datom table
-        if history {
-            // History mode: include both added=true and added=false (no filter)
-        } else {
-            where_clauses.push(format!("{alias}.added = true"));
-        }
-
-        if let Some(as_of_tx) = temporal.as_of {
-            let param = builder.bind_bigint(as_of_tx);
-            where_clauses.push(format!("{alias}.tx <= {param}"));
-
-            // For as-of queries on cardinality-one attributes, exclude datoms
-            // that have been superseded by a newer assertion within the as-of
-            // window.  Cardinality-many attributes must NOT be filtered this
-            // way because multiple values for the same (e, a) are valid.
-            //
-            // We check cardinality at query-compile time when the attribute is
-            // a known constant; when it is a variable we skip the filter
-            // entirely (cardinality-one correctness is still guaranteed by the
-            // explicit retraction inserted during transact).
-            let is_cardinality_many = match &pattern.attribute {
-                PatternNonValuePlace::Ident(kw) => {
-                    let ident_str = keyword_to_ident(kw);
-                    crate::cache::get_cache()
-                        .resolve_ident(&ident_str)
-                        .and_then(|entid| crate::cache::get_cache().get_attribute(entid))
-                        .map(|info| info.cardinality == "many")
-                        .unwrap_or(false)
-                }
-                PatternNonValuePlace::Entid(id) => crate::cache::get_cache()
-                    .get_attribute(*id)
-                    .map(|info| info.cardinality == "many")
-                    .unwrap_or(false),
-                _ => false, // variable or placeholder: skip filter (safe due to explicit retractions)
-            };
-
-            // History as of T is every datom with tx <= T: nothing is superseded.
-            if !is_cardinality_many && !history {
-                let param2 = builder.bind_bigint(as_of_tx);
-                // Use single typed table for NOT EXISTS when attribute type is known.
-                // This avoids the 9-way UNION ALL in the correlated subquery.
-                if let Some(info) = &typed_info {
-                    where_clauses.push(format!(
-                        "NOT EXISTS (SELECT 1 FROM {table} AS newer \
-                         WHERE newer.store_id = {sid} \
-                         AND newer.e = {alias}.e AND newer.a = {alias}.a \
-                         AND newer.added = true \
-                         AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                        table = info.table,
-                        sid = store_id_param,
-                    ));
-                } else {
-                    where_clauses.push(format!(
-                        "NOT EXISTS (SELECT 1 FROM {} AS newer \
-                         WHERE newer.e = {alias}.e AND newer.a = {alias}.a \
-                         AND newer.added = true \
-                         AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                        build_datoms_union_subquery(store_id_param)
-                    ));
-                }
-            }
-        }
-
-        if let Some(since_tx) = temporal.since {
-            let param = builder.bind_bigint(since_tx);
-            where_clauses.push(format!("{alias}.tx > {param}"));
-        }
+        // Temporal filtering per datom table (as-of / since / history).
+        where_clauses.extend(temporal_conditions(
+            temporal,
+            history,
+            &alias,
+            typed_info.as_ref(),
+            narrow_tables_prefix(schema_prefix),
+            store_id_param,
+            builder,
+        ));
 
         // Handle added position (5th element in pattern, e.g. [?e ?a ?v ?tx ?added])
         if let Some(added_var) = non_value_var_name(&pattern.added) {
@@ -6178,11 +6288,11 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
         };
 
-        // Read from the current-state projection for current-time queries
-        // (no as-of / since / history): it holds only live datoms, so it
-        // needs no `added` filter or latest-tx-wins resolution. Temporal
-        // queries must read the append-only log.
-        let use_projection = temporal.as_of.is_none() && temporal.since.is_none() && !history;
+        // Read from the current-state projection for current-time and since
+        // queries (no as-of / history): it holds only live datoms, so it
+        // needs no `added` filter or retraction check. As-of and history
+        // read the append-only log.
+        let use_projection = reads_projection(temporal, history);
 
         // Use the typed single-table FROM fragment or fall back to UNION ALL
         if let Some(info) = &typed_info {
@@ -6208,6 +6318,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 &alias,
                 store_id_param,
                 use_projection,
+                narrow_tables_prefix(schema_prefix),
             ));
             crate::monitoring::record_union_all_fallback();
         }
@@ -6255,36 +6366,31 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             };
 
             // Current state reads the projection (one row per card-one e/a).
-            // as-of / since / history read the log: the latest assertion with
-            // tx <= T that no later retraction (tx <= T) cancels.
-            let current = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+            // as-of / since read the log rows live on that basis
+            // (temporal_conditions: Datomic's rule, issue #364). get-else
+            // reads a value, not the log, so {"history": true} doesn't apply:
+            // the log would hand back a retraction row's value.
             let (from, extra) = match value_type_to_table_info(&info.value_type) {
-                Some(t) if current => (t.current_table.to_string(), String::new()),
                 Some(t) => {
-                    let upper = match temporal.as_of {
-                        Some(tx) => {
-                            let p = builder.bind_bigint(tx);
-                            format!(" AND g.tx <= {p}")
-                        }
-                        None => String::new(),
+                    let from = if reads_projection(temporal, false) {
+                        t.current_table
+                    } else {
+                        t.table
                     };
-                    let lower = match temporal.since {
-                        Some(tx) => {
-                            let p = builder.bind_bigint(tx);
-                            format!(" AND g.tx > {p}")
-                        }
-                        None => String::new(),
-                    };
-                    (
-                        t.table.to_string(),
-                        format!(
-                            " AND g.added{upper}{lower} AND NOT EXISTS (SELECT 1 FROM {tbl} r \
-                             WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a \
-                             AND r.tx > g.tx{r_upper})",
-                            tbl = t.table,
-                            r_upper = upper.replace("g.tx", "r.tx"),
-                        ),
-                    )
+                    let live = temporal_conditions(
+                        temporal,
+                        false,
+                        "g",
+                        Some(&TypedTableInfo {
+                            value_column: "v",
+                            ..t
+                        }),
+                        narrow_tables_prefix(schema_prefix),
+                        store_id_param,
+                        builder,
+                    );
+                    let extra: String = live.iter().map(|c| format!(" AND {c}")).collect();
+                    (from.to_string(), extra)
                 }
                 None => continue,
             };
@@ -6347,16 +6453,21 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
         if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-            let table = attr_lookup_table(&info.value_type, temporal);
-
             let entity_expr = if let Some((alias, col)) = var_to_alias.get(mc.entity_var.as_str()) {
                 format!("{}.{}", alias, col)
             } else {
                 continue;
             };
+            let table = attr_lookup_table(
+                &info.value_type,
+                temporal,
+                narrow_tables_prefix(schema_prefix),
+                store_id_param,
+                builder,
+            );
 
             let not_exists = format!(
-                "NOT EXISTS (SELECT 1 FROM {table} WHERE store_id = {sid} AND e = {entity} AND a = {attr})",
+                "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
                 table = table,
                 sid = store_id_param,
                 entity = entity_expr,
@@ -6529,11 +6640,17 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
                 if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-                    let table = attr_lookup_table(&info.value_type, temporal);
                     if let Some((alias, col)) = var_to_alias.get(entity_var.as_str()) {
+                        let table = attr_lookup_table(
+                            &info.value_type,
+                            temporal,
+                            narrow_tables_prefix(schema_prefix),
+                            store_id_param,
+                            builder,
+                        );
                         let entity_expr = format!("{}.{}", alias, col);
                         let not_exists = format!(
-                            "NOT EXISTS (SELECT 1 FROM {table} WHERE store_id = {sid} AND e = {entity} AND a = {attr})",
+                            "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
                             table = table,
                             sid = store_id_param,
                             entity = entity_expr,
@@ -6621,9 +6738,25 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
             pat.push(']');
             let pat_param = builder.bind_text(pat);
-            // edn_pull(pattern TEXT, entity_id BIGINT) -> jsonb; cast to
-            // text so it flows through the TEXT result-column path.
-            select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+            // The pull reads the query's basis (before 1.18.0 it always read
+            // current state, so an as-of find-pull returned current values).
+            let mut opts = serde_json::Map::new();
+            if let Some(t) = temporal.as_of {
+                opts.insert("asOf".into(), json!(t));
+            }
+            if let Some(t) = temporal.since {
+                opts.insert("since".into(), json!(t));
+            }
+            // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to text
+            // so it flows through the TEXT result-column path.
+            if opts.is_empty() {
+                select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+            } else {
+                let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
+                select_exprs.push(format!(
+                    "edn_pull({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                ));
+            }
             if has_aggregates {
                 group_by_exprs.push(format!("{}", col_idx + 1));
             }
@@ -7264,58 +7397,16 @@ fn build_not_exists_subquery(
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
-                // Temporal filtering in subquery too
-                if !temporal.history {
-                    sub_where.push(format!("{alias}.added = true"));
-                }
-                if let Some(as_of_tx) = temporal.as_of {
-                    let param = builder.bind_bigint(as_of_tx);
-                    sub_where.push(format!("{alias}.tx <= {param}"));
-
-                    // Only add NOT EXISTS for cardinality-one attributes
-                    let is_cardinality_many = match &p.attribute {
-                        PatternNonValuePlace::Ident(kw) => {
-                            let ident_str = keyword_to_ident(kw);
-                            crate::cache::get_cache()
-                                .resolve_ident(&ident_str)
-                                .and_then(|entid| crate::cache::get_cache().get_attribute(entid))
-                                .map(|info| info.cardinality == "many")
-                                .unwrap_or(false)
-                        }
-                        PatternNonValuePlace::Entid(id) => crate::cache::get_cache()
-                            .get_attribute(*id)
-                            .map(|info| info.cardinality == "many")
-                            .unwrap_or(false),
-                        _ => false,
-                    };
-
-                    if !is_cardinality_many {
-                        let param2 = builder.bind_bigint(as_of_tx);
-                        if let Some(info) = &typed_info {
-                            sub_where.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {table} AS newer \
-                                 WHERE newer.store_id = {sid} \
-                                 AND newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                table = info.table,
-                                sid = store_id_param,
-                            ));
-                        } else {
-                            sub_where.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {} AS newer \
-                                 WHERE newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                build_datoms_union_subquery(store_id_param)
-                            ));
-                        }
-                    }
-                }
-                if let Some(since_tx) = temporal.since {
-                    let param = builder.bind_bigint(since_tx);
-                    sub_where.push(format!("{alias}.tx > {param}"));
-                }
+                // Temporal filtering in subquery too.
+                sub_where.extend(temporal_conditions(
+                    temporal,
+                    temporal.history,
+                    &alias,
+                    typed_info.as_ref(),
+                    narrow_tables_prefix(schema_prefix),
+                    store_id_param,
+                    builder,
+                ));
 
                 // Build pushdown conditions for NOT-clause subquery
                 let not_pushdown = {
@@ -7345,13 +7436,14 @@ fn build_not_exists_subquery(
                         store_id_param,
                         info,
                         Some(&not_pushdown),
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
                     ));
                 } else {
                     sub_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
+                        narrow_tables_prefix(schema_prefix),
                     ));
                 }
 
@@ -8205,58 +8297,16 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
-                // Temporal filtering
-                if !temporal.history {
-                    where_parts.push(format!("{alias}.added = true"));
-                }
-                if let Some(as_of) = temporal.as_of {
-                    let param = builder.bind_bigint(as_of);
-                    where_parts.push(format!("{alias}.tx <= {param}"));
-
-                    // Only add NOT EXISTS for cardinality-one attributes
-                    let is_cardinality_many = match &p.attribute {
-                        PatternNonValuePlace::Ident(kw) => {
-                            let ident_str = keyword_to_ident(kw);
-                            crate::cache::get_cache()
-                                .resolve_ident(&ident_str)
-                                .and_then(|entid| crate::cache::get_cache().get_attribute(entid))
-                                .map(|info| info.cardinality == "many")
-                                .unwrap_or(false)
-                        }
-                        PatternNonValuePlace::Entid(id) => crate::cache::get_cache()
-                            .get_attribute(*id)
-                            .map(|info| info.cardinality == "many")
-                            .unwrap_or(false),
-                        _ => false,
-                    };
-
-                    if !is_cardinality_many {
-                        let param2 = builder.bind_bigint(as_of);
-                        if let Some(info) = &typed_info {
-                            where_parts.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {table} AS newer \
-                                 WHERE newer.store_id = {sid} \
-                                 AND newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                table = info.table,
-                                sid = store_id_param,
-                            ));
-                        } else {
-                            where_parts.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {} AS newer \
-                                 WHERE newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                build_datoms_union_subquery(store_id_param)
-                            ));
-                        }
-                    }
-                }
-                if let Some(since) = temporal.since {
-                    let param = builder.bind_bigint(since);
-                    where_parts.push(format!("{alias}.tx > {param}"));
-                }
+                // Temporal filtering.
+                where_parts.extend(temporal_conditions(
+                    temporal,
+                    temporal.history,
+                    &alias,
+                    typed_info.as_ref(),
+                    narrow_tables_prefix(schema_prefix),
+                    store_id_param,
+                    builder,
+                ));
 
                 // Build pushdown conditions for rule-body subquery
                 let rule_pushdown = {
@@ -8286,13 +8336,14 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                         store_id_param,
                         info,
                         Some(&rule_pushdown),
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
                     ));
                 } else {
                     pattern_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
+                        narrow_tables_prefix(schema_prefix),
                     ));
                 }
             }
@@ -8477,4 +8528,39 @@ fn pattern_binds_var(pattern: &edn::query::Pattern, var_name: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+mod tests {
+    use super::*;
+
+    /// temporal_conditions' as-of anti-join and the UNION fallback read the
+    /// tables under the prefix they're given, so a pattern and its anti-join
+    /// can't read different schemas (the named-stores merge passes the
+    /// store's schema).
+    #[pg_test]
+    fn test_temporal_tables_use_the_given_schema() {
+        let prefix = "\"mentat_s\".";
+        let as_of = TemporalOption {
+            as_of: Some(5),
+            since: Some(3),
+            history: false,
+        };
+        let mut b = SqlBuilder::new();
+        let sql = temporal_conditions(&as_of, false, "d0", None, prefix, "$1", &mut b).join(" ");
+        assert!(sql.contains("\"mentat_s\".datoms_long_new"), "{sql}");
+        assert!(!sql.contains("mentat.datoms"), "{sql}");
+        for projection in [false, true] {
+            let from = build_datoms_from_fragment("d0", "$1", projection, prefix);
+            assert!(!from.contains("mentat."), "{from}");
+            assert_eq!(from.matches("FROM \"mentat_s\".").count(), 9, "{from}");
+        }
+        let missing = attr_lookup_table("nonesuch", &as_of, prefix, "$1", &mut b);
+        assert!(
+            missing.starts_with("(SELECT * FROM \"mentat_s\"."),
+            "{missing}"
+        );
+        assert_eq!(narrow_tables_prefix("\"mentat_s\"."), "mentat.");
+    }
 }

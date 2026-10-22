@@ -260,10 +260,11 @@ also repairs a store that was already hit.
 |---|---|
 | `"inputs": [v1, v2, ...]` | Positional, one element per `:in` binding form (`$` source vars are not counted). The count must match. |
 | `"asOf": T` | Query the database as of tx `T` (inclusive). |
-| `"since": T` | Only datoms transacted after tx `T` (pair with a history pattern `[?e ?a ?v ?tx ?added]`). |
+| `"since": T` | The current datoms transacted after tx `T` (Datomic's `since`). A history pattern `[?e ?a ?v ?tx ?added]` sees every datom after `T`, retractions too. |
 
-`asOf` and `since` are mutually exclusive; either may be combined with
-`inputs`. Unknown keys and malformed JSON are errors.
+`asOf` T and `since` S together are the assertions with S < tx <= T not
+retracted by T. Either may be combined with `inputs`. Unknown keys and
+malformed JSON are errors.
 
 Binding forms: scalar `?x` -> a JSON value; collection `[?x ...]` -> a JSON
 array; tuple `[?a ?b]` -> a JSON array (one row); relation `[[?a ?b]]` -> an
@@ -298,8 +299,16 @@ runs mentat's own pull (`(pull ?e pattern)`). The JSON matches pg_mentat's
 `edn_pull`: keys are attribute idents with the colon (`":person/name"`),
 `":db/id"` is always the entity id, cardinality-many values are arrays, refs are
 `{":db/id": n}`, keywords `":ns/name"`, instants epoch microseconds, bytes hex.
-Nested map specs (`{:person/friend [:person/name]}`) are not supported by
-mentat's pull grammar yet.
+Map specs follow a ref and nest the target's pull, with its `":db/id"`:
+`[:person/name {:person/friend [:person/name]}]` gives
+`{":person/friend": [{":db/id": 2, ":person/name": "Bob"}]}` (an array for a
+cardinality-many or reverse attribute, one object for cardinality-one).
+Reverse map specs (`{:person/_friend [...]}`) and nesting work too; pg_mentat's
+recursion limits (`{:person/friend 2}`, `...`), `:limit` and `:default` do not.
+
+A find-pull in an `edn_q` with `{"asOf": T}` / `{"since": T}` reads that basis,
+and so does `mentat.store/pull` on an as-of / since db value. (Before 1.18.0
+both returned current values.)
 
 ### `edn_eval` (feature `script`, default ON)
 

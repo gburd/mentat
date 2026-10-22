@@ -92,7 +92,7 @@ or without `:in` inputs. A shared model test now pins it on all three backends.
 
 | Trade-off | Chosen | Alternative |
 |---|---|---|
-| `pull` on a historical db (SQLite) | Still refused | Reconstruct via datoms | Separate change; `entity`/`read`/`datoms` already work on a historical basis. |
+| `pull` on a historical db (SQLite) | Still refused | Reconstruct via datoms | Separate change; `entity`/`read`/`datoms` already work on a historical basis. Done in 1.18.0: pull reads the basis on all three backends. |
 
 ---
 

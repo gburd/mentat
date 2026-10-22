@@ -36,7 +36,7 @@ SELECT edn_q(
     :where
     [?e :person/name ?name]
     [?e :person/age ?age]]',
-  '{"as_of": 1050}'
+  '{"asOf": 1050}'
 );
 ```
 
@@ -57,7 +57,21 @@ SELECT mentat_as_of('default', 1050,
 
 ## Since Queries
 
-Query only datoms asserted after a specific transaction. This shows what has changed.
+Query the current datoms that were asserted after a specific transaction
+(Datomic's `since`): a value asserted after T and since retracted or replaced
+does not show. To see every change after T, assertions and retractions, use a
+history pattern `[?e ?a ?v ?tx ?added]` with `since`.
+
+`asOf` and `since` together give the assertions with `since < tx <= asOf` that
+were not retracted by `asOf` (Datomic's `(since (as-of db T) S)`).
+
+Before 1.18.0 `since` returned different results on each backend: pg also
+showed values asserted after T and later replaced, and the embedded and
+DuckDB engines also counted retractions after T as values. With `:x/n` 1 at
+t1, 2 at t2 and 3 at t3, `[:find ?v :where [_ :x/n ?v]]` since t1 now
+returns `[3]` everywhere (was `[2 3]` on pg, `[1 2 3]` on SQLite and DuckDB).
+pg rejected `asOf` with `since` in `edn_pull`; the embedded engine dropped
+`since`.
 
 ```sql
 SELECT edn_q(
@@ -144,11 +158,19 @@ SELECT mentat.diff('default', 1000, 1050);
 
 As-of queries add a `tx <= ?target_tx` filter to every pattern in the generated SQL. The query compiler:
 1. Adds `AND d.tx <= $as_of` to each table join
-2. Applies retraction filtering: excludes datoms where a later retraction exists with `tx <= target`
+2. Applies retraction filtering: excludes an assertion when a retraction of the
+   same entity, attribute and value exists with a later `tx <= target`. This
+   hides a value retracted at or before the target whether or not a new value
+   replaced it. (Before 1.18.0 pg hid only a cardinality-one value replaced by
+   a newer one, so a plainly retracted value, or a retracted cardinality-many
+   value, still showed as of a later transaction.)
 
 ### Since Implementation
 
-Since queries add `AND d.tx > $since_tx` to include only newer assertions.
+Since queries add `AND d.tx > $since_tx` and the same retraction filtering
+(any later retraction, no upper bound), so they return the current datoms
+asserted after `since_tx`. A history pattern gets only the tx bound and sees
+retractions too.
 
 ### History Implementation
 
@@ -158,20 +180,28 @@ History queries bypass the current-value filter entirely, returning all datoms (
 
 ### Pull with As-Of
 
-Currently, the pull API always operates on the current state. To pull at a specific point in time, use a Datalog query with `as_of` and then pull individual entities:
+`edn_pull` takes the same temporal options as `edn_q` as a third argument
+(since 1.18.0):
 
 ```sql
--- Find entities as of tx 1000
-WITH historical_people AS (
-  SELECT (jsonb_array_elements(
-    (SELECT edn_q(
-      '[:find [?e ...] :where [?e :person/name]]',
-      '{"as_of": 1000}'
-    ))->'results')
-  )::bigint AS eid
-)
-SELECT edn_pull('[*]', eid) FROM historical_people;
+-- Alice as of transaction 1000: the values asserted at or before 1000 and
+-- not retracted at or before 1000.
+SELECT edn_pull('[:person/name :person/age {:person/friend [:person/name]}]',
+                10001, '{"asOf": 1000}');
+
+-- Only the current datoms transacted after 1000.
+SELECT edn_pull('[*]', 10001, '{"since": 1000}');
 ```
+
+A pull in the `:find` of a historical query reads the query's basis:
+
+```sql
+SELECT edn_q('[:find (pull ?e [:person/age]) :where [?e :person/name "Alice"]]',
+             '{"asOf": 1000}');
+```
+
+Before 1.18.0 `edn_pull` had no options argument and a find-pull under `asOf`
+or `since` returned current values.
 
 ### Subscriptions with Since
 

@@ -137,6 +137,56 @@ mod tests {
         );
     }
 
+    // get-else and missing? read a value, not the log: under {"history": true}
+    // they answer from the query's non-history basis. In 1.18.0 development
+    // they read the log rows instead: a retracted value came back from its
+    // retraction row, and a card-one replace's same-tx retraction and
+    // assertion tied under ORDER BY tx DESC LIMIT 1.
+    #[pg_test]
+    fn get_else_and_missing_read_values_under_history() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[
+              {:db/ident :gh/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+              {:db/ident :gh/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        let t1 = Spi::get_one::<String>(
+            "SELECT edn_t('[{:db/id \"x\" :gh/n 1 :gh/s \"a\"}]'::TEXT)::TEXT",
+        )
+        .expect("tx1")
+        .expect("non-NULL");
+        let t1: serde_json::Value = serde_json::from_str(&t1).expect("json");
+        let x = t1["tempids"]["x"].as_i64().expect("x");
+        let t1 = t1["db-after"]["basis-t"].as_i64().expect("basis-t");
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {x} :gh/n 2] [:db/retract {x} :gh/s \"a\"]]'::TEXT)"
+        ))
+        .expect("tx2");
+        let get_else = "[:find ?n ?s :where [?e :gh/n _] \
+                        [(get-else $ ?e :gh/n 0) ?n] [(get-else $ ?e :gh/s \"none\") ?s]]";
+        let missing = "[:find ?e :where [?e :gh/n _] [(missing? $ ?e :gh/s)]]";
+        for opts in ["{}", r#"{"history": true}"#] {
+            assert_eq!(
+                rows_opts(get_else, opts),
+                vec![serde_json::json!([2, "none"])],
+                "{opts}"
+            );
+            assert_eq!(
+                rows_opts(missing, opts),
+                vec![serde_json::json!([x])],
+                "{opts}"
+            );
+        }
+        // With asOf, history still reads values on that basis.
+        let as_of = format!(r#"{{"history": true, "asOf": {t1}}}"#);
+        assert_eq!(
+            rows_opts(get_else, &as_of),
+            vec![serde_json::json!([1, "a"])]
+        );
+        assert!(rows_opts(missing, &as_of).is_empty());
+    }
+
     // Aggregates over a get-else result, multi-pattern.
     #[pg_test]
     fn get_else_in_an_aggregate() {

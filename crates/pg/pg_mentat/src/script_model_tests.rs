@@ -38,6 +38,17 @@ mod tests {
     model_pg_test!(with_is_speculative_and_does_not_commit);
     model_pg_test!(as_of_and_since_reflect_the_basis);
     model_pg_test!(q_runs_against_as_of_and_since);
+    model_pg_test!(pull_reads_the_as_of_and_since_basis);
+    model_pg_test!(pull_nested_map_specs);
+    model_pg_test!(as_of_hides_retracted_values);
+    model_pg_test!(as_of_sees_a_value_reasserted_after_retraction);
+    model_pg_test!(since_reads_current_datoms_added_after_t);
+    model_pg_test!(as_of_and_since_together);
+    model_pg_test!(missing_and_get_else_read_the_basis);
+    model_pg_test!(or_reads_the_basis);
+    // not_or_reads_the_basis: pg refuses `(not (or ...))` ("Only pattern
+    // clauses and predicates are supported inside (not ...)") on any basis.
+    model_pg_test!(pull_of_an_unknown_attribute_is_empty);
     model_pg_test!(tx_report_has_the_datomic_shape);
     model_pg_test!(q_takes_in_inputs);
     model_pg_test!(q_mixed_inputs);

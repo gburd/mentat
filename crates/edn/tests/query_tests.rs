@@ -450,3 +450,60 @@ fn can_parse_reverse_pull_attribute() {
         other => panic!("expected scalar pull, got {:?}", other),
     }
 }
+
+#[test]
+fn can_parse_nested_map_pull_specs() {
+    use edn::query::{PullAttributeSpec, PullConcreteAttribute};
+    let pat = edn::parse::pull_pattern(
+        "[:person/name {:person/friend [:person/name {:person/_friend [*]}] :person/pet [:pet/name]}]",
+    )
+    .unwrap();
+    // A map with two entries yields two nested specs.
+    assert_eq!(pat.len(), 3);
+    match &pat[1] {
+        PullAttributeSpec::Nested(a, sub) => {
+            assert!(!a.reverse);
+            assert_eq!(format!("{}", a.attribute), ":person/friend");
+            assert_eq!(sub.len(), 2);
+            match &sub[1] {
+                PullAttributeSpec::Nested(r, s) => {
+                    assert!(r.reverse);
+                    // The forward ident is stored.
+                    assert_eq!(
+                        r.attribute,
+                        PullConcreteAttribute::Ident(::std::rc::Rc::new(edn::Keyword::namespaced(
+                            "person", "friend"
+                        )))
+                    );
+                    assert_eq!(s, &vec![PullAttributeSpec::Wildcard]);
+                }
+                other => panic!("expected a reverse map spec, got {other:?}"),
+            }
+        }
+        other => panic!("expected a map spec, got {other:?}"),
+    }
+    // Display round-trips (pg re-sends find-pull patterns as EDN text).
+    let printed = format!(
+        "[{}]",
+        pat.iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    assert_eq!(
+        edn::parse::pull_pattern(&printed).unwrap(),
+        pat,
+        "{printed}"
+    );
+    assert!(printed.contains("{:person/_friend [*]}"), "{printed}");
+
+    // In a query, too.
+    assert!(parse_query(
+        "[:find (pull ?e [{:person/friend [:person/name]}]) . :where [?e :person/name _]]"
+    )
+    .is_ok());
+    // A map spec needs a sub-pattern vector; recursion limits are not in the grammar.
+    assert!(edn::parse::pull_pattern("[{:person/friend 2}]").is_err());
+    assert!(edn::parse::pull_pattern("[{:person/friend ...}]").is_err());
+    assert!(edn::parse::pull_pattern("[{:person/friend}]").is_err());
+}

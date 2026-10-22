@@ -29,8 +29,7 @@ use serde_json::{json, Value as Json};
 
 use mentat::edn::query::{Element, FindSpec};
 use mentat::{
-    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TemporalBound, TxReport,
-    TypedValue, Variable,
+    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TxReport, TypedValue, Variable,
 };
 
 type Res<T> = Result<T, String>;
@@ -387,7 +386,14 @@ fn pull_binding(b: &Binding) -> Json {
 
 fn map_json(m: &StructuredMap) -> serde_json::Map<String, Json> {
     m.0.iter()
-        .map(|(k, v)| (k.to_string(), pull_binding(v)))
+        .map(|(k, v)| {
+            // A (nested) map's own `:db/id` is the plain entity id, as in pg.
+            let v = match v {
+                Binding::Scalar(TypedValue::Ref(e)) if k.to_string() == ":db/id" => json!(e),
+                _ => pull_binding(v),
+            };
+            (k.to_string(), v)
+        })
         .collect()
 }
 
@@ -444,12 +450,9 @@ fn query_json(db: &str, query: &str, opts: Option<&str>) -> Res<String> {
         let (inputs, temporal) =
             mentat::options_from_json(&store.conn().current_schema(), query, &opts)
                 .map_err(|e| format!("edn_q: {e}"))?;
-        match temporal {
-            Some(TemporalBound::AsOf(t)) => store.q_once_as_of(query, inputs, t),
-            Some(TemporalBound::Since(t)) => store.q_once_since(query, inputs, t),
-            None => store.q_once(query, inputs),
-        }
-        .map_err(|e| e.to_string())
+        store
+            .q_once_temporal(query, inputs, temporal)
+            .map_err(|e| e.to_string())
     })
     .map_err(ctx("edn_q"))?;
     Ok(results_json(&out.spec, out.results).to_string())
@@ -573,6 +576,55 @@ mod tests {
         .unwrap();
         assert_eq!(out, "3");
         assert!(eval_edn(db, r#"(slurp "/etc/passwd")"#).is_err());
+    }
+
+    /// edn_pull with a map spec: pg_mentat's JSON shape, nested maps keyed by
+    /// idents with a plain-integer `:db/id`.
+    #[test]
+    fn nested_pull_json_matches_pg_shape() {
+        let path =
+            std::env::temp_dir().join(format!("mentat_sqlite_ext_nest_{}.db", std::process::id()));
+        let db = path.to_str().unwrap();
+        transact_json(
+            db,
+            r#"[{:db/ident :p/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :p/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :p/likes :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        )
+        .unwrap();
+        let r: Json = serde_json::from_str(
+            &transact_json(
+                db,
+                r#"[{:db/id "a" :p/name "Alice"} {:db/id "b" :p/name "Bob" :p/boss "a" :p/likes "a"}]"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let (a, b) = (
+            r["tempids"]["a"].as_i64().unwrap(),
+            r["tempids"]["b"].as_i64().unwrap(),
+        );
+        let p = |e: i64, pat: &str| -> Json {
+            serde_json::from_str(&pull_json(db, pat, e).unwrap()).unwrap()
+        };
+        assert_eq!(
+            p(b, "[:p/name {:p/boss [:p/name]} {:p/likes [:p/name]}]"),
+            json!({":db/id": b, ":p/name": "Bob",
+                   ":p/boss": {":db/id": a, ":p/name": "Alice"},
+                   ":p/likes": [{":db/id": a, ":p/name": "Alice"}]})
+        );
+        assert_eq!(
+            p(a, "[{:p/_boss [:p/name]}]"),
+            json!({":db/id": a, ":p/_boss": [{":db/id": b, ":p/name": "Bob"}]})
+        );
+        // A plain ref keeps pg's `{":db/id": n}` form.
+        assert_eq!(
+            p(b, "[:p/boss]"),
+            json!({":db/id": b, ":p/boss": {":db/id": a}})
+        );
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{db}{ext}"));
+        }
     }
 
     #[test]

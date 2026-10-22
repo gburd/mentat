@@ -332,4 +332,59 @@ mod tests {
             n.0
         );
     }
+
+    /// 1.18.0: since S reads the projection rows with tx > S; with few rows
+    /// after S that is a probe on the TX index, not a scan of every live
+    /// datom of the attribute (issue #364 follow-up).
+    #[pg_test]
+    fn pg_test_proj_since_uses_the_tx_index() {
+        setup();
+        schema();
+        Spi::run(
+            "SELECT edn_t('[' || string_agg(format('{:db/id \"p%s\" :p/age %s :p/name \"n%s\"}', g, g, g), ' ') || ']')
+             FROM generate_series(1, 2000) g",
+        )
+        .expect("tx");
+        let s = Spi::get_one::<i64>("SELECT max(tx) FROM mentat.transactions")
+            .expect("max tx")
+            .expect("NULL");
+        Spi::run("SELECT edn_t('[{:db/id \"q\" :p/age 7 :p/name \"late\"}]')").expect("tx2");
+        Spi::run("ANALYZE mentat.current_long").expect("analyze");
+        Spi::run("ANALYZE mentat.current_text").expect("analyze");
+        for (q, idx) in [
+            ("[:find ?e ?v :where [?e :p/age ?v]]", "idx_current_long_tx"),
+            (
+                "[:find ?e ?a :where [?e ?a \"late\"]]",
+                "idx_current_text_tx",
+            ),
+        ] {
+            let plan = Spi::get_one::<String>(&format!(
+                "SELECT mentat_explain($q${q}$q$, '{{\"since\": {s}}}'::jsonb)->>'explain_plan'"
+            ))
+            .expect("explain")
+            .expect("NULL");
+            assert!(plan.contains(idx), "{q} should use {idx}, got:\n{plan}");
+        }
+        let n = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT edn_q('[:find ?v :where [_ :p/age ?v]]', '{{\"since\": {s}}}')"
+        ))
+        .expect("q")
+        .expect("NULL");
+        assert_eq!(n.0["results"], serde_json::json!([[7]]), "{:?}", n.0);
+    }
+
+    /// The 1.17.2 -> 1.18.0 upgrade creates the same TX indexes as a fresh
+    /// install.
+    #[test]
+    fn upgrade_creates_the_projection_tx_indexes() {
+        let fresh = include_str!("../sql/24_current_projection.sql");
+        let upgrade = include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql");
+        let tx_lines = |sql: &'static str| -> Vec<&'static str> {
+            sql.lines()
+                .filter(|l| l.starts_with("CREATE INDEX") && l.contains("_tx "))
+                .collect()
+        };
+        assert_eq!(tx_lines(fresh).len(), 9);
+        assert_eq!(tx_lines(fresh), tx_lines(upgrade));
+    }
 }

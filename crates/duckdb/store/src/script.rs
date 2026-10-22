@@ -28,7 +28,6 @@ use mino_rs::{Gc, Value};
 use crate::{DuckStore, SqlConn};
 use core_traits::{Binding, StructuredMap, TypedValue};
 use mentat_core::{HasSchema, Keyword};
-use mentat_query_algebrizer::TemporalBound;
 use mentat_query_projector::{QueryOutput, QueryResults};
 use mentat_script::{DbRef, ScriptBackend, TxReport};
 
@@ -54,25 +53,19 @@ impl DuckBackend {
         Ok(DuckStore::new(self.conn, name))
     }
 
-    fn temporal(db: &DbRef) -> Option<TemporalBound> {
-        match (db.as_of, db.since) {
-            (Some(t), _) => Some(TemporalBound::AsOf(t)),
-            (None, Some(t)) => Some(TemporalBound::Since(t)),
-            _ => None,
-        }
-    }
-
     fn query(
         &self,
         db: &DbRef,
         query: &str,
         inputs: &[serde_json::Value],
     ) -> Result<QueryOutput, String> {
+        // Both bounds when both are set: `(since (as-of db T) S)`.
         let mut opts = serde_json::json!({ "inputs": inputs });
-        match Self::temporal(db) {
-            Some(TemporalBound::AsOf(t)) => opts["asOf"] = t.into(),
-            Some(TemporalBound::Since(t)) => opts["since"] = t.into(),
-            None => {}
+        if let Some(t) = db.as_of {
+            opts["asOf"] = t.into();
+        }
+        if let Some(s) = db.since {
+            opts["since"] = s.into();
         }
         self.store(db.conn)?
             .q_json(query, &opts)

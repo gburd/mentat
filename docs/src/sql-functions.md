@@ -108,6 +108,10 @@ SELECT mentat.q('
 The `inputs` parameter is a JSON value:
 - Simple array for positional bindings: `'[25]'`
 - Empty for no inputs: `'{}'` or `'[]'`
+- An object with the [query options](datalog.md#query-options): `inputs`,
+  `asOf`, `since`, `history`, `limit`, `offset`. Since 1.18.0 any other key,
+  or a non-integer `asOf` / `since`, is an error; before, it was ignored and
+  the query read current state (`{"as_of": T}` returned today's values).
 
 ### `edn_q_rows(query, inputs DEFAULT '{}')` -- streamed rows
 
@@ -198,6 +202,18 @@ SELECT mentat.pull('[
   {(:person/friends :limit 5 :as :top-friends) [:person/name]}
   {(:person/_friends :as :admirers) [:person/name]}
 ]', 10001);
+```
+
+### `edn_pull(pattern, eid, options)`
+
+Pull on a historical basis (since 1.18.0). `options` takes `edn_q`'s temporal
+keys: `{"asOf": T}` (the state after transaction T), `{"since": S}` (only the
+current datoms transacted after S), or both (the assertions with S < tx <= T
+not retracted by T). `'{}'` is the current state. Any other key is an error;
+`"history"` does not apply to pull.
+
+```sql
+SELECT edn_pull('[:person/name :person/age]', 10001, '{"asOf": 1000}');
 ```
 
 ### `mentat.pull_many(pattern, eids)` / `mentat_pull_many(pattern, eids)`

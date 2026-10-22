@@ -29,7 +29,9 @@ use mentat_db::{
     InProgressObserverTransactWatcher, PartitionMap, TxObservationService, TxObserver,
 };
 
-use mentat_query_pull::{pull_attributes_for_entities, pull_attributes_for_entity};
+use mentat_query_pull::{
+    pull_attributes_for_entities, pull_attributes_for_entity, pull_pattern_for_entity,
+};
 
 use mentat_transaction::{CacheAction, CacheDirection, InProgress, InProgressRead, Metadata};
 
@@ -175,19 +177,12 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
-        let known = Known::new(&schema, Some(&cache));
-        mentat_transaction::query::q_once_temporal(
-            sqlite,
-            known,
-            query,
-            inputs,
-            mentat_query_algebrizer::TemporalBound::AsOf(tx),
-        )
+        let basis = mentat_query_algebrizer::TemporalBound::AsOf(tx);
+        self.q_once_temporal(sqlite, query, inputs, basis)
     }
 
-    /// Query the store seeing only datoms transacted after transaction `tx`
-    /// (`since`).
+    /// Query the store seeing only the current datoms transacted after
+    /// transaction `tx` (Datomic's `since`).
     pub fn q_once_since<T>(
         &self,
         sqlite: &rusqlite::Connection,
@@ -198,15 +193,24 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
+        let basis = mentat_query_algebrizer::TemporalBound::Since(tx);
+        self.q_once_temporal(sqlite, query, inputs, basis)
+    }
+
+    /// Query the store on a historical basis (as-of, since, or both).
+    pub fn q_once_temporal<T>(
+        &self,
+        sqlite: &rusqlite::Connection,
+        query: &str,
+        inputs: T,
+        basis: mentat_query_algebrizer::TemporalBound,
+    ) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
         let (schema, cache) = self.snapshot();
         let known = Known::new(&schema, Some(&cache));
-        mentat_transaction::query::q_once_temporal(
-            sqlite,
-            known,
-            query,
-            inputs,
-            mentat_query_algebrizer::TemporalBound::Since(tx),
-        )
+        mentat_transaction::query::q_once_temporal(sqlite, known, query, inputs, basis)
     }
 
     /// Query the Mentat store, using the given connection and the current metadata,
@@ -295,6 +299,26 @@ impl Conn {
         let (schema, _) = self.snapshot();
         pull_attributes_for_entity(&schema, &mentat_sql::sqlite(sqlite), entity, attributes)
             .map_err(|e| e.into())
+    }
+
+    /// Pull `pattern` (EDN, e.g. `[:person/name {:person/friend [*]}]`) for
+    /// `entity` on `basis` (`None` = current, else as-of / since).
+    pub fn pull_on(
+        &self,
+        sqlite: &rusqlite::Connection,
+        entity: Entid,
+        pattern: &str,
+        basis: Option<mentat_query_algebrizer::TemporalBound>,
+    ) -> Result<StructuredMap> {
+        let (schema, _) = self.snapshot();
+        let specs = edn::parse::pull_pattern(pattern)?;
+        Ok(pull_pattern_for_entity(
+            &schema,
+            &mentat_sql::sqlite(sqlite),
+            entity,
+            specs,
+            basis,
+        )?)
     }
 
     pub fn lookup_values_for_attribute(

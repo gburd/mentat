@@ -467,8 +467,9 @@ where
 }
 
 /// Like `q_once`, but runs the query against a historical basis: `as-of T`
-/// reconstructs the state at transaction `T`, `since T` sees only datoms
-/// transacted after `T`. This is the SQLite engine's historical-`q` entry point.
+/// reconstructs the state at transaction `T`, `since T` sees the current
+/// datoms transacted after `T`. This is the SQLite engine's historical-`q`
+/// entry point.
 pub fn q_once_temporal<T>(
     sqlite: &rusqlite::Connection,
     known: Known,
