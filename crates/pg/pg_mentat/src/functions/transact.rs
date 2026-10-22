@@ -914,20 +914,22 @@ fn execute_transaction_inner(
     // --- End per-transaction context setup ---
 
     // Insert :db/txInstant datom for this transaction using typed column
-    // Through the store's `datoms` view: its INSTEAD OF trigger routes the
-    // row to the narrow log, and statement triggers on the view (subscriptions,
-    // on-write materialized views) fire once per transaction.
+    // Straight into the narrow table, not through the store's `datoms` view:
+    // statement triggers on the view (subscriptions, on-write materialized
+    // views) must fire once, after all of the transaction's data is in (the
+    // zero-row INSERT at the end), not here, before it.
     Spi::run_with_args(
         &format!(
-            "INSERT INTO {}.datoms (e, a, value_type_tag, v_instant, tx, added) \
-             VALUES ($1, $2, $3, {}, $5, $6)",
+            "INSERT INTO {}.datoms_instant_new (store_id, e, a, v, tx, added) \
+             VALUES ($1, $2, $3, {}, $5, $6) \
+             ON CONFLICT DO NOTHING",
             qs,
             sql_instant_from_micros("$4")
         ),
         &[
+            DatumWithOid::from(tx_store_id),
             DatumWithOid::from(tx_id),
             DatumWithOid::from(bootstrap_entids::DB_TX_INSTANT),
-            DatumWithOid::from(4_i16), // type_tag::INSTANT = 4
             DatumWithOid::from(tx_instant_micros),
             DatumWithOid::from(tx_id),
             DatumWithOid::from(true),
@@ -1431,7 +1433,17 @@ fn execute_transaction_inner(
     // Validate and insert all datoms.
     // If schema was installed (savepoint active), catch errors to rollback
     // the savepoint before propagating.
-    let datom_result = insert_datoms(&pending_datoms, tx_id, &qs);
+    let datom_result = insert_datoms(&pending_datoms, tx_id, &qs).and_then(|n| {
+        // One zero-row statement through the store's `datoms` view, now that
+        // every datom is written: it fires the view's statement triggers
+        // (subscriptions, on-write materialized views) once, on the
+        // transaction's own data.
+        Spi::run(&format!(
+            "INSERT INTO {qs}.datoms (e, a, value_type_tag, tx, added) \
+             SELECT 0, 0, 0::SMALLINT, 0, true WHERE false"
+        ))?;
+        Ok(n)
+    });
 
     match datom_result {
         Ok(changed) => {
