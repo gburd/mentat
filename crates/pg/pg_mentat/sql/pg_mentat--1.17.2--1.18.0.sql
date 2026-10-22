@@ -66,6 +66,16 @@ CREATE INDEX IF NOT EXISTS idx_current_boolean_tx ON mentat.current_boolean (sto
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
+-- pull(store, pattern, entity_id, options): pull on a named store on a
+-- historical basis, as edn_pull(pattern, entity_id, options) does for the
+-- default store (section above). q()'s find-pull on a named store calls it
+-- under an asOf / since query. Same shape as the pgrx-generated install SQL.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION "pull"("store" TEXT, "pattern" TEXT, "entity_id" bigint, "options" jsonb) RETURNS jsonb
+STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', 'pull_with_options_wrapper';
+
+-- ---------------------------------------------------------------------------
 -- The layout functions (identical to sql/30_store_layout.sql).
 -- ---------------------------------------------------------------------------
 -- Per-schema layout for named stores (issue #337).

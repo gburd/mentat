@@ -6811,13 +6811,21 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 opts.insert("since".into(), json!(t));
             }
             // named-stores: edn_pull reads the default store; a named store
-            // pulls from its own schema with pull(store, pattern, entity_id).
+            // pulls from its own schema with pull(store, pattern, entity_id
+            // [, options]).
             let pull_store = store_name_from_prefix(schema_prefix);
             if pull_store != "default" {
                 let store_param = builder.bind_text(pull_store.to_string());
-                select_exprs.push(format!(
-                    "pull({store_param}, {pat_param}, {entity_expr})::TEXT"
-                ));
+                if opts.is_empty() {
+                    select_exprs.push(format!(
+                        "pull({store_param}, {pat_param}, {entity_expr})::TEXT"
+                    ));
+                } else {
+                    let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
+                    select_exprs.push(format!(
+                        "pull({store_param}, {pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                    ));
+                }
             } else if opts.is_empty() {
                 // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to
                 // text so it flows through the TEXT result-column path.
