@@ -3071,7 +3071,7 @@ fn build_sql_from_datalog_enriched(
             // Arithmetic binding functions: [(* ?age 2) ?double-age]
             if let Some((var_name, expr)) = build_where_fn_binding(wf, builder)? {
                 let bound = var_bound_by(&var_name, &pattern_clauses, &rule_invocations);
-                let var = fn_result_var(var_name, bound, &mut fn_eqs);
+                let var = fn_result_var(var_name, bound, &extra_var_bindings, &mut fn_eqs);
                 fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
                 extra_var_bindings.insert(var, expr);
             } else {
@@ -3440,7 +3440,12 @@ fn build_sql_from_datalog_enriched(
                     if let Some((var_name, expr)) = build_where_fn_binding(wf, &mut arm_builder)? {
                         let bound =
                             var_bound_by(&var_name, &combined_patterns, &combined_rule_invocations);
-                        let var = fn_result_var(var_name, bound, &mut arm_fn_eqs);
+                        let var = fn_result_var(
+                            var_name,
+                            bound,
+                            &arm_extra_var_bindings,
+                            &mut arm_fn_eqs,
+                        );
                         arm_fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
                         arm_extra_var_bindings.insert(var, expr);
                     }
@@ -9299,11 +9304,23 @@ fn var_bound_by(
 /// `eqs` gets [(= var fresh)].
 /// shortcut: a top-level function whose variable only an `or` arm binds is
 /// still ignored there; check each arm's patterns too if that comes up.
-fn fn_result_var(var: String, bound: bool, eqs: &mut Vec<Predicate>) -> String {
+/// The fresh name has a '#', which the EDN reader never puts in a variable,
+/// so no user variable has it; `taken` (the scope's computed variables, an
+/// or arm's including the query's) keeps it apart from the other fresh ones.
+fn fn_result_var(
+    var: String,
+    bound: bool,
+    taken: &HashMap<String, String>,
+    eqs: &mut Vec<Predicate>,
+) -> String {
     if !bound {
         return var;
     }
-    let fresh = format!("?__fn{}_{}", eqs.len(), var.trim_start_matches('?'));
+    let name = var.trim_start_matches('?');
+    let fresh = (0..)
+        .map(|n| format!("?#fn{n}_{name}"))
+        .find(|f| !taken.contains_key(f))
+        .expect("an unused name");
     eqs.push(Predicate {
         operator: edn::query::PlainSymbol::plain("="),
         args: vec![

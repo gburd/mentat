@@ -573,6 +573,14 @@ mod tests {
         // A result no pattern binds is unchanged: a new value.
         let q = "[:find ?x ?d :where [?x :rv/age 5] [(* 5 2) ?d]]";
         assert_eq!(rows(q), [format!("[{c},10]")]);
+        // A user variable named like the generated one is a different variable.
+        let q = "[:find ?x :where [(+ 12 0) ?k] [?x :rv/age ?k] [(+ 1 1) ?__fn0_k]]";
+        assert_eq!(rows(q), [format!("[{b}]")]);
+        // So is the generated one of an or arm: ?k is 12 in both arms (the
+        // arm's result replaced the top-level one, so the first arm was ann).
+        let q = "[:find ?x :where [?x :rv/age ?k] [(+ 12 0) ?k] \
+                 (or (and [?x :rv/name _] [(+ 30 0) ?k]) [?x :rv/name \"bob\"])]";
+        assert_eq!(rows(q), [format!("[{b}]")]);
     }
 
     /// One value of a different type on each entity, and :mf/id.
