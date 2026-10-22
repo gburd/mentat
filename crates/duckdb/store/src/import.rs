@@ -40,7 +40,7 @@ use mentat_sql::{SqlConn, SqlConnExt};
 use public_traits::errors::{MentatError, Result};
 
 use crate::schema::{typed_values, VALUE_TYPE};
-use crate::store::write_lock;
+use crate::store::{write_lock, OnDrop};
 use crate::DuckStore;
 
 /// An import error that displays as just `msg` (`BadQueryOptions` would
@@ -250,8 +250,11 @@ impl DuckStore<'_> {
                 err(format!("mentat_import: can't open {path} as SQLite: {m}"))
             }
         })?;
+        // Detached on every exit, a panic included (it would otherwise stay
+        // attached, instance-wide, until the process exits).
+        let detach = OnDrop::new(conn, format!("DETACH DATABASE IF EXISTS {src}"));
         let out = self.import_attached(&src, path);
-        let detached = conn.execute_batch(&format!("DETACH DATABASE IF EXISTS {src}"));
+        let detached = detach.run();
         let out = out?;
         detached?;
         Ok(out)
@@ -397,8 +400,12 @@ impl DuckStore<'_> {
                 ),
                 &[],
             )?;
-            // The engine must be able to read it back.
-            st.read()?;
+            #[cfg(feature = "failpoints")]
+            crate::failpoints::hit("import");
+            // The engine must be able to read it back (this also checks
+            // known_parts: start <= next entid <= end).
+            st.read()
+                .map_err(|e| err(format!("mentat_import: {path}: {e}")))?;
             let n = |sql: &str| -> Result<i64> {
                 Ok(conn.query_opt(sql, &[], |r| r.get_opt_i64(0))?.flatten().unwrap_or(0))
             };

@@ -23,6 +23,8 @@
 
 pub use mentat_sql::{Dialect, SqlConn, SqlConnExt, SqlError, SqlRow, SqlValue};
 
+#[cfg(feature = "failpoints")]
+pub mod failpoints;
 mod import;
 mod schema;
 #[cfg(feature = "script")]

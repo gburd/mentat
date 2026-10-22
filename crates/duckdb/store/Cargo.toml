@@ -17,6 +17,8 @@ description = "mentat's storage on DuckDB tables (the DuckDB extension's backend
 [features]
 # `edn_eval`'s mino scripting surface over DuckDB stores.
 script = ["dep:mino-rs", "dep:mentat_script"]
+# Test-only panic injection (`failpoints::arm`), for the test harness.
+failpoints = []
 
 [dependencies]
 core_traits = { package = "mentat_core_traits", path = "../../core-traits", version = "=1.17.2" }

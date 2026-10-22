@@ -6,7 +6,7 @@
 
 use duckdb::Connection;
 use mentat::Queryable;
-use mentat_duckdb_store::{DuckStore, SqlConn};
+use mentat_duckdb_store::{failpoints, DuckStore, SqlConn};
 use mentat_duckdb_store_tests::DuckConn;
 use mentat_query_algebrizer::TemporalBound;
 
@@ -432,4 +432,64 @@ fn other_stores_work_during_an_import() {
         }
         importer.join().unwrap();
     });
+}
+
+/// A crafted file whose partition counter is below its partition's start
+/// (Partition::new asserts against it) fails with an error, not a panic; a
+/// panic mid-import (injected) unwinds cleanly. Either way nothing stays
+/// attached, no transaction stays open, and the same store then imports a
+/// good file and takes transactions.
+#[test]
+fn a_failed_or_panicking_import_leaves_nothing_behind() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (good, bad) = (
+        dir.path().join("good.mentat"),
+        dir.path().join("bad.mentat"),
+    );
+    for (p, n) in [(&good, 2), (&bad, 1)] {
+        let mut st = mentat::Store::open(p.to_str().unwrap()).unwrap();
+        for tx in &TXS[..n] {
+            st.transact(*tx).unwrap();
+        }
+    }
+    mentat::Store::open(bad.to_str().unwrap())
+        .unwrap()
+        .sqlite_mut()
+        .execute_batch("UPDATE known_parts SET idx = start - 1 WHERE part = ':db.part/user'")
+        .unwrap();
+    let c = Connection::open_in_memory().unwrap();
+    let dc = DuckConn::new(&c);
+    let conn = &dc as &dyn SqlConn;
+    let s = DuckStore::new(conn, "victim");
+    let clean = |what: &str| {
+        let attached: i64 = c
+            .query_row(
+                "SELECT count(*) FROM duckdb_databases() WHERE database_name LIKE '%import_src'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(attached, 0, "{what}: the source is still attached");
+        c.execute_batch("BEGIN; ROLLBACK")
+            .unwrap_or_else(|e| panic!("{what}: a transaction is still open: {e}"));
+        DuckStore::new(conn, "other")
+            .transact(TXS[0])
+            .unwrap_or_else(|e| panic!("{what}: another store can't transact: {e}"));
+    };
+
+    let e = s.import_sqlite(bad.to_str().unwrap()).unwrap_err();
+    assert!(e.to_string().contains("bad known_parts row"), "{e}");
+    assert!(e.to_string().starts_with("mentat_import"), "{e}");
+    clean("bad partition");
+
+    failpoints::arm("import");
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.import_sqlite(good.to_str().unwrap())
+    }));
+    assert!(r.is_err(), "the failpoint didn't fire");
+    clean("panic");
+
+    let imported = s.import_sqlite(good.to_str().unwrap()).unwrap();
+    assert_eq!(imported.transactions, 3);
+    s.transact(r#"[{:p/name "After"}]"#).unwrap();
 }

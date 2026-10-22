@@ -56,6 +56,45 @@ pub(crate) fn write_lock(schema: &str) -> Arc<Mutex<()>> {
     locks.entry(schema.to_string()).or_default().clone()
 }
 
+/// SQL run on a connection when this is dropped, unless `run` or `disarm`
+/// ran first: the ROLLBACK of an open transaction, the DETACH of an import's
+/// source. Dropped on a panic too, which matters: duckdb-rs catches a panic
+/// at the function boundary and the extension reuses the connection, so an
+/// open transaction left behind would wedge writes to the store.
+pub(crate) struct OnDrop<'c> {
+    conn: &'c dyn SqlConn,
+    sql: Option<String>,
+}
+
+impl<'c> OnDrop<'c> {
+    pub(crate) fn new(conn: &'c dyn SqlConn, sql: impl Into<String>) -> Self {
+        OnDrop {
+            conn,
+            sql: Some(sql.into()),
+        }
+    }
+
+    /// Run it now.
+    pub(crate) fn run(mut self) -> Result<()> {
+        match self.sql.take() {
+            Some(sql) => Ok(self.conn.execute_batch(&sql)?),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn disarm(mut self) {
+        self.sql = None;
+    }
+}
+
+impl Drop for OnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(sql) = self.sql.take() {
+            let _ = self.conn.execute_batch(&sql);
+        }
+    }
+}
+
 /// One store (a DuckDB schema) on one connection. Cheap to construct; holds
 /// no state beyond the store's name, so the extension builds one per call.
 pub struct DuckStore<'c> {
@@ -308,20 +347,32 @@ impl<'c> DuckStore<'c> {
     /// Read the partition map (3 rows; cached: no filter, one table).
     fn read_partition_map(&self) -> Result<PartitionMap> {
         let mut parts = PartitionMap::default();
+        let mut bad = None;
         self.conn.query_cached(
             "SELECT part, start, \"end\", idx, allow_excision FROM known_parts",
             &[],
             &mut |r| {
-                let p = Partition::new(
-                    r.get_i64(1)?,
-                    r.get_i64(2)?,
-                    r.get_i64(3)?,
-                    r.get_i64(4)? != 0,
+                let (start, end, idx) = (r.get_i64(1)?, r.get_i64(2)?, r.get_i64(3)?);
+                // Partition::new asserts this; an imported file may break it.
+                if !(start <= idx && idx <= end) {
+                    bad = Some(format!(
+                        "partition {}: start {start}, end {end}, next entid {idx}",
+                        r.get_text(0)?
+                    ));
+                    return Ok(());
+                }
+                parts.insert(
+                    r.get_text(0)?,
+                    Partition::new(start, end, idx, r.get_i64(4)? != 0),
                 );
-                parts.insert(r.get_text(0)?, p);
                 Ok(())
             },
         )?;
+        if let Some(bad) = bad {
+            return Err(MentatError::IoError(std::io::Error::other(format!(
+                "bad known_parts row ({bad}): need start <= next entid <= end"
+            ))));
+        }
         Ok(parts)
     }
 
@@ -366,19 +417,19 @@ impl<'c> DuckStore<'c> {
     }
 
     /// Run `f` in one DuckDB transaction: committed if it returns Ok, rolled
-    /// back otherwise.
+    /// back otherwise, panics included.
     pub(crate) fn in_tx<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let rollback = self.begin()?;
+        let v = f(self)?;
+        self.conn.execute_batch("COMMIT")?;
+        rollback.disarm();
+        Ok(v)
+    }
+
+    /// BEGIN, and the ROLLBACK that undoes it when dropped.
+    fn begin(&self) -> Result<OnDrop<'c>> {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
-        match f(self) {
-            Ok(v) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(v)
-            }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
+        Ok(OnDrop::new(self.conn, "ROLLBACK"))
     }
 
     /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction.
@@ -406,11 +457,11 @@ impl<'c> DuckStore<'c> {
         let (gen, opened) = self.open_gen()?;
         let lock = write_lock(&self.schema);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let rollback = self.begin()?;
         let report = txs.into_iter().try_fold(None, |_, entities| {
             self.apply(entities, gen, &opened.schema).map(Some)
         });
-        let rolled_back = self.conn.execute_batch("ROLLBACK");
+        let rolled_back = rollback.run();
         let report = report?;
         rolled_back?;
         report.ok_or_else(|| MentatError::NotYetImplemented("with: no tx-data".into()))
@@ -446,6 +497,8 @@ impl<'c> DuckStore<'c> {
             NullWatcher(),
             entities,
         )?;
+        #[cfg(feature = "failpoints")]
+        crate::failpoints::hit("apply");
         if next_schema.is_some() {
             self.conn.execute(
                 "UPDATE meta SET value = ((hash(uuid()) >> 1)::BIGINT)::VARCHAR WHERE key = 'generation'",
