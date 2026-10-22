@@ -108,6 +108,10 @@ SELECT mentat.q('
 The `inputs` parameter is a JSON value:
 - Simple array for positional bindings: `'[25]'`
 - Empty for no inputs: `'{}'` or `'[]'`
+- An object with the [query options](datalog.md#query-options): `inputs`,
+  `asOf`, `since`, `history`, `limit`, `offset`. Since 1.18.0 any other key,
+  or a non-integer `asOf` / `since`, is an error; before, it was ignored and
+  the query read current state (`{"as_of": T}` returned today's values).
 
 ### `edn_q_rows(query, inputs DEFAULT '{}')` -- streamed rows
 

@@ -182,4 +182,43 @@ mod tests {
         ));
         assert!(e.contains("does not apply to pull"), "{e}");
     }
+
+    /// edn_q rejects an unknown option key or a non-integer asOf / since,
+    /// like edn_pull and the SQLite / DuckDB edn_q. Before 1.18.0 it ignored
+    /// them and read current state: {"as_of": t1} returned today's values.
+    #[pg_test]
+    fn edn_q_rejects_bad_options() {
+        let (_, _, t1) = setup();
+        let q = "[:find ?a . :where [_ :pb/age ?a]]";
+        for (opts, want) in [
+            (format!(r#"{{"as_of": {t1}}}"#), "unknown option \"as_of\""),
+            (format!(r#"{{"asof": {t1}}}"#), "unknown option \"asof\""),
+            (
+                r#"{"asOf": "x"}"#.to_string(),
+                "\"asOf\" must be an integer tx id",
+            ),
+            (
+                r#"{"since": 1.5}"#.to_string(),
+                "\"since\" must be an integer tx id",
+            ),
+            (
+                r#"{"history": 1}"#.to_string(),
+                "\"history\" must be a boolean",
+            ),
+        ] {
+            for f in ["edn_q", "edn_q_rows"] {
+                let e = err(&format!("SELECT {f}('{q}', '{opts}'::jsonb)"));
+                assert!(e.contains(want), "{f} {opts}: {e}");
+            }
+        }
+        // The documented keys still work.
+        let ok = |opts: &str| jsonv(&format!("SELECT edn_q('{q}', '{opts}'::jsonb)::TEXT"));
+        assert_eq!(ok(&format!(r#"{{"asOf": {t1}}}"#))["result"], json!(30));
+        assert_eq!(ok("{}")["result"], json!(31));
+        assert_eq!(
+            ok(r#"{"inputs": [], "limit": 5, "offset": 0, "history": false, "since": null}"#)
+                ["result"],
+            json!(31)
+        );
+    }
 }

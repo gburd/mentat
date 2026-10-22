@@ -842,21 +842,48 @@ struct TemporalOption {
     history: bool,
 }
 
-/// Parse temporal options from the inputs JSON parameter.
-fn parse_temporal_options(inputs: &serde_json::Value) -> TemporalOption {
+/// Parse temporal options from the inputs JSON parameter. An unknown key
+/// (e.g. the old docs' `as_of`) or a non-integer `asOf` / `since` is an
+/// error: before 1.18.0 it was ignored and the query read current state.
+fn parse_temporal_options(
+    inputs: &serde_json::Value,
+) -> Result<TemporalOption, Box<dyn std::error::Error + Send + Sync>> {
+    use serde_json::Value as J;
+    let invalid = |message: String| -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(MentatError::InvalidQuery {
+            message,
+            suggestion: Some(
+                "Options are {\"inputs\": [..], \"asOf\": tx, \"since\": tx, \
+                 \"history\": bool, \"limit\": n, \"offset\": n}."
+                    .to_string(),
+            ),
+        })
+    };
     let mut opts = TemporalOption::default();
-    if let Some(obj) = inputs.as_object() {
-        if let Some(as_of) = obj.get("asOf").and_then(|v| v.as_i64()) {
-            opts.as_of = Some(as_of);
-        }
-        if let Some(since) = obj.get("since").and_then(|v| v.as_i64()) {
-            opts.since = Some(since);
-        }
-        if let Some(history) = obj.get("history").and_then(|v| v.as_bool()) {
-            opts.history = history;
+    let Some(obj) = inputs.as_object() else {
+        return Ok(opts);
+    };
+    for (k, v) in obj {
+        match (k.as_str(), v) {
+            (_, J::Null) | ("inputs" | "limit" | "offset", _) => {}
+            ("asOf" | "since", v) => {
+                let t = v
+                    .as_i64()
+                    .ok_or_else(|| invalid(format!("\"{k}\" must be an integer tx id, got {v}")))?;
+                if k == "asOf" {
+                    opts.as_of = Some(t);
+                } else {
+                    opts.since = Some(t);
+                }
+            }
+            ("history", J::Bool(b)) => opts.history = *b,
+            ("history", v) => {
+                return Err(invalid(format!("\"history\" must be a boolean, got {v}")))
+            }
+            (other, _) => return Err(invalid(format!("unknown option \"{other}\""))),
         }
     }
-    opts
+    Ok(opts)
 }
 
 /// Pagination options parsed from the inputs JSON parameter.
@@ -1304,7 +1331,7 @@ fn prepare_query<'a>(
     let _parsed_value = parse::value(query)?;
     let parsed = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(inputs);
+    let temporal = parse_temporal_options(inputs)?;
     let input_bindings = parse_input_bindings(&parsed, inputs)?;
     let enriched = parse_input_bindings_v2(&parsed.in_bindings, inputs);
     let has_aggregates = find_spec_has_aggregates(&parsed.find_spec);
@@ -1660,7 +1687,7 @@ fn mentat_explain_internal(
     let _parsed_value = parse::value(query)?;
     let parsed_query = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
+    let temporal = parse_temporal_options(&inputs.0)?;
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     // Collection / tuple / relation :in bindings (issue #330). Built exactly as
     // the executing path (prepare_query) builds them, so EXPLAIN shows the plan
@@ -1853,7 +1880,7 @@ fn mentat_query_sql_internal(
     let _parsed_value = parse::value(query)?;
     let parsed_query = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
+    let temporal = parse_temporal_options(&inputs.0)?;
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     // Collection / tuple / relation :in bindings (issue #330), same as the
     // executing path, so the returned SQL is the SQL edn_q runs.
@@ -1954,7 +1981,7 @@ fn mentat_query_view_internal(
     let _parsed_value = parse::value(query)?;
     let parsed_query = mentat_core::parse_query(query)?;
 
-    let temporal = parse_temporal_options(&inputs.0);
+    let temporal = parse_temporal_options(&inputs.0)?;
     let input_bindings = parse_input_bindings(&parsed_query, &inputs.0)?;
     // Collection / tuple / relation :in bindings (issue #330): without them a
     // collection-:in query_view returned rows as if the input were absent.
