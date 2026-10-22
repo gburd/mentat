@@ -1933,8 +1933,10 @@ SELECT EXISTS
                     // TODO: improve the failure message.  Perhaps try to mimic what Datomic says in
                     // this case?
                     if !attribute.multival {
-                        let mut rows = cardinality_stmt.query([&entid as &dyn ToSql])?;
-                        if rows.next()?.is_some() {
+                        // EXISTS always returns a row: read its value.
+                        let violated: bool =
+                            cardinality_stmt.query_row([&entid as &dyn ToSql], |r| r.get(0))?;
+                        if violated {
                             bail!(DbErrorKind::SchemaAlterationFailed(format!(
                                 "Cannot alter schema attribute {} to be :db.cardinality/one",
                                 entid
@@ -3074,6 +3076,20 @@ mod tests {
         assert_transact!(conn, "[[:db/add 100 :db/cardinality :db.cardinality/one]]",
                          // TODO: give more helpful error details.
                          Err("schema alteration failed: Cannot alter schema attribute 100 to be :db.cardinality/one"));
+
+        // But we can when no entity has two values (#286): with one value each, or no data.
+        assert_transact!(
+            conn,
+            "[[:db/retract 200 :test/ident 2] [:db/add 201 :test/ident 3]]"
+        );
+        assert_transact!(conn, "[[:db/add 100 :db/cardinality :db.cardinality/one]]");
+        assert_transact!(
+            conn,
+            "[[:db/add 101 :db/ident :test/empty]
+              [:db/add 101 :db/valueType :db.type/long]
+              [:db/add 101 :db/cardinality :db.cardinality/many]]"
+        );
+        assert_transact!(conn, "[[:db/add 101 :db/cardinality :db.cardinality/one]]");
     }
 
     #[test]
