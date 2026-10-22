@@ -262,7 +262,19 @@ impl<'c> DuckStore<'c> {
     ///   #26828 already corrupted.
     /// - Replace the pre-1.18 `fulltext_values` table (always empty) with the
     ///   view `(fulltext ...)` queries join.
+    ///
+    /// A read-only database (`duckdb -readonly`, `ATTACH ... (READ_ONLY)`)
+    /// is left as it is: every query still works, except `(fulltext ...)`
+    /// on a pre-1.18 store (no rows match the old, empty table).
     fn upgrade(&self) -> Result<()> {
+        let read_only = self.conn.query_opt(
+            "SELECT readonly::INTEGER FROM duckdb_databases() WHERE database_name = ?",
+            &[SqlValue::Text(self.catalog.clone())],
+            |r| r.get_bool(0),
+        )?;
+        if read_only == Some(true) {
+            return Ok(());
+        }
         let stale = self.conn.query_opt(
             &format!(
                 "SELECT (SELECT count(*) FROM duckdb_indexes() WHERE database_name = $1 \
