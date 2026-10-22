@@ -299,17 +299,21 @@ impl DuckStore<'_> {
             )));
         }
         // Tables, not views: the scanner's SQLite runs a view's SQL (an
-        // untrusted file's, while this store's write lock is held). The one
-        // other table read, fulltext_values, is read by rowid, so a view of
-        // that name fails to prepare.
+        // untrusted file's, while this store's write lock is held). That
+        // includes fulltext_values: a view of that name with a `rowid`
+        // column prepares fine. A real store's fulltext_values is an FTS4
+        // virtual table, which sqlite_master also lists as type 'table'.
         let tables = one(
             "SELECT group_concat(name) FROM (SELECT name FROM sqlite_master \
              WHERE type = 'table' \
-             AND name IN ('datoms', 'timelined_transactions', 'idents', 'schema', 'known_parts') \
+             AND name IN ('datoms', 'timelined_transactions', 'idents', 'schema', 'known_parts', \
+                          'fulltext_values') \
              ORDER BY name)",
         )
         .unwrap_or_default();
-        if version < 2 || tables != "datoms,idents,known_parts,schema,timelined_transactions" {
+        if version < 2
+            || tables != "datoms,fulltext_values,idents,known_parts,schema,timelined_transactions"
+        {
             return Err(err(format!(
                 "mentat_import: {path} is not a mentat store (user_version {version}, \
                  tables {tables:?})"

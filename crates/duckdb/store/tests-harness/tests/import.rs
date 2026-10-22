@@ -406,12 +406,9 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
         .unwrap();
     c.execute_batch("DETACH old").unwrap();
 
-    // Detached: the next open of the legacy store drops its indexes and
-    // records it.
-    c.execute_batch(&format!(
-        "UPDATE {s}.meta SET value = '2' WHERE key = 'generation'"
-    ))
-    .unwrap();
+    // Detached: the next open of the legacy store, on this same thread and
+    // with no schema change, drops its indexes and records it (the open made
+    // while the file was attached isn't cached).
     legacy.q(QUERIES[0], None, None).unwrap();
     let n = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
     assert_eq!(
@@ -704,6 +701,27 @@ fn views_and_unreadable_wal_files_are_refused_up_front() {
     let t0 = std::time::Instant::now();
     let e = DuckStore::new(conn, "view")
         .import_sqlite(view.to_str().unwrap())
+        .unwrap_err();
+    assert!(e.to_string().contains("not a mentat store"), "{e}");
+    assert!(t0.elapsed().as_secs() < 10, "took {:?}", t0.elapsed());
+
+    // fulltext_values replaced by an endless view with a `rowid` column, and
+    // one datom marked fulltext so the import would read it.
+    let ftv = dir.path().join("ftview.mentat");
+    let mut st = mentat::Store::open(ftv.to_str().unwrap()).unwrap();
+    st.transact(TXS[0]).unwrap();
+    st.sqlite_mut()
+        .execute_batch(
+            "DROP TABLE fulltext_values; \
+             CREATE VIEW fulltext_values AS WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) \
+             SELECT n AS rowid, 'x' AS text FROM r; \
+             UPDATE datoms SET index_fulltext = 1, value_type_tag = 10, v = 1 WHERE rowid = (SELECT min(rowid) FROM datoms)",
+        )
+        .unwrap();
+    drop(st);
+    let t0 = std::time::Instant::now();
+    let e = DuckStore::new(conn, "ftview")
+        .import_sqlite(ftv.to_str().unwrap())
         .unwrap_err();
     assert!(e.to_string().contains("not a mentat store"), "{e}");
     assert!(t0.elapsed().as_secs() < 10, "took {:?}", t0.elapsed());

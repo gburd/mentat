@@ -233,12 +233,17 @@ impl<'c> DuckStore<'c> {
         if let Some(opened) = cached {
             return Ok((gen, opened));
         }
-        self.drop_legacy_indexes()?;
+        let checked = self.drop_legacy_indexes()?;
         let opened = self.read()?;
-        OPENED.with(|c| {
-            c.borrow_mut()
-                .insert(self.schema.clone(), (gen, opened.clone()))
-        });
+        // Cache only once the legacy-index check could run: a check that
+        // failed (a SQLite file was attached) must run again on this thread's
+        // next open, not after the next schema change.
+        if checked {
+            OPENED.with(|c| {
+                c.borrow_mut()
+                    .insert(self.schema.clone(), (gen, opened.clone()))
+            });
+        }
         Ok((gen, opened))
     }
 
@@ -246,15 +251,15 @@ impl<'c> DuckStore<'c> {
     /// `schema::LEGACY_INDEXES`), once per store: `meta` then records it
     /// (a store created since has the row from the start). Runs on a
     /// schema-cache miss. This also repairs a store whose index #26828
-    /// already corrupted.
-    fn drop_legacy_indexes(&self) -> Result<()> {
+    /// already corrupted. Returns false if the check couldn't run.
+    fn drop_legacy_indexes(&self) -> Result<bool> {
         let done = self.conn.query_opt(
             &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.schema),
             &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
             |r| r.get_i64(0),
         )?;
         if done.is_some() {
-            return Ok(());
+            return Ok(true);
         }
         // duckdb_indexes() fails ("syntax error at or near "0"") while any
         // SQLite mentat file is ATTACHed: DuckDB's sqlite scanner hands it
@@ -268,7 +273,7 @@ impl<'c> DuckStore<'c> {
             &[SqlValue::Text(self.schema.clone())],
             |r| r.get_i64(0),
         ) else {
-            return Ok(());
+            return Ok(false);
         };
         let lock = write_lock(&self.schema);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -288,7 +293,7 @@ impl<'c> DuckStore<'c> {
             ),
             &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
         );
-        Ok(())
+        Ok(true)
     }
 
     fn create(&self) -> Result<()> {
