@@ -111,26 +111,37 @@ fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, 
     Ok((as_of.is_some() || since.is_some()).then_some(PullBasis { as_of, since }))
 }
 
+/// Where the narrow `datoms_<type>_new` / `current_<type>` tables live: every
+/// store's rows sit in `mentat`'s, keyed by `store_id`. The named-stores work
+/// (feat/pg-named-stores) moves them into each store's schema; then the call
+/// sites pass `db_schema` instead.
+const NARROW_TABLES_SCHEMA: &str = "mentat";
+
 /// The table (or subquery) of live `(store_id, e, a, v, tx)` rows for value
-/// type `ty` (`ref`, `text`, ...) on the current pull basis, with Datomic's
-/// meaning (edn_q's rule, issue #364). As of T: the assertions with tx <= T
-/// that no retraction with a later tx <= T cancels. Since S: the current
-/// datoms transacted after S. Both: the as-of rule with tx > S too.
-fn basis_table(ty: &str) -> String {
+/// type `ty` (`ref`, `text`, ...) under schema `tables_schema`
+/// ([`NARROW_TABLES_SCHEMA`] today) on the current pull basis, with Datomic's meaning (edn_q's
+/// rule, issue #364). As of T: the assertions with tx <= T that no
+/// retraction with a later tx <= T cancels. Since S: the current datoms
+/// transacted after S. Both: the as-of rule with tx > S too.
+fn basis_table(tables_schema: &str, ty: &str) -> String {
+    let (log, cur) = (
+        format!("{tables_schema}.datoms_{ty}_new"),
+        format!("{tables_schema}.current_{ty}"),
+    );
     match PULL_BASIS.with(|b| b.get()) {
-        None => format!("mentat.current_{ty}"),
+        None => cur,
         Some(PullBasis {
             as_of: None,
             since: Some(s),
-        }) => format!("(SELECT store_id, e, a, v, tx FROM mentat.current_{ty} WHERE tx > {s})"),
+        }) => format!("(SELECT store_id, e, a, v, tx FROM {cur} WHERE tx > {s})"),
         Some(PullBasis { as_of, since }) => {
             let t = as_of.unwrap_or(i64::MAX);
             let lower = since
                 .map(|s| format!(" AND g.tx > {s}"))
                 .unwrap_or_default();
             format!(
-                "(SELECT g.store_id, g.e, g.a, g.v, g.tx FROM mentat.datoms_{ty}_new g \
-                 WHERE g.added AND g.tx <= {t}{lower} AND NOT EXISTS (SELECT 1 FROM mentat.datoms_{ty}_new r \
+                "(SELECT g.store_id, g.e, g.a, g.v, g.tx FROM {log} g \
+                 WHERE g.added AND g.tx <= {t}{lower} AND NOT EXISTS (SELECT 1 FROM {log} r \
                  WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a AND r.v = g.v \
                  AND NOT r.added AND r.tx > g.tx AND r.tx <= {t}))"
             )
@@ -222,15 +233,15 @@ fn build_union_all_datoms_query(
             WHERE store_id = {sid} AND {whr} \
         ) AS _datoms {order}",
         pfx = extra_select_prefix,
-        t_ref = basis_table("ref"),
-        t_boolean = basis_table("boolean"),
-        t_long = basis_table("long"),
-        t_double = basis_table("double"),
-        t_instant = basis_table("instant"),
-        t_text = basis_table("text"),
-        t_keyword = basis_table("keyword"),
-        t_uuid = basis_table("uuid"),
-        t_bytes = basis_table("bytes"),
+        t_ref = basis_table(NARROW_TABLES_SCHEMA, "ref"),
+        t_boolean = basis_table(NARROW_TABLES_SCHEMA, "boolean"),
+        t_long = basis_table(NARROW_TABLES_SCHEMA, "long"),
+        t_double = basis_table(NARROW_TABLES_SCHEMA, "double"),
+        t_instant = basis_table(NARROW_TABLES_SCHEMA, "instant"),
+        t_text = basis_table(NARROW_TABLES_SCHEMA, "text"),
+        t_keyword = basis_table(NARROW_TABLES_SCHEMA, "keyword"),
+        t_uuid = basis_table(NARROW_TABLES_SCHEMA, "uuid"),
+        t_bytes = basis_table(NARROW_TABLES_SCHEMA, "bytes"),
         sid = store_id,
         whr = whr,
         order = order_clause,
@@ -1500,7 +1511,7 @@ fn pull_reverse_attributes_batched(
                AND d.v = {entity_id} \
          ORDER BY s.ident, d.e",
         schema = db_schema,
-        ref_table = basis_table("ref"),
+        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1946,7 +1957,7 @@ fn query_forward_refs(
          WHERE d.store_id = {store_id} AND d.e = {entity_id} \
                AND s.ident = '{escaped_ident}'",
         schema = db_schema,
-        ref_table = basis_table("ref"),
+        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -1983,7 +1994,7 @@ fn query_reverse_refs(
          WHERE d.store_id = {store_id} AND s.ident = '{escaped_ident}' \
                AND d.v = {entity_id}",
         schema = db_schema,
-        ref_table = basis_table("ref"),
+        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
         store_id = store_id,
         entity_id = entity_id,
     );
@@ -2037,7 +2048,7 @@ fn query_forward_refs_batched(
                AND s.ident = '{escaped_ident}' \
          ORDER BY d.e",
         schema = db_schema,
-        ref_table = basis_table("ref"),
+        ref_table = basis_table(NARROW_TABLES_SCHEMA, "ref"),
         store_id = store_id,
     );
 
@@ -2267,6 +2278,39 @@ fn decode_row_typed_value(
 #[pg_schema]
 mod tests {
     use super::*;
+
+    /// basis_table reads the tables under the schema it is given, on every
+    /// basis (the named-stores merge passes the store's schema).
+    #[pg_test]
+    fn test_basis_table_uses_the_given_schema() {
+        crate::ensure_extension_loaded();
+        assert_eq!(basis_table("mentat", "ref"), "mentat.current_ref");
+        assert_eq!(
+            basis_table(NARROW_TABLES_SCHEMA, "ref"),
+            "mentat.current_ref"
+        );
+        for (as_of, since) in [(Some(5), None), (None, Some(3)), (Some(5), Some(3))] {
+            let sql = with_basis(Some(PullBasis { as_of, since }), || {
+                basis_table("\"mentat_s\"", "text")
+            });
+            assert!(
+                sql.contains("\"mentat_s\".") && !sql.contains("mentat."),
+                "{sql}"
+            );
+        }
+        let both = with_basis(
+            Some(PullBasis {
+                as_of: Some(5),
+                since: Some(3),
+            }),
+            || basis_table("mentat", "long"),
+        );
+        assert!(both.contains("FROM mentat.datoms_long_new g"), "{both}");
+        assert!(both.contains("g.tx <= 5 AND g.tx > 3"), "{both}");
+        assert!(both.contains("r.tx <= 5"), "{both}");
+        // The basis is scoped to with_basis.
+        assert_eq!(basis_table("mentat", "long"), "mentat.current_long");
+    }
 
     #[pg_test]
     fn test_parse_simple_pattern() -> Result<(), PullError> {
