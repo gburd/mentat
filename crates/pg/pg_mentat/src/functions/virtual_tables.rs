@@ -5,7 +5,7 @@
 /// automatically when a new store is provisioned via `mentat_create_store()`
 /// and can also be regenerated on demand.
 ///
-/// As of Phase 3, views query the type-specific tables (`mentat.datoms_*_new`)
+/// As of Phase 3, views query the type-specific tables (`<schema>.datoms_*_new`)
 /// via UNION ALL instead of the legacy wide `{schema}.datoms` table.
 use crate::functions::store_management::{get_schema_for_store, quote_ident, validate_store_name};
 use pgrx::datum::DatumWithOid;
@@ -59,24 +59,24 @@ fn store_id_subquery(schema: &str) -> String {
 ///
 /// The `extra_where` parameter is appended to each leg's WHERE clause (must
 /// start with " AND ..." if non-empty).
-fn all_datoms_union_sql(store_id_expr: &str, extra_where: &str) -> String {
+fn all_datoms_union_sql(schema: &str, store_id_expr: &str, extra_where: &str) -> String {
     let legs = [
-        ("mentat.datoms_ref_new", 0, "v::text"),
-        ("mentat.datoms_boolean_new", 1, "v::text"),
-        ("mentat.datoms_long_new", 2, "v::text"),
-        ("mentat.datoms_double_new", 3, "v::text"),
-        ("mentat.datoms_instant_new", 4, "v::text"),
-        ("mentat.datoms_text_new", 7, "v"),
-        ("mentat.datoms_keyword_new", 8, "v"),
-        ("mentat.datoms_uuid_new", 10, "v::text"),
-        ("mentat.datoms_bytes_new", 11, "encode(v, 'hex')"),
+        ("datoms_ref_new", 0, "v::text"),
+        ("datoms_boolean_new", 1, "v::text"),
+        ("datoms_long_new", 2, "v::text"),
+        ("datoms_double_new", 3, "v::text"),
+        ("datoms_instant_new", 4, "v::text"),
+        ("datoms_text_new", 7, "v"),
+        ("datoms_keyword_new", 8, "v"),
+        ("datoms_uuid_new", 10, "v::text"),
+        ("datoms_bytes_new", 11, "encode(v, 'hex')"),
     ];
 
     legs.iter()
         .map(|(table, tag, v_expr)| {
             format!(
                 "SELECT e, a, {tag}::SMALLINT AS value_type_tag, {v_expr} AS v_text, tx \
-                 FROM {table} \
+                 FROM {schema}.{table} \
                  WHERE store_id = {sid} AND added = true{extra}",
                 tag = tag,
                 v_expr = v_expr,
@@ -100,7 +100,7 @@ fn all_datoms_union_sql(store_id_expr: &str, extra_where: &str) -> String {
 /// Columns: entity_id, first_tx, last_tx, first_ts, last_ts, attribute_count
 fn entities_view_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
-    let union = all_datoms_union_sql(&sid, "");
+    let union = all_datoms_union_sql(schema, &sid, "");
     format!(
         r"CREATE OR REPLACE VIEW {schema}.entities AS
 SELECT
@@ -161,7 +161,7 @@ fn facts_view_sql(schema: &str) -> String {
     // Each leg produces: e, a, value (text), value_type (text), tx
     let legs = [
         (
-            "mentat.datoms_ref_new",
+            "datoms_ref_new",
             "ref",
             format!(
                 "COALESCE((SELECT ri.ident FROM {schema}.idents ri WHERE ri.entid = d.v), d.v::TEXT)",
@@ -169,42 +169,42 @@ fn facts_view_sql(schema: &str) -> String {
             ),
         ),
         (
-            "mentat.datoms_boolean_new",
+            "datoms_boolean_new",
             "boolean",
             "d.v::TEXT".to_string(),
         ),
         (
-            "mentat.datoms_long_new",
+            "datoms_long_new",
             "long",
             "d.v::TEXT".to_string(),
         ),
         (
-            "mentat.datoms_double_new",
+            "datoms_double_new",
             "double",
             "d.v::TEXT".to_string(),
         ),
         (
-            "mentat.datoms_instant_new",
+            "datoms_instant_new",
             "instant",
             "d.v::TEXT".to_string(),
         ),
         (
-            "mentat.datoms_text_new",
+            "datoms_text_new",
             "string",
             "d.v".to_string(),
         ),
         (
-            "mentat.datoms_keyword_new",
+            "datoms_keyword_new",
             "keyword",
             "':' || d.v".to_string(),
         ),
         (
-            "mentat.datoms_uuid_new",
+            "datoms_uuid_new",
             "uuid",
             "d.v::TEXT".to_string(),
         ),
         (
-            "mentat.datoms_bytes_new",
+            "datoms_bytes_new",
             "bytes",
             "encode(d.v, 'hex')".to_string(),
         ),
@@ -215,7 +215,7 @@ fn facts_view_sql(schema: &str) -> String {
         .map(|(table, type_name, v_expr)| {
             format!(
                 "SELECT d.e, d.a, {v_expr} AS value, '{type_name}' AS value_type, d.tx \
-                 FROM {table} d \
+                 FROM {schema}.{table} d \
                  WHERE d.store_id = {sid} AND d.added = true",
                 v_expr = v_expr,
                 type_name = type_name,
@@ -256,27 +256,15 @@ fn type_specific_views_sql(schema: &str) -> String {
 
     // (view_name, table, value_expr)
     let types = [
-        ("text_values", "mentat.datoms_text_new", "d.v AS value"),
-        ("numeric_values", "mentat.datoms_long_new", "d.v AS value"),
-        ("double_values", "mentat.datoms_double_new", "d.v AS value"),
-        (
-            "boolean_values",
-            "mentat.datoms_boolean_new",
-            "d.v AS value",
-        ),
-        ("references", "mentat.datoms_ref_new", "d.v AS value"),
-        (
-            "instant_values",
-            "mentat.datoms_instant_new",
-            "d.v AS value",
-        ),
-        ("uuid_values", "mentat.datoms_uuid_new", "d.v AS value"),
-        (
-            "keyword_values",
-            "mentat.datoms_keyword_new",
-            "d.v AS value",
-        ),
-        ("bytes_values", "mentat.datoms_bytes_new", "d.v AS value"),
+        ("text_values", "datoms_text_new", "d.v AS value"),
+        ("numeric_values", "datoms_long_new", "d.v AS value"),
+        ("double_values", "datoms_double_new", "d.v AS value"),
+        ("boolean_values", "datoms_boolean_new", "d.v AS value"),
+        ("references", "datoms_ref_new", "d.v AS value"),
+        ("instant_values", "datoms_instant_new", "d.v AS value"),
+        ("uuid_values", "datoms_uuid_new", "d.v AS value"),
+        ("keyword_values", "datoms_keyword_new", "d.v AS value"),
+        ("bytes_values", "datoms_bytes_new", "d.v AS value"),
     ];
 
     let mut sql = String::new();
@@ -291,7 +279,7 @@ SELECT
     COALESCE(s.ident, 'entid:' || d.a::TEXT) AS attribute,
     {value_expr},
     d.tx
-FROM {table} d
+FROM {schema}.{table} d
 LEFT JOIN {schema}.schema s ON s.entid = d.a
 WHERE d.store_id = {sid} AND d.added = true
 ORDER BY d.e, d.a",
@@ -308,7 +296,7 @@ ORDER BY d.e, d.a",
 /// Generate SQL for the `searchable_text` view.
 ///
 /// Provides a view with `to_tsvector` applied to text values for full-text search.
-/// Now queries `mentat.datoms_text_new` directly.
+/// Now queries `<schema>.datoms_text_new` directly.
 ///
 /// Columns: entity_id, attribute, value, search_vector, tx
 fn searchable_text_view_sql(schema: &str) -> String {
@@ -321,7 +309,7 @@ SELECT
     d.v AS value,
     to_tsvector('english', d.v) AS search_vector,
     d.tx
-FROM mentat.datoms_text_new d
+FROM {schema}.datoms_text_new d
 LEFT JOIN {schema}.schema s ON s.entid = d.a
 WHERE d.store_id = {sid} AND d.added = true AND d.v IS NOT NULL
 ORDER BY d.e, d.a",
@@ -338,22 +326,22 @@ fn entities_with_attribute_fn_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
 
     let tables = [
-        "mentat.datoms_ref_new",
-        "mentat.datoms_boolean_new",
-        "mentat.datoms_long_new",
-        "mentat.datoms_double_new",
-        "mentat.datoms_instant_new",
-        "mentat.datoms_text_new",
-        "mentat.datoms_keyword_new",
-        "mentat.datoms_uuid_new",
-        "mentat.datoms_bytes_new",
+        "datoms_ref_new",
+        "datoms_boolean_new",
+        "datoms_long_new",
+        "datoms_double_new",
+        "datoms_instant_new",
+        "datoms_text_new",
+        "datoms_keyword_new",
+        "datoms_uuid_new",
+        "datoms_bytes_new",
     ];
 
     let union = tables
         .iter()
         .map(|table| {
             format!(
-                "SELECT DISTINCT d.e, d.tx FROM {table} d \
+                "SELECT DISTINCT d.e, d.tx FROM {schema}.{table} d \
                  WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true",
                 table = table,
                 sid = sid,
@@ -406,7 +394,7 @@ SELECT
     d.v AS target_entity,
     i.ident AS target_ident,
     d.tx
-FROM mentat.datoms_ref_new d
+FROM {schema}.datoms_ref_new d
 LEFT JOIN {schema}.schema s ON s.entid = d.a
 LEFT JOIN {schema}.idents i ON i.entid = d.v
 WHERE d.store_id = {sid} AND d.added = true
@@ -431,7 +419,7 @@ SELECT
     COALESCE(s.ident, 'entid:' || d.a::TEXT) AS attribute,
     d.e AS source_entity,
     d.tx
-FROM mentat.datoms_ref_new d
+FROM {schema}.datoms_ref_new d
 LEFT JOIN {schema}.schema s ON s.entid = d.a
 WHERE d.store_id = {sid} AND d.added = true
 ORDER BY d.v, d.a",
@@ -455,7 +443,7 @@ SELECT
     COALESCE(s.ident, 'entid:' || d.a::TEXT) AS edge_type,
     d.v AS target,
     d.tx
-FROM mentat.datoms_ref_new d
+FROM {schema}.datoms_ref_new d
 LEFT JOIN {schema}.schema s ON s.entid = d.a
 WHERE d.store_id = {sid} AND d.added = true",
         schema = schema,
@@ -475,7 +463,7 @@ WHERE d.store_id = {sid} AND d.added = true",
 /// Columns: tx, tx_time, datom_count
 fn tx_log_view_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
-    let union = all_datoms_union_sql(&sid, "");
+    let union = all_datoms_union_sql(schema, &sid, "");
     format!(
         r"CREATE OR REPLACE VIEW {schema}.tx_log AS
 SELECT
@@ -508,38 +496,22 @@ fn entity_history_view_sql(schema: &str) -> String {
 
     let legs = [
         (
-            "mentat.datoms_ref_new",
+            "datoms_ref_new",
             "ref",
             format!(
              "COALESCE((SELECT ri.ident FROM {schema}.idents ri WHERE ri.entid = d.v), d.v::TEXT)",
              schema = schema
          ),
         ),
+        ("datoms_boolean_new", "boolean", "d.v::TEXT".to_string()),
+        ("datoms_long_new", "long", "d.v::TEXT".to_string()),
+        ("datoms_double_new", "double", "d.v::TEXT".to_string()),
+        ("datoms_instant_new", "instant", "d.v::TEXT".to_string()),
+        ("datoms_text_new", "string", "d.v".to_string()),
+        ("datoms_keyword_new", "keyword", "':' || d.v".to_string()),
+        ("datoms_uuid_new", "uuid", "d.v::TEXT".to_string()),
         (
-            "mentat.datoms_boolean_new",
-            "boolean",
-            "d.v::TEXT".to_string(),
-        ),
-        ("mentat.datoms_long_new", "long", "d.v::TEXT".to_string()),
-        (
-            "mentat.datoms_double_new",
-            "double",
-            "d.v::TEXT".to_string(),
-        ),
-        (
-            "mentat.datoms_instant_new",
-            "instant",
-            "d.v::TEXT".to_string(),
-        ),
-        ("mentat.datoms_text_new", "string", "d.v".to_string()),
-        (
-            "mentat.datoms_keyword_new",
-            "keyword",
-            "':' || d.v".to_string(),
-        ),
-        ("mentat.datoms_uuid_new", "uuid", "d.v::TEXT".to_string()),
-        (
-            "mentat.datoms_bytes_new",
+            "datoms_bytes_new",
             "bytes",
             "encode(d.v, 'hex')".to_string(),
         ),
@@ -550,7 +522,7 @@ fn entity_history_view_sql(schema: &str) -> String {
         .map(|(table, type_name, v_expr)| {
             format!(
                 "SELECT d.e, d.a, {v_expr} AS value, '{type_name}' AS value_type, d.tx, d.added \
-                 FROM {table} d \
+                 FROM {schema}.{table} d \
                  WHERE d.store_id = {sid}",
                 v_expr = v_expr,
                 type_name = type_name,
@@ -593,38 +565,22 @@ fn recent_changes_view_sql(schema: &str) -> String {
 
     let legs = [
         (
-            "mentat.datoms_ref_new",
+            "datoms_ref_new",
             "ref",
             format!(
              "COALESCE((SELECT ri.ident FROM {schema}.idents ri WHERE ri.entid = d.v), d.v::TEXT)",
              schema = schema
          ),
         ),
+        ("datoms_boolean_new", "boolean", "d.v::TEXT".to_string()),
+        ("datoms_long_new", "long", "d.v::TEXT".to_string()),
+        ("datoms_double_new", "double", "d.v::TEXT".to_string()),
+        ("datoms_instant_new", "instant", "d.v::TEXT".to_string()),
+        ("datoms_text_new", "string", "d.v".to_string()),
+        ("datoms_keyword_new", "keyword", "':' || d.v".to_string()),
+        ("datoms_uuid_new", "uuid", "d.v::TEXT".to_string()),
         (
-            "mentat.datoms_boolean_new",
-            "boolean",
-            "d.v::TEXT".to_string(),
-        ),
-        ("mentat.datoms_long_new", "long", "d.v::TEXT".to_string()),
-        (
-            "mentat.datoms_double_new",
-            "double",
-            "d.v::TEXT".to_string(),
-        ),
-        (
-            "mentat.datoms_instant_new",
-            "instant",
-            "d.v::TEXT".to_string(),
-        ),
-        ("mentat.datoms_text_new", "string", "d.v".to_string()),
-        (
-            "mentat.datoms_keyword_new",
-            "keyword",
-            "':' || d.v".to_string(),
-        ),
-        ("mentat.datoms_uuid_new", "uuid", "d.v::TEXT".to_string()),
-        (
-            "mentat.datoms_bytes_new",
+            "datoms_bytes_new",
             "bytes",
             "encode(d.v, 'hex')".to_string(),
         ),
@@ -635,7 +591,7 @@ fn recent_changes_view_sql(schema: &str) -> String {
         .map(|(table, type_name, v_expr)| {
             format!(
                 "SELECT d.e, d.a, {v_expr} AS value, '{type_name}' AS value_type, d.tx \
-                 FROM {table} d \
+                 FROM {schema}.{table} d \
                  WHERE d.store_id = {sid} AND d.added = true \
                  AND d.tx >= (SELECT COALESCE(MAX(tx) - 100, 0) FROM {schema}.transactions)",
                 v_expr = v_expr,
@@ -682,7 +638,7 @@ ORDER BY d.tx DESC, d.e, d.a",
 ///          entity_count, datom_count
 fn schema_summary_view_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
-    let union = all_datoms_union_sql(&sid, "");
+    let union = all_datoms_union_sql(schema, &sid, "");
     format!(
         r"CREATE OR REPLACE VIEW {schema}.schema_summary AS
 SELECT
@@ -742,35 +698,35 @@ BEGIN
     -- One RETURN QUERY per type: a CASE *expression* can't yield a set (the
     -- old form here made every create_store() fail with a syntax error).
     IF attr_type = 'string' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_text_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_text_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value;
     ELSIF attr_type = 'keyword' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_keyword_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_keyword_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value;
     ELSIF attr_type = 'long' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_long_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_long_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value::BIGINT;
     ELSIF attr_type = 'ref' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_ref_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_ref_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value::BIGINT;
     ELSIF attr_type = 'boolean' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_boolean_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_boolean_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value::BOOLEAN;
     ELSIF attr_type = 'double' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_double_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_double_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value::DOUBLE PRECISION;
     ELSIF attr_type = 'instant' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_instant_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_instant_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value::TIMESTAMPTZ;
     ELSIF attr_type = 'uuid' THEN
-        RETURN QUERY SELECT d.e, d.tx FROM mentat.datoms_uuid_new d
+        RETURN QUERY SELECT d.e, d.tx FROM {schema}.datoms_uuid_new d
              WHERE d.store_id = {sid} AND d.a = attr_entid AND d.added = true
              AND d.v = search_value::UUID;
     END IF;
@@ -806,42 +762,42 @@ BEGIN
 
     CASE attr_type
         WHEN 'string' THEN
-            SELECT d.v INTO result FROM mentat.datoms_text_new d
+            SELECT d.v INTO result FROM {schema}.datoms_text_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'keyword' THEN
-            SELECT ':' || d.v INTO result FROM mentat.datoms_keyword_new d
+            SELECT ':' || d.v INTO result FROM {schema}.datoms_keyword_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'long' THEN
-            SELECT d.v::TEXT INTO result FROM mentat.datoms_long_new d
+            SELECT d.v::TEXT INTO result FROM {schema}.datoms_long_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'ref' THEN
             SELECT COALESCE(
                 (SELECT ri.ident FROM {schema}.idents ri WHERE ri.entid = d.v),
                 d.v::TEXT
-            ) INTO result FROM mentat.datoms_ref_new d
+            ) INTO result FROM {schema}.datoms_ref_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'boolean' THEN
-            SELECT d.v::TEXT INTO result FROM mentat.datoms_boolean_new d
+            SELECT d.v::TEXT INTO result FROM {schema}.datoms_boolean_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'double' THEN
-            SELECT d.v::TEXT INTO result FROM mentat.datoms_double_new d
+            SELECT d.v::TEXT INTO result FROM {schema}.datoms_double_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'instant' THEN
-            SELECT d.v::TEXT INTO result FROM mentat.datoms_instant_new d
+            SELECT d.v::TEXT INTO result FROM {schema}.datoms_instant_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'uuid' THEN
-            SELECT d.v::TEXT INTO result FROM mentat.datoms_uuid_new d
+            SELECT d.v::TEXT INTO result FROM {schema}.datoms_uuid_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         WHEN 'bytes' THEN
-            SELECT encode(d.v, 'hex') INTO result FROM mentat.datoms_bytes_new d
+            SELECT encode(d.v, 'hex') INTO result FROM {schema}.datoms_bytes_new d
             WHERE d.store_id = {sid} AND d.e = eid AND d.a = attr_entid AND d.added = true
             ORDER BY d.tx DESC LIMIT 1;
         ELSE
@@ -865,7 +821,7 @@ $$ LANGUAGE plpgsql STABLE",
 /// Usage: SELECT * FROM {schema}.count_by_attribute();
 fn count_by_attribute_fn_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
-    let union = all_datoms_union_sql(&sid, "");
+    let union = all_datoms_union_sql(schema, &sid, "");
     format!(
         r"CREATE OR REPLACE FUNCTION {schema}.count_by_attribute()
 RETURNS TABLE(attribute TEXT, entity_count BIGINT, datom_count BIGINT)
@@ -909,7 +865,7 @@ BEGIN
         COALESCE(s.ident, 'entid:' || d.a::TEXT),
         d.v,
         ts_rank_cd(to_tsvector('english', d.v), plainto_tsquery('english', search_query))
-    FROM mentat.datoms_text_new d
+    FROM {schema}.datoms_text_new d
     LEFT JOIN {schema}.schema s ON s.entid = d.a
     WHERE d.store_id = {sid}
       AND d.added = true
@@ -944,6 +900,38 @@ WHERE added = true",
     )
 }
 
+/// The store's views and helper functions, in creation order. Every
+/// generator names the store's own tables under `schema` (#337): nothing is
+/// rewritten afterwards.
+fn views_and_functions_sql(schema: &str) -> Vec<String> {
+    vec![
+        // Core views
+        entities_view_sql(schema),
+        attributes_view_sql(schema),
+        facts_view_sql(schema),
+        // Type-specific views
+        type_specific_views_sql(schema),
+        // Full-text search view
+        searchable_text_view_sql(schema),
+        // Relationship navigation views
+        entity_references_view_sql(schema),
+        reverse_references_view_sql(schema),
+        graph_edges_view_sql(schema),
+        // Transaction history and temporal views
+        tx_log_view_sql(schema),
+        entity_history_view_sql(schema),
+        recent_changes_view_sql(schema),
+        // Schema summary view
+        schema_summary_view_sql(schema),
+        // Helper functions
+        entities_with_attribute_fn_sql(schema),
+        lookup_entity_fn_sql(schema),
+        entity_value_fn_sql(schema),
+        count_by_attribute_fn_sql(schema),
+        find_text_fn_sql(schema),
+    ]
+}
+
 /// Whether the current role owns `table` (CREATE INDEX on it needs that).
 fn owns_table(table: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     Ok(Spi::get_one_with_args::<bool>(
@@ -965,45 +953,10 @@ pub fn create_virtual_tables_for_schema(
     schema: &str,
     store_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // The generators name the default store's tables; a named store reads its
-    // own (#337). `schema` is quoted, so this is identity for `mentat`.
-    let in_store = |sql: String| -> String {
-        sql.replace("mentat.datoms_", &format!("{schema}.datoms_"))
-            .replace("mentat.current_", &format!("{schema}.current_"))
-    };
     // The views embed the store's id by name: refresh them after a rename.
-    let run = |sql: String| Spi::run(&in_store(sql));
-
-    // Core views
-    run(entities_view_sql(schema))?;
-    run(attributes_view_sql(schema))?;
-    run(facts_view_sql(schema))?;
-
-    // Type-specific views
-    run(type_specific_views_sql(schema))?;
-
-    // Full-text search view
-    run(searchable_text_view_sql(schema))?;
-
-    // Relationship navigation views
-    run(entity_references_view_sql(schema))?;
-    run(reverse_references_view_sql(schema))?;
-    run(graph_edges_view_sql(schema))?;
-
-    // Transaction history and temporal views
-    run(tx_log_view_sql(schema))?;
-    run(entity_history_view_sql(schema))?;
-    run(recent_changes_view_sql(schema))?;
-
-    // Schema summary view
-    run(schema_summary_view_sql(schema))?;
-
-    // Helper functions
-    run(entities_with_attribute_fn_sql(schema))?;
-    run(lookup_entity_fn_sql(schema))?;
-    run(entity_value_fn_sql(schema))?;
-    run(count_by_attribute_fn_sql(schema))?;
-    run(find_text_fn_sql(schema))?;
+    for sql in views_and_functions_sql(schema) {
+        Spi::run(&sql)?;
+    }
 
     // Optional trigram indexes on the store's narrow text tables. They are
     // tuning, not structure (the store layout already carries the shipped
@@ -1012,7 +965,7 @@ pub fn create_virtual_tables_for_schema(
     // have, so skip them for a non-owner rather than failing.
     if let Some(trgm) = extension_schema("pg_trgm") {
         if owns_table(&format!("{schema}.datoms_text_new"))? {
-            run(trigram_indexes_sql(schema, store_name, &trgm))?;
+            Spi::run(&trigram_indexes_sql(schema, store_name, &trgm))?;
         }
     }
 
@@ -1077,7 +1030,7 @@ mod tests {
 
     #[test]
     fn test_all_datoms_union_sql_covers_all_tables() {
-        let sql = all_datoms_union_sql("42", "");
+        let sql = all_datoms_union_sql("mentat", "42", "");
         assert!(sql.contains("mentat.datoms_ref_new"));
         assert!(sql.contains("mentat.datoms_boolean_new"));
         assert!(sql.contains("mentat.datoms_long_new"));
@@ -1145,10 +1098,11 @@ mod tests {
         assert!(sql.contains("mentat_test.uuid_values"));
         assert!(sql.contains("mentat_test.keyword_values"));
         assert!(sql.contains("mentat_test.bytes_values"));
-        // Should query type-specific tables, not the wide datoms table
-        assert!(sql.contains("mentat.datoms_text_new"));
-        assert!(sql.contains("mentat.datoms_long_new"));
-        assert!(sql.contains("mentat.datoms_ref_new"));
+        // Should query the store's type-specific tables, not the wide datoms table
+        assert!(sql.contains("mentat_test.datoms_text_new"));
+        assert!(sql.contains("mentat_test.datoms_long_new"));
+        assert!(sql.contains("mentat_test.datoms_ref_new"));
+        assert!(!sql.contains("mentat.datoms"));
         assert!(!sql.contains("value_type_tag"));
     }
 
@@ -1181,6 +1135,44 @@ mod tests {
         assert!(sql.contains("idx_default_trgm_keyword"));
         assert!(sql.contains("mentat.datoms_text_new"));
         assert!(sql.contains("mentat.datoms_keyword_new"));
+    }
+
+    // The generators used to name mentat.datoms_* and a str::replace moved
+    // them to the store's schema; for a schema ending in "mentat" it also
+    // matched inside the schema name (mentat_app_mentat.datoms_text_new ->
+    // mentat_app_mentat_app_mentat.datoms_text_new).
+    #[test]
+    fn store_tables_are_named_in_the_store_schema() {
+        for schema in [
+            "mentat",
+            "mentat_app_mentat",
+            "mentat_mentat",
+            "mentat_mentat_x",
+            "\"mentat_A_mentat\"",
+        ] {
+            let mut sql = views_and_functions_sql(schema).join(";\n");
+            sql.push_str(&trigram_indexes_sql(schema, "x", "public"));
+            let mut n = 0;
+            for t in ["datoms_", "transactions", "schema s", "idents"] {
+                for (at, _) in sql.match_indices(&format!(".{t}")) {
+                    let before = &sql[..at];
+                    assert!(
+                        before.ends_with(schema),
+                        "{schema}: {}",
+                        &sql[at.saturating_sub(40)..at + 20]
+                    );
+                    let start = before.len() - schema.len();
+                    let prev = before[..start].chars().last().unwrap_or(' ');
+                    assert!(
+                        !prev.is_alphanumeric() && prev != '_' && prev != '"',
+                        "{schema}: {}",
+                        &sql[start.saturating_sub(20)..at]
+                    );
+                    n += 1;
+                }
+            }
+            assert!(n > 50, "{schema}: {n}");
+        }
     }
 
     #[test]
