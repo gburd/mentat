@@ -1497,6 +1497,171 @@ mod tests {
         assert_eq!(names, want);
     }
 
+    /// The sorted rows of a FindRel q(store, ...), as compact JSON.
+    fn rel(store: &str, query: &str, inputs: &str) -> Vec<String> {
+        let mut v: Vec<String> = q(store, query, inputs)["results"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{store}: {query}: not a relation"))
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    // Rule CTEs (recursive and not), not / not-join / or-join subqueries,
+    // 5-place history patterns inside them, untyped comparisons and
+    // lookup-ref :in values (also for a variable only a rule or a not binds)
+    // read the named store, while the default store holds a different graph
+    // under the same names.
+    #[pg_test]
+    fn rules_not_history_and_in_lookup_refs_on_a_named_store() {
+        setup();
+        Spi::run("SELECT create_store('rq_s')").expect("create");
+        let id = |store: &str, edn: &str| -> i64 {
+            tx(store, edn)["tempids"]["x"].as_i64().expect("tempid x")
+        };
+        // rq_s: a -> b -> c (friends); a's age 1 was replaced by 2. Made in
+        // the order c, b, a, so a's entid is not the default store's a's.
+        tx("rq_s", SCHEMA_TX);
+        let c = id("rq_s", "[{:db/id \"x\" :p/name \"c\"}]");
+        let b = id(
+            "rq_s",
+            &format!("[{{:db/id \"x\" :p/name \"b\" :p/friend {c}}}]"),
+        );
+        let a = id(
+            "rq_s",
+            &format!("[{{:db/id \"x\" :p/name \"a\" :p/age 1 :p/friend {b}}}]"),
+        );
+        tx("rq_s", &format!("[[:db/add {a} :p/age 2]]"));
+        // default: a <-> c (friends); b's age 1 was replaced by 3; d.
+        tx("default", SCHEMA_TX);
+        let da = id("default", "[{:db/id \"x\" :p/name \"a\" :p/age 1}]");
+        let db = id("default", "[{:db/id \"x\" :p/name \"b\" :p/age 1}]");
+        let dc = id(
+            "default",
+            &format!("[{{:db/id \"x\" :p/name \"c\" :p/friend {da}}}]"),
+        );
+        tx("default", &format!("[[:db/add {da} :p/friend {dc}]]"));
+        tx("default", "[{:db/id \"x\" :p/name \"d\"}]");
+        tx("default", &format!("[[:db/add {db} :p/age 3]]"));
+        assert_ne!(a, da);
+
+        let lookup_a = r#"{"inputs": [[":p/name", "a"]]}"#;
+        let reach = "[[(reach ?x ?y) [?x :p/friend ?y]] \
+                      [(reach ?x ?y) [?x :p/friend ?z] (reach ?z ?y)]]";
+        let fname = "[[(fname ?x ?n) [?x :p/friend ?y] [?y :p/name ?n]]]";
+        let dropped = "[[(dropped ?e) [?e :p/age 1 _ ?op] [(= ?op false)]]]";
+        let val = "[[(val ?e ?v) [?e :p/age ?v]] [(val ?e ?v) [?e :p/name ?v]]]";
+        let fr = "[[(fr ?x ?y) [?x :p/friend ?y]]]";
+        // (query, inputs, rows on rq_s, rows on default)
+        let cases: Vec<(String, &str, Vec<&str>, Vec<&str>)> = vec![
+            // A recursive rule.
+            (
+                format!("[:find ?n :rules {reach} :where [?x :p/name \"a\"] (reach ?x ?y) [?y :p/name ?n]]"),
+                "{}",
+                vec![r#"["b"]"#, r#"["c"]"#],
+                vec![r#"["a"]"#, r#"["c"]"#],
+            ),
+            // A non-recursive rule with a string head value, invoked twice.
+            (
+                format!(
+                    "[:find ?n1 ?n2 :rules {fname} :where [?a :p/name \"a\"] (fname ?a ?n1) \
+                     [?b :p/name ?n1] (fname ?b ?n2)]"
+                ),
+                "{}",
+                vec![r#"["b","c"]"#],
+                vec![r#"["c","a"]"#],
+            ),
+            // A rule column of longs and strings.
+            (
+                format!("[:find ?v :rules {val} :where [?e :p/name \"a\"] (val ?e ?v)]"),
+                "{}",
+                vec!["[2]", r#"["a"]"#],
+                vec!["[1]", r#"["a"]"#],
+            ),
+            // A 5-place history pattern in a rule body.
+            (
+                format!("[:find ?n :rules {dropped} :where [?e :p/name ?n] (dropped ?e)]"),
+                "{}",
+                vec![r#"["a"]"#],
+                vec![r#"["b"]"#],
+            ),
+            // not-join.
+            (
+                "[:find ?n :where [?e :p/name ?n] (not-join [?e] [?e :p/friend ?f])]".into(),
+                "{}",
+                vec![r#"["c"]"#],
+                vec![r#"["b"]"#, r#"["d"]"#],
+            ),
+            // A 5-place history pattern inside not and not-join.
+            (
+                "[:find ?n :where [?e :p/name ?n] (not [?e :p/age 1 _ ?op] [(= ?op false)])]".into(),
+                "{}",
+                vec![r#"["b"]"#, r#"["c"]"#],
+                vec![r#"["a"]"#, r#"["c"]"#, r#"["d"]"#],
+            ),
+            (
+                "[:find ?n :where [?e :p/name ?n] \
+                 (not-join [?e] [?e :p/age 1 ?tx ?op] [(= ?op false)])]"
+                    .into(),
+                "{}",
+                vec![r#"["b"]"#, r#"["c"]"#],
+                vec![r#"["a"]"#, r#"["c"]"#, r#"["d"]"#],
+            ),
+            // ... and inside or-join.
+            (
+                "[:find ?n :where [?e :p/name ?n] \
+                 (or-join [?e] (and [?e :p/age 1 _ ?op] [(= ?op false)]) [?e :p/friend ?f])]"
+                    .into(),
+                "{}",
+                vec![r#"["a"]"#, r#"["b"]"#],
+                vec![r#"["a"]"#, r#"["b"]"#, r#"["c"]"#],
+            ),
+            // An untyped comparison (the friend refs aren't numbers).
+            (
+                "[:find ?n :where [?e :p/name ?n] [?e ?attr ?v] [(> ?v 1)] [(< ?v 100)]]".into(),
+                "{}",
+                vec![r#"["a"]"#],
+                vec![r#"["b"]"#],
+            ),
+            // A lookup-ref :in value, for a pattern variable ...
+            (
+                "[:find ?n :in ?x :where [?x :p/friend ?f] [?f :p/name ?n]]".into(),
+                lookup_a,
+                vec![r#"["b"]"#],
+                vec![r#"["c"]"#],
+            ),
+            // ... a variable only a rule invocation binds ...
+            (
+                format!("[:find ?n :in ?x :rules {fr} :where (fr ?x ?y) [?y :p/name ?n]]"),
+                lookup_a,
+                vec![r#"["b"]"#],
+                vec![r#"["c"]"#],
+            ),
+            // ... and a variable only a not binds.
+            (
+                "[:find ?n :in ?x :where [?e :p/name ?n] (not [?x :p/friend ?e])]".into(),
+                lookup_a,
+                vec![r#"["a"]"#, r#"["c"]"#],
+                vec![r#"["a"]"#, r#"["b"]"#, r#"["d"]"#],
+            ),
+        ];
+        let want = |rows: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = rows.iter().map(|r| r.to_string()).collect();
+            v.sort();
+            v
+        };
+        for (query, inputs, named, dflt) in &cases {
+            assert_eq!(rel("rq_s", query, inputs), want(named), "rq_s: {query}");
+            assert_eq!(
+                rel("default", query, inputs),
+                want(dflt),
+                "default: {query}"
+            );
+        }
+    }
+
     // An on_write materialized view's trigger baked in the store's schema,
     // and its body the store's name: after rename_store every t() on the
     // store failed with `schema "mentat_mv_a" does not exist`.
