@@ -300,3 +300,136 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
         .unwrap();
     assert_eq!(attached, 0);
 }
+
+/// While a SQLite mentat file is ATTACHed (by an import, or by hand),
+/// DuckDB's `duckdb_indexes()` fails ("syntax error at or near "0"": the
+/// sqlite scanner hands DuckDB SQLite's partial-index SQL). Opening stores
+/// must not depend on it: a new store, a store from before the
+/// `legacy_indexes_dropped` meta row, and an import of the attached file
+/// itself all work, and the legacy indexes are dropped once it's detached.
+#[test]
+fn stores_open_while_a_sqlite_mentat_file_is_attached() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let old = dir.path().join("old.mentat");
+    mentat::Store::open(old.to_str().unwrap())
+        .unwrap()
+        .transact(TXS[0])
+        .unwrap();
+    let c = Connection::open_in_memory().unwrap();
+    let dc = DuckConn::new(&c);
+    let conn = &dc as &dyn SqlConn;
+    // A store as 1.15.0-1.17.x left it: no meta row, maybe 1.14.0's indexes.
+    let legacy = DuckStore::new(conn, "legacy");
+    legacy.transact(TXS[0]).unwrap();
+    let s = legacy.schema_name().to_string();
+    c.execute_batch(&format!(
+        "DELETE FROM {s}.meta WHERE key = 'legacy_indexes_dropped'; \
+         CREATE INDEX idx_datoms_ea ON {s}.datoms (e, a); \
+         CREATE INDEX idx_tt_tx ON {s}.timelined_transactions (tx); \
+         UPDATE {s}.meta SET value = '1' WHERE key = 'generation';"
+    ))
+    .unwrap();
+
+    c.execute_batch(&format!(
+        "ATTACH '{}' AS old (TYPE sqlite, READ_ONLY)",
+        old.display()
+    ))
+    .unwrap();
+    // What this guards against, logged rather than asserted (an upstream
+    // fix would change it): duckdb_indexes() and information_schema.tables
+    // fail. duckdb_tables() filtered to this database, which `open` uses,
+    // must work.
+    for sql in [
+        "SELECT count(*) FROM duckdb_indexes()",
+        "SELECT count(*) FROM information_schema.tables",
+    ] {
+        let r = c.query_row(sql, [], |r| r.get::<_, i64>(0));
+        eprintln!("with a mentat SQLite file attached: {sql}: {r:?}");
+    }
+    c.query_row(
+        "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_database()",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap();
+    // A new store, the legacy store (cache stale: generation changed), and
+    // the attached file imported.
+    let fresh = DuckStore::new(conn, "fresh");
+    fresh.transact(TXS[0]).unwrap();
+    fresh.transact(TXS[1]).unwrap();
+    assert!(fresh.q(QUERIES[0], None, None).is_ok());
+    legacy.transact(TXS[1]).unwrap();
+    assert!(legacy.q(QUERIES[0], None, None).is_ok());
+    DuckStore::new(conn, "people")
+        .import_sqlite(old.to_str().unwrap())
+        .unwrap();
+    c.execute_batch("DETACH old").unwrap();
+
+    // Detached: the next open of the legacy store drops its indexes and
+    // records it.
+    c.execute_batch(&format!(
+        "UPDATE {s}.meta SET value = '2' WHERE key = 'generation'"
+    ))
+    .unwrap();
+    legacy.q(QUERIES[0], None, None).unwrap();
+    let n = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        n(&format!(
+            "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = '{s}'"
+        )),
+        0
+    );
+    assert_eq!(
+        n(&format!(
+            "SELECT count(*) FROM {s}.meta WHERE key = 'legacy_indexes_dropped'"
+        )),
+        1
+    );
+}
+
+/// Imports on one connection while another connection creates, writes and
+/// queries other stores: each import's ATTACH must not fail them.
+#[test]
+fn other_stores_work_during_an_import() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let old = dir.path().join("old.mentat");
+    let mut sqlite = mentat::Store::open(old.to_str().unwrap()).unwrap();
+    for tx in TXS {
+        sqlite.transact(*tx).unwrap();
+    }
+    drop(sqlite);
+    let c = Connection::open_in_memory().unwrap();
+    DuckStore::new(&DuckConn::new(&c) as &dyn SqlConn, "warm")
+        .transact(TXS[0])
+        .unwrap();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|sc| {
+        let c1 = c.try_clone().unwrap();
+        let (old, done) = (&old, &done);
+        let importer = sc.spawn(move || {
+            let dc = DuckConn::new(&c1);
+            for i in 0..8 {
+                DuckStore::new(&dc as &dyn SqlConn, &format!("imp{i}"))
+                    .import_sqlite(old.to_str().unwrap())
+                    .unwrap();
+            }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let c2 = c.try_clone().unwrap();
+        let dc = DuckConn::new(&c2);
+        let conn = &dc as &dyn SqlConn;
+        let mut i = 0;
+        // At least once, however fast the imports are.
+        while i == 0 || !done.load(std::sync::atomic::Ordering::Relaxed) {
+            let s = DuckStore::new(conn, &format!("other{i}"));
+            s.transact(TXS[0])
+                .unwrap_or_else(|e| panic!("new store {i} during import: {e}"));
+            s.q(QUERIES[0], None, None).unwrap();
+            DuckStore::new(conn, "warm")
+                .transact(r#"[{:p/name "W"}]"#)
+                .unwrap_or_else(|e| panic!("warm store during import: {e}"));
+            i += 1;
+        }
+        importer.join().unwrap();
+    });
+}

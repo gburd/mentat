@@ -204,26 +204,51 @@ impl<'c> DuckStore<'c> {
     }
 
     /// Drop the secondary indexes that 1.11.0-1.14.0 created (see
-    /// `schema::LEGACY_INDEXES`). Runs on a schema-cache miss, so once per
-    /// thread and generation; a no-op once they are gone. This also repairs a
-    /// store whose index #26828 already corrupted.
+    /// `schema::LEGACY_INDEXES`), once per store: `meta` then records it
+    /// (a store created since has the row from the start). Runs on a
+    /// schema-cache miss. This also repairs a store whose index #26828
+    /// already corrupted.
     fn drop_legacy_indexes(&self) -> Result<()> {
-        let present = self.conn.query_opt(
+        let done = self.conn.query_opt(
+            &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.schema),
+            &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
+            |r| r.get_i64(0),
+        )?;
+        if done.is_some() {
+            return Ok(());
+        }
+        // duckdb_indexes() fails ("syntax error at or near "0"") while any
+        // SQLite mentat file is ATTACHed: DuckDB's sqlite scanner hands it
+        // SQLite's partial-index SQL to parse. Read that as none present and
+        // record nothing, so a later open checks again.
+        let Ok(present) = self.conn.query_opt(
             &format!(
                 "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = ? AND index_name IN ({})",
                 schema::LEGACY_INDEXES.map(|i| format!("'{i}'")).join(", ")
             ),
             &[SqlValue::Text(self.schema.clone())],
             |r| r.get_i64(0),
-        )?;
+        ) else {
+            return Ok(());
+        };
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         if present.unwrap_or(0) > 0 {
-            let lock = write_lock(&self.schema);
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             for i in schema::LEGACY_INDEXES {
                 self.conn
                     .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
             }
         }
+        // Under the write lock, so it can't conflict with a transact. Best
+        // effort: a read-only database can't record it, and then the check
+        // just runs again on the next open.
+        let _ = self.conn.execute(
+            &format!(
+                "INSERT INTO {}.meta VALUES (?, '1') ON CONFLICT DO NOTHING",
+                self.schema
+            ),
+            &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
+        );
         Ok(())
     }
 

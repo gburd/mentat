@@ -201,6 +201,14 @@ use. If it can't be (autoloading is off, or there's no network), the call fails
 with a message saying to run `INSTALL sqlite; LOAD sqlite;`. Offline, copy the
 extension file into the extension directory first.
 
+If you `ATTACH` a mentat SQLite file yourself (to look at it before
+importing, say), detach it when you're done: while it is attached, DuckDB's
+own `duckdb_indexes()` and `information_schema.tables` fail with `Parser
+Error: syntax error at or near "0"`. The sqlite extension hands DuckDB
+SQLite's partial-index definitions (`WHERE index_avet IS NOT 0`), which
+DuckDB can't parse. mentat's own calls don't use those catalog functions,
+so they keep working; other tools and queries that read them won't.
+
 ### Transactions and connections
 
 Each `edn_t` runs in its own DuckDB transaction and commits it, so it is

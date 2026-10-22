@@ -345,11 +345,13 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     let _s = seeded(&c);
     assert_eq!(index_count(&c), 0, "new stores have no secondary indexes");
 
-    // Recreate the 1.14.0 layout's indexes, as an old store has them.
+    // Recreate the 1.14.0 layout: its indexes, and no
+    // `legacy_indexes_dropped` meta row.
     c.execute_batch(
         "CREATE INDEX idx_datoms_ea ON mentat.datoms (e, a); \
          CREATE INDEX idx_datoms_a ON mentat.datoms (a); \
          CREATE INDEX idx_tt_tx ON mentat.timelined_transactions (tx); \
+         DELETE FROM mentat.meta WHERE key = 'legacy_indexes_dropped'; \
          UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
     )
     .unwrap();
@@ -359,6 +361,15 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     let names = q(&s, "[:find ?n :where [_ :person/name ?n]]");
     assert_eq!(names.len(), 2, "the store still answers: {names:?}");
     assert_eq!(index_count(&c), 0, "legacy indexes dropped on open");
+    // Recorded, so later opens don't look again.
+    let recorded: i64 = c
+        .query_row(
+            "SELECT count(*) FROM mentat.meta WHERE key = 'legacy_indexes_dropped'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 1);
 }
 
 /// The same query, run before and after each write, on two stores sharing
