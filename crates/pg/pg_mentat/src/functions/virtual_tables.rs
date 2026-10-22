@@ -15,18 +15,18 @@ use pgrx::prelude::*;
 // Extension detection
 // ---------------------------------------------------------------------------
 
-/// Check whether a PostgreSQL extension is installed in the current database.
-fn extension_available(ext_name: &str) -> bool {
-    let query = format!(
-        "SELECT 1 FROM pg_extension WHERE extname = '{}'",
-        ext_name.replace('\'', "''")
-    );
-    Spi::connect(|client| {
-        client
-            .select(&query, Some(1), &[])
-            .map(|t| t.first().get_one::<i64>().ok().flatten().is_some())
-    })
-    .unwrap_or(false)
+/// The schema an extension is installed in, quoted as %I would, or None if
+/// it isn't installed. Name its objects through it, never the search path:
+/// an extension can live in any schema, and the 1.18.0 upgrade calls
+/// create_virtual_tables with the path pinned to pg_catalog.
+fn extension_schema(ext_name: &str) -> Option<String> {
+    Spi::get_one_with_args::<String>(
+        "SELECT pg_catalog.quote_ident(n.nspname) FROM pg_catalog.pg_extension e \
+         JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1",
+        &[DatumWithOid::from(ext_name)],
+    )
+    .ok()
+    .flatten()
 }
 
 // ---------------------------------------------------------------------------
@@ -929,15 +929,16 @@ $$ LANGUAGE plpgsql STABLE",
 /// Generate SQL for optional trigram indexes (requires pg_trgm extension).
 ///
 /// Creates GIN trigram indexes on the text and keyword type-specific tables
-/// for fast LIKE/ILIKE and similarity searches.
-fn trigram_indexes_sql(schema: &str, store_name: &str) -> String {
+/// for fast LIKE/ILIKE and similarity searches. `trgm` is pg_trgm's schema,
+/// quoted (extension_schema).
+fn trigram_indexes_sql(schema: &str, store_name: &str, trgm: &str) -> String {
     format!(
         r"CREATE INDEX IF NOT EXISTS idx_{name}_trgm_text
-ON {schema}.datoms_text_new USING GIN (v gin_trgm_ops)
+ON {schema}.datoms_text_new USING GIN (v {trgm}.gin_trgm_ops)
 WHERE added = true;
 
 CREATE INDEX IF NOT EXISTS idx_{name}_trgm_keyword
-ON {schema}.datoms_keyword_new USING GIN (v gin_trgm_ops)
+ON {schema}.datoms_keyword_new USING GIN (v {trgm}.gin_trgm_ops)
 WHERE added = true",
         name = store_name.to_lowercase()
     )
@@ -1009,8 +1010,10 @@ pub fn create_virtual_tables_for_schema(
     // full-text GIN index). CREATE INDEX needs table ownership, which a role
     // regenerating the default store's views on a trusted install doesn't
     // have, so skip them for a non-owner rather than failing.
-    if extension_available("pg_trgm") && owns_table(&format!("{schema}.datoms_text_new"))? {
-        run(trigram_indexes_sql(schema, store_name))?;
+    if let Some(trgm) = extension_schema("pg_trgm") {
+        if owns_table(&format!("{schema}.datoms_text_new"))? {
+            run(trigram_indexes_sql(schema, store_name, &trgm))?;
+        }
     }
 
     // NOTE: pg_vector support is planned for future implementation.
@@ -1170,8 +1173,10 @@ mod tests {
 
     #[test]
     fn test_trigram_indexes_sql_uses_type_specific_tables() {
-        let sql = trigram_indexes_sql("mentat", "default");
-        assert!(sql.contains("gin_trgm_ops"));
+        let sql = trigram_indexes_sql("mentat", "default", "public");
+        assert!(sql.contains("v public.gin_trgm_ops"));
+        let sql = trigram_indexes_sql("mentat", "default", "\"Ext Schema\"");
+        assert!(sql.contains("v \"Ext Schema\".gin_trgm_ops"));
         assert!(sql.contains("idx_default_trgm_text"));
         assert!(sql.contains("idx_default_trgm_keyword"));
         assert!(sql.contains("mentat.datoms_text_new"));
