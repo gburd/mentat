@@ -296,7 +296,7 @@ impl<'c> DuckStore<'c> {
             return Ok((gen, opened));
         }
         let checked = self.drop_legacy_indexes()?;
-        let upgraded = self.upgrade_fulltext_values()?;
+        let upgraded = self.upgrade_views()?;
         let opened = self.read()?;
         // Cache only once the legacy-index check could run and the store is
         // up to date: a check that failed (a SQLite file was attached), or an
@@ -361,17 +361,18 @@ impl<'c> DuckStore<'c> {
         Ok(true)
     }
 
-    /// Replace the pre-1.18 `fulltext_values` table (always empty) with the
-    /// view `(fulltext ...)` queries join, once per store: `meta` then
-    /// records it (a store created since has the row from the start). Runs on
+    /// Replace the pre-1.18 views, once per store: the `fulltext_values`
+    /// table (always empty) becomes the view `(fulltext ...)` queries join,
+    /// and view bodies that name the schema are rewritten unqualified (see
+    /// `schema::views`). `meta` then records it (a store created since has the row from the start). Runs on
     /// a schema-cache miss. A read-only database (`duckdb -readonly`,
     /// `ATTACH ... (READ_ONLY)`) is left as it is, and every query still
     /// works (`(fulltext ...)` reads the texts from `datoms`, not this table
     /// or view); returns false then, so a later writable open upgrades it.
-    fn upgrade_fulltext_values(&self) -> Result<bool> {
+    fn upgrade_views(&self) -> Result<bool> {
         let done = self.conn.query_opt(
             &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.qualified),
-            &[SqlValue::Text(schema::FULLTEXT_VIEW.into())],
+            &[SqlValue::Text(schema::VIEWS_1_18.into())],
             |r| r.get_i64(0),
         )?;
         if done.is_some() {
@@ -400,12 +401,15 @@ impl<'c> DuckStore<'c> {
                 s.conn
                     .execute_batch(&schema::fulltext_values_view(&s.qualified))?;
             }
+            for v in schema::views(&s.qualified, "CREATE OR REPLACE") {
+                s.conn.execute_batch(&v)?;
+            }
             s.conn.execute(
                 &format!(
                     "INSERT INTO {}.meta VALUES (?, '1') ON CONFLICT DO NOTHING",
                     s.qualified
                 ),
-                &[SqlValue::Text(schema::FULLTEXT_VIEW.into())],
+                &[SqlValue::Text(schema::VIEWS_1_18.into())],
             )?;
             Ok(())
         })?;

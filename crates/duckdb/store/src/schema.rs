@@ -34,8 +34,8 @@
 //!   module). The engine's DuckDB SQL reads `fulltext_values` as a subquery
 //!   over `datoms` that keys each distinct text by itself; the
 //!   `fulltext_values` view is the same, for SQL users. Stores from before
-//!   1.18 had an unused, empty `fulltext_values` table; `open` replaces it
-//!   when the database is writable.
+//!   1.18 had an unused, empty `fulltext_values` table, and view bodies that
+//!   named their schema; `open` replaces them when the database is writable.
 
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
@@ -47,9 +47,10 @@ pub const LEGACY_INDEXES: [&str; 3] = ["idx_datoms_ea", "idx_datoms_a", "idx_tt_
 /// (written at creation, or once `open` has dropped them).
 pub const LEGACY_INDEXES_DROPPED: &str = "legacy_indexes_dropped";
 
-/// The `meta` key recording that a store's `fulltext_values` is the view
-/// (written at creation, or once `open` has replaced the pre-1.18 table).
-pub const FULLTEXT_VIEW: &str = "fulltext_values_view";
+/// The `meta` key recording that a store has the 1.18 views: `fulltext_values`
+/// a view, and view bodies that don't name the schema (written at creation,
+/// or once `open` has replaced the pre-1.18 ones).
+pub const VIEWS_1_18: &str = "views_1_18";
 
 /// The type of every `v` column.
 pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
@@ -72,7 +73,7 @@ pub fn typed_values(x: &str) -> String {
 /// catalog and schema, so the store keeps working when its file is attached
 /// under another name or opened directly.
 pub fn create_statements(s: &str) -> Vec<String> {
-    vec![
+    [
         format!("CREATE SCHEMA IF NOT EXISTS {s}"),
         // A numeric view of a value, for comparisons that SQLite makes across
         // INTEGER and REAL (5 = 5.0, 9.5 < 10). NULL for non-numbers.
@@ -97,20 +98,12 @@ pub fn create_statements(s: &str) -> Vec<String> {
              value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0, \
              {TYPED_COLUMNS})"
         ),
-        format!(
-            "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
-             v_i, v_d, v_s FROM timelined_transactions WHERE timeline = 0"
-        ),
         // Fulltext (see module docs).
         fulltext_values_view(s),
-        format!(
-            "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms WHERE index_fulltext"
-        ),
-        format!(
-            "CREATE VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms"
-        ),
+    ]
+    .into_iter()
+    .chain(views(s, "CREATE"))
+    .chain([
         format!(
             "CREATE TABLE {s}.idents (e BIGINT NOT NULL, a BIGINT NOT NULL, \
              v {VALUE_TYPE} NOT NULL, value_type_tag SMALLINT NOT NULL)"
@@ -127,7 +120,30 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "INSERT INTO {s}.meta VALUES ('version', '{VERSION}')"
         ),
         format!("INSERT INTO {s}.meta VALUES ('{LEGACY_INDEXES_DROPPED}', '1')"),
-        format!("INSERT INTO {s}.meta VALUES ('{FULLTEXT_VIEW}', '1')"),
+        format!("INSERT INTO {s}.meta VALUES ('{VIEWS_1_18}', '1')"),
+    ])
+    .collect()
+}
+
+/// The views over `datoms` and `timelined_transactions`, as `verb` (`CREATE`
+/// or `CREATE OR REPLACE`) statements. Their bodies name tables unqualified;
+/// before 1.18 they named the store's schema (`FROM mentat_x.datoms`), which
+/// DuckDB can't resolve when the file is attached under that same name
+/// ("ambiguous reference"), so `open` replaces them.
+pub fn views(s: &str, verb: &str) -> Vec<String> {
+    vec![
+        format!(
+            "{verb} VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
+             v_i, v_d, v_s FROM timelined_transactions WHERE timeline = 0"
+        ),
+        format!(
+            "{verb} VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms WHERE index_fulltext"
+        ),
+        format!(
+            "{verb} VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms"
+        ),
     ]
 }
 

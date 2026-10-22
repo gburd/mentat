@@ -507,7 +507,7 @@ fn pre_1_18_fulltext_table_is_upgraded_on_open() {
     c.execute_batch(
         "DROP VIEW mentat.fulltext_values; \
          CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
-         DELETE FROM mentat.meta WHERE key = 'fulltext_values_view'; \
+         DELETE FROM mentat.meta WHERE key = 'views_1_18'; \
          UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
     )
     .unwrap();
@@ -531,7 +531,7 @@ fn pre_1_18_fulltext_table_is_upgraded_on_open() {
     // Recorded, so later opens don't look again.
     let recorded: i64 = c
         .query_row(
-            "SELECT count(*) FROM mentat.meta WHERE key = 'fulltext_values_view'",
+            "SELECT count(*) FROM mentat.meta WHERE key = 'views_1_18'",
             [],
             |r| r.get(0),
         )
@@ -563,7 +563,7 @@ fn pre_1_18_store_opens_read_only() {
         c.execute_batch(
             "DROP VIEW mentat.fulltext_values; \
              CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
-             DELETE FROM mentat.meta WHERE key = 'fulltext_values_view'; \
+             DELETE FROM mentat.meta WHERE key = 'views_1_18'; \
              UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
         )
         .unwrap();
@@ -702,4 +702,85 @@ fn dotted_names_without_an_attached_database() {
     );
     let fresh = DuckStore::new(conn, "nodb.fresh").unwrap();
     assert_eq!(fresh.catalog_name(), "nodb");
+}
+
+/// A store made before 1.18 named its own schema in its view bodies
+/// (`FROM mentat_x.datoms`). Attached under another name they resolve, even
+/// read-only. Attached under the schema's own name DuckDB calls that name
+/// ambiguous; `open` rewrites them unqualified (writable databases only), so
+/// queries, history and fulltext work, and keep working read-only after.
+#[test]
+fn pre_1_18_views_work_attached() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.duckdb");
+    let names = "[:find ?n :where [_ :person/name ?n]]";
+    let fts =
+        "[:find ?n :where [(fulltext $ :person/bio \"darkness\") [[?e]]] [?e :person/name ?n]]";
+    // History reads the `transactions` view.
+    let hist = "[:find ?added :where [_ :person/name \"Bob\" ?tx ?added]]";
+    {
+        let c = Connection::open(&path).unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "x").unwrap();
+        s.transact(SCHEMA).unwrap();
+        s.transact(
+            "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+        )
+        .unwrap();
+        let bob = s
+            .transact(
+                r#"[{:person/name "Alice" :person/bio "Hello darkness"} {:db/id "b" :person/name "Bob"}]"#,
+            )
+            .unwrap()
+            .tempids["b"];
+        s.transact(&format!(r#"[[:db/retract {bob} :person/name "Bob"]]"#))
+            .unwrap();
+        // The 1.17 view bodies, schema-qualified, and its fulltext table.
+        let x = s.schema_name().to_string();
+        c.execute_batch(&format!(
+            "DROP VIEW {x}.transactions; DROP VIEW {x}.fulltext_datoms; DROP VIEW {x}.all_datoms; \
+             DROP VIEW {x}.fulltext_values; \
+             CREATE VIEW {x}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
+               v_i, v_d, v_s FROM {x}.timelined_transactions WHERE timeline = 0; \
+             CREATE TABLE {x}.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
+             CREATE VIEW {x}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+               index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {x}.datoms WHERE index_fulltext; \
+             CREATE VIEW {x}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+               index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {x}.datoms; \
+             DELETE FROM {x}.meta WHERE key = 'views_1_18'; \
+             UPDATE {x}.meta SET value = '1' WHERE key = 'generation';"
+        ))
+        .unwrap();
+    }
+    // Also under the store schema's own name, where DuckDB calls an
+    // unqualified `mentat_x_...` ambiguous (catalog or schema).
+    let x = {
+        let c = Connection::open_in_memory().unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        DuckStore::new(conn, "x").unwrap().schema_name().to_string()
+    };
+    for (alias, mode) in [
+        ("side", " (READ_ONLY)"),
+        ("side", ""),
+        (x.as_str(), ""),
+        (x.as_str(), " (READ_ONLY)"),
+    ] {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&format!("ATTACH '{}' AS {alias}{mode}", path.display()))
+            .unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, &format!("{alias}.x")).unwrap();
+        assert_eq!(
+            q(&s, names),
+            vec![vec!["Alice".to_string()]],
+            "{alias}{mode}"
+        );
+        assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]], "{alias}{mode}");
+        assert_eq!(
+            q(&s, hist),
+            vec![vec!["false".to_string()], vec!["true".to_string()]],
+            "{alias}{mode}"
+        );
+        s.last_tx().unwrap();
+    }
 }
