@@ -34,6 +34,7 @@ use sql_traits::errors::{BuildQueryResult, SQLError};
 use mentat_sql::{Dialect, QueryBuilder, QueryFragment, SQLQuery, SQLiteQueryBuilder};
 
 mod fts;
+mod fts_unicode61;
 
 //---------------------------------------------------------
 // A Mentat-focused representation of a SQL query.
