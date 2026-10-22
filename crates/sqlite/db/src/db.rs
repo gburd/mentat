@@ -1053,7 +1053,13 @@ pub trait MentatStoring {
 
     /// After `materialize_mentat_transaction`: how many datoms transaction `tx_id` asserts and
     /// retracts, not counting its own `:db/txInstant` (see `TxReport::datoms_asserted`).
-    fn transaction_datom_counts(&self, tx_id: Entid) -> Result<(usize, usize)>;
+    ///
+    /// The default (for a store written before 1.18.0) does not count: it reports
+    /// `(usize::MAX, usize::MAX)`, so `TxReport::is_empty` is false rather than claiming a
+    /// transaction changed nothing. The SQLite and DuckDB stores override it.
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<(usize, usize)> {
+        Ok((usize::MAX, usize::MAX))
+    }
 
     /// After `materialize_mentat_transaction`: the retractions in the last transaction that
     /// matched no datom, as `(e, a, v)`. The transactor leaves them out of what it tells the
@@ -2739,6 +2745,80 @@ mod tests {
                                  [:db/add 101 :db/cardinality :db.cardinality/many]]",
             Err("bad schema assertion: incomplete schema attribute definition (entity 101): missing :db/ident. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.")
         );
+    }
+
+    // #281: a store that implements only the pre-1.18.0 MentatStoring methods still
+    // transacts; its reports say they were not counted.
+    #[test]
+    fn test_store_without_datom_counts() {
+        struct Old<'c>(&'c rusqlite::Connection);
+        impl MentatStoring for Old<'_> {
+            fn resolve_avs<'a>(&self, avs: &'a [&'a AVPair]) -> Result<AVMap<'a>> {
+                self.0.resolve_avs(avs)
+            }
+            fn begin_tx_application(&self) -> Result<()> {
+                self.0.begin_tx_application()
+            }
+            fn insert_non_fts_searches(&self, e: &[ReducedEntity], t: SearchType) -> Result<()> {
+                self.0.insert_non_fts_searches(e, t)
+            }
+            fn insert_fts_searches(&self, e: &[ReducedEntity], t: SearchType) -> Result<()> {
+                self.0.insert_fts_searches(e, t)
+            }
+            fn materialize_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
+                self.0.materialize_mentat_transaction(tx_id)
+            }
+            fn commit_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
+                self.0.commit_mentat_transaction(tx_id)
+            }
+            fn resolved_metadata_assertions(
+                &self,
+            ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+                self.0.resolved_metadata_assertions()
+            }
+            fn write_partition_map(&self, partition_map: &PartitionMap) -> Result<()> {
+                MentatStoring::write_partition_map(self.0, partition_map)
+            }
+            fn committed_metadata_assertions(
+                &self,
+                tx_id: Entid,
+            ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+                MentatStoring::committed_metadata_assertions(self.0, tx_id)
+            }
+            fn update_metadata(
+                &self,
+                old: &Schema,
+                new: &Schema,
+                report: &metadata::MetadataReport,
+            ) -> Result<()> {
+                MentatStoring::update_metadata(self.0, old, new, report)
+            }
+            fn current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>> {
+                self.0.current_values(e, a)
+            }
+            fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
+                self.0.entity_datoms(e)
+            }
+            fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
+                self.0.referrers(e)
+            }
+        }
+        let conn = TestConn::default();
+        let tx = "[[:db/add \"a\" :db/doc \"x\"]]";
+        let (report, ..) = crate::transact(
+            &Old(&conn.sqlite),
+            conn.partition_map.clone(),
+            &conn.schema,
+            &conn.schema,
+            crate::NullWatcher(),
+            edn::parse::entities(tx).unwrap(),
+        )
+        .expect("transacts");
+        assert_eq!(
+            (report.datoms_asserted, report.datoms_retracted),
+            (usize::MAX, usize::MAX)
+        );
+        assert!(!report.is_empty());
     }
 
     // #286: a new attribute needs :db/ident, :db/valueType and :db/cardinality.

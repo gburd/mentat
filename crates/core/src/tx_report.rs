@@ -17,7 +17,11 @@ use core_traits::Entid;
 use crate::{DateTime, Utc};
 
 /// A transaction report summarizes an applied transaction.
+///
+/// Non-exhaustive (1.18.0): fields may be added in a minor release. Read the fields; build one
+/// with [`TxReport::new`].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
+#[non_exhaustive]
 pub struct TxReport {
     /// The transaction ID of the transaction.
     pub tx_id: Entid,
@@ -36,7 +40,8 @@ pub struct TxReport {
     /// Both leave out the transaction's own `:db/txInstant` datom, so `0, 0` means the
     /// transaction changed nothing. A redundant assertion (the datom is already there) or a
     /// retraction of an absent datom is not counted; replacing a cardinality-one value counts
-    /// one assertion and one retraction.
+    /// one assertion and one retraction. Both are `usize::MAX` ("not counted") from a store
+    /// whose `MentatStoring` doesn't implement `transaction_datom_counts`.
     pub datoms_asserted: usize,
     pub datoms_retracted: usize,
 }
@@ -59,6 +64,7 @@ impl TxReport {
     }
 
     /// True if the transaction asserted and retracted nothing (beyond its `:db/txInstant`).
+    /// False when the store did not count.
     pub fn is_empty(&self) -> bool {
         self.datoms_asserted == 0 && self.datoms_retracted == 0
     }
