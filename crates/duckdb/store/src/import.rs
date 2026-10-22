@@ -35,7 +35,8 @@
 //! the same as the engine's on both sides (see `schema.rs`), so the imported
 //! store is what transacting the same data on DuckDB would have produced.
 
-use mentat_db::entids;
+use core_traits::ValueType;
+use mentat_core::SQLValueType;
 use mentat_sql::{SqlConn, SqlConnExt};
 use public_traits::errors::{MentatError, Result};
 
@@ -332,11 +333,14 @@ impl DuckStore<'_> {
                 "index_fulltext <> 0",
                 true,
             )?;
-            // The log has no index_fulltext column: a row is fulltext iff its
-            // attribute is (`:db/fulltext` can't be altered).
+            // The log has no index_fulltext column. A fulltext value is an
+            // FTS rowid, so an INTEGER where a string (tag 10) belongs; a
+            // real string is always TEXT. Not decided from `schema`: an
+            // attribute retracted since (ident, type and cardinality) is
+            // gone from it, but its log rows still hold rowids.
             let log_ft = format!(
-                "a IN (SELECT e FROM schema WHERE a = {} AND v = 1)",
-                entids::DB_FULLTEXT
+                "value_type_tag = {} AND typeof(v) = 'integer'",
+                ValueType::String.value_type_tag()
             );
             copy_table(
                 conn,

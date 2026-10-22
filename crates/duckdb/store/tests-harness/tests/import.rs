@@ -493,3 +493,77 @@ fn a_failed_or_panicking_import_leaves_nothing_behind() {
     assert_eq!(imported.transactions, 3);
     s.transact(r#"[{:p/name "After"}]"#).unwrap();
 }
+
+/// A fulltext attribute whose definition was later retracted in full
+/// (ident, valueType, cardinality, fulltext): it's gone from `schema`, but
+/// its log rows still hold FTS rowids. The import must turn those into the
+/// text, not copy the rowid as if it were the string.
+#[test]
+fn a_retracted_fulltext_attribute_keeps_its_history_text() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("ft.mentat");
+    let mut sqlite = mentat::Store::open(path.to_str().unwrap()).unwrap();
+    let def = "{:db/ident :x/ft :db/valueType :db.type/string \
+               :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}";
+    sqlite.transact(format!("[{def}]").as_str()).unwrap();
+    let e = sqlite
+        .transact(r#"[{:db/id "e" :x/ft "hello world"}]"#)
+        .unwrap()
+        .tempids["e"];
+    let attr: i64 = sqlite
+        .sqlite_mut()
+        .query_row("SELECT e FROM idents WHERE v = ':x/ft'", [], |r| r.get(0))
+        .unwrap();
+    sqlite
+        .transact(format!(r#"[[:db/retract {e} :x/ft "hello world"]]"#).as_str())
+        .unwrap();
+    sqlite
+        .transact(
+            format!(
+                "[[:db/retract {attr} :db/ident :x/ft] \
+                  [:db/retract {attr} :db/valueType :db.type/string] \
+                  [:db/retract {attr} :db/cardinality :db.cardinality/one] \
+                  [:db/retract {attr} :db/fulltext true] [:db/retract {attr} :db/index true]]"
+            )
+            .as_str(),
+        )
+        .unwrap();
+    // The shape this is about: no schema rows, rowids in the log.
+    let (schema_rows, log_rowids): (i64, i64) = sqlite
+        .sqlite_mut()
+        .query_row(
+            &format!(
+                "SELECT (SELECT count(*) FROM schema WHERE e = {attr}), \
+                 (SELECT count(*) FROM timelined_transactions WHERE a = {attr} AND typeof(v) = 'integer')"
+            ),
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((schema_rows, log_rowids), (0, 2));
+    drop(sqlite);
+
+    let c = Connection::open_in_memory().unwrap();
+    let dc = DuckConn::new(&c);
+    let duck = DuckStore::new(&dc as &dyn SqlConn, "ft");
+    duck.import_sqlite(path.to_str().unwrap()).unwrap();
+    let mut log: Vec<(String, i64, bool)> = c
+        .prepare(&format!(
+            "SELECT union_tag(v)::VARCHAR || ':' || v::VARCHAR, value_type_tag, added \
+             FROM {}.timelined_transactions WHERE a = {attr}",
+            duck.schema_name()
+        ))
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    log.sort();
+    assert_eq!(
+        log,
+        [
+            ("s:hello world".to_string(), 10, false),
+            ("s:hello world".to_string(), 10, true)
+        ]
+    );
+}
