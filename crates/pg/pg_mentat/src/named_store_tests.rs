@@ -1176,7 +1176,11 @@ mod tests {
                 "SELECT pg_temp.capture($q$SELECT subscribe('{store}', '{name}', '{query}')$q$)"
             ))
         };
-        assert_eq!(sub("sc_a", "Sc_Names"), "");
+        let made = text(&format!("SELECT subscribe('sc_a', 'Sc_Names', '{query}')"));
+        assert!(
+            made.contains("LISTEN \"mentat_Sc_Names\" to"),
+            "quoted, as pg_notify sends it: {made:?}"
+        );
         let err = sub("sc_b", "sc_names");
         assert!(
             err.contains("already used by store 'sc_a' as 'Sc_Names'"),
