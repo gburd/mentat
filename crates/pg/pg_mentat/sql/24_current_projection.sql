@@ -118,6 +118,20 @@ CREATE INDEX IF NOT EXISTS idx_current_uuid_avet    ON mentat.current_uuid    (s
 CREATE INDEX IF NOT EXISTS idx_current_bytes_avet   ON mentat.current_bytes   (store_id, a, v, e);
 CREATE INDEX IF NOT EXISTS idx_current_boolean_avet ON mentat.current_boolean (store_id, a, v, e);
 
+-- TX index per projection table (1.18.0): Datomic's `since S` is the
+-- projection rows with tx > S. Without it a since query that matches a few
+-- rows scans every live datom of the attribute (10 ms vs 0.05 ms for 10 of
+-- 200k rows). Small: (store_id, tx) and a row pointer, 1.4 MB per 200k rows.
+CREATE INDEX IF NOT EXISTS idx_current_ref_tx     ON mentat.current_ref     (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_long_tx    ON mentat.current_long    (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_text_tx    ON mentat.current_text    (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_double_tx  ON mentat.current_double  (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_instant_tx ON mentat.current_instant (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_keyword_tx ON mentat.current_keyword (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_uuid_tx    ON mentat.current_uuid    (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_bytes_tx   ON mentat.current_bytes   (store_id, tx);
+CREATE INDEX IF NOT EXISTS idx_current_boolean_tx ON mentat.current_boolean (store_id, tx);
+
 -- These tables take in-place upserts; keep autovacuum aggressive so the
 -- HOT-pruning + dead-tuple reclaim keeps pace with churn.
 DO $$
