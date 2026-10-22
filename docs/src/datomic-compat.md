@@ -97,7 +97,9 @@ and DuckDB backends) bounds tx-functions calling tx-functions. On PostgreSQL it
 runs as the calling role. The embedded and DuckDB stores define the `:db/fn`
 attribute the first time a transaction installs a function; pg_mentat
 bootstraps it. Use `:db.fn/cas` in the returned tx-data for an
-atomic read-modify-write, as above.
+atomic read-modify-write, as above. On pg_mentat 1.18.0 a tx-function runs on
+the default store only; invoking one on a named store (`t('acme', ...)`) is
+`:db.error/unsupported` (issue #389).
 
 ---
 
