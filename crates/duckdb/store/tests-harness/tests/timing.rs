@@ -109,3 +109,42 @@ fn fulltext_100k() {
         );
     }
 }
+
+/// `DuckStore::new` + `open` per call, for a store in the home database and
+/// one in an attached database, with 50 other schemas around (run with
+/// --ignored --nocapture).
+#[test]
+#[ignore]
+fn store_name_resolution() {
+    let c = Connection::open_in_memory().unwrap();
+    c.execute_batch("ATTACH ':memory:' AS side").unwrap();
+    for i in 0..50 {
+        c.execute_batch(&format!(
+            "CREATE SCHEMA s{i}; CREATE TABLE s{i}.t1(x INT); CREATE TABLE s{i}.t2(x INT); \
+             CREATE TABLE side.main.u{i}(x INT)"
+        ))
+        .unwrap();
+    }
+    let dc = DuckConn::new(&c);
+    let conn = &dc as &dyn SqlConn;
+    for name in ["x", "side.x"] {
+        DuckStore::new(conn, name)
+            .unwrap()
+            .transact("[{:db/ident :u/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]")
+            .unwrap();
+        let n = 2000;
+        let t0 = Instant::now();
+        for _ in 0..n {
+            DuckStore::new(conn, name).unwrap().open().unwrap();
+        }
+        let open = t0.elapsed().as_secs_f64() * 1e6 / n as f64;
+        let t0 = Instant::now();
+        for _ in 0..n {
+            DuckStore::new(conn, name).unwrap();
+        }
+        println!(
+            "{name}: new+open {open:.1} us/call, new alone {:.1} us",
+            t0.elapsed().as_secs_f64() * 1e6 / n as f64
+        );
+    }
+}

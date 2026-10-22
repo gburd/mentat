@@ -92,6 +92,69 @@ CHECKS = {
         assert names(b, "imp") == ["imported"], names(b, "imp")
         assert r["datoms"] > 0, r
     """,
+    # 1.18.0's first cut read duckdb_tables() on every 'db.name' call; on
+    # DuckDB 1.5.6 that segfaults while another connection DETACHes a SQLite
+    # file, which mentat_import does on every call.
+    "queries of an attached store during imports": """
+        import sqlite3, threading, time
+        c = connect()
+        try:
+            c.execute("INSTALL sqlite; LOAD sqlite")
+        except duckdb.Error as e:
+            if os.environ.get("MENTAT_REQUIRE_SQLITE_EXT") == "1":
+                raise
+            print(f"SKIPPED (no DuckDB sqlite extension; MENTAT_REQUIRE_SQLITE_EXT=1 fails instead): {e}")
+            sys.exit(0)
+        c.execute("ATTACH ':memory:' AS side")
+        c.execute("SELECT edn_t('side.x', ?)", [SCHEMA]).fetchall()
+        c.execute("SELECT edn_t('side.x', '[{:p/name \\"a\\"}]')").fetchall()
+        # A SQLite-format store (what 1.10.x wrote) to import.
+        c.execute("SELECT edn_t('old', ?)", [SCHEMA]).fetchall()
+        [old] = [s for s in schemas(c) if s.startswith("mentat_old_")]
+        path = os.path.join(TMP, "churn.mentat")
+        lite = sqlite3.connect(path)
+        for t, cols in [("datoms", "e, a, v, tx, value_type_tag, index_avet, index_vaet, index_fulltext, unique_value"),
+                        ("timelined_transactions", "e, a, v, tx, added, value_type_tag, timeline"),
+                        ("idents", "e, a, v, value_type_tag"), ("schema", "e, a, v, value_type_tag"),
+                        ("known_parts", 'part, start, "end", idx, allow_excision')]:
+            lite.execute(f"CREATE TABLE {t} ({cols})")
+            rows = c.execute(f"SELECT {cols} FROM {old}.{t}").fetchall()
+            lite.executemany(f"INSERT INTO {t} VALUES ({', '.join('?' * len(rows[0]))})", rows)
+        lite.execute("CREATE TABLE fulltext_values (text, searchid)")
+        lite.execute("PRAGMA user_version = 3")
+        lite.commit()
+        lite.close()
+        done, errors, counts = threading.Event(), [], {"imports": 0, "queries": 0}
+        def importer():
+            cur, i = c.cursor(), 0
+            try:
+                while not done.is_set():
+                    cur.execute("SELECT mentat_import(?, ?)", [f"imp{i}", path]).fetchall()
+                    i += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"import {i}: {e}")
+            counts["imports"] = i
+        def reader():
+            cur, n, t0 = c.cursor(), 0, time.time()
+            try:
+                while time.time() - t0 < 3:
+                    assert names(cur, "side.x") == ["a"], names(cur, "side.x")
+                    n += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"query: {e}")
+            counts["queries"] += n
+        ts = [threading.Thread(target=reader) for _ in range(4)]
+        imp = threading.Thread(target=importer)
+        for t in ts + [imp]:
+            t.start()
+        for t in ts:
+            t.join()
+        done.set()
+        imp.join()
+        assert not errors, errors
+        assert counts["imports"] > 0 and counts["queries"] > 0, counts
+        print(f"churn: {counts}")
+    """,
 }
 
 

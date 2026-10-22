@@ -238,6 +238,12 @@ SQLite's partial-index definitions (`WHERE index_avet IS NOT 0`), which
 DuckDB can't parse. mentat's own calls don't use those catalog functions,
 so they keep working; other tools and queries that read them won't.
 
+On DuckDB 1.5.6, `duckdb_tables()`, `duckdb_views()`, `duckdb_indexes()`
+and `duckdb_schemas()` can also crash the process (a segfault in the sqlite
+extension) when one connection runs them while another ATTACHes or DETACHes
+a SQLite file, which `mentat_import` does on every call. mentat's calls
+don't run them; avoid running them yourself while imports are under way.
+
 ### Transactions and connections
 
 Each `edn_t` runs in its own DuckDB transaction and commits it, so it is

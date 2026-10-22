@@ -344,7 +344,8 @@ fn import_refuses_a_store_with_data_and_non_mentat_files() {
 /// sqlite scanner hands DuckDB SQLite's partial-index SQL). Opening stores
 /// must not depend on it: a new store, a store from before the
 /// `legacy_indexes_dropped` meta row, and an import of the attached file
-/// itself all work, and the legacy indexes are dropped once it's detached.
+/// itself all work, and the legacy indexes are dropped (by name) while it is
+/// still attached.
 #[test]
 fn stores_open_while_a_sqlite_mentat_file_is_attached() {
     if !sqlite_ext() {
@@ -378,8 +379,7 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
     .unwrap();
     // What this guards against, logged rather than asserted (an upstream
     // fix would change it): duckdb_indexes() and information_schema.tables
-    // fail. duckdb_tables() filtered to this database, which `open` uses,
-    // must work.
+    // fail. `open` uses neither (nor any other catalog function).
     for sql in [
         "SELECT count(*) FROM duckdb_indexes()",
         "SELECT count(*) FROM information_schema.tables",
@@ -387,12 +387,6 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
         let r = c.query_row(sql, [], |r| r.get::<_, i64>(0));
         eprintln!("with a mentat SQLite file attached: {sql}: {r:?}");
     }
-    c.query_row(
-        "SELECT count(*) FROM duckdb_tables() WHERE database_name = current_database()",
-        [],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap();
     // A new store, the legacy store (cache stale: generation changed), and
     // the attached file imported.
     let fresh = DuckStore::new(conn, "fresh").unwrap();
@@ -405,13 +399,15 @@ fn stores_open_while_a_sqlite_mentat_file_is_attached() {
         .unwrap()
         .import_sqlite(old.to_str().unwrap())
         .unwrap();
-    c.execute_batch("DETACH old").unwrap();
-
-    // Detached: the next open of the legacy store, on this same thread and
-    // with no schema change, drops its indexes and records it (the open made
-    // while the file was attached isn't cached).
-    legacy.q(QUERIES[0], None, None).unwrap();
     let n = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+    // Recorded while the file is attached.
+    assert_eq!(
+        n(&format!(
+            "SELECT count(*) FROM {s}.meta WHERE key = 'legacy_indexes_dropped'"
+        )),
+        1
+    );
+    c.execute_batch("DETACH old").unwrap();
     assert_eq!(
         n(&format!(
             "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = '{s}'"
@@ -477,6 +473,73 @@ fn other_stores_work_during_an_import() {
         }
         importer.join().unwrap();
     });
+}
+
+/// Imports on one connection (each ATTACHes and DETACHes its SQLite source)
+/// while clones query a store in an attached database ('side.x'). On
+/// DuckDB 1.5.6 a `duckdb_tables()` racing a SQLite DETACH segfaults in the
+/// sqlite scanner (`SQLiteSchemaEntry::Scan`), and 1.18.0's first cut ran
+/// one on every 'db.name' call. Bounded: 3 s of churn, 4 querying threads.
+#[test]
+fn attached_store_queries_survive_import_churn() {
+    if !sqlite_ext() {
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let old = dir.path().join("old.mentat");
+    mentat::Store::open(old.to_str().unwrap())
+        .unwrap()
+        .transact(TXS[0])
+        .unwrap();
+    let c = Connection::open_in_memory().unwrap();
+    c.execute_batch("ATTACH ':memory:' AS side").unwrap();
+    {
+        let dc = DuckConn::new(&c);
+        let s = DuckStore::new(&dc as &dyn SqlConn, "side.x").unwrap();
+        s.transact(TXS[0]).unwrap();
+        s.transact(TXS[1]).unwrap();
+    }
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (imports, queries) = std::thread::scope(|sc| {
+        let c1 = c.try_clone().unwrap();
+        let (old, done) = (&old, &done);
+        let importer = sc.spawn(move || {
+            let dc = DuckConn::new(&c1);
+            let mut i = 0;
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                DuckStore::new(&dc as &dyn SqlConn, &format!("imp{i}"))
+                    .unwrap()
+                    .import_sqlite(old.to_str().unwrap())
+                    .unwrap();
+                i += 1;
+            }
+            i
+        });
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let c2 = c.try_clone().unwrap();
+                sc.spawn(move || {
+                    let dc = DuckConn::new(&c2);
+                    let t0 = std::time::Instant::now();
+                    let mut n = 0;
+                    while t0.elapsed() < std::time::Duration::from_secs(3) {
+                        let s = DuckStore::new(&dc as &dyn SqlConn, "side.x").unwrap();
+                        assert_eq!(s.catalog_name(), "side");
+                        s.q(QUERIES[0], None, None).unwrap();
+                        n += 1;
+                    }
+                    n
+                })
+            })
+            .collect();
+        let queries: usize = readers.into_iter().map(|r| r.join().unwrap()).sum();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        (importer.join().unwrap(), queries)
+    });
+    assert!(
+        imports > 0 && queries > 0,
+        "{imports} imports, {queries} queries"
+    );
 }
 
 /// A crafted file whose partition counter is below its partition's start

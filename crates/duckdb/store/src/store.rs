@@ -161,12 +161,18 @@ impl<'c> DuckStore<'c> {
             .split_once('.')
             .filter(|(db, _)| !db.is_empty())
         {
-            let catalog = conn.query_opt(
+            let mut catalog = None;
+            conn.query_cached(
                 "SELECT database_name FROM duckdb_databases() \
                  WHERE NOT internal AND lower(database_name) = lower(?)",
                 &[SqlValue::Text(db.to_string())],
-                |r| r.get_text(0),
+                &mut |r| {
+                    catalog = Some(r.get_text(0)?);
+                    Ok(())
+                },
             )?;
+            // duckdb_databases() lists catalogs without scanning them, so
+            // it is safe beside a SQLite DETACH (see `exists`).
             if let Some(catalog) = catalog {
                 let in_home = DuckStore::at(conn, home, store);
                 if !in_home.exists()? {
@@ -220,24 +226,32 @@ impl<'c> DuckStore<'c> {
         Ok(())
     }
 
-    /// `[catalog, schema]`, bound as `$1`, `$2`.
-    fn names(&self) -> [SqlValue; 2] {
-        [
-            SqlValue::Text(self.catalog.clone()),
-            SqlValue::Text(self.schema.clone()),
-        ]
+    /// Whether the store exists: its `meta` table, named. Not
+    /// `duckdb_tables()` (nor `duckdb_schemas()`, `duckdb_indexes()`,
+    /// `information_schema`): those scan every attached database, and on
+    /// DuckDB 1.5.6 one that scans a SQLite database while another
+    /// connection DETACHes it segfaults (`SQLiteSchemaEntry::Scan`), which
+    /// `mentat_import` does on every call.
+    fn exists(&self) -> Result<bool> {
+        self.has("meta", "key")
     }
 
-    fn exists(&self) -> Result<bool> {
-        Ok(self
-            .conn
-            .query_opt(
-                "SELECT 1 FROM duckdb_tables() WHERE database_name = $1 AND schema_name = $2 \
-                 AND table_name = 'meta'",
-                &self.names(),
-                |r| r.get_i64(0),
-            )?
-            .is_some())
+    /// Whether this store's `table` exists with column `col`: a missing one
+    /// fails to bind. Not inside a transaction: DuckDB 2.0 aborts one on any
+    /// error.
+    fn has(&self, table: &str, col: &str) -> Result<bool> {
+        let sql = format!("SELECT {col} FROM {}.{table} LIMIT 0", self.qualified);
+        match self.conn.query(&sql, &[], &mut |_| Ok(())) {
+            Ok(()) => Ok(true),
+            Err(e)
+                if ["Catalog Error", "Binder Error"]
+                    .iter()
+                    .any(|k| e.message.starts_with(k)) =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// The store's generation: a random value, replaced by every transaction
@@ -277,9 +291,10 @@ impl<'c> DuckStore<'c> {
         let gen = match self.generation() {
             Ok(Some(g)) => g,
             _ => {
+                let lock = write_lock(&self.qualified);
+                let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                // Checked under the lock: another thread may have just made it.
                 if !self.exists()? {
-                    let lock = write_lock(&self.qualified);
-                    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                     self.in_tx(|s| s.create())?;
                 }
                 self.generation()?.unwrap_or(0)
@@ -295,14 +310,13 @@ impl<'c> DuckStore<'c> {
         if let Some(opened) = cached {
             return Ok((gen, opened));
         }
-        let checked = self.drop_legacy_indexes()?;
+        self.drop_legacy_indexes()?;
         let upgraded = self.upgrade_views()?;
         let opened = self.read()?;
-        // Cache only once the legacy-index check could run and the store is
-        // up to date: a check that failed (a SQLite file was attached), or an
-        // upgrade a read-only database couldn't make, must run again on this
-        // thread's next open, not after the next schema change.
-        if checked && upgraded {
+        // Cache only once the store is up to date: an upgrade a read-only
+        // database couldn't make must run again on this thread's next open,
+        // not after the next schema change.
+        if upgraded {
             OPENED.with(|c| {
                 c.borrow_mut()
                     .insert(self.qualified.clone(), (gen, opened.clone()))
@@ -315,38 +329,24 @@ impl<'c> DuckStore<'c> {
     /// `schema::LEGACY_INDEXES`), once per store: `meta` then records it
     /// (a store created since has the row from the start). Runs on a
     /// schema-cache miss. This also repairs a store whose index #26828
-    /// already corrupted. Returns false if the check couldn't run.
-    fn drop_legacy_indexes(&self) -> Result<bool> {
+    /// already corrupted.
+    fn drop_legacy_indexes(&self) -> Result<()> {
         let done = self.conn.query_opt(
             &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.qualified),
             &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
             |r| r.get_i64(0),
         )?;
         if done.is_some() {
-            return Ok(true);
+            return Ok(());
         }
-        // duckdb_indexes() fails ("syntax error at or near "0"") while any
-        // SQLite mentat file is ATTACHed: DuckDB's sqlite scanner hands it
-        // SQLite's partial-index SQL to parse. Read that as none present and
-        // record nothing, so a later open checks again.
-        let Ok(present) = self.conn.query_opt(
-            &format!(
-                "SELECT count(*) FROM duckdb_indexes() WHERE database_name = $1 \
-                 AND schema_name = $2 AND index_name IN ({})",
-                schema::LEGACY_INDEXES.map(|i| format!("'{i}'")).join(", ")
-            ),
-            &self.names(),
-            |r| r.get_i64(0),
-        ) else {
-            return Ok(false);
-        };
         let lock = write_lock(&self.qualified);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        if present.unwrap_or(0) > 0 {
-            for i in schema::LEGACY_INDEXES {
-                self.conn
-                    .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.qualified))?;
-            }
+        // By name, not found with duckdb_indexes() (see `exists`; it also
+        // fails while a mentat SQLite file is attached). Dropping a missing
+        // index writes nothing, so this works read-only too.
+        for i in schema::LEGACY_INDEXES {
+            self.conn
+                .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.qualified))?;
         }
         // Under the write lock, so it can't conflict with a transact. Best
         // effort: a read-only database can't record it, and then the check
@@ -358,7 +358,7 @@ impl<'c> DuckStore<'c> {
             ),
             &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
         );
-        Ok(true)
+        Ok(())
     }
 
     /// Replace the pre-1.18 views, once per store: the `fulltext_values`
@@ -388,14 +388,10 @@ impl<'c> DuckStore<'c> {
         }
         let lock = write_lock(&self.qualified);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // The old table has a `searchid` column; the view doesn't.
+        let table = self.has("fulltext_values", "searchid")?;
         self.in_tx(|s| {
-            let table = s.conn.query_opt(
-                "SELECT 1 FROM duckdb_tables() WHERE database_name = $1 AND schema_name = $2 \
-                 AND table_name = 'fulltext_values'",
-                &s.names(),
-                |r| r.get_i64(0),
-            )?;
-            if table.is_some() {
+            if table {
                 s.conn
                     .execute_batch(&format!("DROP TABLE {}.fulltext_values", s.qualified))?;
                 s.conn
@@ -416,11 +412,8 @@ impl<'c> DuckStore<'c> {
         Ok(true)
     }
 
+    /// Under the write lock, in a transaction (see `open_gen`).
     fn create(&self) -> Result<()> {
-        // A concurrent opener may have created it since we checked.
-        if self.exists()? {
-            return Ok(());
-        }
         for stmt in schema::create_statements(&self.qualified) {
             self.conn.execute_batch(&stmt)?;
         }
