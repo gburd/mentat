@@ -544,6 +544,33 @@ mod tests {
         );
     }
 
+    /// A binding function's result for a variable a pattern (or rule) also
+    /// binds constrains it: `[(+ 12 0) ?k] [?x :rv/age ?k]` is bob, aged 12.
+    /// The function was ignored, so every ?x matched with ?k = 12.
+    #[pg_test]
+    fn test_fn_result_constrains_a_bound_variable() {
+        let [a, b, c, _d] = setup_chain();
+        for q in [
+            "[:find ?x ?k :where [(+ 12 0) ?k] [?x :rv/age ?k]]",
+            "[:find ?x ?k :where [?x :rv/age ?k] [(+ 12 0) ?k]]",
+            "[:find ?x ?k :rules [[(aged ?e ?n) [?e :rv/age ?n]]] :where [(+ 12 0) ?k] (aged ?x ?k)]",
+            // In an or arm.
+            "[:find ?x ?k :where [?x :rv/name _] \
+             (or (and [?x :rv/age ?k] [(* 6 2) ?k]) (and [?x :rv/age ?k] [(+ 99 0) ?k]))]",
+            // In a rule body.
+            "[:find ?x ?k :rules [[(twelve ?e ?n) [?e :rv/age ?n] [(+ 12 0) ?n]]] \
+             :where (twelve ?x ?k)]",
+        ] {
+            assert_eq!(rows(q), [format!("[{b},12]")], "{q}");
+        }
+        // An entity: ann is cy's boss's boss; (+ ?y 0) is ann again.
+        let q = format!("[:find ?x :where [?y :rv/name \"ann\"] [(+ ?y 0) ?x] [?x :rv/age 30]]");
+        assert_eq!(rows(&q), [format!("[{a}]")]);
+        // A result no pattern binds is unchanged: a new value.
+        let q = "[:find ?x ?d :where [?x :rv/age 5] [(* 5 2) ?d]]";
+        assert_eq!(rows(q), [format!("[{c},10]")]);
+    }
+
     /// The error a query raises, or "" if it runs.
     fn query_error(query: &str) -> String {
         crate::functions::query::mentat_query(query, pgrx::JsonB(serde_json::json!({})))

@@ -2648,6 +2648,9 @@ fn build_sql_from_datalog_enriched(
     let store_id = resolve_store_id(schema_prefix)?;
     let store_id_param = builder.bind_bigint(store_id as i64);
 
+    // Equalities between a binding function's result and a variable bound
+    // elsewhere (fn_result_var); declared first, as `predicates` borrows it.
+    let mut fn_eqs: Vec<Predicate> = Vec::new();
     // Separate clause types
     let mut pattern_clauses = Vec::new();
     let mut or_joins = Vec::new();
@@ -3065,7 +3068,8 @@ fn build_sql_from_datalog_enriched(
         } else {
             // Arithmetic binding functions: [(* ?age 2) ?double-age]
             if let Some((var_name, expr)) = build_where_fn_binding(wf, builder)? {
-                extra_var_bindings.insert(var_name, expr);
+                let bound = var_bound_by(&var_name, &pattern_clauses, &rule_invocations);
+                extra_var_bindings.insert(fn_result_var(var_name, bound, &mut fn_eqs), expr);
             } else {
                 return Err(format!(
                     ":db.error/unsupported-where-fn Where-function '{}' is not supported. \
@@ -3076,6 +3080,8 @@ fn build_sql_from_datalog_enriched(
             }
         }
     }
+
+    predicates.extend(fn_eqs.iter());
 
     // Merge ground bindings into a combined input_bindings map so that
     // pattern compilation constrains ground variables at build time.
@@ -3286,6 +3292,7 @@ fn build_sql_from_datalog_enriched(
             let mut combined_patterns: Vec<&edn::query::Pattern> = pattern_clauses.clone();
             combined_patterns.extend(arm_patterns);
 
+            let mut arm_fn_eqs: Vec<Predicate> = Vec::new();
             // Combine predicates from base query and this OR branch
             let mut combined_predicates = predicates.clone();
             combined_predicates.extend(arm_predicates);
@@ -3425,7 +3432,10 @@ fn build_sql_from_datalog_enriched(
                     // list (each arm has its own SqlBuilder so $N indices
                     // don't collide).
                     if let Some((var_name, expr)) = build_where_fn_binding(wf, &mut arm_builder)? {
-                        arm_extra_var_bindings.insert(var_name, expr);
+                        let bound =
+                            var_bound_by(&var_name, &combined_patterns, &combined_rule_invocations);
+                        let var = fn_result_var(var_name, bound, &mut arm_fn_eqs);
+                        arm_extra_var_bindings.insert(var, expr);
                     }
                 } else {
                     return Err(format!(
@@ -3436,6 +3446,8 @@ fn build_sql_from_datalog_enriched(
                     ).into());
                 }
             }
+
+            combined_predicates.extend(arm_fn_eqs.iter());
 
             // Combine top-level NOT joins with the ones found in this OR arm so
             // build_extended_pattern_query emits NOT EXISTS subqueries for both.
@@ -9121,10 +9133,27 @@ fn build_rule_clause_sql(
             }
             WhereClause::WhereFn(wf) => {
                 // Handle arithmetic function bindings in rule bodies
-                if let Some((result_var, _computed_expr)) = build_where_fn_binding(wf, builder)? {
-                    // Store the computed expression for later use in SELECT
-                    body_var_to_alias.insert(result_var, ("COMPUTED".to_string(), "expr"));
-                    // We'll handle this in the SELECT clause
+                if let Some((result_var, computed_expr)) = build_where_fn_binding(wf, builder)? {
+                    match body_var_to_alias.get(&result_var) {
+                        // Bound already (a pattern, the recursive call): the
+                        // result constrains it, as fn_result_var does.
+                        Some((alias, col)) if *col != "expr" => {
+                            let expr =
+                                resolve_var_refs_for_rule(&computed_expr, &body_var_to_alias);
+                            let bound = if *col == "v" {
+                                format!(
+                                    "COALESCE({alias}.v_long::NUMERIC, {alias}.v_double::NUMERIC)"
+                                )
+                            } else {
+                                format!("{alias}.{col}::NUMERIC")
+                            };
+                            where_parts.push(format!("({bound} = ({expr})::NUMERIC)"));
+                        }
+                        // Store the computed expression for later use in SELECT
+                        _ => {
+                            body_var_to_alias.insert(result_var, ("COMPUTED".to_string(), "expr"));
+                        }
+                    }
                 } else {
                     return Err(format!(
                         ":db.error/unsupported-rule-fn Unsupported function '{}' in rule body. \
@@ -9150,6 +9179,9 @@ fn build_rule_clause_sql(
     for wc in &clause.body {
         if let WhereClause::WhereFn(wf) = wc {
             if let Some((result_var, computed_expr)) = build_where_fn_binding(wf, builder)? {
+                if !matches!(body_var_to_alias.get(&result_var), Some((_, "expr"))) {
+                    continue; // a constraint on a bound variable (above)
+                }
                 let resolved_expr = resolve_var_refs_for_rule(&computed_expr, &body_var_to_alias);
                 let rec = |x: &str| {
                     Some(
@@ -9223,6 +9255,42 @@ fn build_rule_clause_sql(
 // ============================================================================
 // Helper functions for OR-clause predicate support
 // ============================================================================
+
+/// Whether a pattern or a rule invocation binds `var`.
+fn var_bound_by(
+    var: &str,
+    patterns: &[&edn::query::Pattern],
+    rule_invocations: &[&RuleInvocation],
+) -> bool {
+    patterns.iter().any(|p| pattern_binds_var(p, var))
+        || rule_invocations.iter().any(|ri| {
+            ri.args
+                .iter()
+                .any(|a| matches!(a, FnArg::Variable(v) if v.as_str() == var))
+        })
+}
+
+/// The variable a binding function's result binds. When a pattern or rule
+/// also binds `var` (`bound`), the result is a constraint on it, not a second
+/// binding: [(+ 12 0) ?k] [?x :p/age ?k] is the ?x aged 12 (the function was
+/// ignored, so every ?x matched). Then the result binds a fresh variable and
+/// `eqs` gets [(= var fresh)].
+/// shortcut: a top-level function whose variable only an `or` arm binds is
+/// still ignored there; check each arm's patterns too if that comes up.
+fn fn_result_var(var: String, bound: bool, eqs: &mut Vec<Predicate>) -> String {
+    if !bound {
+        return var;
+    }
+    let fresh = format!("?__fn{}_{}", eqs.len(), var.trim_start_matches('?'));
+    eqs.push(Predicate {
+        operator: edn::query::PlainSymbol::plain("="),
+        args: vec![
+            FnArg::Variable(edn::query::Variable::from_valid_name(&var)),
+            FnArg::Variable(edn::query::Variable::from_valid_name(&fresh)),
+        ],
+    });
+    fresh
+}
 
 /// Check if a pattern binds a specific variable.
 fn pattern_binds_var(pattern: &edn::query::Pattern, var_name: &str) -> bool {
