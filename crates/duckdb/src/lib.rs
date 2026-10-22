@@ -32,7 +32,11 @@ use duckdb::{
 use serde_json::{json, Value as Json};
 use std::{
     error::Error,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
+    time::Duration,
 };
 
 use core_traits::{Binding, StructuredMap, TypedValue};
@@ -45,14 +49,42 @@ type BoxErr = Box<dyn Error>;
 #[path = "../store/src/duck_conn.rs"]
 mod duck_conn;
 
-/// One of the extension's connections to the host database.
+/// One of the extension's connections to the host database: a `DuckConn` over
+/// a `duckdb::Connection`, both on the heap, freed only by `Conn::close`.
 #[derive(Clone, Copy)]
-struct Conn(&'static duck_conn::DuckConn<'static>);
+struct Conn {
+    duck: *mut duck_conn::DuckConn<'static>,
+    con: *mut duckdb::Connection,
+}
 
 // SAFETY: a `duckdb::Connection` is `Send` but not `Sync` (statement-cache
 // RefCell), and so is `DuckConn`. A `Conn` is in the pool or leased to exactly
 // one call (`Pool::conn`), so no two threads use one connection at once.
 unsafe impl Send for Conn {}
+
+impl Conn {
+    fn new(c: duckdb::Connection) -> Conn {
+        let con = Box::into_raw(Box::new(c));
+        // SAFETY: `con` stays allocated until `close`, which frees `duck` first.
+        let duck = Box::into_raw(Box::new(duck_conn::DuckConn::new(unsafe { &*con })));
+        Conn { duck, con }
+    }
+
+    /// Valid until `close`; a lease returns it to the pool before that.
+    fn sql(&self) -> &'static dyn SqlConn {
+        unsafe { &*self.duck }
+    }
+
+    /// Disconnect. SAFETY: no reference from `sql` may still be in use.
+    unsafe fn close(self) {
+        unsafe {
+            drop(Box::from_raw(self.duck));
+            let con = Box::from_raw(self.con);
+            con.flush_prepared_statement_cache();
+            drop(con);
+        }
+    }
+}
 
 /// The extension's connections to ONE database, made in the entrypoint. They
 /// have to be made there: the database handle DuckDB passes the entrypoint is
@@ -61,10 +93,26 @@ unsafe impl Send for Conn {}
 /// state), so a call always runs on the database it was made in. A mentat call
 /// leases one connection for its duration, so up to `MENTAT_DUCKDB_POOL` calls
 /// run at once. Writes to one store still take turns (`DuckStore::transact`).
+///
+/// The pool's connections keep the database open, so once they are the only
+/// connections left the pool closes them (`watch`) and the database shuts
+/// down.
 struct Pool {
-    free: Mutex<Vec<Conn>>,
+    free: Mutex<Free>,
     returned: Condvar,
+    size: usize,
 }
+
+struct Free {
+    conns: Vec<Conn>,
+    released: bool,
+    /// The last check found the database idle (see `release_if_idle`).
+    idle: bool,
+}
+
+const RELEASED: &str = "mentat: this database's mentat connections were closed when it had \
+    no other connections left (MENTAT_DUCKDB_RELEASE_IDLE); close and reopen the database to \
+    use mentat in it again";
 
 /// Connections to open: `MENTAT_DUCKDB_POOL`, else one per core up to 8.
 fn pool_size() -> usize {
@@ -75,16 +123,21 @@ fn pool_size() -> usize {
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get().min(8)))
 }
 
+/// `MENTAT_DUCKDB_RELEASE_IDLE=0` keeps the pool open for the database's
+/// lifetime (and so the database too), for clients that hold a database with
+/// no connection open and connect to it again later.
+fn release_idle() -> bool {
+    std::env::var("MENTAT_DUCKDB_RELEASE_IDLE").map_or(true, |v| v.trim() != "0")
+}
+
 /// A leased connection; dropping it returns the connection to its pool.
 struct Lease<'p>(&'p Pool, Conn);
 
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        self.0
-            .free
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(self.1);
+        let mut free = self.0.free.lock().unwrap_or_else(|e| e.into_inner());
+        free.conns.push(self.1);
+        drop(free);
         self.0.returned.notify_one();
     }
 }
@@ -95,8 +148,11 @@ impl Pool {
     fn conn(&self) -> Result<(&'static dyn SqlConn, Lease<'_>), BoxErr> {
         let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(c) = free.pop() {
-                return Ok((c.0 as &'static dyn SqlConn, Lease(self, c)));
+            if free.released {
+                return Err(RELEASED.into());
+            }
+            if let Some(c) = free.conns.pop() {
+                return Ok((c.sql(), Lease(self, c)));
             }
             free = self.returned.wait(free).unwrap_or_else(|e| e.into_inner());
         }
@@ -107,6 +163,170 @@ impl Pool {
         let (c, lease) = self.conn()?;
         Ok((DuckStore::new(c, name), lease))
     }
+
+    /// Close the pool's connections if nothing else is connected to the
+    /// database, at two checks in a row; true once closed (or the process is
+    /// exiting). Two, so a client that closes a file and opens it again at
+    /// once (see `sole_opener`) is seen again first. Decided and done under
+    /// the pool lock with every connection free, so no call is running, and a
+    /// call that starts meanwhile waits, then gets `RELEASED`.
+    fn release_if_idle(&self) -> bool {
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        if free.released {
+            return true;
+        }
+        let _check = CHECK.lock().unwrap_or_else(|e| e.into_inner());
+        if EXITING.load(Ordering::SeqCst) {
+            return true; // leave everything to the host's exit
+        }
+        let idle = free.conns.len() == self.size && {
+            // SAFETY: all free, so none is leased; this thread has the pool lock.
+            let con = unsafe { &*free.conns[0].con };
+            let others = con
+                .prepare_cached("SELECT count FROM duckdb_connection_count()")
+                .and_then(|mut s| s.query_row([], |r| r.get::<_, u64>(0)))
+                .map_or(1, |n| n.saturating_sub(self.size as u64));
+            others == 0 && sole_opener(&files(con))
+        };
+        let was_idle = std::mem::replace(&mut free.idle, idle);
+        if !(idle && was_idle) {
+            return false;
+        }
+        // SAFETY: as above.
+        let con = unsafe { &*free.conns[0].con };
+        // The database shuts down on this thread once these close, after its
+        // client closed it, so a client may already be opening the same file
+        // again: the closing instance must not write to it. No checkpoint (the
+        // WAL stays and the next open replays it, as 1.11-1.17.1 left it).
+        let _ = con.execute_batch("PRAGMA disable_checkpoint_on_shutdown");
+        free.released = true;
+        for c in free.conns.drain(..) {
+            // SAFETY: every connection is free (checked above), so none is in use.
+            unsafe { c.close() };
+        }
+        drop(free);
+        self.returned.notify_all();
+        true
+    }
+}
+
+/// The files of the database's attached databases. Prepared fresh: this runs
+/// only while the database looks idle, and a reused plan can be stale.
+fn files(con: &duckdb::Connection) -> Vec<String> {
+    con.prepare("SELECT path FROM duckdb_databases() WHERE NOT internal AND path IS NOT NULL")
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_else(|_| vec![String::new()]) // unknown: never release
+}
+
+/// Whether this database instance is the only opener of each file in this
+/// process. A client that doesn't go through DuckDB's instance cache (the
+/// CLI's `.open`, the C API's `duckdb_open`) can open the same file again
+/// while this instance lives; POSIX file locks belong to the process, so
+/// closing this instance's descriptor would drop that other instance's lock,
+/// and another process could then open the file for writing. One descriptor
+/// per file is this instance's own. (`stat` of `/dev/fd/N`: never opens and
+/// closes a descriptor on the file, which would drop the lock itself.)
+/// shortcut: a reopen that lands between this check and the file's close
+/// (the release takes 5-10 ms) still loses its lock until it closes; only a
+/// reopen 100-200 ms after the close can (`release_if_idle` checks twice).
+/// Closing that window needs a DuckDB database-close hook.
+#[cfg(unix)]
+fn sole_opener(files: &[String]) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let id = |m: std::fs::Metadata| (m.dev(), m.ino());
+    let Ok(ids) = files
+        .iter()
+        .map(|f| std::fs::metadata(f).map(id))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return false;
+    };
+    if ids.is_empty() {
+        return true; // in-memory: no file
+    }
+    // Lists every descriptor on Linux and macOS; elsewhere (FreeBSD without
+    // fdescfs) only 0-2, so this instance's own isn't found: never release.
+    let Ok(fds) = std::fs::read_dir("/dev/fd") else {
+        return false;
+    };
+    let mut n = vec![0; ids.len()];
+    for m in fds
+        .flatten()
+        .filter_map(|e| std::fs::metadata(e.path()).ok())
+    {
+        if let Some(i) = ids.iter().position(|&x| x == id(m.clone())) {
+            n[i] += 1;
+        }
+    }
+    n.iter().all(|&k| k == 1)
+}
+
+/// Windows file locks belong to a handle, not the process: closing this
+/// instance's handle can't unlock another instance's.
+#[cfg(not(unix))]
+fn sole_opener(_: &[String]) -> bool {
+    cfg!(windows)
+}
+
+/// How often the watcher checks each pool. A pool is released at the second
+/// idle check, so a reopen of the same file in this process waits 100-200 ms.
+const WATCH: Duration = Duration::from_millis(100);
+
+/// The pools not yet released, all checked by one watcher thread.
+static POOLS: Mutex<Vec<Arc<Pool>>> = Mutex::new(Vec::new());
+
+/// Have the watcher close `pool` once its database has no other connections
+/// (see `Pool`). If the thread can't start, pools stay open, as with
+/// `MENTAT_DUCKDB_RELEASE_IDLE=0`.
+fn watch(pool: Arc<Pool>) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    POOLS.lock().unwrap_or_else(|e| e.into_inner()).push(pool);
+    STARTED.call_once(|| {
+        unsafe { atexit(on_exit) };
+        let _ = std::thread::Builder::new()
+            .name("mentat-pool".into())
+            .spawn(|| {
+                while !EXITING.load(Ordering::SeqCst) {
+                    std::thread::sleep(WATCH);
+                    // Checked outside the list lock: a release shuts a database
+                    // down, and a LOAD meanwhile must not wait for that.
+                    let pools = POOLS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    let done: Vec<_> = pools.iter().filter(|p| p.release_if_idle()).collect();
+                    if !done.is_empty() {
+                        POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .retain(|p| !done.iter().any(|d| Arc::ptr_eq(p, d)));
+                    }
+                }
+            });
+    });
+}
+
+/// Set at process exit: from then on no pool checks or closes anything, so
+/// none races the host's own teardown (static destructors, a language
+/// runtime). `CHECK` is held for each check, so `on_exit` can wait (briefly,
+/// bounded) for one under way. DuckDB never unloads an extension, so the
+/// handler stays mapped.
+static EXITING: AtomicBool = AtomicBool::new(false);
+static CHECK: Mutex<()> = Mutex::new(());
+
+extern "C" fn on_exit() {
+    EXITING.store(true, Ordering::SeqCst);
+    // A check takes well under a millisecond; never hold up exit for long.
+    for _ in 0..1000 {
+        if CHECK.try_lock().is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+extern "C" {
+    fn atexit(f: extern "C" fn()) -> std::os::raw::c_int;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,19 +752,27 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     // loaded into, on clones of the host connection made now (see `Pool`).
     // Each load gets its own pool, carried in the functions' state, so a
     // second database in the process never shares the first one's.
-    let mut free = Vec::new();
-    for _ in 0..pool_size() {
-        let c: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
-        free.push(Conn(Box::leak(Box::new(duck_conn::DuckConn::new(c)))));
+    let size = pool_size();
+    let mut conns = Vec::with_capacity(size);
+    for _ in 0..size {
+        conns.push(Conn::new(con.try_clone()?));
     }
     let pool = Arc::new(Pool {
-        free: Mutex::new(free),
+        free: Mutex::new(Free {
+            conns,
+            released: false,
+            idle: false,
+        }),
         returned: Condvar::new(),
+        size,
     });
     con.register_scalar_function_with_state::<EdnTransact>("edn_t", &pool)?;
     con.register_table_function_with_extra_info::<EdnQuery, _>("edn_q", &pool)?;
     con.register_scalar_function_with_state::<EdnPull>("edn_pull", &pool)?;
     #[cfg(feature = "script")]
     con.register_scalar_function_with_state::<EdnEval>("edn_eval", &pool)?;
+    if release_idle() {
+        watch(pool);
+    }
     Ok(())
 }

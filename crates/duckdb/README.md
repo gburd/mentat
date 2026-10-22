@@ -186,6 +186,20 @@ turns: `edn_t` holds a per-store lock for its whole transaction, because two
 DuckDB transactions that both update the store's partition counters conflict.
 Reads never wait for it, and writes to different stores run in parallel.
 
+The pool's connections would keep the database open after its client closes
+it, so the extension closes them once they are the only connections left: a
+background thread checks each database every 100 ms and closes its pool at the
+second idle check in a row. Closing a database and opening the same file again
+in the same process therefore waits 100-200 ms for the old one to shut down.
+That shutdown doesn't checkpoint; the next open replays the WAL. While a check
+runs, a mentat call waits for it (well under a millisecond). With DuckDB
+logging on (`CALL enable_logging()`), the check shows in `duckdb_logs` as
+`SELECT count FROM duckdb_connection_count()`, ten times a second, next to
+the SQL of mentat's own calls. Set
+`MENTAT_DUCKDB_RELEASE_IDLE=0` (read at `LOAD`) to keep the pool, and the
+database, open until the process exits, as 1.11 through 1.17.1 did; see
+"Known gaps" for who needs it.
+
 ### Storage layout
 
 The tables mirror the embedded SQLite store's, column for column, so the
@@ -414,5 +428,15 @@ keep them.
   `(fulltext ...)` queries aren't supported.
 - Stores live in the database the extension was loaded into, not in another
   `ATTACH`ed database.
-- Mentat calls run one at a time (one connection).
+- **A database left open with no connections.** A client that keeps a
+  database handle with no connection open, then connects to it again later,
+  finds mentat closed: every mentat call on it fails with "this database's
+  mentat connections were closed ... close and reopen the database". The C
+  API (`duckdb_open` and `duckdb_disconnect`), Node's `@duckdb/node-api`
+  (neo), R's `duckdb` and Go's `database/sql` (once the pool closes its idle
+  connections) can all do this. Python, the CLI, JDBC and `duckdb-rs` always
+  hold a connection while the database is open, so they are not affected.
+  Set `MENTAT_DUCKDB_RELEASE_IDLE=0` for such clients; the database then
+  stays open until the process exits. The check also needs `/dev/fd` (Linux,
+  macOS); elsewhere the pool is never closed.
 - Stores written by mentat 1.10.x (SQLite files) are not migrated.
