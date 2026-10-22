@@ -64,7 +64,7 @@ pub fn typed_values(x: &str) -> String {
 /// catalog and schema, so the store keeps working when its file is attached
 /// under another name or opened directly.
 pub fn create_statements(s: &str) -> Vec<String> {
-    vec![
+    [
         format!("CREATE SCHEMA IF NOT EXISTS {s}"),
         // A numeric view of a value, for comparisons that SQLite makes across
         // INTEGER and REAL (5 = 5.0, 9.5 < 10). NULL for non-numbers.
@@ -89,20 +89,12 @@ pub fn create_statements(s: &str) -> Vec<String> {
              value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0, \
              {TYPED_COLUMNS})"
         ),
-        format!(
-            "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
-             v_i, v_d, v_s FROM timelined_transactions WHERE timeline = 0"
-        ),
         // Fulltext (see module docs).
         fulltext_values_view(s),
-        format!(
-            "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms WHERE index_fulltext"
-        ),
-        format!(
-            "CREATE VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms"
-        ),
+    ]
+    .into_iter()
+    .chain(views(s, "CREATE"))
+    .chain([
         format!(
             "CREATE TABLE {s}.idents (e BIGINT NOT NULL, a BIGINT NOT NULL, \
              v {VALUE_TYPE} NOT NULL, value_type_tag SMALLINT NOT NULL)"
@@ -117,6 +109,29 @@ pub fn create_statements(s: &str) -> Vec<String> {
         ),
         format!(
             "INSERT INTO {s}.meta VALUES ('version', '{VERSION}')"
+        ),
+    ])
+    .collect()
+}
+
+/// The views over `datoms` and `timelined_transactions`, as `verb` (`CREATE`
+/// or `CREATE OR REPLACE`) statements. Their bodies name tables unqualified;
+/// before 1.18 they named the store's schema (`FROM mentat_x.datoms`), which
+/// DuckDB can't resolve when the file is attached under that same name
+/// ("ambiguous reference"), so `open` replaces them.
+pub fn views(s: &str, verb: &str) -> Vec<String> {
+    vec![
+        format!(
+            "{verb} VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
+             v_i, v_d, v_s FROM timelined_transactions WHERE timeline = 0"
+        ),
+        format!(
+            "{verb} VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms WHERE index_fulltext"
+        ),
+        format!(
+            "{verb} VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms"
         ),
     ]
 }

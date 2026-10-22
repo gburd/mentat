@@ -261,7 +261,8 @@ impl<'c> DuckStore<'c> {
     ///   `schema::LEGACY_INDEXES`). This also repairs a store whose index
     ///   #26828 already corrupted.
     /// - Replace the pre-1.18 `fulltext_values` table (always empty) with the
-    ///   view `(fulltext ...)` queries join.
+    ///   view `(fulltext ...)` queries join, and the pre-1.18 views whose
+    ///   bodies named the store's schema (see `schema::views`).
     ///
     /// A read-only database (`duckdb -readonly`, `ATTACH ... (READ_ONLY)`)
     /// is left as it is; every query still works (`(fulltext ...)` reads the
@@ -286,7 +287,17 @@ impl<'c> DuckStore<'c> {
             &self.names(),
             |r| r.get_i64(0),
         )?;
-        if stale.unwrap_or(0) == 0 {
+        // A view body that names the schema: `FROM <schema>.` (DuckDB keeps
+        // the SQL as written, quoted or not).
+        let old_views = self.conn.query_opt(
+            "SELECT count(*) FROM duckdb_views() WHERE database_name = $1 AND schema_name = $2 \
+             AND view_name IN ('transactions', 'fulltext_datoms', 'all_datoms') \
+             AND (contains(sql, ' FROM ' || $2 || '.') OR contains(sql, ' FROM \"' || $2 || '\".'))",
+            &self.names(),
+            |r| r.get_i64(0),
+        )?;
+        let stale = stale.unwrap_or(0) + old_views.unwrap_or(0);
+        if stale == 0 {
             return Ok(());
         }
         let lock = write_lock(&self.qualified);
@@ -301,16 +312,18 @@ impl<'c> DuckStore<'c> {
             &self.names(),
             |r| r.get_i64(0),
         )?;
-        if table.is_some() {
-            self.in_tx(|s| {
+        self.in_tx(|s| {
+            if table.is_some() {
                 s.conn
                     .execute_batch(&format!("DROP TABLE {}.fulltext_values", s.qualified))?;
                 s.conn
                     .execute_batch(&schema::fulltext_values_view(&s.qualified))?;
-                Ok(())
-            })?;
-        }
-        Ok(())
+            }
+            for v in schema::views(&s.qualified, "CREATE OR REPLACE") {
+                s.conn.execute_batch(&v)?;
+            }
+            Ok(())
+        })
     }
 
     fn create(&self) -> Result<()> {
