@@ -50,7 +50,7 @@ If any argument is SQL NULL, the result is NULL.
 
 | Function | Returns |
 |---|---|
-| `edn_t(db_path TEXT, edn TEXT)` | JSON tx-report `{"tx_id":N,"tx_instant":"RFC3339","tempids":{"a":N,…}}` (same as DuckDB `edn_t`) |
+| `edn_t(db_path TEXT, edn TEXT)` | JSON tx-report `{"tx_id":N,"tx_instant":"RFC3339","tempids":{"a":N,…},"datoms_asserted":N,"datoms_retracted":N}` (same as DuckDB `edn_t`) |
 | `edn_q(db_path TEXT, query TEXT, opts TEXT)` | JSON result. The shape depends on the find spec (below). |
 | `edn_pull(db_path TEXT, pattern TEXT, entity INTEGER)` | JSON map with `":ns/attr"` keys and `":db/id"` (pg_mentat shape) |
 | `edn_eval(db_path TEXT, script TEXT)` | EDN text (`pr-str`) of the script's last form |

@@ -327,6 +327,8 @@ fn tx_report_json(report: &TxReport) -> String {
         "tx_id": report.tx_id,
         "tx_instant": report.tx_instant.to_rfc3339(),
         "tempids": tempids,
+        "datoms_asserted": report.datoms_asserted,
+        "datoms_retracted": report.datoms_retracted,
     })
     .to_string()
 }
@@ -489,6 +491,24 @@ mod tests {
             .contains("not valid JSON"));
     }
 
+    // #281: counts a store didn't take are JSON null.
+    #[test]
+    fn uncounted_tx_report_is_null() {
+        use mentat::FromMicros;
+        let r = TxReport::new(
+            1,
+            mentat::DateTime::<mentat::Utc>::from_micros(0),
+            Default::default(),
+            None,
+            None,
+        );
+        let j: Json = serde_json::from_str(&tx_report_json(&r)).unwrap();
+        assert_eq!(
+            (&j["datoms_asserted"], &j["datoms_retracted"]),
+            (&Json::Null, &Json::Null)
+        );
+    }
+
     /// End to end over a real store file: tx-report, every result shape, the
     /// inputs contract, as-of, pull and eval.
     #[test]
@@ -510,7 +530,19 @@ mod tests {
         .unwrap();
         let alice = r["tempids"]["a"].as_i64().unwrap();
         let tx1 = r["tx_id"].as_i64().unwrap();
-        transact_json(db, &format!("[[:db/add {alice} :person/age 31]]")).unwrap();
+        assert_eq!(
+            (&r["datoms_asserted"], &r["datoms_retracted"]),
+            (&json!(3), &json!(0))
+        );
+        let r: Json = serde_json::from_str(
+            &transact_json(db, &format!("[[:db/add {alice} :person/age 31]]")).unwrap(),
+        )
+        .unwrap();
+        // A replacement: one assertion, one retraction (#281).
+        assert_eq!(
+            (&r["datoms_asserted"], &r["datoms_retracted"]),
+            (&json!(1), &json!(1))
+        );
 
         let q = |query: &str, opts: &str| -> Json {
             serde_json::from_str(&query_json(db, query, Some(opts)).unwrap()).unwrap()

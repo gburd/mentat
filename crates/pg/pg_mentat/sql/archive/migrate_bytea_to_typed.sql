@@ -118,11 +118,14 @@ BEGIN
     )
     WHERE value_type_tag = 3 AND v_double IS NULL;
 
-    -- Instant values (type_tag = 4): i64 microseconds since Unix epoch -> TIMESTAMPTZ
+    -- Instant values (type_tag = 4): i64 microseconds since Unix epoch -> TIMESTAMPTZ.
+    -- Whole seconds plus an interval: to_timestamp(micros::double precision / 1e6)
+    -- loses a microsecond outside roughly 1932..2100.
     RAISE NOTICE 'Migrating instant values...';
     UPDATE mentat.datoms
-    SET v_instant = to_timestamp(
-        (
+    SET v_instant = (
+        SELECT to_timestamp(m / 1000000) + (m % 1000000) * interval '1 microsecond'
+        FROM (SELECT
             get_byte(v, 0)::BIGINT
           | (get_byte(v, 1)::BIGINT << 8)
           | (get_byte(v, 2)::BIGINT << 16)
@@ -130,8 +133,7 @@ BEGIN
           | (get_byte(v, 4)::BIGINT << 32)
           | (get_byte(v, 5)::BIGINT << 40)
           | (get_byte(v, 6)::BIGINT << 48)
-          | (get_byte(v, 7)::BIGINT << 56)
-        )::DOUBLE PRECISION / 1000000.0
+          | (get_byte(v, 7)::BIGINT << 56) AS m) AS micros
     )
     WHERE value_type_tag = 4 AND v_instant IS NULL;
 

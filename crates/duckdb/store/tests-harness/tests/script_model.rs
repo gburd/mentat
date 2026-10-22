@@ -45,6 +45,9 @@ model_test!(q_takes_in_inputs);
 model_test!(q_mixed_inputs);
 model_test!(history_patterns_see_added);
 model_test!(cas_and_retract_entity);
+model_test!(retracting_an_absent_value_is_a_no_op);
+model_test!(rename_and_retract_logs_one_retraction);
+model_test!(list_form_ref_vector_is_one_lookup_ref);
 model_test!(transaction_functions);
 
 model_test!(with_is_speculative_and_does_not_commit);

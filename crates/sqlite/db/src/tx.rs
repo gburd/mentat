@@ -46,7 +46,7 @@
 //! keep everything straight.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::iter::once;
 
 use crate::db;
@@ -65,7 +65,7 @@ use mentat_core::util::Either;
 
 use core_traits::{attribute, now, Attribute, Entid, KnownEntid, TypedValue, ValueType};
 
-use mentat_core::{DateTime, Schema, TxReport, Utc};
+use mentat_core::{DateTime, HasSchema, Schema, TxReport, Utc};
 
 use crate::metadata;
 use crate::schema::SchemaBuilding;
@@ -123,9 +123,49 @@ where
     tx_id: Entid,
 }
 
+/// A value-position vector `[:attr v]` read as Datomic's lookup ref (#152): two elements, a
+/// keyword naming a `:db/unique` attribute, then a plain value. With `identity_only`, only a
+/// `:db.unique/identity` attribute qualifies: that is DataScript's rule for the one ambiguous
+/// place, the whole value of a cardinality-many ref in map form, where `[:a/b :c/d]` may also
+/// be a list of two idents. A list of lookup refs is a vector of them
+/// (`[[:a/id "x"] [:a/id "y"]]`). In list form `[op e a v]`, `v` is one value, so it is never
+/// a list.
+fn vector_lookup_ref<V: TransactableValue>(
+    schema: &Schema,
+    vs: &[ValuePlace<V>],
+    identity_only: bool,
+) -> Option<entmod::LookupRef<V>> {
+    let [a, ValuePlace::Atom(v)] = vs else {
+        return None;
+    };
+    let a = match a {
+        ValuePlace::Entid(a @ entmod::EntidOrIdent::Ident(_)) => a.clone(),
+        ValuePlace::Atom(atom) => match atom.clone().into_entity_place().ok()? {
+            entmod::EntityPlace::Entid(a @ entmod::EntidOrIdent::Ident(_)) => a,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let entmod::EntidOrIdent::Ident(ref kw) = a else {
+        return None;
+    };
+    schema
+        .attribute_for_ident(kw)
+        .filter(|(attr, _)| match attr.unique {
+            Some(attribute::Unique::Identity) => true,
+            Some(attribute::Unique::Value) => !identity_only,
+            None => false,
+        })?;
+    Some(entmod::LookupRef {
+        a: AttributePlace::Entid(a),
+        v: v.clone(),
+    })
+}
+
 /// Remove any :db/id value from the given map notation, converting the returned value into
 /// something suitable for the entity position rather than something suitable for a value position.
 pub fn remove_db_id<V: TransactableValue>(
+    schema: &Schema,
     map: &mut entmod::MapNotation<V>,
 ) -> Result<Option<entmod::EntityPlace<V>>> {
     // TODO: extract lazy defined constant.
@@ -138,7 +178,11 @@ pub fn remove_db_id<V: TransactableValue>(
             entmod::ValuePlace::TempId(e) => Some(entmod::EntityPlace::TempId(e)),
             entmod::ValuePlace::TxFunction(e) => Some(entmod::EntityPlace::TxFunction(e)),
             entmod::ValuePlace::Atom(v) => Some(v.into_entity_place()?),
-            entmod::ValuePlace::Vector(_) | entmod::ValuePlace::MapNotation(_) => {
+            entmod::ValuePlace::Vector(vs) => match vector_lookup_ref(schema, &vs, false) {
+                Some(lr) => Some(entmod::EntityPlace::LookupRef(lr)),
+                None => bail!(DbErrorKind::InputError(errors::InputError::BadDbId)),
+            },
+            entmod::ValuePlace::MapNotation(_) => {
                 bail!(DbErrorKind::InputError(errors::InputError::BadDbId))
             }
         }
@@ -594,8 +638,12 @@ where
                                 }
                             }
 
-                            entmod::ValuePlace::Vector(_) =>
-                                bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode vector value in :attr/_reversed notation for attribute {}", forward_a))),
+                            entmod::ValuePlace::Vector(ref vs) => match vector_lookup_ref(self.schema, vs, false) {
+                                Some(ref lookup_ref) =>
+                                    Ok(Either::Right(LookupRefOrTempId::LookupRef(self.intern_lookup_ref(lookup_ref)?))),
+                                None =>
+                                    bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode vector value in :attr/_reversed notation for attribute {}", forward_a))),
+                            },
 
                             entmod::ValuePlace::MapNotation(_) =>
                                 bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode map notation value in :attr/_reversed notation for attribute {}", forward_a))),
@@ -613,29 +661,35 @@ where
 
         // We want to handle entities in the order they're given to us, while also "exploding" some
         // entities into many.  We therefore push the initial entities onto the back of the deque,
-        // take from the front of the deque, and explode onto the front as well.
-        let mut deque: VecDeque<Entity<V>> = VecDeque::default();
-        deque.extend(entities);
+        // take from the front of the deque, and explode onto the front as well.  Each entity
+        // carries `one_value`: it was given in list form, `[op e a v]`, whose `v` is one value
+        // (Datomic's grammar), so on a ref attribute a vector `v` is a lookup ref (#152).
+        let mut deque: VecDeque<(Entity<V>, bool)> = VecDeque::default();
+        deque.extend(entities.into_iter().map(|e| (e, true)));
 
         let mut terms: Vec<TermWithTempIdsAndLookupRefs> = Vec::with_capacity(deque.len());
 
-        while let Some(entity) = deque.pop_front() {
+        while let Some((entity, one_value)) = deque.pop_front() {
             match entity {
                 Entity::MapNotation(mut map_notation) => {
                     // :db/id is optional; if it's not given, we generate a special internal tempid
                     // to use for upserting.  This tempid will not be reported in the TxReport.
-                    let db_id: entmod::EntityPlace<V> = remove_db_id(&mut map_notation)?
-                        .unwrap_or_else(|| in_process.allocate_mentat_id());
+                    let db_id: entmod::EntityPlace<V> =
+                        remove_db_id(self.schema, &mut map_notation)?
+                            .unwrap_or_else(|| in_process.allocate_mentat_id());
 
                     // We're not nested, so :db/isComponent is not relevant.  We just explode the
                     // map notation.
                     for (a, v) in map_notation {
-                        deque.push_front(Entity::AddOrRetract {
-                            op: OpType::Add,
-                            e: db_id.clone(),
-                            a: AttributePlace::Entid(a),
-                            v,
-                        });
+                        deque.push_front((
+                            Entity::AddOrRetract {
+                                op: OpType::Add,
+                                e: db_id.clone(),
+                                a: AttributePlace::Entid(a),
+                                v,
+                            },
+                            false,
+                        ));
                     }
                 }
 
@@ -704,7 +758,9 @@ where
                                 });
                             }
 
-                            if let Some(ov) = old_val {
+                            // [:db/cas e a v v] is a no-op, as in Datomic (whose cas expands
+                            // to the assertion alone): retracting v would conflict with the add.
+                            if let Some(ov) = old_val.filter(|ov| *ov != new_val) {
                                 terms.push(Term::AddOrRetract(
                                     OpType::Retract,
                                     Either::Left(KnownEntid(e)),
@@ -813,17 +869,57 @@ where
                             }
 
                             entmod::ValuePlace::Vector(vs) => {
+                                let is_ref = attribute.value_type == ValueType::Ref;
+                                if is_ref {
+                                    // Map form's whole value of a cardinality-many ref is the
+                                    // one ambiguous place: DataScript's identity-only rule.
+                                    let identity_only = attribute.multival && !one_value;
+                                    match vector_lookup_ref(self.schema, &vs, identity_only) {
+                                        Some(lr) => {
+                                            deque.push_front((
+                                                Entity::AddOrRetract {
+                                                    op,
+                                                    e: e.clone(),
+                                                    a: AttributePlace::Entid(
+                                                        entmod::EntidOrIdent::Entid(a),
+                                                    ),
+                                                    v: entmod::ValuePlace::LookupRef(lr),
+                                                },
+                                                one_value,
+                                            ));
+                                            continue;
+                                        }
+                                        None if one_value => bail!(DbErrorKind::NotYetImplemented(format!("The value of ref attribute {} in [:db/add e a v] is one value, so a vector there must be a lookup ref [:unique/attr value]", a))),
+                                        None => {}
+                                    }
+                                }
                                 if !attribute.multival {
                                     bail!(DbErrorKind::NotYetImplemented(format!("Cannot explode vector value for attribute {} that is not :db.cardinality :db.cardinality/many", a)));
                                 }
 
                                 for vv in vs {
-                                    deque.push_front(Entity::AddOrRetract {
-                                        op,
-                                        e: e.clone(),
-                                        a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(a)),
-                                        v: vv,
-                                    });
+                                    // In a ref's list of values, a vector is a lookup ref
+                                    // (any :db/unique attribute), not a nested list.
+                                    let vv = match vv {
+                                        entmod::ValuePlace::Vector(inner) if is_ref => {
+                                            match vector_lookup_ref(self.schema, &inner, false) {
+                                                Some(lr) => entmod::ValuePlace::LookupRef(lr),
+                                                None => bail!(DbErrorKind::NotYetImplemented(format!("A vector in the values of ref attribute {} must be a lookup ref [:unique/attr value]", a))),
+                                            }
+                                        }
+                                        vv => vv,
+                                    };
+                                    deque.push_front((
+                                        Entity::AddOrRetract {
+                                            op,
+                                            e: e.clone(),
+                                            a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(
+                                                a,
+                                            )),
+                                            v: vv,
+                                        },
+                                        false,
+                                    ));
                                 }
                                 continue;
                             }
@@ -844,7 +940,7 @@ where
                                 // :db/id is optional; if it's not given, we generate a special internal tempid
                                 // to use for upserting.  This tempid will not be reported in the TxReport.
                                 let db_id: Option<entmod::EntityPlace<V>> =
-                                    remove_db_id(&mut map_notation)?;
+                                    remove_db_id(self.schema, &mut map_notation)?;
                                 let mut dangling = db_id.is_none();
                                 let db_id: entmod::EntityPlace<V> =
                                     db_id.unwrap_or_else(|| in_process.allocate_mentat_id());
@@ -894,14 +990,17 @@ where
                                             dangling = false;
                                         }
 
-                                        deque.push_front(Entity::AddOrRetract {
-                                            op: OpType::Add,
-                                            e: db_id.clone(),
-                                            a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(
-                                                inner_a,
-                                            )),
-                                            v: inner_v,
-                                        });
+                                        deque.push_front((
+                                            Entity::AddOrRetract {
+                                                op: OpType::Add,
+                                                e: db_id.clone(),
+                                                a: AttributePlace::Entid(
+                                                    entmod::EntidOrIdent::Entid(inner_a),
+                                                ),
+                                                v: inner_v,
+                                            },
+                                            false,
+                                        ));
                                     }
                                 }
 
@@ -1106,19 +1205,20 @@ where
         let mut aev_trie = into_aev_trie(self.schema, final_populations, inert_terms)?;
 
         let tx_instant;
+        let datom_counts;
         {
             // TODO: Don't use this block to scope borrowing the schema; instead, extract a helper function.
 
             // Assertions that are :db.cardinality/one and not :db.fulltext.
             let mut non_fts_one: Vec<db::ReducedEntity> = vec![];
 
-            // Assertions that are :db.cardinality/many and not :db.fulltext.
+            // Assertions that are :db.cardinality/many, and retractions, not :db.fulltext.
             let mut non_fts_many: Vec<db::ReducedEntity> = vec![];
 
             // Assertions that are :db.cardinality/one and :db.fulltext.
             let mut fts_one: Vec<db::ReducedEntity> = vec![];
 
-            // Assertions that are :db.cardinality/many and :db.fulltext.
+            // Assertions that are :db.cardinality/many, and retractions, that are :db.fulltext.
             let mut fts_many: Vec<db::ReducedEntity> = vec![];
 
             // We need to ensure that callers can't blindly transact entities that haven't been
@@ -1150,13 +1250,6 @@ where
                     tx_might_update_metadata = true;
                 }
 
-                let queue = match (attribute.fulltext, attribute.multival) {
-                    (false, true) => &mut non_fts_many,
-                    (false, false) => &mut non_fts_one,
-                    (true, false) => &mut fts_one,
-                    (true, true) => &mut fts_many,
-                };
-
                 for (e, ars) in evs {
                     for (added, v) in ars
                         .add
@@ -1164,8 +1257,16 @@ where
                         .map(|v| (true, v))
                         .chain(ars.retract.into_iter().map(|v| (false, v)))
                     {
-                        let op = if added { OpType::Add } else { OpType::Retract };
-                        self.watcher.datom(op, e, a, &v);
+                        // A retraction must match its value: the inexact (e, a) search of
+                        // cardinality-one assertions would find, and retract, whatever value
+                        // [e a] has. So every retraction takes the exact (e, a, v) search.
+                        let exact = attribute.multival || !added;
+                        let queue = match (attribute.fulltext, exact) {
+                            (false, true) => &mut non_fts_many,
+                            (false, false) => &mut non_fts_one,
+                            (true, false) => &mut fts_one,
+                            (true, true) => &mut fts_many,
+                        };
                         queue.push((e, a, attribute, v, added));
                     }
                 }
@@ -1201,6 +1302,30 @@ where
                     self.store.write_partition_map(&self.partition_map)?;
                 }
             }
+            datom_counts = self.store.transaction_datom_counts(self.tx_id)?;
+
+            // The watchers (attribute caches, observers) see what the transaction did: a
+            // retraction that matched no datom is left out (#362).
+            let has_retractions = [&non_fts_one, &non_fts_many, &fts_one, &fts_many]
+                .iter()
+                .any(|q| q.iter().any(|r| !r.4));
+            let unmatched: HashSet<(Entid, Entid, TypedValue)> = if has_retractions {
+                self.store.unmatched_retractions()?.into_iter().collect()
+            } else {
+                HashSet::new()
+            };
+            for (e, a, _, v, added) in non_fts_one
+                .iter()
+                .chain(&non_fts_many)
+                .chain(&fts_one)
+                .chain(&fts_many)
+            {
+                if *added {
+                    self.watcher.datom(OpType::Add, *e, *a, v);
+                } else if unmatched.is_empty() || !unmatched.contains(&(*e, *a, v.clone())) {
+                    self.watcher.datom(OpType::Retract, *e, *a, v);
+                }
+            }
         }
 
         self.watcher.done(&self.tx_id, self.schema)?;
@@ -1234,11 +1359,13 @@ where
             }
         }
 
-        Ok(TxReport {
-            tx_id: self.tx_id,
+        Ok(TxReport::new(
+            self.tx_id,
             tx_instant,
             tempids,
-        })
+            datom_counts.map(|c| c.0),
+            datom_counts.map(|c| c.1),
+        ))
     }
 }
 

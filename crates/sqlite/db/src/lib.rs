@@ -85,11 +85,45 @@ pub use crate::tx_observer::{InProgressObserverTransactWatcher, TxObservationSer
 
 pub use crate::types::{AttributeSet, Partition, PartitionMap, TransactableValue, DB};
 
+/// Parse a stored keyword value (`:ns/name` or, for a value, a plain `:name`; #123).
+pub fn to_keyword(s: &str) -> Result<symbols::Keyword> {
+    if let Ok(k) = to_namespaced_keyword(s) {
+        return Ok(k);
+    }
+    match s.strip_prefix(':') {
+        Some(name) if !name.is_empty() && !name.contains(['/', ':']) => {
+            Ok(symbols::Keyword::plain(name))
+        }
+        _ => bail!(DbErrorKind::NotYetImplemented(format!(
+            "InvalidKeyword: {}",
+            s
+        ))),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_to_keyword() {
+    assert_eq!(
+        to_keyword(":plain").unwrap(),
+        symbols::Keyword::plain("plain")
+    );
+    assert_eq!(
+        to_keyword(":a.b/c").unwrap(),
+        symbols::Keyword::namespaced("a.b", "c")
+    );
+    for bad in ["", ":", "plain", ":a/b/c", "::x"] {
+        assert!(to_keyword(bad).is_err(), "{bad}");
+    }
+}
+
 pub fn to_namespaced_keyword(s: &str) -> Result<symbols::Keyword> {
     let splits = [':', '/'];
     let mut i = s.split(&splits[..]);
     let nsk = match (i.next(), i.next(), i.next(), i.next()) {
-        (Some(""), Some(namespace), Some(name), None) => {
+        (Some(""), Some(namespace), Some(name), None)
+            if !namespace.is_empty() && !name.is_empty() =>
+        {
             Some(symbols::Keyword::namespaced(namespace, name))
         }
         _ => None,

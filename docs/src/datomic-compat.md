@@ -19,11 +19,55 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
 | Tempids | Yes | Yes | **Complete** |
-| Lookup refs | Yes | Yes | **Complete** |
+| Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; in map form, for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs (see [Lookup refs in a list of values](#lookup-refs-in-a-list-of-values)). The embedded engine and DuckDB accept the vector form since 1.18.0 |
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
 | Negative tempids | Yes | No | N/A -- use string tempids |
 | `:db/fn` (database functions) | Yes (Clojure) | Yes (mino) | pg_mentat 1.14.0 (`script` builds); embedded SQLite (`mino` feature) and the DuckDB extension in 1.15.0 -- sandboxed mino `(fn [db & args] ...)` returning tx-data; see [Transaction functions](#transaction-functions) |
+
+### Lookup refs in a list of values
+
+A lookup ref `[:attr v]` names the entity whose `:attr` is `v`, for any
+`:db/unique` attribute (`:db.unique/identity` or `:db.unique/value`), in
+`:db/id`, entity position, and as the value of a cardinality-one ref. The
+embedded engine and DuckDB also take one in reverse notation
+(`{:a/_ref [:attr v]}`); pg_mentat has no reverse notation in transactions.
+
+In list form, `[:db/add e a v]` takes one value, as in Datomic, so on a ref
+attribute (cardinality-one or -many) a vector `v` is always a lookup ref, and
+an error if it doesn't resolve. To add several values, use several `:db/add`s
+or map form.
+
+The whole value of a cardinality-many ref attribute in map form is the one
+ambiguous place: a two-element vector there can be one lookup ref or a list
+of two values. Every backend reads it the way DataScript does: when the first
+element is the ident of a `:db.unique/identity` attribute, the vector is one
+lookup ref. Otherwise it is a list of values, and each vector in that list is
+a lookup ref (any `:db/unique` attribute; one that doesn't resolve is an
+error).
+
+```clojure
+;; :user/id is :db.unique/identity, :user/email is :db.unique/value
+{:form/owners [:user/id "u1"]}                   ; one ref: the entity with :user/id "u1"
+{:form/owners [[:user/id "u1"] [:user/id "u2"]]} ; two refs, one per lookup ref
+{:form/owners [[:user/email "a@x"]]}             ; one ref, by :user/email
+{:db/id [:user/email "a@x"] :user/name "A"}      ; :db/id may use either kind
+;; :user/name is not unique
+{:form/fields [:user/email :user/name]}          ; two refs, to the two attribute entities
+;; list form: one value
+[:db/add "f" :form/owners [:user/email "a@x"]]   ; one ref, by :user/email
+[:db/add "f" :form/fields [:user/email :user/name]] ; error: a lookup ref that does not resolve
+```
+
+`:db/ident` is itself `:db.unique/identity`, so `[:db/ident :user/name]` is a
+lookup ref to the entity named `:user/name`, not refs to `:db/ident` and
+`:user/name`. The same goes for a list whose first element names any identity
+attribute. To write two refs in that case, make the first one a lookup ref
+(or use entids):
+
+```clojure
+{:form/fields [[:db/ident :user/id] :user/name]} ; two refs: :user/id and :user/name
+```
 
 ### Transaction functions
 

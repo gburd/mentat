@@ -68,6 +68,34 @@
 //! `Result<T, E>` as a `*mut T` while writing any error to the `ExternError` are provided as
 //! `translate_result`, `translate_opt_result` (for `Result<Option<T>>`) and `translate_void_result`
 //! (for `Result<(), T>`). Callers are responsible for freeing the `message` field of `ExternError`.
+//!
+//! # Panics
+//!
+//! No panic unwinds into the caller. Most entry points run inside `catch_panic`: a panic is
+//! reported in the `ExternError` out parameter when the function has one (the message starts
+//! with `mentat panicked: `), and the function returns a null pointer, 0, 0.0 or nothing.
+//! After a caught panic, a handle the call consumed is gone, and a handle it borrowed may be in
+//! an inconsistent state: destroy it.
+//!
+//! The functions that return a plain number, and have no `ExternError`, abort the process on a
+//! panic instead, as they did before 1.18.0: 0 is a valid long, boolean, double, timestamp and
+//! entid, so returning it would hide the failure (a misspelled attribute name would quietly
+//! become entid 0). They are `typed_value_into_{long,entid,boolean,double,timestamp}`,
+//! `value_at_index_into_{long,entid,boolean,double,timestamp}`, `store_entid_for_attribute`
+//! (an attribute not in the schema), `tx_report_get_entid`, `tx_report_get_tx_instant`,
+//! `changelist_entry_at` and `typed_value_value_type` (whose return type has no spare value).
+//! Each documents what makes it panic; check the value type or the attribute first.
+//!
+//! # Threads
+//!
+//! A `Store` handle, and every handle made from it (`InProgress`, builders, `QueryBuilder`,
+//! result sets and iterators), must not be used from two threads at once. The underlying
+//! SQLite connection and the store's caches are not synchronised. A caller that shares a
+//! store between threads must serialise all calls on it with its own lock. Moving a handle to
+//! another thread, and using it only there, is fine. To use Mentat from several threads in
+//! parallel, open one `Store` per thread on the same file: SQLite serialises the writers.
+//! Transaction observer callbacks (`store_register_observer`) run on a separate thread owned
+//! by Mentat; they must not call back into the same `Store`.
 
 #![allow(unused_doc_comments)]
 #![allow(clippy::missing_safety_doc)]
@@ -98,7 +126,9 @@ pub mod utils;
 
 pub use utils::strings::{c_char_to_string, kw_from_string, string_to_c_char};
 
-use utils::error::{translate_opt_result, translate_result, translate_void_result, ExternError};
+use utils::error::{
+    catch_panic, translate_opt_result, translate_result, translate_void_result, ExternError,
+};
 
 pub use utils::log;
 
@@ -171,9 +201,11 @@ impl<'a, 'c> InProgressTransactResult<'a, 'c> {
 /// pointer type.
 #[no_mangle]
 pub unsafe extern "C" fn store_open(uri: *const c_char, error: *mut ExternError) -> *mut Store {
-    assert_not_null!(uri);
-    let uri = c_char_to_string(uri);
-    translate_result(Store::open(uri), error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(uri);
+        let uri = c_char_to_string(uri);
+        translate_result(Store::open(uri), error)
+    })
 }
 
 /// Variant of store_open that opens an encrypted database.
@@ -190,9 +222,11 @@ pub unsafe extern "C" fn store_open_encrypted(
     key: *const c_char,
     error: *mut ExternError,
 ) -> *mut Store {
-    let uri = c_char_to_string(uri);
-    let key = c_char_to_string(key);
-    translate_result(Store::open_with_key(&uri, &key), error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        let uri = c_char_to_string(uri);
+        let key = c_char_to_string(key);
+        translate_result(Store::open_with_key(&uri, &key), error)
+    })
 }
 
 // TODO: open empty
@@ -221,9 +255,11 @@ pub unsafe extern "C" fn store_begin_transaction<'a, 'c>(
     store: *mut Store,
     error: *mut ExternError,
 ) -> *mut InProgress<'a, 'c> {
-    assert_not_null!(store);
-    let store = &mut *store;
-    translate_result(store.begin_transaction(), error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        translate_result(store.begin_transaction(), error)
+    })
 }
 
 /// Perform a single transact operation using the current in progress
@@ -244,10 +280,12 @@ pub unsafe extern "C" fn in_progress_transact<'m>(
     transaction: *const c_char,
     error: *mut ExternError,
 ) -> *mut TxReport {
-    assert_not_null!(in_progress);
-    let in_progress = &mut *in_progress;
-    let transaction = c_char_to_string(transaction);
-    translate_result(in_progress.transact(transaction), error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(in_progress);
+        let in_progress = &mut *in_progress;
+        let transaction = c_char_to_string(transaction);
+        translate_result(in_progress.transact(transaction), error)
+    })
 }
 
 /// Commit all the transacts that have been performed using this
@@ -264,9 +302,11 @@ pub unsafe extern "C" fn in_progress_commit<'m>(
     in_progress: *mut InProgress<'m, 'm>,
     error: *mut ExternError,
 ) {
-    assert_not_null!(in_progress);
-    let in_progress = Box::from_raw(in_progress);
-    translate_void_result(in_progress.commit(), error);
+    catch_panic(error, (), || {
+        assert_not_null!(in_progress);
+        let in_progress = Box::from_raw(in_progress);
+        translate_void_result(in_progress.commit(), error);
+    })
 }
 
 /// Rolls back all the transacts that have been performed using this
@@ -284,9 +324,11 @@ pub unsafe extern "C" fn in_progress_rollback<'m>(
     in_progress: *mut InProgress<'m, 'm>,
     error: *mut ExternError,
 ) {
-    assert_not_null!(in_progress);
-    let in_progress = Box::from_raw(in_progress);
-    translate_void_result(in_progress.rollback(), error);
+    catch_panic(error, (), || {
+        assert_not_null!(in_progress);
+        let in_progress = Box::from_raw(in_progress);
+        translate_void_result(in_progress.rollback(), error);
+    })
 }
 
 /// Creates a builder using the in progress transaction to allow for programmatic
@@ -301,9 +343,11 @@ pub unsafe extern "C" fn in_progress_rollback<'m>(
 pub unsafe extern "C" fn in_progress_builder<'m>(
     in_progress: *mut InProgress<'m, 'm>,
 ) -> *mut InProgressBuilder<'m, 'm> {
-    assert_not_null!(in_progress);
-    let in_progress = Box::from_raw(in_progress);
-    Box::into_raw(Box::new(in_progress.builder()))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(in_progress);
+        let in_progress = Box::from_raw(in_progress);
+        Box::into_raw(Box::new(in_progress.builder()))
+    })
 }
 
 /// Creates a builder for an entity with `tempid` using the in progress transaction to
@@ -319,10 +363,12 @@ pub unsafe extern "C" fn in_progress_entity_builder_from_temp_id<'m>(
     in_progress: *mut InProgress<'m, 'm>,
     temp_id: *const c_char,
 ) -> *mut EntityBuilder<InProgressBuilder<'m, 'm>> {
-    assert_not_null!(in_progress);
-    let in_progress = Box::from_raw(in_progress);
-    let temp_id = c_char_to_string(temp_id);
-    Box::into_raw(Box::new(in_progress.builder().describe_tempid(temp_id)))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(in_progress);
+        let in_progress = Box::from_raw(in_progress);
+        let temp_id = c_char_to_string(temp_id);
+        Box::into_raw(Box::new(in_progress.builder().describe_tempid(temp_id)))
+    })
 }
 
 /// Creates a builder for an entity with `entid` using the in progress transaction to
@@ -338,9 +384,11 @@ pub unsafe extern "C" fn in_progress_entity_builder_from_entid<'m>(
     in_progress: *mut InProgress<'m, 'm>,
     entid: c_longlong,
 ) -> *mut EntityBuilder<InProgressBuilder<'m, 'm>> {
-    assert_not_null!(in_progress);
-    let in_progress = Box::from_raw(in_progress);
-    Box::into_raw(Box::new(in_progress.builder().describe(KnownEntid(entid))))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(in_progress);
+        let in_progress = Box::from_raw(in_progress);
+        Box::into_raw(Box::new(in_progress.builder().describe(KnownEntid(entid))))
+    })
 }
 
 /// Starts a new transaction and creates a builder using the transaction
@@ -356,12 +404,14 @@ pub unsafe extern "C" fn store_in_progress_builder<'a, 'c>(
     store: *mut Store,
     error: *mut ExternError,
 ) -> *mut InProgressBuilder<'a, 'c> {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let result = store
-        .begin_transaction()
-        .map(|in_progress| in_progress.builder());
-    translate_result(result, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let result = store
+            .begin_transaction()
+            .map(|in_progress| in_progress.builder());
+        translate_result(result, error)
+    })
 }
 
 /// Starts a new transaction and creates a builder for an entity with `tempid`
@@ -378,13 +428,15 @@ pub unsafe extern "C" fn store_entity_builder_from_temp_id<'a, 'c>(
     temp_id: *const c_char,
     error: *mut ExternError,
 ) -> *mut EntityBuilder<InProgressBuilder<'a, 'c>> {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let temp_id = c_char_to_string(temp_id);
-    let result = store
-        .begin_transaction()
-        .map(|in_progress| in_progress.builder().describe_tempid(temp_id));
-    translate_result(result, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let temp_id = c_char_to_string(temp_id);
+        let result = store
+            .begin_transaction()
+            .map(|in_progress| in_progress.builder().describe_tempid(temp_id));
+        translate_result(result, error)
+    })
 }
 
 /// Starts a new transaction and creates a builder for an entity with `entid`
@@ -401,12 +453,14 @@ pub unsafe extern "C" fn store_entity_builder_from_entid<'a, 'c>(
     entid: c_longlong,
     error: *mut ExternError,
 ) -> *mut EntityBuilder<InProgressBuilder<'a, 'c>> {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let result = store
-        .begin_transaction()
-        .map(|in_progress| in_progress.builder().describe(KnownEntid(entid)));
-    translate_result(result, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let result = store
+            .begin_transaction()
+            .map(|in_progress| in_progress.builder().describe(KnownEntid(entid)));
+        translate_result(result, error)
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -428,11 +482,13 @@ pub unsafe extern "C" fn in_progress_builder_add_string(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = c_char_to_string(value).into();
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = c_char_to_string(value).into();
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -454,11 +510,13 @@ pub unsafe extern "C" fn in_progress_builder_add_long(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Long(value);
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Long(value);
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -481,11 +539,13 @@ pub unsafe extern "C" fn in_progress_builder_add_ref(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Ref(value);
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Ref(value);
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -508,11 +568,13 @@ pub unsafe extern "C" fn in_progress_builder_add_keyword(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -534,11 +596,13 @@ pub unsafe extern "C" fn in_progress_builder_add_boolean(
     value: bool,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -560,11 +624,13 @@ pub unsafe extern "C" fn in_progress_builder_add_double(
     value: f64,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -586,11 +652,13 @@ pub unsafe extern "C" fn in_progress_builder_add_timestamp(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::instant(value);
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::instant(value);
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -612,13 +680,15 @@ pub unsafe extern "C" fn in_progress_builder_add_uuid(
     value: *const [u8; 16],
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder, value);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value = &*value;
-    let value = Uuid::from_slice(value).expect("valid uuid");
-    let value: TypedValue = value.into();
-    translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder, value);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value = &*value;
+        let value = Uuid::from_slice(value).expect("valid uuid");
+        let value: TypedValue = value.into();
+        translate_void_result(builder.add(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -640,11 +710,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_string(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = c_char_to_string(value).into();
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = c_char_to_string(value).into();
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -666,11 +738,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_long(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Long(value);
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Long(value);
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -692,11 +766,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_ref(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Ref(value);
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Ref(value);
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -718,11 +794,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_keyword(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -744,11 +822,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_boolean(
     value: bool,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -770,11 +850,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_double(
     value: f64,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -796,11 +878,13 @@ pub unsafe extern "C" fn in_progress_builder_retract_timestamp(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::instant(value);
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::instant(value);
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -823,13 +907,15 @@ pub unsafe extern "C" fn in_progress_builder_retract_uuid(
     value: *const [u8; 16],
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder, value);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value = &*value;
-    let value = Uuid::from_slice(value).expect("valid uuid");
-    let value: TypedValue = value.into();
-    translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder, value);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value = &*value;
+        let value = Uuid::from_slice(value).expect("valid uuid");
+        let value: TypedValue = value.into();
+        translate_void_result(builder.retract(KnownEntid(entid), kw, value), error);
+    })
 }
 
 /// Transacts and commits all the assertions and retractions that have been performed
@@ -845,9 +931,11 @@ pub unsafe extern "C" fn in_progress_builder_commit(
     builder: *mut InProgressBuilder,
     error: *mut ExternError,
 ) -> *mut TxReport {
-    assert_not_null!(builder);
-    let builder = Box::from_raw(builder);
-    translate_result(builder.commit(), error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(builder);
+        let builder = Box::from_raw(builder);
+        translate_result(builder.commit(), error)
+    })
 }
 
 /// Transacts all the assertions and retractions that have been performed
@@ -868,9 +956,17 @@ pub unsafe extern "C" fn in_progress_builder_commit(
 pub unsafe extern "C" fn in_progress_builder_transact<'a, 'c>(
     builder: *mut InProgressBuilder<'a, 'c>,
 ) -> InProgressTransactResult<'a, 'c> {
-    assert_not_null!(builder);
-    let builder = Box::from_raw(builder);
-    InProgressTransactResult::from_transact(builder.transact())
+    let mut err = ExternError::default();
+    let result = catch_panic(&mut err, None, || {
+        assert_not_null!(builder);
+        let builder = Box::from_raw(builder);
+        Some(InProgressTransactResult::from_transact(builder.transact()))
+    });
+    result.unwrap_or(InProgressTransactResult {
+        in_progress: std::ptr::null_mut(),
+        tx_report: std::ptr::null_mut(),
+        err,
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -891,11 +987,13 @@ pub unsafe extern "C" fn entity_builder_add_string(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = c_char_to_string(value).into();
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = c_char_to_string(value).into();
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -916,11 +1014,13 @@ pub unsafe extern "C" fn entity_builder_add_long(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Long(value);
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Long(value);
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -941,11 +1041,13 @@ pub unsafe extern "C" fn entity_builder_add_ref(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Ref(value);
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Ref(value);
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -966,11 +1068,13 @@ pub unsafe extern "C" fn entity_builder_add_keyword(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -991,11 +1095,13 @@ pub unsafe extern "C" fn entity_builder_add_boolean(
     value: bool,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -1016,11 +1122,13 @@ pub unsafe extern "C" fn entity_builder_add_double(
     value: f64,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -1041,11 +1149,13 @@ pub unsafe extern "C" fn entity_builder_add_timestamp(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::instant(value);
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::instant(value);
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to assert `value` for `kw` on entity `entid`.
@@ -1066,13 +1176,15 @@ pub unsafe extern "C" fn entity_builder_add_uuid(
     value: *const [u8; 16],
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value = &*value;
-    let value = Uuid::from_slice(value).expect("valid uuid");
-    let value: TypedValue = value.into();
-    translate_void_result(builder.add(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value = &*value;
+        let value = Uuid::from_slice(value).expect("valid uuid");
+        let value: TypedValue = value.into();
+        translate_void_result(builder.add(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1093,11 +1205,13 @@ pub unsafe extern "C" fn entity_builder_retract_string(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = c_char_to_string(value).into();
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = c_char_to_string(value).into();
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1118,11 +1232,13 @@ pub unsafe extern "C" fn entity_builder_retract_long(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Long(value);
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Long(value);
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1143,11 +1259,13 @@ pub unsafe extern "C" fn entity_builder_retract_ref(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::Ref(value);
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::Ref(value);
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1168,11 +1286,13 @@ pub unsafe extern "C" fn entity_builder_retract_keyword(
     value: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = kw_from_string(c_char_to_string(value)).into();
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1193,11 +1313,13 @@ pub unsafe extern "C" fn entity_builder_retract_boolean(
     value: bool,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1218,11 +1340,13 @@ pub unsafe extern "C" fn entity_builder_retract_double(
     value: f64,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = value.into();
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = value.into();
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1243,11 +1367,13 @@ pub unsafe extern "C" fn entity_builder_retract_timestamp(
     value: c_longlong,
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value: TypedValue = TypedValue::instant(value);
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value: TypedValue = TypedValue::instant(value);
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Uses `builder` to retract `value` for `kw` on entity `entid`.
@@ -1269,13 +1395,15 @@ pub unsafe extern "C" fn entity_builder_retract_uuid(
     value: *const [u8; 16],
     error: *mut ExternError,
 ) {
-    assert_not_null!(builder, value);
-    let builder = &mut *builder;
-    let kw = kw_from_string(c_char_to_string(kw));
-    let value = &*value;
-    let value = Uuid::from_slice(value).expect("valid uuid");
-    let value: TypedValue = value.into();
-    translate_void_result(builder.retract(kw, value), error);
+    catch_panic(error, (), || {
+        assert_not_null!(builder, value);
+        let builder = &mut *builder;
+        let kw = kw_from_string(c_char_to_string(kw));
+        let value = &*value;
+        let value = Uuid::from_slice(value).expect("valid uuid");
+        let value: TypedValue = value.into();
+        translate_void_result(builder.retract(kw, value), error);
+    })
 }
 
 /// Transacts all the assertions and retractions that have been performed
@@ -1296,9 +1424,17 @@ pub unsafe extern "C" fn entity_builder_retract_uuid(
 pub unsafe extern "C" fn entity_builder_transact<'a, 'c>(
     builder: *mut EntityBuilder<InProgressBuilder<'a, 'c>>,
 ) -> InProgressTransactResult<'a, 'c> {
-    assert_not_null!(builder);
-    let builder = Box::from_raw(builder);
-    InProgressTransactResult::from_transact(builder.transact())
+    let mut err = ExternError::default();
+    let result = catch_panic(&mut err, None, || {
+        assert_not_null!(builder);
+        let builder = Box::from_raw(builder);
+        Some(InProgressTransactResult::from_transact(builder.transact()))
+    });
+    result.unwrap_or(InProgressTransactResult {
+        in_progress: std::ptr::null_mut(),
+        tx_report: std::ptr::null_mut(),
+        err,
+    })
 }
 
 /// Transacts and commits all the assertions and retractions that have been performed
@@ -1314,9 +1450,11 @@ pub unsafe extern "C" fn entity_builder_commit(
     builder: *mut EntityBuilder<InProgressBuilder>,
     error: *mut ExternError,
 ) -> *mut TxReport {
-    assert_not_null!(builder);
-    let builder = Box::from_raw(builder);
-    translate_result(builder.commit(), error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(builder);
+        let builder = Box::from_raw(builder);
+        translate_result(builder.commit(), error)
+    })
 }
 
 /// Performs a single transaction against the store.
@@ -1330,15 +1468,17 @@ pub unsafe extern "C" fn store_transact(
     transaction: *const c_char,
     error: *mut ExternError,
 ) -> *mut TxReport {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let transaction = c_char_to_string(transaction);
-    let result = store.begin_transaction().and_then(|mut in_progress| {
-        in_progress
-            .transact(transaction)
-            .and_then(|tx_report| in_progress.commit().map(|_| tx_report))
-    });
-    translate_result(result, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let transaction = c_char_to_string(transaction);
+        let result = store.begin_transaction().and_then(|mut in_progress| {
+            in_progress
+                .transact(transaction)
+                .and_then(|tx_report| in_progress.commit().map(|_| tx_report))
+        });
+        translate_result(result, error)
+    })
 }
 
 /// Fetches the `tx_id` for the given [TxReport](mentat::TxReport)`.
@@ -1370,14 +1510,16 @@ pub unsafe extern "C" fn tx_report_entity_for_temp_id(
     tx_report: *mut TxReport,
     tempid: *const c_char,
 ) -> *mut c_longlong {
-    assert_not_null!(tx_report);
-    let tx_report = &*tx_report;
-    let key = c_char_to_string(tempid);
-    if let Some(entid) = tx_report.tempids.get(key) {
-        Box::into_raw(Box::new(*entid as c_longlong))
-    } else {
-        std::ptr::null_mut()
-    }
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(tx_report);
+        let tx_report = &*tx_report;
+        let key = c_char_to_string(tempid);
+        if let Some(entid) = tx_report.tempids.get(key) {
+            Box::into_raw(Box::new(*entid as c_longlong))
+        } else {
+            std::ptr::null_mut()
+        }
+    })
 }
 
 /// Adds an attribute to the cache.
@@ -1389,10 +1531,12 @@ pub unsafe extern "C" fn store_cache_attribute_forward(
     attribute: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let kw = kw_from_string(c_char_to_string(attribute));
-    translate_void_result(store.cache(&kw, CacheDirection::Forward), error);
+    catch_panic(error, (), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let kw = kw_from_string(c_char_to_string(attribute));
+        translate_void_result(store.cache(&kw, CacheDirection::Forward), error);
+    })
 }
 
 /// Adds an attribute to the cache.
@@ -1404,10 +1548,12 @@ pub unsafe extern "C" fn store_cache_attribute_reverse(
     attribute: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let kw = kw_from_string(c_char_to_string(attribute));
-    translate_void_result(store.cache(&kw, CacheDirection::Reverse), error);
+    catch_panic(error, (), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let kw = kw_from_string(c_char_to_string(attribute));
+        translate_void_result(store.cache(&kw, CacheDirection::Reverse), error);
+    })
 }
 
 /// Adds an attribute to the cache.
@@ -1424,10 +1570,12 @@ pub unsafe extern "C" fn store_cache_attribute_bi_directional(
     attribute: *const c_char,
     error: *mut ExternError,
 ) {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let kw = kw_from_string(c_char_to_string(attribute));
-    translate_void_result(store.cache(&kw, CacheDirection::Both), error);
+    catch_panic(error, (), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let kw = kw_from_string(c_char_to_string(attribute));
+        translate_void_result(store.cache(&kw, CacheDirection::Both), error);
+    })
 }
 
 /// Creates a [QueryBuilder](mentat::QueryBuilder) from the given store to execute the provided query.
@@ -1444,10 +1592,12 @@ pub unsafe extern "C" fn store_query<'a>(
     store: *mut Store,
     query: *const c_char,
 ) -> *mut QueryBuilder<'a> {
-    assert_not_null!(store);
-    let query = c_char_to_string(query);
-    let store = &mut *store;
-    Box::into_raw(Box::new(QueryBuilder::new(store, query)))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let query = c_char_to_string(query);
+        let store = &mut *store;
+        Box::into_raw(Box::new(QueryBuilder::new(store, query)))
+    })
 }
 
 /// Binds a [TypedValue::Long](mentat::TypedValue::Long) to a [Variable](mentat::Variable) with the given name.
@@ -1459,10 +1609,12 @@ pub unsafe extern "C" fn query_builder_bind_long(
     var: *const c_char,
     value: c_longlong,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let query_builder = &mut *query_builder;
-    query_builder.bind_long(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let query_builder = &mut *query_builder;
+        query_builder.bind_long(var, value);
+    })
 }
 
 /// Binds a [TypedValue::Ref](mentat::TypedValue::Ref) to a [Variable](mentat::Variable) with the given name.
@@ -1474,10 +1626,12 @@ pub unsafe extern "C" fn query_builder_bind_ref(
     var: *const c_char,
     value: c_longlong,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let query_builder = &mut *query_builder;
-    query_builder.bind_ref(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let query_builder = &mut *query_builder;
+        query_builder.bind_ref(var, value);
+    })
 }
 
 /// Binds a [TypedValue::Ref](mentat::TypedValue::Ref) to a [Variable](mentat::Variable) with the given name. Takes a keyword as a c string in the format
@@ -1494,13 +1648,15 @@ pub unsafe extern "C" fn query_builder_bind_ref_kw(
     var: *const c_char,
     value: *const c_char,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let kw = kw_from_string(c_char_to_string(value));
-    let query_builder = &mut *query_builder;
-    if let Some(err) = query_builder.bind_ref_from_kw(var, kw).err() {
-        std::panic::panic_any(err);
-    }
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let kw = kw_from_string(c_char_to_string(value));
+        let query_builder = &mut *query_builder;
+        if let Some(err) = query_builder.bind_ref_from_kw(var, kw).err() {
+            std::panic::panic_any(err);
+        }
+    })
 }
 
 /// Binds a [TypedValue::Ref](mentat::TypedValue::Ref) to a [Variable](mentat::Variable) with the given name. Takes a keyword as a c string in the format
@@ -1513,11 +1669,13 @@ pub unsafe extern "C" fn query_builder_bind_kw(
     var: *const c_char,
     value: *const c_char,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let query_builder = &mut *query_builder;
-    let kw = kw_from_string(c_char_to_string(value));
-    query_builder.bind_value(var, kw);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let query_builder = &mut *query_builder;
+        let kw = kw_from_string(c_char_to_string(value));
+        query_builder.bind_value(var, kw);
+    })
 }
 
 /// Binds a [TypedValue::Boolean](mentat::TypedValue::Boolean) to a [Variable](mentat::Variable) with the given name.
@@ -1529,10 +1687,12 @@ pub unsafe extern "C" fn query_builder_bind_boolean(
     var: *const c_char,
     value: bool,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let query_builder = &mut *query_builder;
-    query_builder.bind_value(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let query_builder = &mut *query_builder;
+        query_builder.bind_value(var, value);
+    })
 }
 
 /// Binds a [TypedValue::Double](mentat::TypedValue::Double) to a [Variable](mentat::Variable) with the given name.
@@ -1544,10 +1704,12 @@ pub unsafe extern "C" fn query_builder_bind_double(
     var: *const c_char,
     value: f64,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let query_builder = &mut *query_builder;
-    query_builder.bind_value(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let query_builder = &mut *query_builder;
+        query_builder.bind_value(var, value);
+    })
 }
 
 /// Binds a [TypedValue::Instant](mentat::TypedValue::Instant) to a [Variable](mentat::Variable) with the given name.
@@ -1560,10 +1722,12 @@ pub unsafe extern "C" fn query_builder_bind_timestamp(
     var: *const c_char,
     value: c_longlong,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let query_builder = &mut *query_builder;
-    query_builder.bind_instant(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let query_builder = &mut *query_builder;
+        query_builder.bind_instant(var, value);
+    })
 }
 
 /// Binds a [TypedValue::String](mentat::TypedValue::String) to a [Variable](mentat::Variable) with the given name.
@@ -1575,11 +1739,13 @@ pub unsafe extern "C" fn query_builder_bind_string(
     var: *const c_char,
     value: *const c_char,
 ) {
-    assert_not_null!(query_builder);
-    let var = c_char_to_string(var);
-    let value = c_char_to_string(value);
-    let query_builder = &mut *query_builder;
-    query_builder.bind_value(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder);
+        let var = c_char_to_string(var);
+        let value = c_char_to_string(value);
+        let query_builder = &mut *query_builder;
+        query_builder.bind_value(var, value);
+    })
 }
 
 /// Binds a [TypedValue::Uuid](mentat::TypedValue::Uuid) to a [Variable](mentat::Variable) with the given name.
@@ -1592,12 +1758,14 @@ pub unsafe extern "C" fn query_builder_bind_uuid(
     var: *const c_char,
     value: *const [u8; 16],
 ) {
-    assert_not_null!(query_builder, value);
-    let var = c_char_to_string(var);
-    let value = &*value;
-    let value = Uuid::from_slice(value).expect("valid uuid");
-    let query_builder = &mut *query_builder;
-    query_builder.bind_value(var, value);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(query_builder, value);
+        let var = c_char_to_string(var);
+        let value = &*value;
+        let value = Uuid::from_slice(value).expect("valid uuid");
+        let query_builder = &mut *query_builder;
+        query_builder.bind_value(var, value);
+    })
 }
 
 /// Executes a query and returns the results as a [Scalar](mentat::QueryResults::Scalar).
@@ -1616,10 +1784,12 @@ pub unsafe extern "C" fn query_builder_execute_scalar(
     query_builder: *mut QueryBuilder,
     error: *mut ExternError,
 ) -> *mut Binding {
-    assert_not_null!(query_builder);
-    let query_builder = &mut *query_builder;
-    let results = query_builder.execute_scalar();
-    translate_opt_result(results, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(query_builder);
+        let query_builder = &mut *query_builder;
+        let results = query_builder.execute_scalar();
+        translate_opt_result(results, error)
+    })
 }
 
 /// Executes a query and returns the results as a [Coll](mentat::QueryResults::Coll).
@@ -1638,10 +1808,12 @@ pub unsafe extern "C" fn query_builder_execute_coll(
     query_builder: *mut QueryBuilder,
     error: *mut ExternError,
 ) -> *mut Vec<Binding> {
-    assert_not_null!(query_builder);
-    let query_builder = &mut *query_builder;
-    let results = query_builder.execute_coll();
-    translate_result(results, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(query_builder);
+        let query_builder = &mut *query_builder;
+        let results = query_builder.execute_coll();
+        translate_result(results, error)
+    })
 }
 
 /// Executes a query and returns the results as a [Tuple](mentat::QueryResults::Tuple).
@@ -1660,10 +1832,12 @@ pub unsafe extern "C" fn query_builder_execute_tuple(
     query_builder: *mut QueryBuilder,
     error: *mut ExternError,
 ) -> *mut Vec<Binding> {
-    assert_not_null!(query_builder);
-    let query_builder = &mut *query_builder;
-    let results = query_builder.execute_tuple();
-    translate_opt_result(results, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(query_builder);
+        let query_builder = &mut *query_builder;
+        let results = query_builder.execute_tuple();
+        translate_opt_result(results, error)
+    })
 }
 
 /// Executes a query and returns the results as a [Rel](mentat::QueryResults::Rel).
@@ -1682,10 +1856,12 @@ pub unsafe extern "C" fn query_builder_execute(
     query_builder: *mut QueryBuilder,
     error: *mut ExternError,
 ) -> *mut RelResult<Binding> {
-    assert_not_null!(query_builder);
-    let query_builder = &mut *query_builder;
-    let results = query_builder.execute_rel();
-    translate_result(results, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(query_builder);
+        let query_builder = &mut *query_builder;
+        let results = query_builder.execute_rel();
+        translate_result(results, error)
+    })
 }
 
 fn unwrap_conversion<T>(value: Option<T>, expected_type: ValueType) -> T {
@@ -1735,9 +1911,11 @@ pub unsafe extern "C" fn typed_value_into_entid(typed_value: *mut Binding) -> En
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_kw(typed_value: *mut Binding) -> *mut c_char {
-    assert_not_null!(typed_value);
-    let typed_value = Box::from_raw(typed_value);
-    unwrap_conversion(typed_value.into_kw_c_string(), ValueType::Keyword)
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(typed_value);
+        let typed_value = Box::from_raw(typed_value);
+        unwrap_conversion(typed_value.into_kw_c_string(), ValueType::Keyword)
+    })
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as a boolean represented as an `i32`.
@@ -1800,9 +1978,11 @@ pub unsafe extern "C" fn typed_value_into_timestamp(typed_value: *mut Binding) -
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_string(typed_value: *mut Binding) -> *mut c_char {
-    assert_not_null!(typed_value);
-    let typed_value = Box::from_raw(typed_value);
-    unwrap_conversion(typed_value.into_c_string(), ValueType::String)
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(typed_value);
+        let typed_value = Box::from_raw(typed_value);
+        unwrap_conversion(typed_value.into_c_string(), ValueType::String)
+    })
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as a UUID byte slice of length 16.
@@ -1816,15 +1996,25 @@ pub unsafe extern "C" fn typed_value_into_string(typed_value: *mut Binding) -> *
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_uuid(typed_value: *mut Binding) -> *mut [u8; 16] {
-    assert_not_null!(typed_value);
-    let typed_value = Box::from_raw(typed_value);
-    let value = unwrap_conversion(typed_value.into_uuid(), ValueType::Uuid);
-    Box::into_raw(Box::new(*value.as_bytes()))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(typed_value);
+        let typed_value = Box::from_raw(typed_value);
+        let value = unwrap_conversion(typed_value.into_uuid(), ValueType::Uuid);
+        Box::into_raw(Box::new(*value.as_bytes()))
+    })
 }
 
 /// Returns the [ValueType](mentat::ValueType) of this [Binding](mentat::Binding).
+///
+/// # Panics
+///
+/// If the binding is not a scalar (a pull map or a vector). `ValueType` has no spare value to
+/// signal that, so this entry point is not wrapped in `catch_panic`: the panic aborts the
+/// process (an `extern "C"` function cannot unwind) rather than unwinding into C. The other
+/// scalar getters do the same; see the crate docs.
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_value_type(typed_value: *mut Binding) -> ValueType {
+    assert_not_null!(typed_value);
     let typed_value = &*typed_value;
     typed_value
         .value_type()
@@ -1844,11 +2034,13 @@ pub unsafe extern "C" fn row_at_index(
     rows: *mut RelResult<Binding>,
     index: c_int,
 ) -> *mut Vec<Binding> {
-    assert_not_null!(rows);
-    let result = &*rows;
-    result
-        .row(index as usize)
-        .map_or_else(std::ptr::null_mut, |v| Box::into_raw(Box::new(v.to_vec())))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(rows);
+        let result = &*rows;
+        result
+            .row(index as usize)
+            .map_or_else(std::ptr::null_mut, |v| Box::into_raw(Box::new(v.to_vec())))
+    })
 }
 
 /// Consumes the `RelResult<Binding>` and returns an iterator over the values.
@@ -1862,10 +2054,12 @@ pub unsafe extern "C" fn row_at_index(
 pub unsafe extern "C" fn typed_value_result_set_into_iter(
     rows: *mut RelResult<Binding>,
 ) -> *mut BindingListIterator {
-    assert_not_null!(rows);
-    let result = &*rows;
-    let rows = result.rows();
-    Box::into_raw(Box::new(rows))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(rows);
+        let result = &*rows;
+        let rows = result.rows();
+        Box::into_raw(Box::new(rows))
+    })
 }
 
 /// Returns the next value in the `iter` as a `Vec<ValueType>`.
@@ -1880,10 +2074,12 @@ pub unsafe extern "C" fn typed_value_result_set_into_iter(
 pub unsafe extern "C" fn typed_value_result_set_iter_next(
     iter: *mut BindingListIterator,
 ) -> *mut Vec<Binding> {
-    assert_not_null!(iter);
-    let iter = &mut *iter;
-    iter.next().map_or(std::ptr::null_mut(), |v| {
-        Box::into_raw(Box::new(v.to_vec()))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(iter);
+        let iter = &mut *iter;
+        iter.next().map_or(std::ptr::null_mut(), |v| {
+            Box::into_raw(Box::new(v.to_vec()))
+        })
     })
 }
 
@@ -1898,9 +2094,11 @@ pub unsafe extern "C" fn typed_value_result_set_iter_next(
 pub unsafe extern "C" fn typed_value_list_into_iter(
     values: *mut Vec<Binding>,
 ) -> *mut BindingIterator {
-    assert_not_null!(values);
-    let result = Box::from_raw(values);
-    Box::into_raw(Box::new(result.into_iter()))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(values);
+        let result = Box::from_raw(values);
+        Box::into_raw(Box::new(result.into_iter()))
+    })
 }
 
 /// Returns the next value in the `iter` as a [Binding](mentat::Binding).
@@ -1913,10 +2111,12 @@ pub unsafe extern "C" fn typed_value_list_into_iter(
 /// pointer type.
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_list_iter_next(iter: *mut BindingIterator) -> *mut Binding {
-    assert_not_null!(iter);
-    let iter = &mut *iter;
-    iter.next()
-        .map_or(std::ptr::null_mut(), |v| Box::into_raw(Box::new(v)))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(iter);
+        let iter = &mut *iter;
+        iter.next()
+            .map_or(std::ptr::null_mut(), |v| Box::into_raw(Box::new(v)))
+    })
 }
 
 /// Returns the value at the provided `index` as a [Binding](mentat::Binding).
@@ -1929,16 +2129,18 @@ pub unsafe extern "C" fn typed_value_list_iter_next(iter: *mut BindingIterator) 
 /// pointer type.
 #[no_mangle]
 pub unsafe extern "C" fn value_at_index(values: *mut Vec<Binding>, index: c_int) -> *mut Binding {
-    assert_not_null!(values);
-    let values = &*values;
-    if index < 0 || (index as usize) > values.len() {
-        std::ptr::null_mut()
-    } else {
-        // TODO: an older version of this function returned a reference into values. This
-        // causes `typed_value_into_*` to be memory unsafe, and goes against the documentation.
-        // Should there be a version that still behaves in this manner?
-        Box::into_raw(Box::new(values[index as usize].clone()))
-    }
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(values);
+        let values = &*values;
+        if index < 0 || (index as usize) > values.len() {
+            std::ptr::null_mut()
+        } else {
+            // TODO: an older version of this function returned a reference into values. This
+            // causes `typed_value_into_*` to be memory unsafe, and goes against the documentation.
+            // Should there be a version that still behaves in this manner?
+            Box::into_raw(Box::new(values[index as usize].clone()))
+        }
+    })
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as a `long`.
@@ -1992,10 +2194,12 @@ pub unsafe extern "C" fn value_at_index_into_kw(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> *mut c_char {
-    assert_not_null!(values);
-    let result = &*values;
-    let value = result.get(index as usize).expect("No value at index");
-    unwrap_conversion(value.clone().into_kw_c_string(), ValueType::Keyword) as *mut c_char
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(values);
+        let result = &*values;
+        let value = result.get(index as usize).expect("No value at index");
+        unwrap_conversion(value.clone().into_kw_c_string(), ValueType::Keyword) as *mut c_char
+    })
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as a boolean represented by a `i32`.
@@ -2074,10 +2278,12 @@ pub unsafe extern "C" fn value_at_index_into_string(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> *mut c_char {
-    assert_not_null!(values);
-    let result = &*values;
-    let value = result.get(index as usize).expect("No value at index");
-    unwrap_conversion(value.clone().into_c_string(), ValueType::String) as *mut c_char
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(values);
+        let result = &*values;
+        let value = result.get(index as usize).expect("No value at index");
+        unwrap_conversion(value.clone().into_c_string(), ValueType::String) as *mut c_char
+    })
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as a UUID byte slice of length 16.
@@ -2093,11 +2299,13 @@ pub unsafe extern "C" fn value_at_index_into_uuid(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> *mut [u8; 16] {
-    assert_not_null!(values);
-    let result = &*values;
-    let value = result.get(index as usize).expect("No value at index");
-    let uuid = unwrap_conversion(value.clone().into_uuid(), ValueType::Uuid);
-    Box::into_raw(Box::new(*uuid.as_bytes()))
+    catch_panic(std::ptr::null_mut(), std::ptr::null_mut(), || {
+        assert_not_null!(values);
+        let result = &*values;
+        let value = result.get(index as usize).expect("No value at index");
+        let uuid = unwrap_conversion(value.clone().into_uuid(), ValueType::Uuid);
+        Box::into_raw(Box::new(*uuid.as_bytes()))
+    })
 }
 
 /// Returns a pointer to the the [Binding](mentat::Binding) associated with the `attribute` as
@@ -2122,13 +2330,15 @@ pub unsafe extern "C" fn store_value_for_attribute(
     attribute: *const c_char,
     error: *mut ExternError,
 ) -> *mut Binding {
-    assert_not_null!(store);
-    let store = &*store;
-    let kw = kw_from_string(c_char_to_string(attribute));
-    let result = store
-        .lookup_value_for_attribute(entid, &kw)
-        .map(|o| o.map(Binding::from));
-    translate_opt_result(result, error)
+    catch_panic(error, std::ptr::null_mut(), || {
+        assert_not_null!(store);
+        let store = &*store;
+        let kw = kw_from_string(c_char_to_string(attribute));
+        let result = store
+            .lookup_value_for_attribute(entid, &kw)
+            .map(|o| o.map(Binding::from));
+        translate_opt_result(result, error)
+    })
 }
 
 /// Registers a [TxObserver](mentat::TxObserver) with the `key` to observe changes to `attributes`
@@ -2147,49 +2357,53 @@ pub unsafe extern "C" fn store_register_observer(
     attributes_len: usize,
     callback: extern "C" fn(key: *const c_char, reports: &TxChangeList),
 ) {
-    assert_not_null!(store, attributes);
-    let store = &mut *store;
-    let mut attribute_set = BTreeSet::new();
-    let slice = slice::from_raw_parts(attributes, attributes_len);
-    attribute_set.extend(slice.iter());
-    let key = c_char_to_string(key);
-    let tx_observer = Arc::new(TxObserver::new(attribute_set, move |obs_key, batch| {
-        let reports: Vec<(Entid, Vec<Entid>)> = batch
-            .into_iter()
-            .map(|(tx_id, changes)| {
-                (
-                    *tx_id,
-                    changes.iter().map(|eid| *eid as c_longlong).collect(),
-                )
-            })
-            .collect();
-        let extern_reports = reports
-            .iter()
-            .map(|item| TransactionChange {
-                txid: item.0,
-                changes: item.1.as_ptr(),
-                changes_len: item.1.len() as c_ulonglong,
-            })
-            .collect::<Vec<_>>();
-        let len = extern_reports.len();
-        let change_list = TxChangeList {
-            reports: extern_reports.as_ptr(),
-            len: len as c_ulonglong,
-        };
-        let s = string_to_c_char(obs_key);
-        callback(s, &change_list);
-        rust_c_string_destroy(s);
-    }));
-    store.register_observer(key.to_string(), tx_observer);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(store, attributes);
+        let store = &mut *store;
+        let mut attribute_set = BTreeSet::new();
+        let slice = slice::from_raw_parts(attributes, attributes_len);
+        attribute_set.extend(slice.iter());
+        let key = c_char_to_string(key);
+        let tx_observer = Arc::new(TxObserver::new(attribute_set, move |obs_key, batch| {
+            let reports: Vec<(Entid, Vec<Entid>)> = batch
+                .into_iter()
+                .map(|(tx_id, changes)| {
+                    (
+                        *tx_id,
+                        changes.iter().map(|eid| *eid as c_longlong).collect(),
+                    )
+                })
+                .collect();
+            let extern_reports = reports
+                .iter()
+                .map(|item| TransactionChange {
+                    txid: item.0,
+                    changes: item.1.as_ptr(),
+                    changes_len: item.1.len() as c_ulonglong,
+                })
+                .collect::<Vec<_>>();
+            let len = extern_reports.len();
+            let change_list = TxChangeList {
+                reports: extern_reports.as_ptr(),
+                len: len as c_ulonglong,
+            };
+            let s = string_to_c_char(obs_key);
+            callback(s, &change_list);
+            rust_c_string_destroy(s);
+        }));
+        store.register_observer(key.to_string(), tx_observer);
+    })
 }
 
 /// Unregisters a [TxObserver](mentat::TxObserver)  with the `key` to observe changes on this `store`.
 #[no_mangle]
 pub unsafe extern "C" fn store_unregister_observer(store: *mut Store, key: *const c_char) {
-    assert_not_null!(store);
-    let store = &mut *store;
-    let key = c_char_to_string(key).to_string();
-    store.unregister_observer(&key);
+    catch_panic(std::ptr::null_mut(), (), || {
+        assert_not_null!(store);
+        let store = &mut *store;
+        let key = c_char_to_string(key).to_string();
+        store.unregister_observer(&key);
+    })
 }
 
 /// Returns the [Entid](mentat::Entid)  associated with the `attr` as `:namespace/name`.
@@ -2225,10 +2439,12 @@ pub unsafe extern "C" fn tx_change_list_entry_at(
     tx_report_list: *mut TxChangeList,
     index: c_int,
 ) -> *const TransactionChange {
-    assert_not_null!(tx_report_list);
-    let tx_report_list = &*tx_report_list;
-    assert!(0 <= index && (index as usize) < (tx_report_list.len as usize));
-    tx_report_list.reports.offset(index as isize)
+    catch_panic(std::ptr::null_mut(), std::ptr::null(), || {
+        assert_not_null!(tx_report_list);
+        let tx_report_list = &*tx_report_list;
+        assert!(0 <= index && (index as usize) < (tx_report_list.len as usize));
+        tx_report_list.reports.offset(index as isize)
+    })
 }
 
 /// Returns the value at the provided `index` as a [Entid](mentat::Entid) .
@@ -2249,9 +2465,11 @@ pub unsafe extern "C" fn changelist_entry_at(
 
 #[no_mangle]
 pub unsafe extern "C" fn rust_c_string_destroy(s: *mut c_char) {
-    if !s.is_null() {
-        let _ = CString::from_raw(s);
-    }
+    catch_panic(std::ptr::null_mut(), (), || {
+        if !s.is_null() {
+            let _ = CString::from_raw(s);
+        }
+    })
 }
 
 /// Creates a function with a given `$name` that releases the memory for a type `$t`.
@@ -2259,10 +2477,12 @@ macro_rules! define_destructor (
     ($name:ident, $t:ty) => (
         #[no_mangle]
         pub unsafe extern "C" fn $name(obj: *mut $t) {
-            if !obj.is_null() {
-                #[allow(clippy::from_raw_with_void_ptr)]
-                let _ = Box::from_raw(obj);
-            }
+            catch_panic(std::ptr::null_mut(), (), || {
+                if !obj.is_null() {
+                    #[allow(clippy::from_raw_with_void_ptr)]
+                    let _ = Box::from_raw(obj);
+                }
+            })
         }
     )
 );
@@ -2278,10 +2498,12 @@ macro_rules! define_destructor_with_lifetimes (
     ($name:ident, $t:ty) => (
         #[no_mangle]
         pub unsafe extern "C" fn $name<'a, 'c>(obj: *mut $t) {
-            if !obj.is_null() {
-                #[allow(clippy::from_raw_with_void_ptr)]
-                let _ = Box::from_raw(obj);
-            }
+            catch_panic(std::ptr::null_mut(), (), || {
+                if !obj.is_null() {
+                    #[allow(clippy::from_raw_with_void_ptr)]
+                    let _ = Box::from_raw(obj);
+                }
+            })
         }
     )
 );
@@ -2327,3 +2549,94 @@ define_destructor!(typed_value_result_set_iter_destroy, BindingListIterator);
 
 /// Destructor for releasing the memory of [InProgress](mentat::InProgress).
 define_destructor!(in_progress_destroy, InProgress);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    // #266: a panic inside an entry point is reported, not unwound into C.
+    #[test]
+    fn test_panic_is_reported_not_unwound() {
+        unsafe {
+            let mut err = ExternError::default();
+            let uri = CString::new("").unwrap();
+            let store = store_open(uri.as_ptr(), &mut err);
+            assert!(err.message.is_null());
+            assert!(!store.is_null());
+
+            // A null transaction string trips an assert inside the call.
+            let report = store_transact(store, std::ptr::null(), &mut err);
+            assert!(report.is_null());
+            assert!(!err.message.is_null());
+            let msg = CStr::from_ptr(err.message).to_str().unwrap().to_string();
+            assert!(msg.starts_with("mentat panicked: "), "{}", msg);
+            rust_c_string_destroy(err.message);
+
+            // The store is still usable after a caught panic.
+            let mut err = ExternError::default();
+            let tx = CString::new("[[:db/add \"a\" :db/doc \"x\"]]").unwrap();
+            let report = store_transact(store, tx.as_ptr(), &mut err);
+            assert!(err.message.is_null());
+            assert!(!report.is_null());
+            tx_report_destroy(report);
+
+            // A builder transact that panics returns an error in the result struct.
+            let result = in_progress_builder_transact(std::ptr::null_mut());
+            assert!(result.in_progress.is_null() && result.tx_report.is_null());
+            assert!(!result.err.message.is_null());
+            rust_c_string_destroy(result.err.message);
+
+            store_destroy(store);
+        }
+    }
+
+    // #266: a scalar getter with no error out-param aborts on a panic rather than returning
+    // 0, which is a valid value. Each case runs in a child process (this test binary,
+    // filtered to `abort_child`, with MENTAT_FFI_ABORT_CASE set).
+    #[test]
+    fn test_scalar_getter_aborts_on_panic() {
+        for case in ["entid_for_unknown_attribute", "string_as_long"] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::abort_child", "--nocapture"])
+                .env("MENTAT_FFI_ABORT_CASE", case)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(!out.status.success(), "{case}: {stdout}");
+            assert!(!stdout.contains("returned"), "{case}: {stdout}");
+        }
+    }
+
+    #[test]
+    fn abort_child() {
+        let Ok(case) = std::env::var("MENTAT_FFI_ABORT_CASE") else {
+            return;
+        };
+        unsafe {
+            // The abort is the expected outcome; don't leave a core file behind.
+            #[cfg(unix)]
+            libc::setrlimit(
+                libc::RLIMIT_CORE,
+                &libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                },
+            );
+            let got = match case.as_str() {
+                "entid_for_unknown_attribute" => {
+                    let mut err = ExternError::default();
+                    let uri = CString::new("").unwrap();
+                    let store = store_open(uri.as_ptr(), &mut err);
+                    let attr = CString::new(":no/such").unwrap();
+                    store_entid_for_attribute(store, attr.as_ptr())
+                }
+                _ => {
+                    let s: Binding = TypedValue::typed_string("not a long").into();
+                    typed_value_into_long(Box::into_raw(Box::new(s)))
+                }
+            };
+            println!("returned {got}");
+        }
+    }
+}

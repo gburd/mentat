@@ -161,10 +161,14 @@ fn update_attribute_map_from_schema_retractions(
 /// contain install and alter markers.
 ///
 /// Returns a report summarizing the mutations that were applied.
+///
+/// `ident` names an attribute in error messages (#253): the caller knows idents that the
+/// `AttributeMap` does not, such as those asserted in the transaction being applied.
 pub fn update_attribute_map_from_entid_triples(
     attribute_map: &mut AttributeMap,
     assertions: Vec<EAV>,
     retractions: Vec<EAV>,
+    ident: &dyn Fn(Entid) -> String,
 ) -> Result<MetadataReport> {
     fn attribute_builder_to_modify(
         attribute_id: Entid,
@@ -313,13 +317,13 @@ pub fn update_attribute_map_from_entid_triples(
                 builder
                     .validate_install_attribute()
                     .context(DbErrorKind::BadSchemaAssertion(format!(
-                        "Schema alteration for new attribute with entid {} is not valid",
-                        entid
+                        "Schema alteration for new attribute {} is not valid",
+                        ident(entid)
                     )))?;
 
                 // … and twice, now we have the Attribute.
                 let a = builder.build();
-                a.validate(|| entid.to_string())?;
+                a.validate(|| ident(entid))?;
                 entry.insert(a);
                 attributes_installed.insert(entid);
             }
@@ -328,8 +332,8 @@ pub fn update_attribute_map_from_entid_triples(
                 builder
                     .validate_alter_attribute()
                     .context(DbErrorKind::BadSchemaAssertion(format!(
-                        "Schema alteration for existing attribute with entid {} is not valid",
-                        entid
+                        "Schema alteration for existing attribute {} is not valid",
+                        ident(entid)
                     )))?;
                 let mutations = builder.mutate(entry.get_mut());
                 attributes_altered.insert(entid, mutations);
@@ -342,6 +346,51 @@ pub fn update_attribute_map_from_entid_triples(
         attributes_altered,
         idents_altered: BTreeMap::default(),
     })
+}
+
+/// A new attribute needs :db/ident, :db/valueType and :db/cardinality (#286), as in Datomic and
+/// pg_mentat (same messages). Only checked for attributes a transaction installs: attributes
+/// already in `attribute_map` (which may predate the rule) can still be read and altered.
+fn require_minimal_attribute_set(
+    attribute_map: &AttributeMap,
+    assertions: &[EAV],
+    ident_set: &AddRetractAlterSet<Entid, symbols::Keyword>,
+    entid_map: &mentat_core::EntidMap,
+) -> Result<()> {
+    let mut new_attrs: BTreeMap<Entid, BTreeSet<Entid>> = BTreeMap::new();
+    for (e, a, _) in assertions {
+        if !attribute_map.contains_key(e) {
+            new_attrs.entry(*e).or_default().insert(*a);
+        }
+    }
+    for (e, attrs) in new_attrs {
+        let ident = ident_set
+            .asserted
+            .get(&e)
+            .or_else(|| ident_set.altered.get(&e).map(|(_, new)| new))
+            .or_else(|| entid_map.get(&e));
+        let ident = match ident {
+            Some(ident) => ident,
+            None => bail!(DbErrorKind::BadSchemaAssertion(format!(
+                "incomplete schema attribute definition (entity {}): missing :db/ident. \
+                 A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.",
+                e
+            ))),
+        };
+        for (a, name) in [
+            (entids::DB_VALUE_TYPE, ":db/valueType"),
+            (entids::DB_CARDINALITY, ":db/cardinality"),
+        ] {
+            if !attrs.contains(&a) {
+                bail!(DbErrorKind::BadSchemaAssertion(format!(
+                    "incomplete schema attribute definition for '{}': missing {}. \
+                     A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.",
+                    ident, name
+                )))
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Update a `Schema` in place from the given `[e a typed_value added]` quadruples.
@@ -404,11 +453,25 @@ where
         &ident_set.retracted,
     )?;
 
-    // Now we process all other retractions.
+    // Now we process all other retractions.  The idents this transaction asserts are not in
+    // `entid_map` yet, so look there first when naming an attribute in an error.
+    let entid_map = &schema.entid_map;
+    let ident = |e: Entid| {
+        ident_set
+            .asserted
+            .get(&e)
+            .or_else(|| ident_set.altered.get(&e).map(|(_, new)| new))
+            .or_else(|| entid_map.get(&e))
+            .map(|kw| kw.to_string())
+            .unwrap_or_else(|| format!("entid {}", e))
+    };
+    let assertions: Vec<EAV> = asserted_triples.chain(altered_triples).collect();
+    require_minimal_attribute_set(&schema.attribute_map, &assertions, &ident_set, entid_map)?;
     let report = update_attribute_map_from_entid_triples(
         &mut schema.attribute_map,
-        asserted_triples.chain(altered_triples).collect(),
+        assertions,
         non_schema_retractions,
+        &ident,
     )?;
 
     let mut idents_altered: BTreeMap<Entid, IdentAlteration> = BTreeMap::new();

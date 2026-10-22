@@ -8,6 +8,186 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking (Rust API)
+
+- **`TxReport` is `#[non_exhaustive]` (#281).** Code outside mentat_core that
+  builds one with a struct literal or matches it exhaustively stops compiling;
+  build one with `TxReport::new`. Fields can now be added without another
+  break.
+- **`TxReport` has two new fields, `datoms_asserted` and `datoms_retracted`,
+  both `Option<usize>` (#281).** `None` means the store did not count. Both
+  `Some(0)` means the transaction changed nothing; `TxReport::is_empty()` is
+  true only then.
+- **`MentatStoring` has two new methods, both with defaults**, so an
+  out-of-tree store still compiles: `transaction_datom_counts` (default
+  `Ok(None)`: the report's counts are `None`) and `unmatched_retractions`
+  (default: none, so every retraction reaches the caches and observers, as
+  before). The SQLite store implements both; the DuckDB store implements
+  `transaction_datom_counts` (it has no caches or observers).
+- **`mentat_script::TxReport` has two new public fields, `datoms_asserted`
+  and `datoms_retracted` (#281).** Code that builds one with a struct
+  literal stops compiling.
+
+### Added
+
+- **Transaction reports count the datoms asserted and retracted (#281).** The
+  counts leave out the transaction's `:db/txInstant`. A redundant assertion
+  or a retraction of an absent datom is not counted; replacing a
+  cardinality-one value is one of each.
+  - Embedded: `TxReport::datoms_asserted` / `datoms_retracted` (above).
+  - pg_mentat `edn_t` / `mentat_with` JSON, and the SQLite and DuckDB
+    extensions' `edn_t` JSON: `datoms_asserted` / `datoms_retracted` keys
+    (the extensions write `null` when the store did not count).
+  - Scripting tx report (every backend): `:mentat.store/datoms-asserted` and
+    `:mentat.store/datoms-retracted` (`nil` when not counted).
+- **`[:unique/attr v]` lookup refs in transactions on the embedded engine and
+  DuckDB (#152)**, as pg_mentat already took them in entity position,
+  `:db/id` and a ref attribute's value; the embedded engine and DuckDB also
+  take them in reverse notation (pg has no reverse notation in transactions). Before, only
+  `(lookup-ref a v)` worked there and `[[:db/add [:t/id "e1"] :t/n 5]]` was a
+  parse error. pg_mentat now takes a vector of values for a
+  cardinality-many attribute (`{:a/many [1 2]}`), which it rejected.
+- **`like`, `ilike`, `starts-with?`, `ends-with?` and `includes?` on every
+  backend (#267).** The embedded engine and DuckDB had no string predicates;
+  pg_mentat had `like` / `ilike`. `like` is case-sensitive, `ilike` is not;
+  `%` and `_` are wildcards and `\` escapes them. On the embedded engine and
+  DuckDB the pattern must be a constant or an `:in` value, and the embedded
+  `ilike` folds ASCII case only.
+- **`min` and `max` over refs on the embedded engine (#249)**, so
+  `(max ?tx)` is the latest transaction, as on pg_mentat.
+- **docs/src/ordered-list.md (#244):** a manually ordered list kept
+  consistent by two `:db/fn` transaction functions; a test runs the page.
+
+### Changed
+
+- **The rules for a vector in a ref attribute's value (#152), the same on
+  every backend** (docs/src/datomic-compat.md, "Lookup refs in a list of
+  values"):
+  - In list form, `[:db/add e a v]` takes one value, as in Datomic, so on a
+    ref attribute (cardinality-one or -many) a vector `v` is a lookup ref on
+    any `:db/unique` attribute, and an error if it doesn't resolve.
+    **This breaks embedded and DuckDB callers** that passed several refs in
+    one list-form op: `[:db/add e :ref/many [a b]]` (entids, tempids such as
+    `["t1" "t2"]`, or idents) and `[a]` were accepted through 1.17.2 and are
+    now errors. Use map form (`{:db/id e :ref/many [a b]}`) or one
+    `:db/add` per value. pg_mentat already rejected them. On a non-ref
+    cardinality-many attribute, `[:db/add e :nums [1 2]]` still adds both
+    values.
+  - In map form, the whole value of a cardinality-many ref follows
+    DataScript: a two-element vector whose first element names a
+    `:db.unique/identity` attribute is one lookup ref; otherwise it is a list
+    of values, and each vector in that list is a lookup ref on any
+    `:db/unique` attribute (one that doesn't resolve is an error). So
+    `{:form/fields [:user/email :user/name]}` with `:user/email`
+    `:db.unique/value` is two refs. `:db/ident` is
+    `:db.unique/identity`, so `[:db/ident :user/name]` is one ref.
+  - `:db/id`, entity position, reverse notation (embedded and DuckDB; pg has
+    no reverse notation in transactions) and a cardinality-one ref take a
+    lookup ref on any `:db/unique` attribute.
+  - A list of lookup refs on a `:db.unique/value` attribute,
+    `{:p/likes [[:p/id "a"] [:p/id "b"]]}`, used to be flattened into refs
+    to the `:p/id` attribute plus two new empty entities.
+- **`[:db/cas e a v v]` with `v` current is a no-op, as in Datomic.** It
+  asserts nothing and retracts nothing (the report counts 0 and 0). Through
+  1.17.2 pg_mentat deleted the value and the embedded engine rejected it
+  as an add/retract conflict. A mismatch still fails.
+- **pg_mentat's `tx-data` lists the datoms the transaction changed (#281)**, as
+  in Datomic: a cardinality-one replacement shows the old value retracted and
+  the new one asserted, and a re-assertion of a value already there is left
+  out. Before, `tx-data` echoed the input. A `:db/noHistory` replacement
+  counts one assertion and one retraction on every backend; pg still logs no
+  retraction for it.
+- **Schema alterations (#286).** A new attribute needs `:db/ident`,
+  `:db/valueType` and `:db/cardinality` on every backend; the embedded engine
+  used to default the cardinality to one and install one with no ident.
+  Existing attributes can still be altered one property at a time, and a
+  store whose attributes predate the rule still opens. pg_mentat now applies
+  an alteration of an existing attribute (it treated one as nothing),
+  rejects a change of `:db/valueType` or `:db/fulltext`, and rejects
+  many -> one when an entity has two values and adding `:db/unique` when two
+  datoms share a value, with the embedded engine's messages. The embedded
+  engine now allows many -> one when no entity has two values (it rejected
+  every one).
+- **mentat_ffi catches panics at its C entry points (#266)**: the message
+  goes to the `ExternError` out parameter where there is one (or the `err`
+  field of an `InProgressTransactResult`), and the function returns null, 0
+  or nothing. The fourteen scalar getters with no error out parameter
+  (`typed_value_into_*`, `value_at_index_into_*`, `store_entid_for_attribute`,
+  `tx_report_get_entid`, `tx_report_get_tx_instant`, `changelist_entry_at`)
+  still abort on a panic, since 0 is a valid value. The crate docs and
+  README say a Store and its handles must not be used from two threads at
+  once (#248).
+- **The CLI's command parser uses peg instead of combine (#264).**
+  `.timer off` parses now; everything else parses as before.
+
+### Fixed
+
+- **pg_mentat: instants are exact to the microsecond in every year 1-9999 on
+  every PostgreSQL version (#375).** They were written with
+  `to_timestamp(double)`, which loses a microsecond outside roughly
+  1932-2100 (`#inst "9999-12-31T23:59:59.999999Z"` was stored as
+  10000-01-01). On pg13, where `EXTRACT` returns double precision, reads
+  were off by up to 20 microseconds far from 1970. A card-one replacement
+  of a fractional-second instant left two live values, since the old
+  value was read rounded to the second. Pull, entity, `attribute_values`,
+  `retract_entity` and `export_edn` read `.700001` as `01.700001`. Every
+  conversion now goes through one exact write and one exact read.
+
+  **Upgrade note:** no migration rewrites instants already stored. One that
+  an earlier version stored with a lost microsecond (outside roughly
+  1932-2100, or any fractional second written through a path that rounded)
+  keeps the stored value, and 1.18.0 reads it exactly. So a query, a
+  `:db/retract` or a `:db/cas` that names the *original* `#inst` no longer
+  matches it: the retract silently retracts nothing, and on a
+  cardinality-many attribute a re-assertion adds a second value next to
+  the stored one. Read the stored value back (pull or q) and use that, or
+  re-assert the intended value on a cardinality-one attribute, which
+  replaces it.
+- **A retraction of an absent value is a no-op on every backend (#362).** On
+  the embedded engine and DuckDB, `[:db/retract e :a 7]` on a
+  cardinality-one attribute holding 1 retracted the 1; it also emptied the
+  attribute cache and notified transaction observers. pg_mentat kept the
+  value but logged the retraction and put it in `tx-data`. On the embedded
+  engine, `:db/retractEntity` on an entity with a fulltext value failed with
+  `BadSQLValuePair`, and an `#inst` with sub-microsecond digits is now
+  truncated to the microsecond where it becomes a value, as storage holds
+  it.
+- **pg_mentat: asserting and retracting the same datom in one transaction is
+  an `AddRetractConflict` (#368, #369)**, as on the embedded engine.
+  `[[:db/retract e a 1] [:db/add e a 1]]` with 1 live used to delete 1;
+  `[[:db/add e a 5] [:db/retract e a 5]]` failed with PostgreSQL's "ON
+  CONFLICT DO UPDATE command cannot affect row a second time".
+- **pg_mentat: renaming a unique value and retracting the old one in one
+  transaction logs and counts one retraction (#12).**
+- **Ordering comparisons on a value of unknown type (`[_ ?a ?v] [(> ?v 1)]`)
+  apply to comparable values only (#179).** The embedded engine failed with
+  "bad SQL (value_type_tag, value) pair" and pg_mentat with "operator does
+  not exist: text > bigint".
+- **pg_mentat: string predicates on a value of unknown type match strings
+  only (#267)**; `[(starts-with? ?v "1")]` matched the long 17 and the
+  keyword `:k/17`.
+- **`sum`, `avg`, `min` and `max` over no rows return nothing; `count` is 0
+  (#237).** The embedded engine and DuckDB failed on `sum`; pg_mentat
+  returned one row of NULL.
+- **Embedded: a non-namespaced keyword value (`:plain`) reads back (#123)**;
+  a stored keyword with an empty namespace is an error, not a panic.
+- **Embedded: a bare integer in value position no longer matches a fulltext
+  datom whose text has that rowid (#145).**
+- **Embedded: schema validation errors name the attribute (#253)**
+  ("... for :t/ft", not "for entid: 65539").
+- Tests: datom index flags follow the attribute (#119); QueryBuilder keeps
+  its `query` field (#225); crates/sqlite/fixtures is documented and the
+  fixtures still load or are refused untouched (#272).
+
+### Known issues
+
+- **pg_mentat `:db/cas` and cardinality-one replacement are atomic only
+  under SERIALIZABLE (#376).** Under READ COMMITTED two concurrent cas calls
+  from the same old value can both commit and leave two live values on a
+  cardinality-one attribute. As in 1.17.2.
+- **A tempid used only as a ref value creates an entity with no datoms
+  (#384)**, on every backend; Datomic rejects it.
+
 ## [1.17.2] — security: pg_mentat install script
 
 ### Security

@@ -8,11 +8,11 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use core_traits::{ValueType, ValueTypeSet};
+use core_traits::{TypedValue, ValueType, ValueTypeSet};
 
 use mentat_core::Schema;
 
-use edn::query::{FnArg, PlainSymbol, Predicate, TypeAnnotation};
+use edn::query::{FnArg, NonIntegerConstant, PlainSymbol, Predicate, TypeAnnotation};
 
 use crate::clauses::ConjoiningClauses;
 
@@ -20,7 +20,7 @@ use crate::clauses::convert::ValueTypes;
 
 use query_algebrizer_traits::errors::{AlgebrizerError, Result};
 
-use crate::types::{ColumnConstraint, EmptyBecause, Inequality, QueryValue};
+use crate::types::{ColumnConstraint, EmptyBecause, Inequality, QueryValue, StringMatchOp};
 
 use crate::Known;
 
@@ -37,8 +37,107 @@ impl ConjoiningClauses {
         // and ultimately allowing user-specified predicates, we match on the predicate name first.
         if let Some(op) = Inequality::from_datalog_operator(predicate.operator.0.as_str()) {
             self.apply_inequality(known, op, predicate)
+        } else if let Some(op) = StringMatchOp::from_datalog_operator(predicate.operator.0.as_str())
+        {
+            self.apply_string_match(op, predicate)
         } else {
             bail!(AlgebrizerError::UnknownFunction(predicate.operator.clone()))
+        }
+    }
+
+    /// `[(like ?s "pat%")]`, `[(starts-with? ?s ?prefix)]` and the other string predicates
+    /// (#267), with pg_mentat's semantics: a string value matches on its text; a value of a
+    /// keyword-typed attribute on its text without the leading `:`; a variable of unknown type
+    /// is constrained to strings, so other values don't match. The pattern is a string; for
+    /// `like`/`ilike` it must be a constant (or an `:in` value), because SQLite has no
+    /// case-sensitive LIKE and the engine rewrites the pattern.
+    fn apply_string_match(&mut self, op: StringMatchOp, predicate: Predicate) -> Result<()> {
+        if predicate.args.len() != 2 {
+            bail!(AlgebrizerError::InvalidNumberOfArguments(
+                predicate.operator.clone(),
+                predicate.args.len(),
+                2
+            ));
+        }
+        let mut args = predicate.args.into_iter();
+        let (value, keyword) =
+            self.resolve_string_argument(&predicate.operator, 0, args.next().unwrap(), true)?;
+        let (pattern, _) =
+            self.resolve_string_argument(&predicate.operator, 1, args.next().unwrap(), false)?;
+        if op.is_pattern() {
+            match pattern {
+                QueryValue::TypedValue(TypedValue::String(ref p)) => {
+                    // As in PostgreSQL (DuckDB raises the same error).
+                    if p.chars().rev().take_while(|c| *c == '\\').count() % 2 == 1 {
+                        bail!(AlgebrizerError::InvalidArgument(
+                            predicate.operator,
+                            "pattern that does not end with an escape character",
+                            1
+                        ));
+                    }
+                }
+                _ => bail!(AlgebrizerError::InvalidArgument(
+                    predicate.operator,
+                    "constant string pattern",
+                    1
+                )),
+            }
+        }
+        self.wheres.add_intersection(ColumnConstraint::StringMatch {
+            op,
+            value,
+            keyword,
+            pattern,
+        });
+        Ok(())
+    }
+
+    /// A string predicate's argument, and whether it is a keyword column (see
+    /// `apply_string_match`). Keywords are allowed only when `allow_keyword`.
+    fn resolve_string_argument(
+        &mut self,
+        function: &PlainSymbol,
+        position: usize,
+        arg: FnArg,
+        allow_keyword: bool,
+    ) -> Result<(QueryValue, bool)> {
+        match arg {
+            FnArg::Variable(var) => match self.bound_value(&var) {
+                Some(v @ TypedValue::String(_)) => Ok((QueryValue::TypedValue(v), false)),
+                Some(TypedValue::Keyword(k)) if allow_keyword => {
+                    let text = k.to_string();
+                    Ok((
+                        QueryValue::TypedValue(TypedValue::typed_string(&text[1..])),
+                        false,
+                    ))
+                }
+                Some(v) => bail!(AlgebrizerError::InputTypeDisagreement(
+                    var.name(),
+                    ValueType::String,
+                    v.value_type()
+                )),
+                None => {
+                    let column = self
+                        .column_bindings
+                        .get(&var)
+                        .and_then(|cols| cols.first().cloned())
+                        .ok_or_else(|| AlgebrizerError::UnboundVariable(var.name()))?;
+                    let keyword = allow_keyword
+                        && self.known_type_set(&var) == ValueTypeSet::of_one(ValueType::Keyword);
+                    if !keyword {
+                        self.add_type_requirement(var, ValueTypeSet::of_one(ValueType::String));
+                    }
+                    Ok((QueryValue::Column(column), keyword))
+                }
+            },
+            FnArg::Constant(NonIntegerConstant::Text(s)) => {
+                Ok((QueryValue::TypedValue(TypedValue::String(s)), false))
+            }
+            _ => bail!(AlgebrizerError::InvalidArgument(
+                function.clone(),
+                "string",
+                position
+            )),
         }
     }
 
@@ -272,13 +371,24 @@ mod testing {
         let expected = ValueTypeSet::of_numeric_types();
         assert_eq!(Some(&expected), cc.known_types.get(&y));
 
+        // The attribute is unknown, so the SQL checks ?y's type tag too (#179).
         let clauses = cc.wheres;
-        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses.len(), 2);
+        let column = cc.column_bindings.get(&y).unwrap()[0].clone();
         assert_eq!(
             clauses.0[0],
+            ColumnConstraint::HasTypes {
+                value: column.0.clone(),
+                value_types: ValueTypeSet::of_numeric_types(),
+                check_value: true,
+            }
+            .into()
+        );
+        assert_eq!(
+            clauses.0[1],
             ColumnConstraint::Inequality {
                 operator: Inequality::LessThan,
-                left: QueryValue::Column(cc.column_bindings.get(&y).unwrap()[0].clone()),
+                left: QueryValue::Column(column),
                 right: QueryValue::TypedValue(TypedValue::Long(10)),
             }
             .into()

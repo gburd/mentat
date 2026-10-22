@@ -8,17 +8,12 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-use combine::parser::char::{space, spaces, string};
-use combine::parser::combinator::attempt;
-use combine::{any, choice, eof, look_ahead, many1, satisfy, sep_end_by, token, Parser};
-
 use crate::CliError;
 
 use edn;
 
 use anyhow::Error;
 
-use combine::error::StringStreamError;
 use mentat::{AutoIndex, CacheDirection};
 
 pub static COMMAND_CACHE: &str = "cache";
@@ -214,203 +209,95 @@ impl Command {
     }
 }
 
+type Parsed = Result<Command, CliError>;
+
+/// `.open`/`.open_encrypted`: exactly `n` arguments.
+fn exactly(args: Vec<String>, n: usize) -> Result<Vec<String>, CliError> {
+    if args.len() < n {
+        return Err(CliError::CommandParse(
+            "Missing required argument".to_string(),
+        ));
+    }
+    if args.len() > n {
+        return Err(CliError::CommandParse(format!(
+            "Unrecognized argument {:?}",
+            args[n]
+        )));
+    }
+    Ok(args)
+}
+
+/// A command that takes no arguments.
+fn no_args(args: Vec<String>, cmd: Command) -> Parsed {
+    exactly(args, 0).map(|_| cmd)
+}
+
+fn pull(args: String) -> Parsed {
+    match split_query(&args) {
+        Some((pattern, entity)) if !entity.is_empty() && !entity.contains(char::is_whitespace) => {
+            Ok(Command::Pull(pattern.to_string(), entity.to_string()))
+        }
+        _ => Err(CliError::CommandParse(
+            "Usage: .pull [pattern] entity (an entid or :an/ident)".to_string(),
+        )),
+    }
+}
+
+// Text after a command's arguments is ignored, as it was with `combine` (#264).
+peg::parser!(grammar cli() for str {
+    rule sp() = [c if c.is_whitespace()]
+    rule word() -> String = s:$([c if !c.is_whitespace()]+) { s.to_string() }
+    rule eof() = ![_]
+    rule ignored() = [_]*
+    // Whitespace-separated words, with any surrounding whitespace.
+    rule args() -> Vec<String> = sp()* a:(word() ** (sp()+)) sp()* { a }
+    // Words directly after the command name (`.closefoo`), then the end.
+    rule bare_args() -> Vec<String> = a:(word() ** (sp()+)) sp()* eof() { a }
+    // An EDN argument: everything from the first `[` or `{`, complete or not.
+    rule edn_arg() -> String = sp()* &['[' | '{'] s:$([_]+) { s.to_string() }
+
+    rule direction() -> CacheDirection
+        = "forward" { CacheDirection::Forward }
+        / "reverse" { CacheDirection::Reverse }
+        / "both" { CacheDirection::Both }
+    rule mode() -> AutoIndex
+        = "off" { AutoIndex::Off } / "schema" { AutoIndex::Schema } / "adaptive" { AutoIndex::Adaptive }
+
+    rule help() -> Parsed = "help" a:args() ignored() { Ok(Command::Help(a)) }
+    rule import() -> Parsed = ("import" / "i") sp()* p:word() ignored() { Ok(Command::Import(p)) }
+    rule timer() -> Parsed
+        = "timer" sp()* on:("on" { true } / "off" { false }) ignored() { Ok(Command::Timer(on)) }
+    rule tune() -> Parsed = "tune" t:(
+          "!" ignored() { Command::Tune(None, true) }
+        / sp()* m:mode() sp()* eof() { Command::Tune(Some(m), false) }
+        / sp()* eof() { Command::Tune(None, false) }) { Ok(t) }
+    rule eval() -> Parsed = "eval" sp()* s:$([_]+) { Ok(Command::Eval(s.to_string())) }
+    rule pull() -> Parsed = "pull" a:edn_arg() { pull(a) }
+    rule cache() -> Parsed
+        = "cache" sp()* a:word() sp()* d:direction() ignored() { Ok(Command::Cache(a, d)) }
+    rule open_encrypted() -> Parsed = "open_encrypted" a:args() ignored() {
+        exactly(a, 2).map(|a| Command::OpenEncrypted(a[0].clone(), a[1].clone()))
+    }
+    rule open() -> Parsed = "open" a:args() ignored() { exactly(a, 1).map(|a| Command::Open(a[0].clone())) }
+    rule close() -> Parsed = "close" a:bare_args() { no_args(a, Command::Close) }
+    rule explain_query() -> Parsed = ("explain_query" / "eq") a:edn_arg() { Ok(Command::QueryExplain(a)) }
+    rule exit() -> Parsed = ("exit" / "e") a:bare_args() { no_args(a, Command::Exit) }
+    rule query_prepared() -> Parsed = "query_prepared" a:edn_arg() { Ok(Command::QueryPrepared(a)) }
+    rule query() -> Parsed = ("query" / "q") a:edn_arg() { Ok(Command::Query(a)) }
+    rule schema() -> Parsed = "schema" a:bare_args() { no_args(a, Command::Schema) }
+    rule transact() -> Parsed = ("transact" / "t") a:edn_arg() { Ok(Command::Transact(a)) }
+
+    pub rule command() -> Parsed = sp()* "." c:(
+          help() / import() / timer() / tune() / eval() / pull() / cache() / open_encrypted()
+        / open() / close() / explain_query() / exit() / query_prepared() / query() / schema()
+        / transact()) { c }
+});
+
 pub fn command(s: &str) -> Result<Command, Error> {
-    let path = || many1::<String, _, _>(satisfy(|c: char| !c.is_whitespace()));
-    let argument = || many1::<String, _, _>(satisfy(|c: char| !c.is_whitespace()));
-    let arguments = || {
-        sep_end_by::<Vec<_>, _, _, _>(
-            many1(satisfy(|c: char| !c.is_whitespace())),
-            many1::<Vec<_>, _, _>(space()),
-        )
-        .expected("arguments")
-    };
-
-    // Helpers.
-    let direction_parser = || {
-        string("forward")
-            .map(|_| CacheDirection::Forward)
-            .or(string("reverse").map(|_| CacheDirection::Reverse))
-            .or(string("both").map(|_| CacheDirection::Both))
-    };
-
-    let edn_arg_parser = || {
-        spaces().with(
-            look_ahead(string("[").or(string("{")))
-                .with(many1::<Vec<_>, _, _>(attempt(any())))
-                .and_then(|args| -> Result<String, StringStreamError> {
-                    Ok(args.iter().collect())
-                }),
-        )
-    };
-
-    let no_arg_parser = || arguments().skip(spaces()).skip(eof());
-
-    let opener = |command, num_args| {
-        string(command)
-            .with(spaces())
-            .with(arguments())
-            .map(move |args| {
-                if args.len() < num_args {
-                    bail!(CliError::CommandParse(
-                        "Missing required argument".to_string()
-                    ));
-                }
-                if args.len() > num_args {
-                    bail!(CliError::CommandParse(format!(
-                        "Unrecognized argument {:?}",
-                        args[num_args]
-                    )));
-                }
-                Ok(args)
-            })
-    };
-
-    // Commands.
-    let cache_parser = string(COMMAND_CACHE).with(spaces()).with(
-        argument()
-            .skip(spaces())
-            .and(direction_parser())
-            .map(|(arg, direction)| Ok(Command::Cache(arg, direction))),
-    );
-
-    let close_parser = string(COMMAND_CLOSE).with(no_arg_parser()).map(|args| {
-        if !args.is_empty() {
-            bail!(CliError::CommandParse(format!(
-                "Unrecognized argument {:?}",
-                args[0]
-            )));
-        }
-        Ok(Command::Close)
-    });
-
-    let exit_parser = attempt(string(COMMAND_EXIT_LONG))
-        .or(attempt(string(COMMAND_EXIT_SHORT)))
-        .with(no_arg_parser())
-        .map(|args| {
-            if !args.is_empty() {
-                bail!(CliError::CommandParse(format!(
-                    "Unrecognized argument {:?}",
-                    args[0]
-                )));
-            }
-            Ok(Command::Exit)
-        });
-
-    let explain_query_parser = attempt(string(COMMAND_QUERY_EXPLAIN_LONG))
-        .or(attempt(string(COMMAND_QUERY_EXPLAIN_SHORT)))
-        .with(edn_arg_parser())
-        .map(|x| Ok(Command::QueryExplain(x)));
-
-    let help_parser = string(COMMAND_HELP)
-        .with(spaces())
-        .with(arguments())
-        .map(|args| Ok(Command::Help(args)));
-
-    let import_parser = attempt(string(COMMAND_IMPORT_LONG))
-        .or(attempt(string(COMMAND_IMPORT_SHORT)))
-        .with(spaces())
-        .with(path())
-        .map(|x| Ok(Command::Import(x)));
-
-    let open_parser =
-        opener(COMMAND_OPEN, 1).map(|args_res| args_res.map(|args| Command::Open(args[0].clone())));
-
-    let open_encrypted_parser = opener(COMMAND_OPEN_ENCRYPTED, 2).map(|args_res| {
-        args_res.map(|args| Command::OpenEncrypted(args[0].clone(), args[1].clone()))
-    });
-
-    let query_parser = attempt(string(COMMAND_QUERY_LONG))
-        .or(attempt(string(COMMAND_QUERY_SHORT)))
-        .with(edn_arg_parser())
-        .map(|x| Ok(Command::Query(x)));
-
-    let query_prepared_parser = string(COMMAND_QUERY_PREPARED_LONG)
-        .with(edn_arg_parser())
-        .map(|x| Ok(Command::QueryPrepared(x)));
-
-    let schema_parser = string(COMMAND_SCHEMA).with(no_arg_parser()).map(|args| {
-        if !args.is_empty() {
-            bail!(CliError::CommandParse(format!(
-                "Unrecognized argument {:?}",
-                args[0]
-            )));
-        }
-        Ok(Command::Schema)
-    });
-
-    let timer_parser = string(COMMAND_TIMER_LONG)
-        .with(spaces())
-        .with(string("on").map(|_| true).or(string("off").map(|_| false)))
-        .map(|args| Ok(Command::Timer(args)));
-
-    let eval_parser = string(COMMAND_EVAL)
-        .with(spaces())
-        .with(many1::<String, _, _>(any()))
-        .map(|src| Ok(Command::Eval(src)));
-
-    let pull_parser = string(COMMAND_PULL)
-        .with(edn_arg_parser())
-        .map(|args: String| match split_query(&args) {
-            Some((pattern, entity))
-                if !entity.is_empty() && !entity.contains(char::is_whitespace) =>
-            {
-                Ok(Command::Pull(pattern.to_string(), entity.to_string()))
-            }
-            _ => bail!(CliError::CommandParse(
-                "Usage: .pull [pattern] entity (an entid or :an/ident)".to_string()
-            )),
-        });
-
-    let tune_mode = || {
-        string("off")
-            .map(|_| AutoIndex::Off)
-            .or(string("schema").map(|_| AutoIndex::Schema))
-            .or(string("adaptive").map(|_| AutoIndex::Adaptive))
-    };
-    let tune_parser = string(COMMAND_TUNE)
-        .with(
-            token('!')
-                .map(|_| Command::Tune(None, true))
-                .or(
-                    attempt(spaces().with(tune_mode()).skip(spaces()).skip(eof()))
-                        .map(|m| Command::Tune(Some(m), false)),
-                )
-                .or(spaces().skip(eof()).map(|_| Command::Tune(None, false))),
-        )
-        .map(Ok);
-
-    let transact_parser = attempt(string(COMMAND_TRANSACT_LONG))
-        .or(attempt(string(COMMAND_TRANSACT_SHORT)))
-        .with(edn_arg_parser())
-        .map(|x| Ok(Command::Transact(x)));
-
-    let parsers = choice((
-        attempt(help_parser),
-        attempt(import_parser),
-        attempt(timer_parser),
-        attempt(tune_parser),
-        attempt(eval_parser),
-        attempt(pull_parser),
-        attempt(cache_parser),
-        attempt(open_encrypted_parser),
-        attempt(open_parser),
-        attempt(close_parser),
-        attempt(explain_query_parser),
-        attempt(exit_parser),
-        attempt(query_prepared_parser),
-        attempt(query_parser),
-        attempt(schema_parser),
-        attempt(transact_parser),
-    ));
-    spaces()
-        .skip(token('.'))
-        .with(parsers)
-        .parse(s)
-        .unwrap_or((
-            Err(CliError::CommandParse(format!("Invalid command {:?}", s)).into()),
-            "",
-        ))
-        .0
+    match cli::command(s) {
+        Ok(parsed) => Ok(parsed?),
+        Err(_) => Err(CliError::CommandParse(format!("Invalid command {:?}", s)).into()),
+    }
 }
 
 #[cfg(test)]
@@ -815,6 +702,53 @@ mod tests {
         let input = "help command1 command2";
         let err = command(&input).expect_err("Expected an error");
         assert_eq!(err.to_string(), format!("Invalid command {:?}", input));
+    }
+
+    // #264: the `combine` parser's behaviour, checked input by input against it; except
+    // `.timer off`, which it rejected (its `on` alternative consumed the `o`).
+    #[test]
+    fn test_peg_port_edge_cases() {
+        assert_eq!(
+            command(".i /x/y extra").unwrap(),
+            Command::Import("/x/y".into())
+        );
+        assert_eq!(command(".timer off").unwrap(), Command::Timer(false));
+        assert_eq!(command(".timer on now").unwrap(), Command::Timer(true));
+        assert!(command(".timer").is_err());
+        assert_eq!(
+            command(".cache :foo/bar reverse").unwrap(),
+            Command::Cache(":foo/bar".into(), CacheDirection::Reverse)
+        );
+        assert!(command(".cache :foo/bar sideways").is_err());
+        assert_eq!(
+            command(".eq [:find ?x :where [?x _ _]]").unwrap(),
+            Command::QueryExplain("[:find ?x :where [?x _ _]]".into())
+        );
+        assert_eq!(
+            command(".query_prepared [:find ?x]").unwrap(),
+            Command::QueryPrepared("[:find ?x]".into())
+        );
+        assert_eq!(command(".e").unwrap(), Command::Exit);
+        assert_eq!(command(".eval x").unwrap(), Command::Eval("x".into()));
+        assert!(command(".eval   ").is_err());
+        assert_eq!(command(".tune! now").unwrap(), Command::Tune(None, true));
+        assert_eq!(
+            command(".tune  schema ").unwrap(),
+            Command::Tune(Some(AutoIndex::Schema), false)
+        );
+        assert_eq!(
+            command(".closefoo").unwrap_err().to_string(),
+            "Unrecognized argument \"foo\""
+        );
+        assert_eq!(
+            command(".open_encrypted a b c").unwrap_err().to_string(),
+            "Unrecognized argument \"c\""
+        );
+        assert_eq!(command("\t.schema").unwrap(), Command::Schema);
+        assert_eq!(
+            command(".t  [:a]\n").unwrap(),
+            Command::Transact("[:a]\n".into())
+        );
     }
 
     #[test]

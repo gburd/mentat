@@ -330,6 +330,11 @@ peg::parser!(grammar grammar() for str {
         = "(" __ "lookup-ref" __ a:(entid()) __ v:(value()) __ ")" { LookupRef { a: AttributePlace::Entid(a), v } }
         / expected!("lookup-ref")
 
+    // Datomic's `[a v]` lookup ref (#152). Only in entity position: in value position a
+    // vector may also be a list of values, so the transactor decides from the schema.
+    rule vector_lookup_ref() -> LookupRef<ValueAndSpan>
+        = "[" __ a:(raw_namespaced_keyword()) __ v:(atom()) __ "]" { LookupRef { a: AttributePlace::Entid(EntidOrIdent::Ident(a)), v } }
+
     rule tx_function() -> TxFunction
         = "(" __ n:$(symbol_name()) __ ")" { TxFunction { op: PlainSymbol::plain(n) } }
 
@@ -337,6 +342,7 @@ peg::parser!(grammar grammar() for str {
         = v:raw_text() { EntityPlace::TempId(TempId::External(v).into()) }
         / v:entid() { EntityPlace::Entid(v) }
         / v:lookup_ref() { EntityPlace::LookupRef(v) }
+        / v:vector_lookup_ref() { EntityPlace::LookupRef(v) }
         / v:tx_function() { EntityPlace::TxFunction(v) }
 
     rule value_place_pair() -> (EntidOrIdent, ValuePlace<ValueAndSpan>)

@@ -127,6 +127,7 @@ fn execute_cached_query<'a>(
 }
 
 use crate::types::constants::type_tag;
+use crate::types::instant::{sql_instant_from_micros, sql_micros_from_instant};
 
 /// Run a single-column `SELECT` through *read-only* SPI and return the first
 /// `i64`, or `None`.
@@ -2393,7 +2394,8 @@ fn build_numeric_value_decode_expr(alias: &str) -> String {
     format!(
         "COALESCE({alias}.v_ref, {alias}.v_long, \
          {alias}.v_double::BIGINT, \
-         EXTRACT(EPOCH FROM {alias}.v_instant)::BIGINT * 1000000)"
+         {})",
+        sql_micros_from_instant(&format!("{alias}.v_instant"))
     )
 }
 
@@ -2499,7 +2501,8 @@ fn bind_constant_value(
                 let micros = dt.timestamp_micros();
                 let param = builder.bind_bigint(micros);
                 Ok(Some(format!(
-                    "({alias}.v_instant = to_timestamp({param}::DOUBLE PRECISION / 1000000.0) AND {alias}.value_type_tag = {tag})",
+                    "({alias}.v_instant = {} AND {alias}.value_type_tag = {tag})",
+                    sql_instant_from_micros(&param),
                     tag = type_tag::INSTANT
                 )))
             }
@@ -6888,6 +6891,11 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             .any(|b| matches!(b, InputBinding::Relation { .. }));
     let keyed =
         use_projection && !may_multiply && tuple_is_row_key(patterns, &tuple_vars, schema_prefix);
+    // Over no rows an ungrouped SQL aggregate still returns one row, NULL for sum, avg, min
+    // and max. Those are nil in Datomic, so the find returns nothing (#237); a count is 0.
+    let nullable_aggregate = agg_cols
+        .iter()
+        .any(|(_, a)| !matches!(a.func.0 .0.as_str(), "count" | "count-distinct"));
 
     if keyed {
         // Every join row is a distinct tuple already: aggregate in place;
@@ -6901,6 +6909,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         let mut sql = format!("SELECT {}{body}", select_exprs.join(", "));
         if !group_by_exprs.is_empty() {
             sql.push_str(&format!(" GROUP BY {}", group_by_exprs.join(", ")));
+        } else if nullable_aggregate {
+            sql.push_str(" HAVING COUNT(*) > 0");
         }
         return Ok((sql, var_to_alias, var_to_type));
     }
@@ -6935,6 +6945,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     );
     if !groups.is_empty() {
         sql.push_str(&format!(" GROUP BY {}", groups.join(", ")));
+    } else if nullable_aggregate {
+        sql.push_str(" HAVING COUNT(*) > 0");
     }
     Ok((sql, var_to_alias, var_to_type))
 }
@@ -7544,7 +7556,7 @@ fn build_predicate_clause(
             )
             .into());
         }
-        let left = pred_arg_to_sql(
+        let left = string_pred_arg_to_sql(
             &pred.args[0],
             var_to_alias,
             var_to_type,
@@ -7552,7 +7564,7 @@ fn build_predicate_clause(
             input_bindings,
             builder,
         )?;
-        let right = pred_arg_to_sql(
+        let right = string_pred_arg_to_sql(
             &pred.args[1],
             var_to_alias,
             var_to_type,
@@ -7562,6 +7574,37 @@ fn build_predicate_clause(
         )?;
         let sql_op = if op == "like" { "LIKE" } else { "ILIKE" };
         return Ok(format!("({} {} {})", left, sql_op, right));
+    }
+
+    // Clojure's string predicates (#267), as on the embedded engine.
+    if matches!(op, "starts-with?" | "ends-with?" | "includes?") {
+        if pred.args.len() != 2 {
+            return Err(format!(
+                ":db.error/predicate-arity Predicate '{}' requires exactly 2 arguments, got {}. \
+                 Example: [({} ?name \"Al\")]",
+                op,
+                pred.args.len(),
+                op
+            )
+            .into());
+        }
+        let mut sql = Vec::with_capacity(2);
+        for arg in &pred.args {
+            sql.push(string_pred_arg_to_sql(
+                arg,
+                var_to_alias,
+                var_to_type,
+                computed,
+                input_bindings,
+                builder,
+            )?);
+        }
+        let (s, p) = (&sql[0], &sql[1]);
+        return Ok(match op {
+            "starts-with?" => format!("(left(({s})::TEXT, length({p})) = {p})"),
+            "ends-with?" => format!("(right(({s})::TEXT, length({p})) = {p})"),
+            _ => format!("(strpos(({s})::TEXT, {p}) > 0)"),
+        });
     }
 
     let sql_op = match op {
@@ -7574,8 +7617,8 @@ fn build_predicate_clause(
         _ => {
             return Err(format!(
                 ":db.error/unsupported-predicate Unsupported predicate operator '{}'. \
-             Supported operators: <, >, <=, >=, =, !=, like, ilike. \
-             Example: [(< ?age 30)]",
+             Supported operators: <, >, <=, >=, =, !=, like, ilike, starts-with?, \
+             ends-with?, includes?. Example: [(< ?age 30)]",
                 op
             )
             .into())
@@ -7604,6 +7647,74 @@ fn build_predicate_clause(
         }
     }
 
+    // #179: an ordering comparison on a value of unknown type ([_ ?a ?v]) against a number
+    // or an instant applies to comparable values only, as on the embedded engine: numbers
+    // against a number, instants against an instant. Other values compare as NULL, so they
+    // don't match. Against anything else (a string) the text comparison below is kept.
+    let kinds: Vec<Option<&str>> = pred
+        .args
+        .iter()
+        .map(|a| match a {
+            FnArg::EntidOrInteger(_) | FnArg::Constant(NonIntegerConstant::Float(_)) => Some("num"),
+            FnArg::Constant(NonIntegerConstant::Instant(_)) => Some("instant"),
+            FnArg::Variable(v) if untyped_value_alias(v, var_to_alias, var_to_type).is_some() => {
+                None
+            }
+            FnArg::Variable(v) => {
+                let name = format!("{v}");
+                match var_to_type.get(name.as_str()) {
+                    Some(Some(t)) if matches!(t.as_str(), "long" | "double" | "ref") => Some("num"),
+                    Some(Some(t)) if t == "instant" => Some("instant"),
+                    _ if input_bindings
+                        .get(name.as_str())
+                        .is_some_and(|j| j.is_number()) =>
+                    {
+                        Some("num")
+                    }
+                    _ => Some("other"),
+                }
+            }
+            _ => Some("other"),
+        })
+        .collect();
+    let known: Vec<&str> = kinds.iter().flatten().copied().collect();
+    let comparable = kinds.contains(&None)
+        && (known.iter().all(|k| *k == "num") || known.iter().all(|k| *k == "instant"));
+    if matches!(op, "<" | ">" | "<=" | ">=") && comparable {
+        let instant = known.contains(&"instant");
+        let mut sides = Vec::with_capacity(2);
+        for arg in &pred.args {
+            sides.push(match arg {
+                FnArg::Constant(NonIntegerConstant::Instant(dt)) => {
+                    sql_instant_from_micros(&builder.bind_bigint(dt.timestamp_micros()))
+                }
+                FnArg::Variable(v) => match untyped_value_alias(v, var_to_alias, var_to_type) {
+                    Some(alias) if instant => format!("{alias}.v_instant"),
+                    Some(alias) => {
+                        format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)")
+                    }
+                    None => pred_arg_to_sql(
+                        arg,
+                        var_to_alias,
+                        var_to_type,
+                        computed,
+                        input_bindings,
+                        builder,
+                    )?,
+                },
+                _ => pred_arg_to_sql(
+                    arg,
+                    var_to_alias,
+                    var_to_type,
+                    computed,
+                    input_bindings,
+                    builder,
+                )?,
+            });
+        }
+        return Ok(format!("({} {} {})", sides[0], sql_op, sides[1]));
+    }
+
     let left = pred_arg_to_sql(
         &pred.args[0],
         var_to_alias,
@@ -7622,6 +7733,49 @@ fn build_predicate_clause(
     )?;
 
     Ok(format!("({} {} {})", left, sql_op, right))
+}
+
+/// An argument of a string predicate (like, ilike, starts-with?, ...). A value of unknown
+/// type matches only if it is a string, as on the embedded engine (#267): its text column,
+/// NULL for every other type, rather than the COALESCE of all columns as text.
+fn string_pred_arg_to_sql(
+    arg: &FnArg,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
+    input_bindings: &HashMap<String, serde_json::Value>,
+    builder: &mut SqlBuilder<'_>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    if let FnArg::Variable(v) = arg {
+        if let Some(alias) = untyped_value_alias(v, var_to_alias, var_to_type) {
+            return Ok(format!("{alias}.v_text"));
+        }
+    }
+    pred_arg_to_sql(
+        arg,
+        var_to_alias,
+        var_to_type,
+        computed,
+        input_bindings,
+        builder,
+    )
+}
+
+/// The table alias of `v` when it is bound to a datom's value column and its type is not
+/// known from the schema (a pattern with a variable attribute).
+fn untyped_value_alias<'m>(
+    v: &edn::query::Variable,
+    var_to_alias: &'m HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+) -> Option<&'m str> {
+    let name = format!("{}", v);
+    match (
+        var_to_alias.get(name.as_str()),
+        var_to_type.get(name.as_str()),
+    ) {
+        (Some((alias, "v")), None | Some(None)) => Some(alias.as_str()),
+        _ => None,
+    }
 }
 
 /// Check if an inequality predicate has a type mismatch between variable and literal.

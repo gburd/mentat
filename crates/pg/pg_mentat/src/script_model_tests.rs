@@ -54,6 +54,9 @@ mod tests {
     model_pg_test!(q_mixed_inputs);
     model_pg_test!(history_patterns_see_added);
     model_pg_test!(cas_and_retract_entity);
+    model_pg_test!(retracting_an_absent_value_is_a_no_op);
+    model_pg_test!(rename_and_retract_logs_one_retraction);
+    model_pg_test!(list_form_ref_vector_is_one_lookup_ref);
     model_pg_test!(transaction_functions);
 
     #[pgrx::pg_test]

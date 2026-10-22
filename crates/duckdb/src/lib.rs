@@ -214,6 +214,8 @@ fn tx_report_json(report: &TxReport) -> String {
         "tx_id": report.tx_id,
         "tx_instant": report.tx_instant.to_rfc3339(),
         "tempids": tempids,
+        "datoms_asserted": report.datoms_asserted,
+        "datoms_retracted": report.datoms_retracted,
     })
     .to_string()
 }

@@ -1084,3 +1084,234 @@ pub fn not_or_reads_the_basis(it: &mut Interpreter) {
     assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t1)), not_m), ex);
     assert_eq!(q_sorted(it, &db_on(Some(t3), None), not_m), "[]");
 }
+
+/// Issue #362: retracting a value an attribute doesn't have changes nothing: on a
+/// cardinality-one attribute (it used to retract the current value on the embedded
+/// engine), on a cardinality-many attribute, and on a ref given as a lookup ref. No
+/// retraction is logged (pg_mentat used to log one) and the report counts nothing.
+pub fn retracting_an_absent_value_is_a_no_op(it: &mut Interpreter) {
+    seed_people(it);
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :person/best :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+            {:db/ident :person/tag :db/valueType :db.type/string :db/cardinality :db.cardinality/many}])",
+    )
+    .expect("schema");
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/id [:person/name \"Alice\"] \
+           :person/best [:person/name \"Bob\"] :person/tag [\"x\" \"y\"]}])",
+    )
+    .expect("data");
+    let q = |it: &mut Interpreter, query: &str| {
+        it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+            .unwrap()
+    };
+    // A tuple find, one tag at a time: a set's print order differs by backend.
+    let state = "[:find [?a ?b] :where [?e :person/name \"Alice\"] [?e :person/age ?a] \
+                 [?e :person/best ?f] [?f :person/name ?b]]";
+    let tags = "[:find ?t :where [?e :person/name \"Alice\"] [?e :person/tag ?t]]";
+    let before = q(it, state);
+    assert_eq!(before, "[30 \"Bob\"]");
+    let tag_count = |it: &mut Interpreter| {
+        it.eval_to_string(&format!(
+            "(count (mentat.store/q (mentat.store/db c) '{tags}))"
+        ))
+        .unwrap()
+    };
+    assert_eq!(tag_count(it), "2");
+    let report = it
+        .eval_to_string(
+            "(mentat.store/transact c \
+               [[:db/retract [:person/name \"Alice\"] :person/age 99] \
+                [:db/retract [:person/name \"Alice\"] :person/tag \"zzz\"] \
+                [:db/retract [:person/name \"Alice\"] :person/best [:person/name \"Alice\"]]])",
+        )
+        .expect("retract absent values");
+    assert!(
+        report.contains(":mentat.store/datoms-asserted 0"),
+        "{report}"
+    );
+    assert!(
+        report.contains(":mentat.store/datoms-retracted 0"),
+        "{report}"
+    );
+    assert_eq!(q(it, state), before, "nothing changed");
+    assert_eq!(tag_count(it), "2", "nothing changed");
+    // The log has no retraction for Alice.
+    let log = q(
+        it,
+        "[:find ?v ?added :where [?e :person/name \"Alice\"] [?e :person/tag ?v ?tx ?added]]",
+    );
+    assert!(!log.contains("false"), "{log}");
+    let log = q(
+        it,
+        "[:find ?v ?added :where [?e :person/name \"Alice\"] [?e :person/age ?v ?tx ?added]]",
+    );
+    assert!(!log.contains("false"), "{log}");
+    // The present values still retract, one datom each.
+    let report = it
+        .eval_to_string(
+            "(mentat.store/transact c \
+               [[:db/retract [:person/name \"Alice\"] :person/age 30] \
+                [:db/retract [:person/name \"Alice\"] :person/tag \"x\"] \
+                [:db/retract [:person/name \"Alice\"] :person/best [:person/name \"Bob\"]]])",
+        )
+        .expect("retract present values");
+    assert!(
+        report.contains(":mentat.store/datoms-retracted 3"),
+        "{report}"
+    );
+    assert_eq!(
+        q(
+            it,
+            "[:find [?t ...] :where [?e :person/name \"Alice\"] [?e :person/tag ?t]]"
+        ),
+        "[\"y\"]"
+    );
+    for a in [":person/age", ":person/best"] {
+        assert_eq!(
+            q(
+                it,
+                &format!("[:find ?x . :where [?e :person/name \"Alice\"] [?e {a} ?x]]")
+            ),
+            "nil",
+            "{a}"
+        );
+    }
+}
+
+/// Issue #12 (Mozilla #818): renaming a unique identity value and explicitly retracting the
+/// old value in the same transaction retracts the old value once. The report counts one
+/// retraction and the log holds one, on every backend.
+pub fn rename_and_retract_logs_one_retraction(it: &mut Interpreter) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :t/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+             :db/unique :db.unique/identity :db/index true}])",
+    )
+    .expect("schema");
+    it.eval_to_string("(mentat.store/transact c [{:t/id \"One\"}])")
+        .expect("data");
+    let report = it
+        .eval_to_string(
+            "(mentat.store/transact c \
+               [[:db/add [:t/id \"One\"] :t/id \"Two\"] \
+                [:db/retract [:t/id \"One\"] :t/id \"One\"]])",
+        )
+        .expect("rename and retract");
+    assert!(
+        report.contains(":mentat.store/datoms-asserted 1"),
+        "{report}"
+    );
+    assert!(
+        report.contains(":mentat.store/datoms-retracted 1"),
+        "{report}"
+    );
+    let q = |it: &mut Interpreter, query: &str| {
+        it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+            .unwrap()
+    };
+    // One assertion and one retraction of "One". (A Datalog result is a set, so this can't
+    // see two identical log rows; the report's count, the rows written, can.)
+    let log = q(
+        it,
+        "[:find ?added (count ?tx) :where [?e :t/id \"One\" ?tx ?added]]",
+    );
+    assert!(
+        log.contains("[false 1]") && log.contains("[true 1]"),
+        "{log}"
+    );
+    assert_eq!(
+        q(it, "[:find ?e . :where [?e :t/id \"One\"]]"),
+        "nil",
+        "\"One\" is retracted"
+    );
+}
+
+/// Issue #152: in list form, `[:db/add e a v]` takes one value (Datomic's grammar), so on a
+/// ref attribute, cardinality-one or -many, a vector `v` is a lookup ref under any
+/// `:db/unique` attribute, and one that doesn't resolve is an error. It used to make, for a
+/// `:db.unique/value` attribute, a ref to the attribute plus a new empty entity "x". Map
+/// form keeps DataScript's rule (only `:db.unique/identity` makes the whole value a lookup
+/// ref), so there it is still two refs.
+pub fn list_form_ref_vector_is_one_lookup_ref(it: &mut Interpreter) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :l/uv :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+             :db/unique :db.unique/value :db/index true} \
+            {:db/ident :l/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+             :db/unique :db.unique/identity :db/index true} \
+            {:db/ident :l/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :l/many :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} \
+            {:db/ident :l/one :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    it.eval_to_string(
+        "(mentat.store/transact c [{:l/uv \"x\" :l/id \"x\"} {:l/uv \"y\" :l/id \"y\"}])",
+    )
+    .expect("data");
+    let q = |it: &mut Interpreter, query: &str| {
+        it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+            .unwrap()
+    };
+    for attr in [":l/many", ":l/one"] {
+        let report = it
+            .eval_to_string(&format!(
+                "(mentat.store/transact c [[:db/add \"s\" :l/id \"s{attr}\"] \
+                   [:db/add \"s\" {attr} [:l/uv \"x\"]]])"
+            ))
+            .unwrap_or_else(|e| panic!("{attr}: {e}"));
+        // Only "s" is a tempid: "x" is a lookup ref, not a new entity.
+        assert!(!report.contains("\"x\""), "{attr}: {report}");
+        assert!(
+            report.contains(":mentat.store/datoms-asserted 2"),
+            "{attr}: {report}"
+        );
+        assert_eq!(
+            q(
+                it,
+                &format!(
+                    "[:find [?i ...] :where [?s :l/id \"s{attr}\"] [?s {attr} ?r] [?r :l/id ?i]]"
+                )
+            ),
+            "[\"x\"]",
+            "{attr}"
+        );
+    }
+    // Retracting it the same way finds the same entity.
+    it.eval_to_string(
+        "(mentat.store/transact c [[:db/retract [:l/id \"s:l/many\"] :l/many [:l/uv \"x\"]]])",
+    )
+    .expect("retract by lookup ref");
+    assert_eq!(
+        q(
+            it,
+            "[:find ?r . :where [?s :l/id \"s:l/many\"] [?s :l/many ?r]]"
+        ),
+        "nil"
+    );
+    // One value: an unresolved lookup ref, a non-unique attribute or a list is an error.
+    for v in [
+        "[:l/uv \"nope\"]",
+        "[:l/n 1]",
+        "[[:l/uv \"x\"] [:l/uv \"y\"]]",
+    ] {
+        assert!(
+            it.eval(&format!(
+                "(mentat.store/transact c [[:db/add [:l/id \"x\"] :l/many {v}]])"
+            ))
+            .is_err(),
+            "{v}"
+        );
+    }
+    // Map form: DataScript's rule, so [:l/uv :l/n] under :db.unique/value is two refs.
+    let report = it
+        .eval_to_string("(mentat.store/transact c [{:db/id \"m\" :l/many [:l/uv :l/n]}])")
+        .expect("map form");
+    assert!(
+        report.contains(":mentat.store/datoms-asserted 2"),
+        "{report}"
+    );
+}

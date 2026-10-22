@@ -52,6 +52,13 @@ pub const TXS: &[&str] = &[
     r#"[{:p/name "Alice" :p/age 31}]"#,
     r#"[{:p/name "Dan" :p/height 1.9}]"#,
     r#"[{:p/name "Eve" :p/age 25 :p/blob #bytes 010203}]"#,
+    // No-ops, a cardinality-one replacement, a retraction of an absent value (#281).
+    r#"[{:p/name "Eve" :p/age 25} [:db/retract [:p/name "Eve"] :p/age 99] [:db/retract [:p/name "Eve"] :p/nick "x"]]"#,
+    r#"[{:p/name "Eve" :p/age 26} {:p/name "Bob" :p/nick ["Bobby"]}]"#,
+    // A non-namespaced keyword value (#123).
+    r#"[{:p/name "Dan" :p/role [:plain]}]"#,
+    // [a v] lookup refs as entity, :db/id, cardinality-one and -many ref values (#152).
+    r#"[{:db/id [:p/name "Eve"] :p/boss [:p/name "Carol"] :p/likes [[:p/name "Bob"] [:p/name "Dan"]]}]"#,
 ];
 
 pub const QUERIES: &[&str] = &[
@@ -70,6 +77,8 @@ pub const QUERIES: &[&str] = &[
     // Value equality for every type.
     "[:find ?n :where [?e :p/alive false] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/role :r/dev] [?e :p/name ?n]]",
+    "[:find ?n ?r :where [?e :p/role ?r] [?e :p/name ?n]]",
+    "[:find ?n :where [?e :p/role :plain] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/id #uuid \"22222222-2222-4222-8222-222222222222\"] [?e :p/name ?n]]",
     "[:find ?n :where [?e :p/born ?t] [(< ?t #inst \"1992-01-01T00:00:00.000Z\")] [?e :p/name ?n]]",
     "[:find ?b :where [_ :p/blob ?b]]",
@@ -91,6 +100,31 @@ pub const QUERIES: &[&str] = &[
     "[:find (sum ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
     "[:find (max ?t) . :where [_ :p/born ?t]]",
+    // Aggregates over no rows (#237): nil, and 0 for a count. Nobody is 99.
+    "[:find (sum ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (avg ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (min ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (max ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (count ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find (sum ?a) (count ?a) :where [_ :p/age ?a] [(> ?a 99)]]",
+    "[:find [(sum ?h) (max ?h)] :where [_ :p/height ?h] [(> ?h 99)]]",
+    "[:find ?e (sum ?a) :where [?e :p/age ?a] [(> ?a 99)]]",
+    // min/max over refs and tx ids (#249).
+    "[:find (max ?tx) . :where [_ :p/age _ ?tx]]",
+    "[:find (min ?tx) . :where [_ :p/age _ ?tx]]",
+    "[:find ?e (max ?l) :where [?e :p/likes ?l]]",
+    // String predicates (#267).
+    "[:find ?n :where [_ :p/name ?n] [(like ?n \"A%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(like ?n \"a%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(ilike ?n \"%A%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(like ?n \"_o_\")]]",
+    "[:find ?n :where [_ :p/nick ?n] [(like ?n \"Al%\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(starts-with? ?n \"Ca\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(ends-with? ?n \"e\")]]",
+    "[:find ?n :where [_ :p/name ?n] [(includes? ?n \"o\")]]",
+    "[:find ?n ?k :where [?e :p/name ?n] [?e :p/nick ?k] [(starts-with? ?n ?k)]]",
+    "[:find ?r :where [_ :p/role ?r] [(like ?r \"r/d%\")]]",
+    "[:find ?v :where [?e :p/name \"Alice\"] [?e _ ?v] [(includes? ?v \"l\")]]",
     // Strings: ordering and equality compare text, not numbers.
     "[:find ?n :where [_ :p/name ?n] [(< ?n \"Bz\")]]",
     "[:find ?n :where [?e :p/name ?n] [?e :p/nick ?k] [(!= ?k \"Al\")]]",

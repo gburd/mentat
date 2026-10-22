@@ -1481,6 +1481,56 @@ fn test_aggregate_the() {
     );
 }
 
+// #249: min/max over refs, including transaction ids.
+#[test]
+fn test_min_max_ref() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :t/r :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                {:db/ident :t/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    let first = store.transact(r#"[{:db/id "a" :t/n 1}]"#).expect("a");
+    let a = *first.tempids.get("a").unwrap();
+    let last = store.transact(r#"[{:db/id "b" :t/n 2}]"#).expect("b");
+    let b = *last.tempids.get("b").unwrap();
+    store
+        .transact(format!("[[:db/add {a} :t/r {a}] [:db/add {a} :t/r {b}]]").as_str())
+        .expect("refs");
+
+    let scalar = |q: &str| store.q_once(q, None).into_scalar_result().expect(q);
+    assert_eq!(
+        scalar("[:find (max ?tx) . :where [_ :t/n _ ?tx]]"),
+        Some(Binding::Scalar(TypedValue::Ref(last.tx_id)))
+    );
+    assert_eq!(
+        scalar("[:find (min ?tx) . :where [_ :t/n _ ?tx]]"),
+        Some(Binding::Scalar(TypedValue::Ref(first.tx_id)))
+    );
+    assert_eq!(
+        scalar("[:find (max ?v) . :where [_ :t/r ?v]]"),
+        Some(Binding::Scalar(TypedValue::Ref(a.max(b))))
+    );
+    assert_eq!(
+        scalar("[:find (min ?v) . :where [_ :t/r ?v]]"),
+        Some(Binding::Scalar(TypedValue::Ref(a.min(b))))
+    );
+    // Grouped, in a relation.
+    let rel = store
+        .q_once("[:find ?e (max ?v) :where [?e :t/r ?v]]", None)
+        .into_rel_result()
+        .expect("rel");
+    assert_eq!(
+        rel,
+        vec![vec![TypedValue::Ref(a), TypedValue::Ref(a.max(b))]].into()
+    );
+    // Sum over refs is still meaningless.
+    assert!(store
+        .q_once("[:find (sum ?v) . :where [_ :t/r ?v]]", None)
+        .is_err());
+}
+
 #[test]
 fn test_null_aggregates() {
     let store = Store::open("").expect("opened");
@@ -2090,4 +2140,410 @@ fn test_plain_keyword_in_value_place() {
     );
     // A plain keyword nobody stored matches nothing (and is not an error).
     assert!(names("[:find [?n ...] :where [?e :task/status :nope] [?e :task/name ?n]]").is_empty());
+}
+
+// #267: like / ilike and the string predicates.
+#[test]
+fn test_string_predicates() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :s/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :s/pre  :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :s/kw   :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                {:db/ident :s/n    :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :s/doc  :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(
+            r#"[{:s/name "Alice" :s/pre "Al" :s/kw :k/alpha :s/n 1 :s/doc "Alice in Wonderland"}
+                {:s/name "alfred" :s/pre "xx" :s/n 2}
+                {:s/name "50%" :s/pre "5"}
+                {:s/name "500"}
+                {:s/name "a*b?[c]"}
+                {:s/name "axbyzc]"}
+                {:s/name "café" :s/pre ""}]"#,
+        )
+        .expect("data");
+
+    let names = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_coll_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .into_iter()
+            .map(|b| match b {
+                Binding::Scalar(TypedValue::String(s)) => s.to_string(),
+                Binding::Scalar(TypedValue::Keyword(k)) => k.to_string(),
+                b => panic!("{b:?}"),
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let q = |pred: &str| names(&format!("[:find [?s ...] :where [_ :s/name ?s] [{pred}]]"));
+
+    // like is case-sensitive; ilike is not.
+    assert_eq!(q(r#"(like ?s "Al%")"#), vec!["Alice"]);
+    assert_eq!(q(r#"(like ?s "al%")"#), vec!["alfred"]);
+    assert_eq!(q(r#"(ilike ?s "AL%")"#), vec!["Alice", "alfred"]);
+    assert_eq!(q(r#"(like ?s "_lice")"#), vec!["Alice"]);
+    // \ escapes % and _; GLOB metacharacters in a pattern are literals.
+    assert_eq!(q(r#"(like ?s "50\\%")"#), vec!["50%"]);
+    assert_eq!(q(r#"(like ?s "50%")"#), vec!["50%", "500"]);
+    assert_eq!(q(r#"(like ?s "a*b?[c]")"#), vec!["a*b?[c]"]);
+    assert_eq!(q(r#"(ilike ?s "A*B?[C]")"#), vec!["a*b?[c]"]);
+    assert_eq!(q(r#"(like ?s "caf_")"#), vec!["café"]);
+
+    // starts-with? / ends-with? / includes?, with constants.
+    assert_eq!(q(r#"(starts-with? ?s "Al")"#), vec!["Alice"]);
+    assert_eq!(q(r#"(ends-with? ?s "é")"#), vec!["café"]);
+    assert_eq!(q(r#"(includes? ?s "*b?")"#), vec!["a*b?[c]"]);
+    assert_eq!(q(r#"(includes? ?s "%")"#), vec!["50%"]);
+    assert_eq!(q(r#"(ends-with? ?s "")"#).len(), 7);
+    // ... and with a bound second argument.
+    assert_eq!(
+        names("[:find [?s ...] :where [?e :s/name ?s] [?e :s/pre ?p] [(starts-with? ?s ?p)]]"),
+        vec!["50%", "Alice", "café"]
+    );
+    // A pattern bound with :in.
+    let inputs = QueryInputs::with_value_sequence(vec![(
+        Variable::from_valid_name("?p"),
+        TypedValue::typed_string("%e%"),
+    )]);
+    let mut v: Vec<_> = store
+        .q_once(
+            "[:find [?s ...] :in ?p :where [_ :s/name ?s] [(like ?s ?p)]]",
+            inputs,
+        )
+        .into_coll_result()
+        .expect("like with :in");
+    v.sort_by_key(|b| format!("{b:?}"));
+    assert_eq!(
+        v,
+        vec![
+            Binding::Scalar(TypedValue::typed_string("Alice")),
+            Binding::Scalar(TypedValue::typed_string("alfred"))
+        ]
+    );
+
+    // A keyword attribute matches on its text without the leading `:`, as on pg_mentat.
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [_ :s/kw ?v] [(like ?v "k/%")]]"#),
+        vec![":k/alpha"]
+    );
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [_ :s/kw ?v] [(starts-with? ?v ":")]]"#),
+        Vec::<String>::new()
+    );
+    // An untyped value: only strings match, other types are skipped.
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [?e :s/n _] [?e ?a ?v] [(like ?v "Al%")]]"#),
+        vec!["Al", "Alice", "Alice in Wonderland"]
+    );
+    // A fulltext attribute matches on its text.
+    assert_eq!(
+        names(r#"[:find [?v ...] :where [_ :s/doc ?v] [(ilike ?v "%wonder%")]]"#),
+        vec!["Alice in Wonderland"]
+    );
+    // Inside not.
+    assert_eq!(
+        names(r#"[:find [?s ...] :where [?e :s/name ?s] [?e :s/n _] (not [(like ?s "A%")])]"#),
+        vec!["alfred"]
+    );
+
+    // Errors: arity, a pattern from a column, a trailing escape, a non-string pattern.
+    for (pred, msg) in [
+        (r#"(like ?s)"#, "invalid number of arguments to like: expected 2, got 1."),
+        (r#"(like ?s ?s)"#, "invalid argument to like: expected constant string pattern in position 1."),
+        (r#"(like ?s "a\\")"#, "invalid argument to like: expected pattern that does not end with an escape character in position 1."),
+        (r#"(starts-with? ?s 5)"#, "invalid argument to starts-with?: expected string in position 1."),
+    ] {
+        let err = store
+            .q_once(&format!("[:find ?s :where [_ :s/name ?s] [{pred}]]"), None)
+            .expect_err(pred);
+        assert_eq!(err.to_string(), msg, "{pred}");
+    }
+}
+
+// #281: the TxReport counts the datoms a transaction asserted and retracted.
+#[test]
+fn test_tx_report_counts() {
+    let mut store = Store::open("").expect("opened");
+    let counts = |r: &TxReport| (r.datoms_asserted.unwrap(), r.datoms_retracted.unwrap());
+    let r = store
+        .transact(
+            r#"[{:db/ident :c/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :c/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+                {:db/ident :c/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    assert_eq!(counts(&r), (11, 0));
+    let r = store
+        .transact(r#"[{:db/id "a" :c/n 1 :c/m [1 2] :c/s "x"}]"#)
+        .expect("a");
+    assert_eq!(counts(&r), (4, 0));
+    let a = *r.tempids.get("a").unwrap();
+    for (tx, want) in [
+        // Re-asserting what is there, and retracting what isn't, change nothing.
+        (
+            format!("[[:db/add {a} :c/n 1] [:db/add {a} :c/m 2] [:db/add {a} :c/s \"x\"]]"),
+            (0, 0),
+        ),
+        (
+            format!("[[:db/retract {a} :c/n 7] [:db/retract {a} :c/m 9]]"),
+            (0, 0),
+        ),
+        ("[]".to_string(), (0, 0)),
+        // Replacing a cardinality-one value: one assertion, one retraction.
+        (format!("[[:db/add {a} :c/n 2]]"), (1, 1)),
+        (format!("[[:db/add {a} :c/s \"y\"]]"), (1, 1)),
+        (
+            format!("[[:db/add {a} :c/m 3] [:db/retract {a} :c/m 1]]"),
+            (1, 1),
+        ),
+        (format!("[[:db/retractEntity {a}]]"), (0, 4)),
+    ] {
+        let r = store.transact(tx.as_str()).expect(&tx);
+        assert_eq!(counts(&r), want, "{tx}");
+        assert_eq!(r.is_empty(), want == (0, 0), "{tx}");
+    }
+    // A :db/noHistory replacement retracts the old value like any other (pg_mentat agrees).
+    store
+        .transact(
+            "[{:db/ident :c/h :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+               :db/noHistory true}]",
+        )
+        .expect("noHistory");
+    let r = store.transact(r#"[{:db/id "b" :c/h 1}]"#).expect("b");
+    let b = *r.tempids.get("b").unwrap();
+    let r = store.transact(&format!("[[:db/add {b} :c/h 2]]")).unwrap();
+    assert_eq!(counts(&r), (1, 1));
+}
+
+// #123: a non-namespaced keyword value reads back (it transacted, then failed to read).
+#[test]
+fn test_plain_keyword_value_round_trips() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :t/k :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(r#"[{:db/id "a" :t/k [:plain :ns/name]}]"#)
+        .expect("data");
+    let mut ks: Vec<String> = store
+        .q_once("[:find [?k ...] :where [_ :t/k ?k]]", None)
+        .into_coll_result()
+        .expect("read back")
+        .into_iter()
+        .map(|b| match b {
+            Binding::Scalar(TypedValue::Keyword(k)) => k.to_string(),
+            b => panic!("{b:?}"),
+        })
+        .collect();
+    ks.sort();
+    assert_eq!(ks, vec![":ns/name", ":plain"]);
+    // As a query constant, and through pull.
+    assert!(store
+        .q_once("[:find ?e . :where [?e :t/k :plain]]", None)
+        .into_scalar_result()
+        .expect("constant")
+        .is_some());
+    let pulled = store
+        .q_once("[:find (pull ?e [:t/k]) . :where [?e :t/k :plain]]", None)
+        .into_scalar_result()
+        .expect("pull");
+    assert!(format!("{pulled:?}").contains("plain"), "{pulled:?}");
+}
+
+// #179: a comparison over a value of unknown type applies to comparable values only.
+#[test]
+fn test_inequality_over_untyped_values() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :u/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :u/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :u/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+                {:db/ident :u/b :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
+                {:db/ident :u/r :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :u/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(
+            r#"[{:db/id "x" :u/id "e1" :u/n 5 :u/d 2.5 :u/b true :u/r "x"
+                 :u/t #inst "2020-01-01T00:00:00Z"}]"#,
+        )
+        .expect("data");
+    let vals = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_coll_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .iter()
+            .map(|b| format!("{b:?}"))
+            .collect();
+        v.sort();
+        v
+    };
+    // Longs and doubles only: not the string, the ref, the boolean or the instant.
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [?e :u/id "e1"] [?e ?a ?v] [(> ?v 1)]]"#),
+        ["Scalar(Double(2.5))", "Scalar(Long(5))"]
+    );
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [?e :u/id "e1"] [?e ?a ?v] [(<= ?v 2.5)]]"#),
+        ["Scalar(Double(2.5))"]
+    );
+    // An instant constant compares with instants only.
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [?e :u/id "e1"] [?e ?a ?v] [(< ?v #inst "2021-01-01T00:00:00Z")]]"#).len(),
+        1
+    );
+    // Over the whole store: no error (the bootstrap has keywords, strings, refs...).
+    assert!(store
+        .q_once("[:find ?v :where [_ ?a ?v] [(> ?v 4)]]", None)
+        .is_ok());
+    // A typed attribute is unchanged.
+    assert_eq!(
+        vals(r#"[:find [?v ...] :where [_ :u/n ?v] [(> ?v 1)]]"#),
+        ["Scalar(Long(5))"]
+    );
+}
+
+// #145 (Mozilla): a fulltext datom stores the rowid of its text in fulltext_values, so a
+// bare integer in the value place must not match it by that rowid.
+#[test]
+fn test_unattributed_integer_does_not_match_fulltext_rowid() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :ft/text :db/valueType :db.type/string :db/cardinality :db.cardinality/many
+                 :db/fulltext true :db/index true}
+                {:db/ident :ft/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    // 50 texts on one entity, so every rowid in 1..=50 is one of its values.
+    let texts: Vec<String> = (1..=50).map(|i| format!("\"text {i}\"")).collect();
+    let report = store
+        .transact(&format!(
+            "[{{:db/id \"t\" :ft/text [{}]}} {{:db/id \"n\" :ft/n 42}}]",
+            texts.join(" ")
+        ))
+        .expect("data");
+    let (t, n) = (report.tempids["t"], report.tempids["n"]);
+    let rowids: Vec<i64> = store
+        .sqlite_ref()
+        .prepare("SELECT d.v FROM datoms d WHERE d.e = ? AND d.index_fulltext")
+        .unwrap()
+        .query_map([t], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(rowids.contains(&42), "{rowids:?}");
+    let matching = |store: &mut Store, v: i64| -> Vec<Binding> {
+        store
+            .q_once(&format!("[:find [?x ...] :where [?x _ {v}]]"), None)
+            .into_coll_result()
+            .expect("query")
+    };
+    let found = matching(&mut store, 42);
+    assert!(
+        found.contains(&Binding::Scalar(TypedValue::Ref(n))),
+        "{found:?}"
+    );
+    for v in rowids {
+        let found = matching(&mut store, v);
+        assert!(
+            !found.contains(&Binding::Scalar(TypedValue::Ref(t))),
+            "[?x _ {v}]: {found:?}"
+        );
+    }
+}
+
+// #237: an aggregate over no rows is nil, as in Datomic, for every find spec; a count is 0.
+// (A grouped aggregate has no groups, so no rows.)
+#[test]
+fn test_aggregates_over_no_rows_are_nil() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :z/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :z/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+                {:db/ident :z/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
+                {:db/ident :z/k :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    store.transact("[{:z/k 1}]").expect("data");
+    let run = |store: &mut Store, q: String| {
+        store
+            .q_once(&q, None)
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .results
+    };
+    let zero = Binding::Scalar(TypedValue::Long(0));
+    for (agg, attrs) in [
+        ("sum", &[":z/n", ":z/d"][..]),
+        ("avg", &[":z/n", ":z/d"]),
+        ("min", &[":z/n", ":z/d", ":z/t"]),
+        ("max", &[":z/n", ":z/d", ":z/t"]),
+        ("count", &[":z/n", ":z/d", ":z/t"]),
+    ] {
+        let count = agg == "count";
+        for attr in attrs {
+            let r = run(
+                &mut store,
+                format!("[:find ({agg} ?v) . :where [_ {attr} ?v]]"),
+            );
+            let want = QueryResults::Scalar(count.then(|| zero.clone()));
+            assert_eq!(r, want, "{agg} {attr} scalar");
+            let r = run(
+                &mut store,
+                format!("[:find [({agg} ?v) ...] :where [_ {attr} ?v]]"),
+            );
+            let want = QueryResults::Coll(if count { vec![zero.clone()] } else { vec![] });
+            assert_eq!(r, want, "{agg} {attr} coll");
+            let r = run(
+                &mut store,
+                format!("[:find [({agg} ?v)] :where [_ {attr} ?v]]"),
+            );
+            let want = QueryResults::Tuple(count.then(|| vec![zero.clone()]));
+            assert_eq!(r, want, "{agg} {attr} tuple");
+            let r = run(
+                &mut store,
+                format!("[:find ({agg} ?v) :where [_ {attr} ?v]]"),
+            );
+            assert_eq!(r.len(), count as usize, "{agg} {attr} rel: {r:?}");
+            let r = run(
+                &mut store,
+                format!("[:find ?k ({agg} ?v) :where [?e :z/k ?k] [?e {attr} ?v]]"),
+            );
+            assert!(r.is_empty(), "{agg} {attr} grouped rel: {r:?}");
+        }
+    }
+    // With a nil aggregate in the find there is no row, even beside a count.
+    let r = run(
+        &mut store,
+        "[:find [(sum ?v) (count ?v)] :where [_ :z/n ?v]]".into(),
+    );
+    assert_eq!(r, QueryResults::Tuple(None));
+    // Over some rows they still aggregate.
+    store.transact("[{:z/n 5}]").expect("data");
+    assert_eq!(
+        store
+            .q_once("[:find [(sum ?v) (count ?v)] :where [_ :z/n ?v]]", None)
+            .into_tuple_result()
+            .expect("tuple"),
+        Some(vec![
+            Binding::Scalar(TypedValue::Long(5)),
+            Binding::Scalar(TypedValue::Long(1))
+        ])
+    );
 }

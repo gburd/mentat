@@ -27,7 +27,7 @@ use rusqlite::types::{ToSql, ToSqlOutput};
 use rusqlite::TransactionBehavior;
 
 use crate::bootstrap;
-use crate::{repeat_values, to_namespaced_keyword};
+use crate::repeat_values;
 use mentat_sql::SqlValue;
 
 use edn::{DateTime, Utc, Uuid, Value};
@@ -754,7 +754,7 @@ impl TypedSQLValue for TypedValue {
                 }
                 Ok(TypedValue::Uuid(u))
             }
-            (13, SqlValue::Text(x)) => to_namespaced_keyword(&x).map(|k| k.into()),
+            (13, SqlValue::Text(x)) => crate::to_keyword(&x).map(|k| k.into()),
             (15, SqlValue::Blob(x)) => Ok(TypedValue::Bytes(x.into())),
             (_, value) => bail!(DbErrorKind::BadSQLValuePair(value, value_type_tag)),
         }
@@ -770,7 +770,8 @@ impl TypedSQLValue for TypedValue {
     fn from_edn_value(value: &Value) -> Option<TypedValue> {
         match value {
             Value::Boolean(x) => Some(TypedValue::Boolean(*x)),
-            Value::Instant(x) => Some(TypedValue::Instant(*x)),
+            // Truncated to microseconds, as stored, so a term, the cache and storage agree.
+            Value::Instant(x) => Some((*x).into()),
             Value::Integer(x) => Some(TypedValue::Long(*x)),
             Value::Uuid(x) => Some(TypedValue::Uuid(*x)),
             Value::Float(ref x) => Some(TypedValue::Double(*x)),
@@ -931,7 +932,12 @@ pub fn read_attribute_map_from(
     entid_triples: Vec<(Entid, Entid, TypedValue)>,
 ) -> Result<AttributeMap> {
     let mut attribute_map = AttributeMap::default();
-    metadata::update_attribute_map_from_entid_triples(&mut attribute_map, entid_triples, vec![])?;
+    metadata::update_attribute_map_from_entid_triples(
+        &mut attribute_map,
+        entid_triples,
+        vec![],
+        &|e| format!("entid {}", e),
+    )?;
     Ok(attribute_map)
 }
 
@@ -939,7 +945,12 @@ pub fn read_attribute_map_from(
 pub(crate) fn read_attribute_map(conn: &rusqlite::Connection) -> Result<AttributeMap> {
     let entid_triples = read_materialized_view(conn, "schema")?;
     let mut attribute_map = AttributeMap::default();
-    metadata::update_attribute_map_from_entid_triples(&mut attribute_map, entid_triples, vec![])?;
+    metadata::update_attribute_map_from_entid_triples(
+        &mut attribute_map,
+        entid_triples,
+        vec![],
+        &|e| format!("entid {}", e),
+    )?;
     Ok(attribute_map)
 }
 
@@ -1040,6 +1051,25 @@ pub trait MentatStoring {
     /// Every live `[referrer a]` whose value is a ref to `e` (for
     /// `:db/retractEntity`, which retracts inbound references; issue #326).
     fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>>;
+
+    /// After `materialize_mentat_transaction`: how many datoms transaction `tx_id` asserts and
+    /// retracts, not counting its own `:db/txInstant` (see `TxReport::datoms_asserted`).
+    ///
+    /// The default (for a store written before 1.18.0) does not count: it reports `None`, so
+    /// the report's counts are `None` and `TxReport::is_empty` is false rather than claiming
+    /// a transaction changed nothing. The SQLite and DuckDB stores override it.
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<Option<(usize, usize)>> {
+        Ok(None)
+    }
+
+    /// After `materialize_mentat_transaction`: the retractions in the last transaction that
+    /// matched no datom, as `(e, a, v)`. The transactor leaves them out of what it tells the
+    /// attribute caches and transaction observers (#362).
+    ///
+    /// The default reports none, so every retraction is passed on, as before 1.18.0.
+    fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
+        Ok(Vec::new())
+    }
 }
 
 /// A SQLite transaction is a store too (it derefs to its connection).
@@ -1098,6 +1128,12 @@ impl MentatStoring for rusqlite::Transaction<'_> {
     }
     fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
         (**self).referrers(e)
+    }
+    fn transaction_datom_counts(&self, tx_id: Entid) -> Result<Option<(usize, usize)>> {
+        (**self).transaction_datom_counts(tx_id)
+    }
+    fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
+        (**self).unmatched_retractions()
     }
 }
 
@@ -1673,7 +1709,8 @@ impl MentatStoring for rusqlite::Connection {
     }
 
     fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
-        let mut stmt = self.prepare("SELECT a, v, value_type_tag FROM datoms WHERE e = ?")?;
+        // all_datoms: a fulltext value is a rowid in `datoms`, its text in the view.
+        let mut stmt = self.prepare("SELECT a, v, value_type_tag FROM all_datoms WHERE e = ?")?;
         let rows: Result<Vec<(Entid, TypedValue)>> = stmt
             .query_and_then(rusqlite::params![e], |row| {
                 let a: Entid = row.get(0)?;
@@ -1692,6 +1729,48 @@ impl MentatStoring for rusqlite::Connection {
         )?;
         let rows: Result<Vec<(Entid, Entid)>> = stmt
             .query_and_then(rusqlite::params![e], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect();
+        rows
+    }
+
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<Option<(usize, usize)>> {
+        // The same conditions `insert_transaction` uses to write the log.
+        let s = format!(
+            r#"
+            SELECT
+              (SELECT count(*) FROM temp.search_results
+               WHERE a0 IS NOT {tx_instant} AND added0 IS 1 AND
+                     ((rid IS NULL) OR ((rid IS NOT NULL) AND (v0 IS NOT v)))),
+              (SELECT count(*) FROM (SELECT DISTINCT e0, a0, v FROM temp.search_results
+               WHERE a0 IS NOT {tx_instant} AND rid IS NOT NULL AND
+                     ((added0 IS 0) OR
+                      (added0 IS 1 AND search_type IS ':db.cardinality/one' AND v0 IS NOT v))))"#,
+            tx_instant = entids::DB_TX_INSTANT
+        );
+        let (a, r): (i64, i64) = self.query_row(&s, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(Some((a as usize, r as usize)))
+    }
+
+    fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
+        // A fulltext search value is a fulltext_values rowid; report the text.
+        let s = format!(
+            r#"
+            SELECT s.e0, s.a0, CASE WHEN s.flags0 & {ft} IS NOT 0 THEN f.text ELSE s.v0 END,
+                   s.value_type_tag0
+            FROM temp.search_results AS s
+            LEFT JOIN fulltext_values AS f ON s.flags0 & {ft} IS NOT 0 AND f.rowid = s.v0
+            WHERE s.added0 IS 0 AND s.rid IS NULL"#,
+            ft = AttributeBitFlags::IndexFulltext as u8
+        );
+        let mut stmt = self.prepare_cached(&s)?;
+        let rows: Result<Vec<_>> = stmt
+            .query_and_then([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    TypedValue::from_sql_value_pair(row.get(2)?, row.get(3)?)?,
+                ))
+            })?
             .collect();
         rows
     }
@@ -1855,8 +1934,10 @@ SELECT EXISTS
                     // TODO: improve the failure message.  Perhaps try to mimic what Datomic says in
                     // this case?
                     if !attribute.multival {
-                        let mut rows = cardinality_stmt.query([&entid as &dyn ToSql])?;
-                        if rows.next()?.is_some() {
+                        // EXISTS always returns a row: read its value.
+                        let violated: bool =
+                            cardinality_stmt.query_row([&entid as &dyn ToSql], |r| r.get(0))?;
+                        if violated {
                             bail!(DbErrorKind::SchemaAlterationFailed(format!(
                                 "Cannot alter schema attribute {} to be :db.cardinality/one",
                                 entid
@@ -1909,6 +1990,8 @@ mod tests {
     extern crate env_logger;
 
     use std::borrow::Borrow;
+
+    use crate::to_namespaced_keyword;
 
     use super::*;
     use crate::debug::{tempids, TestConn};
@@ -2065,8 +2148,10 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/str]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 222 :db/ident :test/ref]
-                                 [:db/add 222 :db/valueType :db.type/ref]]"
+                                 [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]]"
         );
 
         // Test that we can assert metadata about the current transaction.
@@ -2214,6 +2299,22 @@ mod tests {
         );
     }
 
+    // #253: validation errors name the attribute being installed, not its entid.
+    #[test]
+    fn test_attribute_validation_names_the_ident() {
+        let mut conn = TestConn::default();
+        assert_transact!(
+            conn,
+            "
+            [{:db/ident :t/ft
+              :db/valueType :db.type/string
+              :db/cardinality :db.cardinality/one
+              :db/fulltext true
+              :db/index false}]",
+            Err("bad schema assertion: :db/fulltext true without :db/index true for :t/ft")
+        );
+    }
+
     // Unique is required!
     #[test]
     fn test_upsert_issue_538() {
@@ -2229,7 +2330,7 @@ mod tests {
               :db/valueType :db.type/string
               :db/unique :db.unique/identity
               :db/cardinality :db.cardinality/many}]",
-              Err("bad schema assertion: :db/unique :db/unique_identity without :db/index true for entid: 65538"));
+              Err("bad schema assertion: :db/unique :db/unique_identity without :db/index true for :person/email"));
     }
 
     // TODO: don't use :db/ident to test upserts!
@@ -2640,12 +2741,131 @@ mod tests {
                          [:db/retract 100 :db/ident :test/ident]]"
         );
 
-        // Trying to install an attribute without a :db/ident is allowed.
+        // Installing an attribute without a :db/ident is not allowed (#286).
         assert_transact!(
             conn,
             "[[:db/add 101 :db/valueType :db.type/long]
-                                 [:db/add 101 :db/cardinality :db.cardinality/many]]"
+                                 [:db/add 101 :db/cardinality :db.cardinality/many]]",
+            Err("bad schema assertion: incomplete schema attribute definition (entity 101): missing :db/ident. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality.")
         );
+    }
+
+    // #281: a store that implements only the pre-1.18.0 MentatStoring methods still
+    // transacts; its reports say they were not counted.
+    #[test]
+    fn test_store_without_datom_counts() {
+        struct Old<'c>(&'c rusqlite::Connection);
+        impl MentatStoring for Old<'_> {
+            fn resolve_avs<'a>(&self, avs: &'a [&'a AVPair]) -> Result<AVMap<'a>> {
+                self.0.resolve_avs(avs)
+            }
+            fn begin_tx_application(&self) -> Result<()> {
+                self.0.begin_tx_application()
+            }
+            fn insert_non_fts_searches(&self, e: &[ReducedEntity], t: SearchType) -> Result<()> {
+                self.0.insert_non_fts_searches(e, t)
+            }
+            fn insert_fts_searches(&self, e: &[ReducedEntity], t: SearchType) -> Result<()> {
+                self.0.insert_fts_searches(e, t)
+            }
+            fn materialize_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
+                self.0.materialize_mentat_transaction(tx_id)
+            }
+            fn commit_mentat_transaction(&self, tx_id: Entid) -> Result<()> {
+                self.0.commit_mentat_transaction(tx_id)
+            }
+            fn resolved_metadata_assertions(
+                &self,
+            ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+                self.0.resolved_metadata_assertions()
+            }
+            fn write_partition_map(&self, partition_map: &PartitionMap) -> Result<()> {
+                MentatStoring::write_partition_map(self.0, partition_map)
+            }
+            fn committed_metadata_assertions(
+                &self,
+                tx_id: Entid,
+            ) -> Result<Vec<(Entid, Entid, TypedValue, bool)>> {
+                MentatStoring::committed_metadata_assertions(self.0, tx_id)
+            }
+            fn update_metadata(
+                &self,
+                old: &Schema,
+                new: &Schema,
+                report: &metadata::MetadataReport,
+            ) -> Result<()> {
+                MentatStoring::update_metadata(self.0, old, new, report)
+            }
+            fn current_values(&self, e: Entid, a: Entid) -> Result<Vec<TypedValue>> {
+                self.0.current_values(e, a)
+            }
+            fn entity_datoms(&self, e: Entid) -> Result<Vec<(Entid, TypedValue)>> {
+                self.0.entity_datoms(e)
+            }
+            fn referrers(&self, e: Entid) -> Result<Vec<(Entid, Entid)>> {
+                self.0.referrers(e)
+            }
+        }
+        let conn = TestConn::default();
+        let tx = "[[:db/add \"a\" :db/doc \"x\"]]";
+        let (report, ..) = crate::transact(
+            &Old(&conn.sqlite),
+            conn.partition_map.clone(),
+            &conn.schema,
+            &conn.schema,
+            crate::NullWatcher(),
+            edn::parse::entities(tx).unwrap(),
+        )
+        .expect("transacts");
+        assert_eq!(
+            (report.datoms_asserted, report.datoms_retracted),
+            (None, None)
+        );
+        assert!(!report.is_empty());
+    }
+
+    // #286: a new attribute needs :db/ident, :db/valueType and :db/cardinality.
+    #[test]
+    fn test_new_attribute_needs_minimal_set() {
+        let mut conn = TestConn::default();
+        assert_transact!(conn,
+            "[[:db/add \"p\" :db/ident :test/prop] [:db/add \"p\" :db/valueType :db.type/string]]",
+            Err("bad schema assertion: incomplete schema attribute definition for ':test/prop': missing :db/cardinality. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality."));
+        assert_transact!(conn,
+            "[[:db/add \"p\" :db/ident :test/prop] [:db/add \"p\" :db/cardinality :db.cardinality/one]]",
+            Err("bad schema assertion: incomplete schema attribute definition for ':test/prop': missing :db/valueType. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality."));
+        assert_transact!(conn,
+            "[[:db/add \"p\" :db/valueType :db.type/string] [:db/add \"p\" :db/cardinality :db.cardinality/one]]",
+            Err("bad schema assertion: incomplete schema attribute definition (entity 65536): missing :db/ident. A schema attribute requires :db/ident, :db/valueType, and :db/cardinality."));
+
+        // A bare ident is fine (it names an entity, not an attribute).
+        assert_transact!(conn, "[[:db/add \"p\" :db/ident :test/prop]]");
+        // The full set is fine, also when the ident came in an earlier transaction.
+        assert_transact!(conn,
+            "[[:db/add :test/prop :db/valueType :db.type/string] [:db/add :test/prop :db/cardinality :db.cardinality/one]]");
+        // Altering an existing attribute needs only the changed piece.
+        assert_transact!(conn, "[[:db/add :test/prop :db/index true]]");
+        assert_transact!(
+            conn,
+            "[[:db/add :test/prop :db/cardinality :db.cardinality/many]]"
+        );
+    }
+
+    // #286: a store whose attribute predates the rule (no :db/ident) still opens and alters.
+    #[test]
+    fn test_existing_half_defined_attribute_still_reads() {
+        let mut conn = TestConn::default();
+        conn.sqlite
+            .execute_batch(
+                "INSERT INTO datoms (e, a, v, value_type_tag, tx, index_avet, index_vaet, index_fulltext, unique_value)
+                 VALUES (101, 7, 25, 0, 268435457, 0, 1, 0, 0), (101, 8, 33, 0, 268435457, 0, 1, 0, 0);
+                 INSERT INTO schema (e, a, v, value_type_tag) VALUES (101, 7, 25, 0), (101, 8, 33, 0);",
+            )
+            .expect("insert a half-defined attribute");
+        let db = read_db(&conn.sqlite).expect("store opens");
+        assert!(db.schema.attribute_for_entid(101).is_some());
+        conn.schema = db.schema;
+        assert_transact!(conn, "[[:db/add 101 :db/index true]]");
     }
 
     #[test]
@@ -2662,7 +2882,7 @@ mod tests {
 
         // Trying to alter the :db/valueType will fail.
         assert_transact!(conn, "[[:db/add 100 :db/valueType :db.type/long]]",
-                         Err("bad schema assertion: Schema alteration for existing attribute with entid 100 is not valid"));
+                         Err("bad schema assertion: Schema alteration for existing attribute :test/ident is not valid"));
 
         // But we can alter the cardinality.
         assert_transact!(conn, "[[:db/add 100 :db/cardinality :db.cardinality/many]]");
@@ -2857,6 +3077,20 @@ mod tests {
         assert_transact!(conn, "[[:db/add 100 :db/cardinality :db.cardinality/one]]",
                          // TODO: give more helpful error details.
                          Err("schema alteration failed: Cannot alter schema attribute 100 to be :db.cardinality/one"));
+
+        // But we can when no entity has two values (#286): with one value each, or no data.
+        assert_transact!(
+            conn,
+            "[[:db/retract 200 :test/ident 2] [:db/add 201 :test/ident 3]]"
+        );
+        assert_transact!(conn, "[[:db/add 100 :db/cardinality :db.cardinality/one]]");
+        assert_transact!(
+            conn,
+            "[[:db/add 101 :db/ident :test/empty]
+              [:db/add 101 :db/valueType :db.type/long]
+              [:db/add 101 :db/cardinality :db.cardinality/many]]"
+        );
+        assert_transact!(conn, "[[:db/add 101 :db/cardinality :db.cardinality/one]]");
     }
 
     #[test]
@@ -2921,6 +3155,69 @@ mod tests {
         );
     }
 
+    /// Issue #119: each datom's index_avet, index_vaet, index_fulltext and unique_value flags
+    /// follow its attribute's :db/index, ref type, :db/fulltext and :db/unique, when written and
+    /// when the attribute is altered.
+    #[test]
+    fn test_datom_flags_follow_the_attribute() {
+        let mut conn = TestConn::default();
+        assert_transact!(
+            conn,
+            "[{:db/id 100 :db/ident :f/plain :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+              {:db/id 101 :db/ident :f/indexed :db/valueType :db.type/long :db/cardinality :db.cardinality/one :db/index true}
+              {:db/id 102 :db/ident :f/ref :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+              {:db/id 103 :db/ident :f/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}
+              {:db/id 104 :db/ident :f/unique :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/value :db/index true}
+              {:db/id 105 :db/ident :f/identity :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/unique :db.unique/identity :db/index true}]"
+        );
+        assert_transact!(
+            conn,
+            "[{:db/id 200 :f/plain 1 :f/indexed 2 :f/ref 200 :f/text \"t\" :f/unique \"u\" :f/identity \"i\"}]"
+        );
+        let flags = |conn: &TestConn| -> Vec<(i64, [bool; 4])> {
+            conn.sqlite
+                .prepare(
+                    "SELECT a, index_avet, index_vaet, index_fulltext, unique_value \
+                     FROM datoms WHERE e = 200 ORDER BY a",
+                )
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        //            avet   vaet   fulltext unique
+        assert_eq!(
+            flags(&conn),
+            vec![
+                (100, [false, false, false, false]),
+                (101, [true, false, false, false]),
+                (102, [false, true, false, false]),
+                (103, [true, false, true, false]),
+                (104, [true, false, false, true]),
+                (105, [true, false, false, true]),
+            ]
+        );
+
+        // Altering :db/index and :db/unique updates the existing datoms.
+        assert_transact!(
+            conn,
+            "[[:db/add 100 :db/index true] [:db/add 100 :db/unique :db.unique/value]
+              [:db/add 101 :db/index false] [:db/retract 104 :db/unique :db.unique/value]]"
+        );
+        let altered = flags(&conn);
+        assert_eq!(
+            [altered[0], altered[1], altered[4]],
+            [
+                (100, [true, false, false, true]),
+                (101, [false, false, false, false]),
+                (104, [true, false, false, false]),
+            ]
+        );
+    }
+
     #[test]
     fn test_db_double_retraction_issue_818() {
         let mut conn = TestConn::default();
@@ -2971,6 +3268,7 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/fulltext]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/identity]
                                  [:db/add 111 :db/index true]
                                  [:db/add 111 :db/fulltext true]
@@ -2988,7 +3286,7 @@ mod tests {
 
         assert_transact!(conn,
                          "[[:db/add 222 :db/fulltext true]]",
-                         Err("bad schema assertion: Schema alteration for existing attribute with entid 222 is not valid"));
+                         Err("bad schema assertion: Schema alteration for existing attribute :test/string is not valid"));
     }
 
     #[test]
@@ -3000,6 +3298,7 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/fulltext]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/identity]
                                  [:db/add 111 :db/index true]
                                  [:db/add 111 :db/fulltext true]
@@ -3044,6 +3343,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3073,6 +3373,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3106,6 +3407,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3136,6 +3438,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3168,6 +3471,7 @@ mod tests {
             conn.datoms(),
             "[[111 :db/ident :test/fulltext]
                           [111 :db/valueType :db.type/string]
+                          [111 :db/cardinality :db.cardinality/one]
                           [111 :db/unique :db.unique/identity]
                           [111 :db/index true]
                           [111 :db/fulltext true]
@@ -3190,10 +3494,12 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/unique_value]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/value]
                                  [:db/add 111 :db/index true]
                                  [:db/add 222 :db/ident :test/unique_identity]
                                  [:db/add 222 :db/valueType :db.type/long]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 222 :db/unique :db.unique/identity]
                                  [:db/add 222 :db/index true]
                                  [:db/add 333 :db/ident :test/not_unique]
@@ -3252,10 +3558,12 @@ mod tests {
             conn,
             "[[:db/add 111 :db/ident :test/unique_value]
                                  [:db/add 111 :db/valueType :db.type/string]
+                                 [:db/add 111 :db/cardinality :db.cardinality/one]
                                  [:db/add 111 :db/unique :db.unique/value]
                                  [:db/add 111 :db/index true]
                                  [:db/add 222 :db/ident :test/unique_identity]
                                  [:db/add 222 :db/valueType :db.type/long]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 222 :db/unique :db.unique/identity]
                                  [:db/add 222 :db/index true]
                                  [:db/add 333 :db/ident :test/not_unique]
@@ -3264,6 +3572,7 @@ mod tests {
                                  [:db/add 333 :db/index true]
                                  [:db/add 444 :db/ident :test/ref]
                                  [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/unique :db.unique/identity]
                                  [:db/add 444 :db/index true]]"
         );
@@ -3386,12 +3695,15 @@ mod tests {
                                  [:db/add 222 :db/ident :test/component]
                                  [:db/add 222 :db/isComponent true]
                                  [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 333 :db/ident :test/unique]
                                  [:db/add 333 :db/unique :db.unique/identity]
                                  [:db/add 333 :db/index true]
                                  [:db/add 333 :db/valueType :db.type/long]
+                                 [:db/add 333 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/ident :test/dangling]
-                                 [:db/add 444 :db/valueType :db.type/ref]]"
+                                 [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]]"
         );
 
         // Check that we can explode map notation without :db/id.
@@ -3489,12 +3801,15 @@ mod tests {
                                  [:db/add 222 :db/ident :test/component]
                                  [:db/add 222 :db/isComponent true]
                                  [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 333 :db/ident :test/unique]
                                  [:db/add 333 :db/unique :db.unique/identity]
                                  [:db/add 333 :db/index true]
                                  [:db/add 333 :db/valueType :db.type/long]
+                                 [:db/add 333 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/ident :test/dangling]
-                                 [:db/add 444 :db/valueType :db.type/ref]]"
+                                 [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]]"
         );
 
         // Check that we can explode direct reversed notation, entids.
@@ -3623,12 +3938,15 @@ mod tests {
                                  [:db/add 222 :db/ident :test/component]
                                  [:db/add 222 :db/isComponent true]
                                  [:db/add 222 :db/valueType :db.type/ref]
+                                 [:db/add 222 :db/cardinality :db.cardinality/one]
                                  [:db/add 333 :db/ident :test/unique]
                                  [:db/add 333 :db/unique :db.unique/identity]
                                  [:db/add 333 :db/index true]
                                  [:db/add 333 :db/valueType :db.type/long]
+                                 [:db/add 333 :db/cardinality :db.cardinality/one]
                                  [:db/add 444 :db/ident :test/dangling]
-                                 [:db/add 444 :db/valueType :db.type/ref]]"
+                                 [:db/add 444 :db/valueType :db.type/ref]
+                                 [:db/add 444 :db/cardinality :db.cardinality/one]]"
         );
 
         // `tx-parser` should fail to parse direct reverse notation with nested value maps and
@@ -3725,8 +4043,8 @@ mod tests {
         assert_transact!(
             conn,
             r#"[
-            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity}
-            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity}
+            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
             {:db/ident :page/title :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
         ]"#
         );
@@ -3788,8 +4106,8 @@ mod tests {
         assert_transact!(
             conn,
             r#"[
-            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity}
-            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity}
+            {:db/ident :page/id :db/valueType :db.type/string :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
+            {:db/ident :page/ref :db/valueType :db.type/ref :db/index true :db/unique :db.unique/identity :db/cardinality :db.cardinality/one}
             {:db/ident :page/title :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
         ]"#
         );

@@ -1923,10 +1923,13 @@ fn build_datoms_query(index: crate::protocol::DatomsIndex, component_count: usiz
 
     // Select all typed value columns; convert v_instant to epoch microseconds
     // and v_uuid to text so tokio-postgres can read them without extra features.
+    // The microseconds are pg_mentat's sql_micros_from_instant: exact on pg13
+    // too, where EXTRACT(EPOCH) is a double.
     let base_query = "\
         SELECT e, a, value_type_tag, \
                v_ref, v_bool, v_long, v_double, v_text, v_keyword, \
-               (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
+               (EXTRACT(EPOCH FROM date_trunc('second', v_instant))::BIGINT * 1000000 \
+                + EXTRACT(MICROSECONDS FROM v_instant)::BIGINT % 1000000) AS v_instant_micros, \
                v_uuid::TEXT AS v_uuid_str, \
                v_bytes, \
                tx, added \

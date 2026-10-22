@@ -148,6 +148,33 @@ fn test_cas_mismatch_aborts_whole_tx() {
     assert_eq!(name(&store, e), None);
 }
 
+// [:db/cas e a v v] with v current is a no-op, as in Datomic, on a cardinality-one and a
+// cardinality-many attribute; it was an AddRetractConflict. A mismatch still fails.
+#[test]
+fn test_cas_to_the_same_value_is_a_no_op() {
+    let mut store = setup();
+    let e = make_entity(
+        &mut store,
+        r#"[[:db/add "e" :t/val 10] [:db/add "e" :t/tags "a"]]"#,
+    );
+    for tx in [
+        format!("[[:db/cas {e} :t/val 10 10]]"),
+        format!("[[:db/cas {e} :t/tags \"a\" \"a\"]]"),
+    ] {
+        let r = store.transact(&tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
+        assert_eq!(
+            (r.datoms_asserted, r.datoms_retracted),
+            (Some(0), Some(0)),
+            "{tx}"
+        );
+    }
+    assert_eq!(val(&store, e), Some(10));
+    assert_eq!(datom_count(&store, e), 2);
+    assert!(store
+        .transact(&format!("[[:db/cas {e} :t/val 11 11]]"))
+        .is_err());
+}
+
 #[test]
 fn test_cas_from_nil_asserts_when_absent() {
     let mut store = setup();
@@ -280,4 +307,430 @@ fn test_retract_entity_retracts_incoming_refs() {
         .collect();
     assert_eq!(refs, Vec::<i64>::new(), "inbound ref retracted");
     assert_eq!(name(&store, referrer), Some("referrer".to_string()));
+}
+
+// Retracting a value the attribute doesn't have changed nothing on a cardinality-many
+// attribute, but on a cardinality-one attribute it retracted the current value.
+#[test]
+fn test_retract_of_absent_value_keeps_current_value() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :r/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    let r = store
+        .transact(r#"[{:db/id "a" :r/n 1 :r/s "x"}]"#)
+        .expect("a");
+    let a = *r.tempids.get("a").unwrap();
+    store
+        .transact(format!("[[:db/retract {a} :r/n 7] [:db/retract {a} :r/s \"y\"]]").as_str())
+        .expect("retract");
+    fn q(store: &Store, q: &str) -> mentat::RelResult<mentat::Binding> {
+        store.q_once(q, None).into_rel_result().expect(q)
+    }
+    assert_eq!(
+        q(
+            &store,
+            &format!("[:find ?n ?s :where [{a} :r/n ?n] [{a} :r/s ?s]]")
+        ),
+        vec![vec![TypedValue::Long(1), TypedValue::typed_string("x")]].into()
+    );
+    // Nothing was logged for the retractions.
+    assert_eq!(
+        q(
+            &store,
+            &format!("[:find ?v ?added :where [{a} :r/n ?v ?tx ?added]]")
+        ),
+        vec![vec![TypedValue::Long(1), TypedValue::Boolean(true)]].into()
+    );
+    // The right value still retracts.
+    store
+        .transact(format!("[[:db/retract {a} :r/n 1] [:db/retract {a} :r/s \"x\"]]").as_str())
+        .expect("retract");
+    assert_eq!(
+        q(&store, &format!("[:find ?v :where [{a} ?a ?v]]")).row_count(),
+        0
+    );
+}
+
+// :db/retractEntity on an entity with a fulltext value read the rowid as a string.
+#[test]
+fn test_retract_entity_with_fulltext_value() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    let r = store.transact(r#"[{:db/id "a" :r/s "x"}]"#).expect("a");
+    let a = *r.tempids.get("a").unwrap();
+    store
+        .transact(format!("[[:db/retractEntity {a}]]").as_str())
+        .expect("retractEntity");
+    assert_eq!(datom_count(&store, a), 0);
+}
+
+// #152: Datomic's `[a v]` lookup refs, in entity position, :db/id, value position (a
+// cardinality-one ref), a list of them (cardinality-many), and reverse notation.
+#[test]
+fn test_vector_lookup_refs() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :t/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :t/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :t/ref :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :t/refs :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+                {:db/ident :t/kws :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(r#"[{:t/id "e1"} {:t/id "e2"} {:t/id "e3"}]"#)
+        .expect("data");
+    for tx in [
+        r#"[[:db/add [:t/id "e1"] :t/n 5]]"#,
+        r#"[{:db/id [:t/id "e2"] :t/n 6}]"#,
+        r#"[{:t/id "x" :t/ref [:t/id "e1"]}]"#,
+        r#"[{:t/id "y" :t/refs [[:t/id "e1"] [:t/id "e2"]]}]"#,
+        r#"[[:db/add [:t/id "y"] :t/refs [:t/id "e3"]]]"#,
+        r#"[{:t/id "e3" :t/_ref [:t/id "e2"]}]"#,
+        // Not a lookup ref: a keyword attribute gets a list of keywords.
+        r#"[{:t/id "z" :t/kws [:k/a :k/b]}]"#,
+    ] {
+        store.transact(tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
+    }
+    let q = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_rel_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .rows()
+            .map(|r| format!("{:?}", r))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        q(r#"[:find ?i ?n :where [?e :t/id ?i] [?e :t/n ?n]]"#),
+        [
+            r#"[Scalar(String("e1")), Scalar(Long(5))]"#,
+            r#"[Scalar(String("e2")), Scalar(Long(6))]"#
+        ]
+    );
+    assert_eq!(
+        q(r#"[:find ?a ?b :where [?x :t/id ?a] [?x :t/ref ?r] [?r :t/id ?b]]"#),
+        [
+            r#"[Scalar(String("e2")), Scalar(String("e3"))]"#,
+            r#"[Scalar(String("x")), Scalar(String("e1"))]"#
+        ]
+    );
+    assert_eq!(
+        q(r#"[:find ?b :where [?x :t/id "y"] [?x :t/refs ?r] [?r :t/id ?b]]"#),
+        [
+            r#"[Scalar(String("e1"))]"#,
+            r#"[Scalar(String("e2"))]"#,
+            r#"[Scalar(String("e3"))]"#
+        ]
+    );
+    assert_eq!(
+        q(r#"[:find ?k :where [?x :t/id "z"] [?x :t/kws ?k]]"#).len(),
+        2
+    );
+    // A lookup ref that matches nothing, or a non-unique attribute, is an error.
+    assert!(store
+        .transact(r#"[[:db/add [:t/id "nope"] :t/n 1]]"#)
+        .is_err());
+    assert!(store.transact(r#"[[:db/add [:t/n 5] :t/n 1]]"#).is_err());
+    // A vector of values for a cardinality-one attribute is still rejected.
+    assert!(store.transact(r#"[{:t/id "x" :t/ref [1 2]}]"#).is_err());
+    // (lookup-ref a v) keeps working.
+    store
+        .transact(r#"[[:db/add (lookup-ref :t/id "e3") :t/n 7]]"#)
+        .expect("lookup-ref");
+}
+
+// #362: a retraction of an absent value leaves an attribute's cache alone, and an observer of
+// the attribute hears nothing, because nothing changed.
+#[test]
+fn test_retract_of_absent_value_keeps_cache_and_observers_quiet() {
+    use mentat::{kw, CacheDirection, HasSchema, TxObserver};
+    use std::collections::BTreeSet;
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :r/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+                {:db/ident :r/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :r/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    let a = *store
+        .transact(r#"[{:db/id "a" :r/n 1 :r/m 1 :r/id "A" :r/s "x"}]"#)
+        .expect("a")
+        .tempids
+        .get("a")
+        .unwrap();
+    store.cache(&kw!(:r/n), CacheDirection::Forward).unwrap();
+    store.cache(&kw!(:r/id), CacheDirection::Both).unwrap();
+
+    let schema = store.conn().current_schema();
+    let attr = |k| schema.get_entid(&k).map(|e| e.0).unwrap();
+    let (r_n, r_m) = (attr(kw!(:r/n)), attr(kw!(:r/m)));
+    let attrs: BTreeSet<_> = [r_n, r_m, attr(kw!(:r/id)), attr(kw!(:r/s))].into();
+    let (send, heard) = mpsc::channel();
+    let send = Mutex::new(send);
+    store.register_observer(
+        "watch".to_string(),
+        Arc::new(TxObserver::new(attrs, move |_key, batch| {
+            for (tx, changes) in batch {
+                send.lock().unwrap().send((*tx, changes.clone())).unwrap();
+            }
+        })),
+    );
+
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/n 7] [:db/retract {a} :r/m 7] [:db/retract {a} :r/id \"B\"]
+              [:db/retract {a} :r/s \"y\"]]"
+        ))
+        .expect("retract absent");
+    assert!(r.is_empty());
+    let n = |store: &Store| {
+        store
+            .q_once(&format!("[:find ?v . :where [{a} :r/n ?v]]"), None)
+            .into_scalar_result()
+            .unwrap()
+    };
+    assert_eq!(n(&store), Some(TypedValue::Long(1).into()));
+    let ip = store.begin_read().unwrap();
+    assert_eq!(
+        ip.lookup_value_for_attribute(a, &kw!(:r/n)).unwrap(),
+        Some(TypedValue::Long(1))
+    );
+    assert_eq!(
+        ip.lookup_value_for_attribute(a, &kw!(:r/id)).unwrap(),
+        Some(TypedValue::typed_string("A"))
+    );
+    drop(ip);
+    assert!(
+        heard
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "observer notified of a transaction that changed nothing"
+    );
+
+    // A real retraction still updates the cache and notifies.
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/n 1] [:db/retract {a} :r/m 7]]"
+        ))
+        .expect("retract present");
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(0), Some(1)));
+    assert_eq!(n(&store), None);
+    let (tx, changes) = heard
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("notified");
+    assert_eq!(tx, r.tx_id);
+    assert!(changes.contains(&r_n));
+    assert!(!changes.contains(&r_m), "{changes:?}");
+}
+
+// #152: only a :db.unique/identity attribute makes `[:attr v]` in a cardinality-many ref's
+// value a lookup ref (DataScript's rule). Two idents of other attributes stay two refs.
+#[test]
+fn test_vector_of_idents_on_a_ref_list() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :user/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/value :db/index true}
+                {:db/ident :user/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :user/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :form/fields :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    let fields = |store: &mut Store, tx: &str| -> Vec<String> {
+        let f = *store
+            .transact(tx)
+            .unwrap_or_else(|e| panic!("{tx}: {e}"))
+            .tempids
+            .get("f")
+            .unwrap();
+        let mut v: Vec<String> = store
+            .q_once(
+                &format!("[:find [?i ...] :where [{f} :form/fields ?r] [?r :db/ident ?i]]"),
+                None,
+            )
+            .into_coll_result()
+            .unwrap()
+            .into_iter()
+            .map(|b| b.into_kw().expect("keyword").to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    // :user/email is :db.unique/value: two refs.
+    assert_eq!(
+        fields(
+            &mut store,
+            r#"[{:db/id "f" :form/fields [:user/email :user/name]}]"#
+        ),
+        [":user/email", ":user/name"]
+    );
+    // :db/ident is :db.unique/identity, so this is a lookup ref to :user/name ...
+    assert_eq!(
+        fields(
+            &mut store,
+            r#"[{:db/id "f" :form/fields [:db/ident :user/name]}]"#
+        ),
+        [":user/name"]
+    );
+    // ... and the way to write the two refs is to make the first a lookup ref.
+    assert_eq!(
+        fields(
+            &mut store,
+            r#"[{:db/id "f" :form/fields [[:db/ident :user/id] :user/name]}]"#
+        ),
+        [":user/id", ":user/name"]
+    );
+}
+
+// #152: outside the ambiguous place (the whole value of a cardinality-many ref), any
+// :db/unique attribute makes `[a v]` a lookup ref, as in Datomic: :db/id, entity position,
+// reverse notation, a cardinality-one ref, and each vector in a ref's list of values.
+#[test]
+fn test_unique_value_lookup_refs() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :p/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/value :db/index true}
+                {:db/ident :p/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :p/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+                {:db/ident :p/likes :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    store
+        .transact(r#"[{:p/id "a"} {:p/id "b"} {:p/id "c"}]"#)
+        .expect("data");
+    for tx in [
+        r#"[{:db/id [:p/id "a"] :p/n 1}]"#,
+        r#"[[:db/add [:p/id "b"] :p/n 2]]"#,
+        r#"[{:p/id "x" :p/boss [:p/id "a"]}]"#,
+        r#"[[:db/add [:p/id "c"] :p/boss [:p/id "b"]]]"#,
+        r#"[{:p/id "y" :p/_boss [:p/id "c"]}]"#,
+    ] {
+        store.transact(tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
+    }
+    let r = store
+        .transact(r#"[{:db/id "z" :p/id "z" :p/likes [[:p/id "a"] [:p/id "b"]]}]"#)
+        .expect("list of lookup refs");
+    // No tempids for "a" and "b": they are lookup refs, not new entities.
+    assert_eq!(r.tempids.keys().collect::<Vec<_>>(), ["z"]);
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(3), Some(0)));
+    let rows = |q: &str| -> Vec<String> {
+        let mut v: Vec<String> = store
+            .q_once(q, None)
+            .into_rel_result()
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .rows()
+            .map(|r| format!("{:?}", r))
+            .collect();
+        v.sort();
+        v
+    };
+    let s = |a: &str, b: &str| format!(r#"[Scalar(String("{a}")), Scalar(String("{b}"))]"#);
+    // c's boss was b, then y (reverse notation; :p/boss is cardinality-one).
+    assert_eq!(
+        rows("[:find ?i ?b :where [?e :p/id ?i] [?e :p/boss ?r] [?r :p/id ?b]]"),
+        [s("c", "y"), s("x", "a")]
+    );
+    assert_eq!(
+        rows("[:find ?i ?n :where [?e :p/id ?i] [?e :p/n ?n]]"),
+        [
+            r#"[Scalar(String("a")), Scalar(Long(1))]"#,
+            r#"[Scalar(String("b")), Scalar(Long(2))]"#
+        ]
+    );
+    assert_eq!(
+        rows(r#"[:find ?i ?b :where [?e :p/id "z"] [?e :p/id ?i] [?e :p/likes ?r] [?r :p/id ?b]]"#),
+        [s("z", "a"), s("z", "b")]
+    );
+    // An inner vector that isn't a lookup ref that resolves is an error, not new entities.
+    for tx in [
+        r#"[{:db/id "w" :p/likes [[:p/id "nope"]]}]"#,
+        r#"[{:db/id "w" :p/likes [[:p/n 1]]}]"#,
+        r#"[{:db/id "w" :p/likes [[:p/id "a" "b"]]}]"#,
+    ] {
+        assert!(store.transact(tx).is_err(), "{tx}");
+    }
+}
+
+// #362: instants are kept to the microsecond. A retraction of an instant that differs from
+// the stored one only below a microsecond, and isn't the stored one once truncated, is a
+// retraction of an absent value: it leaves the datom and the cache alone. One that truncates
+// to the stored value retracts it. A sub-microsecond assertion caches the truncated value.
+#[test]
+fn test_sub_microsecond_instants() {
+    use mentat::{kw, CacheDirection};
+
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    let a = *store
+        .transact(r#"[{:db/id "a" :r/t #inst "2020-01-01T00:00:00.000001Z"}]"#)
+        .expect("a")
+        .tempids
+        .get("a")
+        .unwrap();
+    store.cache(&kw!(:r/t), CacheDirection::Forward).unwrap();
+    let stored = TypedValue::instant(1_577_836_800_000_001);
+    let cached = |store: &mut Store| store.lookup_value_for_attribute(a, &kw!(:r/t)).unwrap();
+    let queried = |store: &Store| {
+        store
+            .q_once(&format!("[:find ?v . :where [{a} :r/t ?v]]"), None)
+            .into_scalar_result()
+            .unwrap()
+    };
+
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/t #inst \"2020-01-01T00:00:00.0000027Z\"]]"
+        ))
+        .expect("retract absent");
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(0), Some(0)));
+    assert_eq!(cached(&mut store), Some(stored.clone()));
+    assert_eq!(queried(&store), Some(stored.into()));
+
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/t #inst \"2020-01-01T00:00:00.0000017Z\"]]"
+        ))
+        .expect("retract present");
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (Some(0), Some(1)));
+    assert_eq!(cached(&mut store), None);
+    assert_eq!(queried(&store), None);
+
+    store
+        .transact(&format!(
+            "[[:db/add {a} :r/t #inst \"2020-01-01T00:00:00.0000027Z\"]]"
+        ))
+        .expect("assert");
+    assert_eq!(
+        cached(&mut store),
+        Some(TypedValue::instant(1_577_836_800_000_002))
+    );
 }

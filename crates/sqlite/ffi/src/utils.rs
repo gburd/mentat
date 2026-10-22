@@ -56,7 +56,8 @@ pub mod log {
 
     #[cfg(all(target_os = "android", not(test)))]
     pub fn d(message: &str) {
-        let message = CString::new(message).unwrap();
+        // Strip NULs first: a panic here, inside catch_panic's handler, would abort.
+        let message = CString::new(message.replace('\0', "")).unwrap_or_default();
         let message = message.as_ptr();
         let tag = CString::new("Mentat").unwrap();
         let tag = tag.as_ptr();
@@ -156,6 +157,37 @@ pub mod error {
             Err(e) => {
                 error.message = string_to_c_char(e.to_string());
                 ptr::null_mut()
+            }
+        }
+    }
+
+    /// Run `f`, stopping a panic from unwinding into the C caller (#266).
+    ///
+    /// On a panic the message is stored in `error` (when it is non-null) and `on_panic` is
+    /// returned instead (a null pointer, 0 or false). Any handle the call consumed is gone; a
+    /// handle it borrowed may be inconsistent and should be destroyed.
+    /// # Safety
+    /// `error` must be null or point to a valid `ExternError`.
+    pub unsafe fn catch_panic<T, F: FnOnce() -> T>(
+        error: *mut ExternError,
+        on_panic: T,
+        f: F,
+    ) -> T {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(v) => v,
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string());
+                let msg = format!("mentat panicked: {}", msg);
+                super::log::d(&msg);
+                if !error.is_null() {
+                    // Strip NULs so the CString conversion cannot panic again.
+                    (*error).message = string_to_c_char(msg.replace('\0', ""));
+                }
+                on_panic
             }
         }
     }

@@ -195,3 +195,26 @@ fn test_eval() {
     let (ok, _, _) = cli(&db.path(), &[".eval (throw (ex-info \"boom\" {}))"], None);
     assert!(!ok);
 }
+
+// #272: fixtures/seattle.script still runs, from crates/sqlite (its `.i` paths are relative).
+#[test]
+fn test_seattle_script_fixture() {
+    let d = tempfile::tempdir().unwrap();
+    let db = d.path().join("seattle.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_mentat_cli"))
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+        .args(["-d", db.to_str().unwrap(), "-f", "fixtures/seattle.script"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run mentat_cli");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    // The script's last query: the district of Beacon Hill.
+    assert_eq!(
+        cells(&stdout).last().map(String::as_str),
+        Some("\"Greater Duwamish\""),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Wallingford"), "{stdout}");
+}

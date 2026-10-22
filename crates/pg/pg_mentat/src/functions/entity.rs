@@ -5,6 +5,7 @@ use pgrx::JsonB;
 use serde_json::json;
 
 use crate::types::constants::type_tag;
+use crate::types::instant::sql_micros_from_instant;
 
 /// Fetch all datoms for a specific entity and return as JSON
 ///
@@ -77,7 +78,8 @@ pub fn entity(
         }
 
         // Query all type-specific tables with UNION ALL, joined to schema for ident
-        let query = "
+        let query = format!(
+            "
             SELECT s.ident, 0::SMALLINT AS type_tag, d.v::TEXT AS value
             FROM mentat.datoms_ref_new d
             JOIN mentat.schema s ON d.a = s.entid
@@ -98,9 +100,7 @@ pub fn entity(
             JOIN mentat.schema s ON d.a = s.entid
             WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
             UNION ALL
-            SELECT s.ident, 4::SMALLINT,
-                   (EXTRACT(EPOCH FROM d.v)::BIGINT * 1000000 +
-                    EXTRACT(MICROSECOND FROM d.v)::BIGINT % 1000000)::TEXT
+            SELECT s.ident, 4::SMALLINT, {}::TEXT
             FROM mentat.datoms_instant_new d
             JOIN mentat.schema s ON d.a = s.entid
             WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
@@ -124,10 +124,12 @@ pub fn entity(
             FROM mentat.datoms_bytes_new d
             JOIN mentat.schema s ON d.a = s.entid
             WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
-        ";
+        ",
+            sql_micros_from_instant("d.v")
+        );
 
         for row in client.select(
-            query,
+            &query,
             None,
             &[DatumWithOid::from(store_id), DatumWithOid::from(entity_id)],
         )? {

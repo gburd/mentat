@@ -432,6 +432,25 @@ impl MentatStoring for DuckStoring<'_> {
             |r| Ok((r.get_i64(0)?, r.get_i64(1)?)),
         )?)
     }
+
+    fn transaction_datom_counts(&self, _tx_id: Entid) -> Result<Option<(usize, usize)>> {
+        // The same conditions `insert_transaction` uses to write the log.
+        let s = format!(
+            "SELECT
+              (SELECT count(*) FROM temp.search_results
+               WHERE a0 <> {tx_instant} AND added0 AND ((rid IS NULL) OR (v0 IS DISTINCT FROM v))),
+              (SELECT count(*) FROM (SELECT DISTINCT e0, a0, v FROM temp.search_results
+               WHERE a0 <> {tx_instant} AND rid IS NOT NULL AND
+                     ((NOT added0) OR
+                      (added0 AND search_type = ':db.cardinality/one' AND v0 IS DISTINCT FROM v))))",
+            tx_instant = entids::DB_TX_INSTANT
+        );
+        let rows = self
+            .conn
+            .query_rows(&s, &[], |r| Ok((r.get_i64(0)?, r.get_i64(1)?)))?;
+        let (a, r) = rows.first().copied().unwrap_or((0, 0));
+        Ok(Some((a as usize, r as usize)))
+    }
 }
 
 fn bail_db(kind: DbErrorKind) -> Result<()> {

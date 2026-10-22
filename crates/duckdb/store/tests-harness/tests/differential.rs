@@ -44,6 +44,7 @@ fn duckdb_matches_sqlite() {
     let duck = DuckStore::new(&dc as &dyn SqlConn, "default");
 
     let mut tx_ids = Vec::new();
+    let mut counts = Vec::new();
     for (i, tx) in TXS.iter().enumerate() {
         let a = sqlite
             .transact(*tx)
@@ -53,8 +54,18 @@ fn duckdb_matches_sqlite() {
             .unwrap_or_else(|e| panic!("duckdb tx {i}: {e}"));
         assert_eq!(a.tx_id, b.tx_id, "tx {i}: tx ids differ");
         assert_eq!(a.tempids, b.tempids, "tx {i}: tempids differ");
+        // #281: the datom counts come from each store's own SQL.
+        assert_eq!(
+            (a.datoms_asserted, a.datoms_retracted),
+            (b.datoms_asserted, b.datoms_retracted),
+            "tx {i}: datom counts differ"
+        );
         tx_ids.push(a.tx_id);
+        counts.push((a.datoms_asserted.unwrap(), a.datoms_retracted.unwrap()));
     }
+
+    // A no-op, then a replacement and a new value, a keyword, then three new refs.
+    assert_eq!(counts[counts.len() - 4..], [(0, 0), (2, 1), (1, 0), (3, 0)]);
 
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>, ordered: bool| {
@@ -80,7 +91,20 @@ fn duckdb_matches_sqlite() {
             // Both failing agrees, except for queries that must work: the
             // get-else / missing? cases were silently "agreeing" this way
             // while neither engine implemented them (#335).
-            (Err(a), Err(_)) if q.contains("get-else") || q.contains("missing?") => {
+            (Err(a), Err(_))
+                if [
+                    "get-else",
+                    "missing?",
+                    "like",
+                    "-with?",
+                    "includes?",
+                    "?tx)",
+                    "(max ?l)",
+                    "99)]]",
+                ]
+                .iter()
+                .any(|f| q.contains(f)) =>
+            {
                 failures.push(format!("{label} {q}\n  both engines ERR: {a}"))
             }
             (Err(_), Err(_)) => {}

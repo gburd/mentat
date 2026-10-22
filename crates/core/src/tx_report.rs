@@ -17,7 +17,11 @@ use core_traits::Entid;
 use crate::{DateTime, Utc};
 
 /// A transaction report summarizes an applied transaction.
+///
+/// Non-exhaustive (1.18.0): fields may be added in a minor release. Read the fields; build one
+/// with [`TxReport::new`].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
+#[non_exhaustive]
 pub struct TxReport {
     /// The transaction ID of the transaction.
     pub tx_id: Entid,
@@ -31,4 +35,37 @@ pub struct TxReport {
     /// existing entid, or is allocated a new entid.  (It is possible for multiple distinct string
     /// literal tempids to all unify to a single freshly allocated entid.)
     pub tempids: BTreeMap<String, Entid>,
+
+    /// How many datoms the transaction added to the log, and how many it retracted (#281).
+    /// Both leave out the transaction's own `:db/txInstant` datom, so `0, 0` means the
+    /// transaction changed nothing. A redundant assertion (the datom is already there) or a
+    /// retraction of an absent datom is not counted; replacing a cardinality-one value counts
+    /// one assertion and one retraction. Both are `None` (not counted) from a store whose
+    /// `MentatStoring` doesn't implement `transaction_datom_counts`.
+    pub datoms_asserted: Option<usize>,
+    pub datoms_retracted: Option<usize>,
+}
+
+impl TxReport {
+    pub fn new(
+        tx_id: Entid,
+        tx_instant: DateTime<Utc>,
+        tempids: BTreeMap<String, Entid>,
+        datoms_asserted: Option<usize>,
+        datoms_retracted: Option<usize>,
+    ) -> TxReport {
+        TxReport {
+            tx_id,
+            tx_instant,
+            tempids,
+            datoms_asserted,
+            datoms_retracted,
+        }
+    }
+
+    /// True if the transaction asserted and retracted nothing (beyond its `:db/txInstant`).
+    /// False when the store did not count.
+    pub fn is_empty(&self) -> bool {
+        self.datoms_asserted == Some(0) && self.datoms_retracted == Some(0)
+    }
 }

@@ -324,29 +324,30 @@ fn test_unknown_attribute_integer_value() {
     let one = r#"[:find ?x :where [?x _ 1]]"#;
     let two = r#"[:find ?x :where [?x _ 2]]"#;
 
-    // Can't match boolean; no need to filter it out.
+    // Can't match boolean; no need to filter it out. A string's tag is always excluded: a
+    // fulltext value in `datoms` is an integer rowid (#145).
     let SQLQuery { sql, args } = translate(&schema, negative);
     assert_eq!(
         sql,
-        "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE `datoms00`.v = -1"
+        "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE (`datoms00`.v = -1 AND `datoms00`.value_type_tag <> 10)"
     );
     assert_eq!(args, vec![]);
 
     // Excludes booleans.
     let SQLQuery { sql, args } = translate(&schema, zero);
-    assert_eq!(sql, "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE (`datoms00`.v = 0 AND `datoms00`.value_type_tag <> 1)");
+    assert_eq!(sql, "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE (`datoms00`.v = 0 AND `datoms00`.value_type_tag <> 10 AND `datoms00`.value_type_tag <> 1)");
     assert_eq!(args, vec![]);
 
     // Excludes booleans.
     let SQLQuery { sql, args } = translate(&schema, one);
-    assert_eq!(sql, "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE (`datoms00`.v = 1 AND `datoms00`.value_type_tag <> 1)");
+    assert_eq!(sql, "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE (`datoms00`.v = 1 AND `datoms00`.value_type_tag <> 10 AND `datoms00`.value_type_tag <> 1)");
     assert_eq!(args, vec![]);
 
     // Can't match boolean; no need to filter it out.
     let SQLQuery { sql, args } = translate(&schema, two);
     assert_eq!(
         sql,
-        "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE `datoms00`.v = 2"
+        "SELECT DISTINCT `datoms00`.e AS `?x` FROM `datoms` AS `datoms00` WHERE (`datoms00`.v = 2 AND `datoms00`.value_type_tag <> 10)"
     );
     assert_eq!(args, vec![]);
 }
@@ -446,8 +447,9 @@ fn test_numeric_less_than_unknown_attribute() {
     let SQLQuery { sql, args } = translate(&schema, query);
 
     // Although we infer numericness from numeric predicates, we've already assigned a table to the
-    // first pattern, and so this is _still_ `all_datoms`.
-    assert_eq!(sql, "SELECT DISTINCT `all_datoms00`.e AS `?x` FROM `all_datoms` AS `all_datoms00` WHERE `all_datoms00`.v < 10");
+    // first pattern, and so this is _still_ `all_datoms`. The type tag is checked, so only longs
+    // and doubles (tag 5) are compared (#179).
+    assert_eq!(sql, "SELECT DISTINCT `all_datoms00`.e AS `?x` FROM `all_datoms` AS `all_datoms00` WHERE (`all_datoms00`.value_type_tag = 5) AND `all_datoms00`.v < 10");
     assert_eq!(args, vec![]);
 }
 

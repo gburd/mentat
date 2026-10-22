@@ -409,9 +409,45 @@ impl Debug for Inequality {
     }
 }
 
+/// A string predicate (#267). `like`/`ilike` patterns use `%` and `_` with `\\` as the
+/// escape, as in PostgreSQL; `like` is case-sensitive, `ilike` is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringMatchOp {
+    Like,
+    ILike,
+    StartsWith,
+    EndsWith,
+    Includes,
+}
+
+impl StringMatchOp {
+    pub fn from_datalog_operator(s: &str) -> Option<StringMatchOp> {
+        match s {
+            "like" => Some(StringMatchOp::Like),
+            "ilike" => Some(StringMatchOp::ILike),
+            "starts-with?" => Some(StringMatchOp::StartsWith),
+            "ends-with?" => Some(StringMatchOp::EndsWith),
+            "includes?" => Some(StringMatchOp::Includes),
+            _ => None,
+        }
+    }
+
+    /// `like` and `ilike` need a constant pattern (see `apply_string_match`).
+    pub fn is_pattern(self) -> bool {
+        matches!(self, StringMatchOp::Like | StringMatchOp::ILike)
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub enum ColumnConstraint {
     Equals(QualifiedAlias, QueryValue),
+    /// `keyword`: the value is a keyword, matched on its text without the leading `:`.
+    StringMatch {
+        op: StringMatchOp,
+        value: QueryValue,
+        keyword: bool,
+        pattern: QueryValue,
+    },
     Inequality {
         operator: Inequality,
         left: QueryValue,
@@ -533,6 +569,13 @@ impl Debug for ColumnConstraint {
             } => write!(f, "{:?} {:?} {:?}", left, operator, right),
 
             Matches(ref qa, ref thing) => write!(f, "{:?} MATCHES {:?}", qa, thing),
+
+            StringMatch {
+                op,
+                ref value,
+                ref pattern,
+                ..
+            } => write!(f, "{:?} {:?} {:?}", value, op, pattern),
 
             HasTypes {
                 ref value,

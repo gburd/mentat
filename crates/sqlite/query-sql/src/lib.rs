@@ -25,8 +25,8 @@ use mentat_core::SQLTypeAffinity;
 use edn::query::{Direction, Limit, Variable};
 
 use mentat_query_algebrizer::{
-    Column, DatomsColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias, TableAlias,
-    TransactionsColumn, VariableColumn,
+    Column, DatomsColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias, StringMatchOp,
+    TableAlias, TransactionsColumn, VariableColumn,
 };
 
 use sql_traits::errors::{BuildQueryResult, SQLError};
@@ -131,6 +131,14 @@ pub enum Constraint {
     TypeCheck {
         value: ColumnOrExpression,
         affinity: SQLTypeAffinity,
+    },
+    /// A string predicate (#267), rendered per dialect. `keyword`: `value` is a keyword
+    /// column, matched on its text without the leading `:`.
+    StringMatch {
+        op: StringMatchOp,
+        value: ColumnOrExpression,
+        keyword: bool,
+        pattern: ColumnOrExpression,
     },
 }
 
@@ -493,8 +501,139 @@ impl QueryFragment for Constraint {
                 });
                 Ok(())
             }
+            StringMatch {
+                op,
+                ref value,
+                keyword,
+                ref pattern,
+            } => push_string_match(out, *op, value, *keyword, pattern),
         }
     }
+}
+
+/// Translate a `like` pattern (`%`, `_`, `\` escapes, as in PostgreSQL) to a SQLite GLOB
+/// pattern, which matches case-sensitively, as `like` must.
+fn like_to_glob(pattern: &str) -> String {
+    fn literal(out: &mut String, c: char) {
+        match c {
+            '*' => out.push_str("[*]"),
+            '?' => out.push_str("[?]"),
+            '[' => out.push_str("[[]"),
+            c => out.push(c),
+        }
+    }
+    let mut out = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            // The algebrizer rejects a trailing escape.
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    literal(&mut out, n)
+                }
+            }
+            '%' => out.push('*'),
+            '_' => out.push('?'),
+            c => literal(&mut out, c),
+        }
+    }
+    out
+}
+
+/// A string operand: on DuckDB, a `v` column is read through its VARCHAR copy `v_s` (NULL for
+/// non-strings), and any other column is cast to VARCHAR.
+fn push_string_operand(out: &mut dyn QueryBuilder, c: &ColumnOrExpression) -> BuildQueryResult {
+    if out.dialect() == Dialect::DuckDb {
+        if is_value_column(c) {
+            return push_comparand(out, c, Comparand::Member("v_s"));
+        }
+        if let ColumnOrExpression::Column(_) | ColumnOrExpression::ExistingColumn(_) = c {
+            out.push_sql("CAST(");
+            c.push_sql(out)?;
+            out.push_sql(" AS VARCHAR)");
+            return Ok(());
+        }
+    }
+    c.push_sql(out)
+}
+
+fn push_string_match(
+    out: &mut dyn QueryBuilder,
+    op: StringMatchOp,
+    value: &ColumnOrExpression,
+    keyword: bool,
+    pattern: &ColumnOrExpression,
+) -> BuildQueryResult {
+    use StringMatchOp::*;
+    let duck = out.dialect() == Dialect::DuckDb;
+    // A keyword is stored as `:ns/name`; match on `ns/name`, as pg_mentat does.
+    let push_value = |out: &mut dyn QueryBuilder| -> BuildQueryResult {
+        if keyword {
+            out.push_sql("substr(");
+            push_string_operand(out, value)?;
+            out.push_sql(", 2)");
+            Ok(())
+        } else {
+            push_string_operand(out, value)
+        }
+    };
+    // `pre value mid pattern post`.
+    let (pre, mid, post) = match (op, duck) {
+        (Like, true) => ("(", " LIKE ", " ESCAPE '\\')"),
+        (ILike, true) => ("(", " ILIKE ", " ESCAPE '\\')"),
+        (StartsWith, true) => ("starts_with(", ", ", ")"),
+        (EndsWith, true) => ("ends_with(", ", ", ")"),
+        (Includes, true) => ("contains(", ", ", ")"),
+        (Like, false) => {
+            if let ColumnOrExpression::Value(TypedValue::String(p)) = pattern {
+                out.push_sql("(");
+                push_value(out)?;
+                out.push_sql(" GLOB ");
+                out.push_typed_value(&TypedValue::typed_string(like_to_glob(p)))?;
+                out.push_sql(")");
+                return Ok(());
+            }
+            // Unreachable: the algebrizer only accepts a constant pattern. Fall back to
+            // SQLite's LIKE, which ignores ASCII case.
+            ("(", " LIKE ", " ESCAPE '\\')")
+        }
+        // shortcut: SQLite's LIKE folds ASCII letters only (no Unicode case folding without
+        // ICU), so `ilike` on SQLite is ASCII-case-insensitive; PostgreSQL and DuckDB fold all
+        // of Unicode. Register a Unicode lower() if users need it.
+        (ILike, false) => ("(", " LIKE ", " ESCAPE '\\')"),
+        (StartsWith, false) => {
+            out.push_sql("(substr(");
+            push_value(out)?;
+            out.push_sql(", 1, length(");
+            pattern.push_sql(out)?;
+            out.push_sql(")) = ");
+            return push_then(out, pattern, ")");
+        }
+        (EndsWith, false) => {
+            // substr(v, -0) is all of v, so test the empty suffix separately.
+            out.push_sql("(length(");
+            pattern.push_sql(out)?;
+            out.push_sql(") = 0 OR substr(");
+            push_value(out)?;
+            out.push_sql(", -length(");
+            pattern.push_sql(out)?;
+            out.push_sql(")) = ");
+            return push_then(out, pattern, ")");
+        }
+        (Includes, false) => ("(instr(", ", ", ") > 0)"),
+    };
+    out.push_sql(pre);
+    push_value(out)?;
+    out.push_sql(mid);
+    push_string_operand(out, pattern)?;
+    out.push_sql(post);
+    Ok(())
+}
+
+fn push_then(out: &mut dyn QueryBuilder, c: &ColumnOrExpression, tail: &str) -> BuildQueryResult {
+    c.push_sql(out)?;
+    out.push_sql(tail);
+    Ok(())
 }
 
 /// True if `c` is a `v` column (datoms, transactions, or fulltext).

@@ -52,7 +52,7 @@ pub enum AlgebrizerError {
     #[error("value of type {0} provided for var {1}, expected {2}")]
     InputTypeDisagreement(PlainSymbol, ValueType, ValueType),
 
-    #[error("invalid number of arguments to {0}: expected {1}, got {2}.")]
+    #[error("invalid number of arguments to {0}: expected {2}, got {1}.")]
     InvalidNumberOfArguments(PlainSymbol, usize, usize),
 
     #[error("invalid argument to {0}: expected {1} in position {2}.")]

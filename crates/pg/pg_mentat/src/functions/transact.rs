@@ -1,5 +1,6 @@
 use crate::error::{self, MentatError};
 use crate::functions::store_management;
+use crate::types::instant::{sql_instant_from_micros, sql_micros_from_instant};
 use edn::entities::{BuiltinTxFn, OpType};
 use edn::parse;
 use pgrx::datum::DatumWithOid;
@@ -689,23 +690,23 @@ fn execute_cas_fn(
         .into());
     }
 
-    // CAS matched -- retract old value (if not nil) and assert new value
-    if !old_is_nil {
-        if let Some(old_val) = old_encoded {
-            pending_datoms.push(PendingDatom {
-                e,
-                a,
-                v: old_val,
-                added: false,
-            });
-        }
-    }
-
     let new_val = if is_ref {
         encode_ref_value(new_edn, tempid_map, qs)?
     } else {
         encode_value(new_edn)?
     };
+
+    // CAS matched -- retract old value (if not nil) and assert new value. [:db/cas e a v v]
+    // is a no-op, as in Datomic (whose cas expands to the assertion alone): retracting v
+    // would conflict with the add.
+    if let Some(old_val) = old_encoded.filter(|old_val| *old_val != new_val) {
+        pending_datoms.push(PendingDatom {
+            e,
+            a,
+            v: old_val,
+            added: false,
+        });
+    }
     pending_datoms.push(PendingDatom {
         e,
         a,
@@ -754,8 +755,9 @@ fn allocate_tx_id(qs: &str) -> Result<(i64, i64, i64), Box<dyn std::error::Error
     let tx_instant_micros = Spi::get_one_with_args::<i64>(
         &format!(
             "INSERT INTO {}.transactions (tx, tx_instant) VALUES ($1, CURRENT_TIMESTAMP) \
-             RETURNING (EXTRACT(EPOCH FROM tx_instant) * 1000000)::BIGINT",
-            qs
+             RETURNING {}",
+            qs,
+            sql_micros_from_instant("tx_instant")
         ),
         &[DatumWithOid::from(tx_id)],
     )
@@ -897,12 +899,12 @@ fn execute_transaction_inner(
     // --- End per-transaction context setup ---
 
     // Insert :db/txInstant datom for this transaction using typed column
-    // Use to_timestamp() in SQL to convert microseconds to TIMESTAMPTZ
     Spi::run_with_args(
         &format!(
             "INSERT INTO {}.datoms (e, a, value_type_tag, v_instant, tx, added) \
-             VALUES ($1, $2, $3, to_timestamp($4::DOUBLE PRECISION / 1000000.0), $5, $6)",
-            qs
+             VALUES ($1, $2, $3, {}, $5, $6)",
+            qs,
+            sql_instant_from_micros("$4")
         ),
         &[
             DatumWithOid::from(tx_id),
@@ -922,9 +924,10 @@ fn execute_transaction_inner(
     Spi::run_with_args(
         &format!(
             "INSERT INTO {}.current_instant (store_id, e, a, v, tx) \
-             VALUES ($1, $2, $3, to_timestamp($4::DOUBLE PRECISION / 1000000.0), $5) \
+             VALUES ($1, $2, $3, {}, $5) \
              ON CONFLICT (store_id, e, a, v) DO UPDATE SET tx = EXCLUDED.tx",
-            qs
+            qs,
+            sql_instant_from_micros("$4")
         ),
         &[
             DatumWithOid::from(tx_store_id),
@@ -1114,15 +1117,18 @@ fn execute_transaction_inner(
 
                 let e = resolve_entity_place(&entity_vec[1], &mut tempid_map, &qs)?;
                 let a = resolve_attribute(&entity_vec[2])?;
-                // Check if attribute is ref-type; if so, resolve value as entity reference
-                let v = if lookup_value_type(a).as_deref() == Some("ref") {
-                    encode_ref_value(&entity_vec[3], &mut tempid_map, &qs)?
-                } else {
-                    encode_value(&entity_vec[3])?
-                };
                 let added = matches!(op, OpType::Add);
-
-                pending_datoms.push(PendingDatom { e, a, v, added });
+                // List form takes one value (Datomic's grammar), so on a ref attribute a
+                // vector is a lookup ref under any :db/unique attribute, never a list (#152).
+                let values = if lookup_value_type(a).as_deref() == Some("ref") {
+                    vec![&entity_vec[3]]
+                } else {
+                    exploded_values(a, &entity_vec[3])
+                };
+                for value in values {
+                    let v = encode_attr_value(a, value, &mut tempid_map, &qs)?;
+                    pending_datoms.push(PendingDatom { e, a, v, added });
+                }
             }
             edn::Value::Map(ref map) => {
                 // Reuse entity ID from Pass 1 if one was pre-allocated,
@@ -1150,19 +1156,15 @@ fn execute_transaction_inner(
                     }
 
                     let a = resolve_attribute(attr_key)?;
-                    // Check if attribute is ref-type; if so, resolve value as entity reference
-                    let v = if lookup_value_type(a).as_deref() == Some("ref") {
-                        encode_ref_value(attr_value, &mut tempid_map, &qs)?
-                    } else {
-                        encode_value(attr_value)?
-                    };
-
-                    pending_datoms.push(PendingDatom {
-                        e,
-                        a,
-                        v,
-                        added: true,
-                    });
+                    for value in exploded_values(a, attr_value) {
+                        let v = encode_attr_value(a, value, &mut tempid_map, &qs)?;
+                        pending_datoms.push(PendingDatom {
+                            e,
+                            a,
+                            v,
+                            added: true,
+                        });
+                    }
                 }
             }
             // Fail loud: a vector beginning with a keyword that reached here
@@ -1368,13 +1370,55 @@ fn execute_transaction_inner(
         }
     }
 
+    // A transaction is a set of datoms: asserting and retracting the same one is a
+    // conflict, in either order (#368, #369), as on the embedded engine and in Datomic.
+    // Without this, retract-then-add deleted the value and add-then-retract failed inside
+    // the batch INSERT.
+    if pending_datoms.iter().any(|d| !d.added) {
+        let key = |d: &PendingDatom| (d.e, d.a, d.v.type_tag(), typed_value_sql_literal(&d.v));
+        let asserted: std::collections::HashSet<_> =
+            pending_datoms.iter().filter(|d| d.added).map(key).collect();
+        if let Some(d) = pending_datoms
+            .iter()
+            .find(|d| !d.added && asserted.contains(&key(d)))
+        {
+            // named-stores: per-store cache
+            let attr = crate::cache::get_cache()
+                .get_ident(d.a)
+                .unwrap_or_else(|| d.a.to_string());
+            return Err(MentatError::InvalidTransaction {
+                message: format!(
+                    "cardinality conflicts: AddRetractConflict {{ e: {}, a: {}, vs: {{{}}} }}: \
+                     a transaction cannot assert and retract the same datom",
+                    d.e,
+                    attr,
+                    format_typed_value(&d.v)
+                ),
+            }
+            .into());
+        }
+    }
+
+    // A retraction of a datom that isn't live is a no-op (#362): it is not
+    // logged and not reported, as on the embedded engine and in Datomic.
+    let dead = dead_retractions(&pending_datoms, &qs)?;
+    if !dead.is_empty() {
+        let mut i = 0;
+        pending_datoms.retain(|_| {
+            i += 1;
+            !dead.contains(&(i - 1))
+        });
+    }
+
     // Validate and insert all datoms.
     // If schema was installed (savepoint active), catch errors to rollback
     // the savepoint before propagating.
     let datom_result = insert_datoms(&pending_datoms, tx_id, &qs);
 
     match datom_result {
-        Ok(_datom_count) => {
+        Ok(changed) => {
+            let datoms_asserted = changed.iter().filter(|d| d.4).count();
+            let datoms_retracted = changed.len() - datoms_asserted;
             // All datoms inserted successfully. PostgreSQL's transaction
             // management will commit schema + datoms atomically.
 
@@ -1392,8 +1436,9 @@ fn execute_transaction_inner(
 
             // Build tx-data: array of [e, a, v, tx, added] for each datom in the transaction.
             // Include the implicit :db/txInstant datom first (matches Datomic ordering),
-            // then all user-supplied datoms.
-            let mut tx_data_entries: Vec<String> = Vec::with_capacity(pending_datoms.len() + 1);
+            // then the datoms the transaction changed, as in Datomic: with the retraction
+            // a cardinality-one replacement implies, without no-op re-assertions.
+            let mut tx_data_entries: Vec<String> = Vec::with_capacity(changed.len() + 1);
 
             // The :db/txInstant datom
             let tx_instant_tv = TypedValue::Instant(tx_instant_micros);
@@ -1406,27 +1451,28 @@ fn execute_transaction_inner(
                 true
             ));
 
-            // All user datoms (including implicit retractions from cardinality-one handling)
-            for datom in &pending_datoms {
+            for (e, a, v, tx, added) in &changed {
                 tx_data_entries.push(format!(
                     "[{},{},{},{},{}]",
-                    datom.e,
-                    datom.a,
-                    format_typed_value_for_json(&datom.v),
-                    tx_id,
-                    datom.added
+                    e,
+                    a,
+                    format_typed_value_for_json(v),
+                    tx,
+                    added
                 ));
             }
 
             let tx_data_json = format!("[{}]", tx_data_entries.join(","));
 
             Ok(format!(
-                "{{\"db-before\":{{\"basis-t\":{}}},\"db-after\":{{\"basis-t\":{}}},\"tx-data\":{},\"tempids\":{{{}}},\"schema_changed\":{}}}",
+                "{{\"db-before\":{{\"basis-t\":{}}},\"db-after\":{{\"basis-t\":{}}},\"tx-data\":{},\"tempids\":{{{}}},\"schema_changed\":{},\"datoms_asserted\":{},\"datoms_retracted\":{}}}",
                 basis_t_before,
                 tx_id,
                 tx_data_json,
                 tempids_json.join(","),
-                has_schema_changes
+                has_schema_changes,
+                datoms_asserted,
+                datoms_retracted
             ))
         }
         Err(e) => {
@@ -1461,11 +1507,15 @@ enum CardinalityOneResult {
 /// semantics. Returns the number of datoms processed.
 ///
 /// The `schema` parameter is the quoted PostgreSQL schema name.
+/// Returns the datoms the transaction asserted and retracted, `(e, a, v, tx, added)`, for
+/// the report's counts (#281) and tx-data: the rows written to the log, without skipped
+/// no-ops, plus the value a :db/noHistory replacement retracts (which is not logged). The
+/// `:db/txInstant` datom is written elsewhere.
 fn insert_datoms(
     pending_datoms: &[PendingDatom],
     tx_id: i64,
     schema: &str,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<(i64, i64, TypedValue, i64, bool)>, Box<dyn std::error::Error + Send + Sync>> {
     let datom_count = pending_datoms.len();
 
     // Collect all rows that need to be written to the type-specific tables.
@@ -1473,6 +1523,7 @@ fn insert_datoms(
     // reducing ~463 per-datom INSERTs to at most 9 (one per type table).
     let mut rows_to_insert: Vec<(i64, i64, TypedValue, i64, bool)> =
         Vec::with_capacity(datom_count);
+    let mut unlogged_retractions: Vec<(i64, i64, TypedValue, i64, bool)> = Vec::new();
     let mut fulltext_values: Vec<String> = Vec::new();
 
     for datom in pending_datoms {
@@ -1496,10 +1547,15 @@ fn insert_datoms(
                         "one" => {
                             // Idempotent: if the current value already equals
                             // the new one, skip entirely.
-                            if let CardinalityOneResult::Skip = retract_existing_cardinality_one(
+                            match retract_existing_cardinality_one(
                                 datom.e, datom.a, &datom.v, schema,
                             )? {
-                                continue;
+                                CardinalityOneResult::Skip => continue,
+                                CardinalityOneResult::Insert => {}
+                                // Not logged, but the transaction did retract it: the
+                                // report and tx-data say so, as for any replacement.
+                                CardinalityOneResult::Replace(old_v) => unlogged_retractions
+                                    .push((datom.e, datom.a, old_v, tx_id, false)),
                             }
                             // Prune ALL prior log rows for this (e,a): noHistory
                             // keeps no trail, so the old assertion/retraction
@@ -1592,6 +1648,16 @@ fn insert_datoms(
         }
     }
 
+    // Dedup by the full PK (e, a, v, tx, added). Some transaction paths queue
+    // the same datom twice: :db.fn/cas pushes a retraction of the old value,
+    // and so does an explicit :db/retract of the value a cardinality-one
+    // assertion replaces (#12); the replace logic above queues it again.
+    // The log holds one row and the report counts one retraction.
+    let mut seen = std::collections::HashSet::new();
+    rows_to_insert.retain(|(e, a, v, tx, added)| {
+        seen.insert((*e, *a, typed_value_sql_literal(v), *tx, *added))
+    });
+
     // Flush all collected datoms via one batch INSERT per type table.
     batch_insert_datoms(&rows_to_insert, schema)?;
 
@@ -1609,7 +1675,16 @@ fn insert_datoms(
         )?;
     }
 
-    Ok(datom_count)
+    // An explicit retraction (or :db/cas's) of the value a noHistory replacement retracts
+    // is already in the log rows: count it once.
+    rows_to_insert.extend(
+        unlogged_retractions
+            .into_iter()
+            .filter(|(e, a, v, tx, added)| {
+                seen.insert((*e, *a, typed_value_sql_literal(v), *tx, *added))
+            }),
+    );
+    Ok(rows_to_insert)
 }
 
 /// Collect schema-defining assertions for an entity.
@@ -1691,8 +1766,10 @@ fn collect_schema_assertion(
 
 /// Install new schema attributes into the store's schema and idents tables.
 ///
-/// For each entity that has at least :db/ident and :db/valueType, insert a row
-/// into <schema>.schema and <schema>.idents. This must happen before datoms are
+/// For each entity that asserts attribute properties, insert or update a row
+/// in <schema>.schema and <schema>.idents. A new attribute needs :db/ident,
+/// :db/valueType and :db/cardinality; an existing one keeps what is not
+/// asserted. This must happen before datoms are
 /// inserted so that foreign key constraints on datoms.a are satisfied.
 ///
 /// The `schema` parameter is the quoted PostgreSQL schema name.
@@ -1700,18 +1777,28 @@ fn install_schema_attributes(
     builders: &BTreeMap<i64, SchemaBuilder>,
     schema: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // named-stores: per-store cache
+    let cache = crate::cache::get_cache();
     for (&entid, builder) in builders {
-        // An entity is an ATTRIBUTE definition only if it asserts :db/valueType
-        // or :db/cardinality. A bare :db/ident with neither is just naming an
-        // entity (e.g. an enum value like :status/open, or a partition) -- a
-        // legitimate Datomic pattern, NOT an incomplete attribute. For those
-        // we install the ident mapping and move on. For a genuine attribute
-        // definition we fail loud on a missing piece rather than silently
-        // skipping it.
-        let is_attribute_definition = builder.value_type.is_some() || builder.cardinality.is_some();
+        // An entity is an ATTRIBUTE definition if it asserts any attribute
+        // property. A bare :db/ident is just naming an entity (e.g. an enum
+        // value like :status/open, or a partition) -- a legitimate Datomic
+        // pattern, NOT an incomplete attribute. For those we install the
+        // ident mapping and move on.
+        let is_attribute_definition = builder.value_type.is_some()
+            || builder.cardinality.is_some()
+            || builder.unique.is_some()
+            || builder.indexed.is_some()
+            || builder.fulltext.is_some()
+            || builder.component.is_some()
+            || builder.no_history.is_some();
+        // The schema as it was before this transaction: an attribute that
+        // already exists is being altered, and keeps what this transaction
+        // does not change (#286). Its ident may come from an earlier one.
+        let existing = cache.get_attribute(entid);
 
-        let ident = match &builder.ident {
-            Some(i) => i.clone(),
+        let ident = match builder.ident.clone().or_else(|| cache.get_ident(entid)) {
+            Some(i) => i,
             None => {
                 if is_attribute_definition {
                     return Err(MentatError::InvalidTransaction {
@@ -1729,7 +1816,7 @@ fn install_schema_attributes(
             }
         };
 
-        // A bare :db/ident (no valueType/cardinality): install the ident-only
+        // A bare :db/ident (no attribute property): install the ident-only
         // mapping for the named entity and skip attribute-column handling.
         if !is_attribute_definition {
             Spi::run_with_args(
@@ -1746,39 +1833,101 @@ fn install_schema_attributes(
             continue;
         }
 
-        let value_type = match &builder.value_type {
-            Some(vt) => vt.clone(),
-            None => {
+        let missing = |what: &str| -> Box<dyn std::error::Error + Send + Sync> {
+            MentatError::InvalidTransaction {
+                message: format!(
+                    "incomplete schema attribute definition for '{}': \
+                     missing {}. A schema attribute requires \
+                     :db/ident, :db/valueType, and :db/cardinality.",
+                    ident, what
+                ),
+            }
+            .into()
+        };
+        // As on the embedded engine: an existing attribute's type and
+        // fulltext flag cannot change (re-asserting the same value is fine).
+        if let Some(a) = &existing {
+            let changed = builder
+                .value_type
+                .as_ref()
+                .is_some_and(|vt| *vt != a.value_type)
+                || builder.fulltext.is_some_and(|f| f != a.fulltext);
+            if changed {
                 return Err(MentatError::InvalidTransaction {
                     message: format!(
-                        "incomplete schema attribute definition for '{}': \
-                         missing :db/valueType. A schema attribute requires \
-                         :db/ident, :db/valueType, and :db/cardinality.",
+                        "Schema alteration for existing attribute {} is not valid: \
+                         :db/valueType and :db/fulltext cannot change.",
                         ident
                     ),
                 }
                 .into());
             }
+        }
+        let value_type = match (&builder.value_type, &existing) {
+            (Some(vt), _) => vt.clone(),
+            (None, Some(a)) => a.value_type.clone(),
+            (None, None) => return Err(missing(":db/valueType")),
         };
+        let cardinality = match (&builder.cardinality, &existing) {
+            (Some(c), _) => c.clone(),
+            (None, Some(a)) => a.cardinality.clone(),
+            (None, None) => return Err(missing(":db/cardinality")),
+        };
+        let old = existing.as_ref();
+        let unique = builder
+            .unique
+            .clone()
+            .or_else(|| old.and_then(|a| a.unique_constraint.clone()));
+        let indexed = builder.indexed.or(old.map(|a| a.indexed)).unwrap_or(false);
+        let fulltext = builder
+            .fulltext
+            .or(old.map(|a| a.fulltext))
+            .unwrap_or(false);
+        let component = builder
+            .component
+            .or(old.map(|a| a.component))
+            .unwrap_or(false);
+        let no_history = builder
+            .no_history
+            .or(old.map(|a| a.no_history))
+            .unwrap_or(false);
 
-        let cardinality = match &builder.cardinality {
-            Some(c) => c.clone(),
-            None => {
-                return Err(MentatError::InvalidTransaction {
-                    message: format!(
-                        "incomplete schema attribute definition for '{}': \
-                         missing :db/cardinality. A schema attribute requires \
-                         :db/ident, :db/valueType, and :db/cardinality.",
-                        ident
-                    ),
+        // As on the embedded engine (update_metadata): an alteration the existing data
+        // violates is rejected, so a cardinality-one attribute never holds two values and a
+        // unique one never holds a value twice.
+        if let Some(a) = old {
+            // value_type is a schema enum label; "string" values live in current_text.
+            let table = match value_type.as_str() {
+                "string" => "current_text".to_string(),
+                vt => format!("current_{vt}"),
+            };
+            let store_id = get_store_id_from_schema(schema)?;
+            // Does some (e) or (v) group of this attribute's live datoms hold two rows?
+            let violated = |group_by: &str| {
+                let sql = format!(
+                    "SELECT EXISTS(SELECT 1 FROM mentat.{table} WHERE store_id = $1 AND a = $2 \
+                     GROUP BY {group_by} HAVING count(*) > 1)"
+                );
+                let args = [DatumWithOid::from(store_id), DatumWithOid::from(entid)];
+                Spi::get_one_with_args::<bool>(&sql, &args).map(|b| b.unwrap_or(false))
+            };
+            let cannot = |what: &str| -> Box<dyn std::error::Error + Send + Sync> {
+                MentatError::InvalidTransaction {
+                    message: format!("Cannot alter schema attribute {ident} to be {what}"),
                 }
-                .into());
+                .into()
+            };
+            if a.cardinality == "many" && cardinality == "one" && violated("e")? {
+                return Err(cannot(":db.cardinality/one"));
             }
-        };
-        let indexed = builder.indexed.unwrap_or(false);
-        let fulltext = builder.fulltext.unwrap_or(false);
-        let component = builder.component.unwrap_or(false);
-        let no_history = builder.no_history.unwrap_or(false);
+            if a.unique_constraint.is_none() {
+                if let Some(u) = &unique {
+                    if violated("v")? {
+                        return Err(cannot(&format!(":db.unique/{u}")));
+                    }
+                }
+            }
+        }
 
         // Insert into idents (keyword -> entid mapping)
         Spi::run_with_args(
@@ -1794,7 +1943,7 @@ fn install_schema_attributes(
         )?;
 
         // Build the unique_constraint DatumWithOid: either a text value or NULL.
-        let unique_datum = match &builder.unique {
+        let unique_datum = match &unique {
             Some(u) => DatumWithOid::from(u.as_str()),
             None => DatumWithOid::null::<String>(),
         };
@@ -2053,6 +2202,65 @@ fn encode_ref_value(
     Ok(TypedValue::Ref(entity_id))
 }
 
+/// Encode `value` for attribute `a`: a ref attribute resolves it as an entity reference.
+fn encode_attr_value(
+    a: i64,
+    value: &edn::Value,
+    tempid_map: &mut BTreeMap<String, i64>,
+    schema: &str,
+) -> Result<TypedValue, Box<dyn std::error::Error + Send + Sync>> {
+    if lookup_value_type(a).as_deref() == Some("ref") {
+        encode_ref_value(value, tempid_map, schema)
+    } else {
+        encode_value(value)
+    }
+}
+
+/// The values a map-form value stands for, as on the embedded engine (#152): on a
+/// cardinality-many attribute a vector is a list of values (nested vectors flatten). On a
+/// cardinality-many ref, `[:identity/attr v]` is one lookup ref (DataScript's rule for the
+/// ambiguity: only a :db.unique/identity attribute), and otherwise each element is one value,
+/// so an inner vector is a lookup ref on any :db/unique attribute (resolve_entity_place).
+/// Anything else is one value; a lookup ref in any other place may use any unique attribute.
+/// (List form's value on a ref attribute is always one value; see the :db/add arm.)
+fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
+    fn is_identity_lookup_ref(v: &edn::Value) -> bool {
+        match v {
+            edn::Value::Vector(pair) if pair.len() == 2 => match &pair[0] {
+                // named-stores: per-store cache
+                edn::Value::Keyword(kw) => crate::cache::get_cache()
+                    .get_attribute_by_ident(&format!("{kw}"))
+                    .is_some_and(|attr| attr.unique_constraint.as_deref() == Some("identity")),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    fn flatten<'v>(v: &'v edn::Value, out: &mut Vec<&'v edn::Value>) {
+        match v {
+            edn::Value::Vector(vs) => vs.iter().for_each(|x| flatten(x, out)),
+            _ => out.push(v),
+        }
+    }
+    let Some(info) = lookup_attribute_info(a) else {
+        return vec![value];
+    };
+    if info.cardinality != "many" {
+        return vec![value];
+    }
+    match value {
+        edn::Value::Vector(_) if info.value_type == "ref" && is_identity_lookup_ref(value) => {
+            vec![value]
+        }
+        edn::Value::Vector(vs) if info.value_type == "ref" => vs.iter().collect(),
+        _ => {
+            let mut out = Vec::new();
+            flatten(value, &mut out);
+            out
+        }
+    }
+}
+
 /// Look up the value_type of an attribute (using cache).
 /// Returns the value_type string (e.g., "string", "long", "ref") or None if not found.
 fn lookup_value_type(attr_id: i64) -> Option<String> {
@@ -2302,10 +2510,10 @@ fn current_projection_value_for_ea(
         TypedValue::Bytes(_) => ("current_bytes", 11),
     };
     let value_expr = match tag {
-        4 => "(EXTRACT(EPOCH FROM v)::bigint * 1000000)::text",
-        7 | 8 => "v",
-        11 => "encode(v, 'hex')",
-        _ => "v::text",
+        4 => format!("{}::text", sql_micros_from_instant("v")),
+        7 | 8 => "v".to_string(),
+        11 => "encode(v, 'hex')".to_string(),
+        _ => "v::text".to_string(),
     };
     let query = format!(
         "SELECT {value_expr} AS value FROM mentat.{table} \
@@ -2410,9 +2618,11 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_instant \
-             WHERE store_id = $1 AND e = $2 AND a = $3 \
-             AND v = to_timestamp($4::DOUBLE PRECISION / 1000000.0))",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM mentat.current_instant \
+                 WHERE store_id = $1 AND e = $2 AND a = $3 AND v = {})",
+                sql_instant_from_micros("$4")
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2449,6 +2659,68 @@ fn is_duplicate_cardinality_many(
     .unwrap_or(false);
 
     Ok(exists)
+}
+
+/// The indexes of the retractions in `datoms` whose datom is not live: not in the
+/// current-state projection (#362). (A retraction of a datom the transaction also asserts is
+/// rejected before this.) One query per value type, whatever the number of retractions; the
+/// probes are bound as arrays, and only the misses (usually none) come back.
+fn dead_retractions(
+    datoms: &[PendingDatom],
+    schema: &str,
+) -> Result<std::collections::HashSet<usize>, Box<dyn std::error::Error + Send + Sync>> {
+    use std::collections::{HashMap, HashSet};
+    let mut dead = HashSet::new();
+    if datoms.iter().all(|d| d.added) {
+        return Ok(dead);
+    }
+    // projection table -> (indexes, e, a, v as text) to look up
+    type Probe = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<String>);
+    let mut probes: HashMap<&'static str, Probe> = HashMap::new();
+    for (i, d) in datoms.iter().enumerate().filter(|(_, d)| !d.added) {
+        let p = probes.entry(current_projection_table(&d.v)).or_default();
+        p.0.push(i as i64);
+        p.1.push(d.e);
+        p.2.push(d.a);
+        p.3.push(match &d.v {
+            TypedValue::Ref(n) | TypedValue::Long(n) | TypedValue::Instant(n) => n.to_string(),
+            TypedValue::Boolean(b) => b.to_string(),
+            // {:?} keeps every digit; PostgreSQL reads "inf", "-inf" and "NaN".
+            TypedValue::Double(f) => format!("{f:?}"),
+            TypedValue::Text(s) | TypedValue::Keyword(s) => s.clone(),
+            TypedValue::Uuid(u) => u.to_string(),
+            TypedValue::Bytes(b) => hex::encode(b),
+        });
+    }
+    let store_id = get_store_id_from_schema(schema)?;
+    let instant = sql_instant_from_micros("t.v");
+    for (table, (idx, es, as_, vs)) in probes {
+        let v = match table {
+            "current_ref" | "current_long" => "t.v::bigint",
+            "current_boolean" => "t.v::boolean",
+            "current_double" => "t.v::double precision",
+            "current_instant" => instant.as_str(),
+            "current_uuid" => "t.v::uuid",
+            "current_bytes" => "decode(t.v, 'hex')",
+            _ => "t.v",
+        };
+        let sql = format!(
+            "SELECT array_agg(t.i) FROM unnest($2::bigint[], $3::bigint[], $4::bigint[], $5::text[]) \
+             AS t(i, e, a, v) WHERE NOT EXISTS (SELECT 1 FROM mentat.{table} AS c \
+             WHERE c.store_id = $1 AND c.e = t.e AND c.a = t.a AND c.v = {v})"
+        );
+        let args = [
+            DatumWithOid::from(store_id),
+            DatumWithOid::from(idx),
+            DatumWithOid::from(es),
+            DatumWithOid::from(as_),
+            DatumWithOid::from(vs),
+        ];
+        if let Some(missed) = Spi::get_one_with_args::<Vec<i64>>(&sql, &args)? {
+            dead.extend(missed.into_iter().map(|i| i as usize));
+        }
+    }
+    Ok(dead)
 }
 
 /// Map a type tag back to a human-readable value type name (for error messages).
@@ -2661,24 +2933,8 @@ fn batch_insert_datoms(
         return Ok(());
     }
 
-    // Dedup by the full PK (e, a, v, tx, added). Some transaction paths can
-    // queue the same datom twice -- e.g. :db.fn/cas pushes a retraction of
-    // the old value, and the cardinality-one replace logic in insert_datoms
-    // independently queues the same retraction. Identical datoms are
-    // idempotent, but a single INSERT ... ON CONFLICT (store_id,e,a,v,tx)
-    // cannot list the same key twice ("cannot affect row a second time").
-    // Collapse duplicates before building the batch.
-    use std::collections::HashSet;
-    let mut seen: HashSet<(i64, i64, String, i64, bool)> = HashSet::new();
-    let mut deduped: Vec<&(i64, i64, TypedValue, i64, bool)> = Vec::with_capacity(rows.len());
-    for row in rows {
-        let (e, a, v, tx, added) = row;
-        let key = (*e, *a, typed_value_sql_literal(v), *tx, *added);
-        if seen.insert(key) {
-            deduped.push(row);
-        }
-    }
-    let rows: &[&(i64, i64, TypedValue, i64, bool)] = &deduped;
+    // `rows` has no duplicates (insert_datoms collapses them): a single
+    // INSERT ... ON CONFLICT cannot list the same key twice.
 
     // TX_STORE_ID fast-path: no DB query after the first call in this tx.
     let store_id = get_store_id_from_schema(schema)?;
@@ -2740,10 +2996,14 @@ fn batch_insert_datoms(
                 ));
             }
             TypedValue::Instant(micros) => {
-                // to_timestamp converts Unix microseconds → TIMESTAMPTZ.
                 instant_vals.push(format!(
-                    "({},{},{},to_timestamp({}::double precision/1000000.0),{},{})",
-                    store_id, e, a, micros, tx, added_sql
+                    "({},{},{},{},{},{})",
+                    store_id,
+                    e,
+                    a,
+                    sql_instant_from_micros(&micros.to_string()),
+                    tx,
+                    added_sql
                 ));
             }
             TypedValue::Text(s) => {
@@ -2843,9 +3103,7 @@ fn typed_value_sql_literal(v: &TypedValue) -> String {
                 format!("{:e}::double precision", f)
             }
         }
-        TypedValue::Instant(micros) => {
-            format!("to_timestamp({}::double precision/1000000.0)", micros)
-        }
+        TypedValue::Instant(micros) => sql_instant_from_micros(&micros.to_string()),
         TypedValue::Text(s) => format!("'{}'", sql_escape_str(s)),
         TypedValue::Keyword(s) => format!("'{}'", sql_escape_str(s)),
         TypedValue::Uuid(u) => format!("'{}'::uuid", u),
@@ -3098,43 +3356,93 @@ fn check_unique_typed_value(
         TypedValue::Ref(id) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_ref_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*id)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*id),
+            ],
+        ),
         TypedValue::Boolean(b) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_boolean_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*b)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*b),
+            ],
+        ),
         TypedValue::Long(n) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_long_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*n)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*n),
+            ],
+        ),
         TypedValue::Double(f) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_double_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*f)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*f),
+            ],
+        ),
         TypedValue::Text(s) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_text_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(s.as_str())]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(s.as_str()),
+            ],
+        ),
         TypedValue::Keyword(s) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_keyword_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(s.as_str())]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(s.as_str()),
+            ],
+        ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_instant_new \
-             WHERE store_id = $1 AND a = $2 AND v = to_timestamp($3::DOUBLE PRECISION / 1000000.0) AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*micros)]),
+            &format!(
+                "SELECT e FROM mentat.datoms_instant_new \
+                 WHERE store_id = $1 AND a = $2 AND v = {} AND added = true LIMIT 1",
+                sql_instant_from_micros("$3")
+            ),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*micros),
+            ],
+        ),
         TypedValue::Uuid(u) => {
             let uuid_str = u.to_string();
             Spi::get_one_with_args::<i64>(
                 "SELECT e FROM mentat.datoms_uuid_new \
                  WHERE store_id = $1 AND a = $2 AND v = $3::UUID AND added = true LIMIT 1",
-                &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(uuid_str.as_str())])
+                &[
+                    DatumWithOid::from(store_id),
+                    DatumWithOid::from(attr_id),
+                    DatumWithOid::from(uuid_str.as_str()),
+                ],
+            )
         }
         TypedValue::Bytes(b) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_bytes_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(b.clone())]),
-    }.ok().flatten();
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(b.clone()),
+            ],
+        ),
+    }
+    .ok()
+    .flatten();
 
     Ok(result)
 }
