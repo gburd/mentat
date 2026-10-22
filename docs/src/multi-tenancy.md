@@ -41,7 +41,13 @@ store (`mentat`) cannot be dropped or renamed.
 
 The extension-wide functions that have no store argument (`edn_t`, `edn_q`,
 `edn_pull`, `edn_eval`, `mentat_tune_indexes`, the `mentat.attach_*`
-per-attribute index helpers) work on the default store only.
+per-attribute index helpers) work on the default store only. So the
+where-fns backed by the per-attribute tables those helpers make
+(`vector-near`, `turbovec-near`, `geom-near`, `geom-within`,
+`geom-contains`, `geom-intersects`) raise `:db.error/unsupported` on a named
+store. `fulltext`, `fuzzy`, the trigram where-fns and `bm25-match` read the
+store's own tables; `mentat.create_fts_index` indexes the default store's
+table only. `subscribe('acme', ...)` re-runs its query against `acme`.
 
 **Permissions.** The role that calls `create_store` owns the new schema and
 everything in it. Every role with a privilege on the default store's
