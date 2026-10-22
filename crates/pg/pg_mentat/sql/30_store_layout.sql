@@ -248,6 +248,12 @@ BEGIN
     LOOP
         EXECUTE format('ALTER ROUTINE %s OWNER TO %s', r.oid::regprocedure, owner_oid::regrole);
     END LOOP;
+    -- Extended statistics the tables' LIKE ... INCLUDING ALL copied.
+    FOR r IN
+        SELECT s.stxname FROM pg_statistic_ext s WHERE s.stxnamespace = ns AND s.stxowner <> owner_oid
+    LOOP
+        EXECUTE format('ALTER STATISTICS %I.%I OWNER TO %s', p_schema, r.stxname, owner_oid::regrole);
+    END LOOP;
 
     FOR a IN
         SELECT (aclexplode(nspacl)).* FROM pg_namespace WHERE nspname = 'mentat'

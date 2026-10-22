@@ -482,6 +482,9 @@ mod tests {
         // NOTICE would never reach the user.
         assert!(!block.contains("RAISE NOTICE"));
         assert!(block.contains("RAISE WARNING 'pg_mentat upgrade: rebuilt named store"));
+        // Every store it skips gets a WARNING saying why (a bare CONTINUE
+        // WHEN skipped silently).
+        assert!(!block.contains("CONTINUE WHEN"));
         // The path is pinned for the block and restored, never SET LOCAL:
         // that lasts to the end of the script's transaction, so every later
         // unqualified CREATE in the script would land in pg_catalog.
