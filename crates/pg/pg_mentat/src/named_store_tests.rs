@@ -473,4 +473,103 @@ mod tests {
         Spi::run("RESET ROLE").expect("reset role");
         Spi::run("SELECT drop_store('quoted_role')").expect("drop");
     }
+
+    /// The upgrade's DO block, with @extschema@ resolved as PostgreSQL would.
+    fn upgrade_do_block() -> String {
+        let script = include_str!("../sql/pg_mentat--1.17.1--1.18.0.sql");
+        let start = script.find("DO $migrate$").expect("DO block");
+        let end = script[start..].find("$migrate$;").expect("DO block end") + start;
+        let ext_schema = text(
+            "SELECT extnamespace::regnamespace::text FROM pg_extension WHERE extname = 'pg_mentat'",
+        );
+        script[start..end + "$migrate$;".len()].replace("@extschema@", &ext_schema)
+    }
+
+    // The 1.17.1 -> 1.18.0 DO block runs as the bootstrap superuser. It must
+    // not rebuild a schema just because mentat.stores (writable by the
+    // installing role) names it, and must not read anything in an old store's
+    // schema (its owner could have made any table a view over its own
+    // function, which would then run as superuser). Before 1.18.0 shipped it
+    // did both: it copied rows out of mentat_<name>_pre118.
+    #[pg_test]
+    fn upgrade_trusts_no_user_owned_relation() {
+        setup();
+        Spi::run(
+            "CREATE TABLE public.ns_planted_ran (what TEXT); \
+             CREATE FUNCTION public.ns_planted() RETURNS TABLE (ident TEXT, entid BIGINT) \
+               LANGUAGE plpgsql AS $$ BEGIN INSERT INTO public.ns_planted_ran VALUES ('view'); END $$; \
+             CREATE FUNCTION public.ns_planted_trg() RETURNS trigger \
+               LANGUAGE plpgsql AS $$ BEGIN INSERT INTO public.ns_planted_ran VALUES ('trigger'); RETURN NULL; END $$; \
+             CREATE TRIGGER ns_planted AFTER INSERT OR UPDATE ON mentat.cache_generation \
+               FOR EACH STATEMENT EXECUTE FUNCTION public.ns_planted_trg(); \
+             -- A 1.17 named store whose owner swapped its tables for views.
+             INSERT INTO mentat.stores (store_name, schema_name) VALUES ('evil', 'mentat_evil'); \
+             CREATE SCHEMA mentat_evil; \
+             CREATE TABLE mentat_evil.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+               value_type_tag SMALLINT NOT NULL, v_ref BIGINT, v_bool BOOLEAN, v_long BIGINT, \
+               v_double DOUBLE PRECISION, v_text TEXT, v_keyword TEXT, v_instant TIMESTAMPTZ, \
+               v_uuid UUID, v_bytes BYTEA, tx BIGINT NOT NULL, added BOOLEAN NOT NULL DEFAULT TRUE); \
+             INSERT INTO mentat_evil.datoms (e, a, value_type_tag, v_long, tx) \
+               VALUES (1000001, 100, 2, 7, 1000000000001); \
+             CREATE VIEW mentat_evil.idents AS SELECT * FROM public.ns_planted(); \
+             CREATE VIEW mentat_evil.schema AS SELECT p.entid, p.ident, \
+               'long'::mentat.value_type AS value_type, 'one'::mentat.cardinality_type AS cardinality, \
+               NULL::mentat.unique_type AS unique_constraint, false AS indexed, false AS fulltext, \
+               false AS component, false AS no_history FROM public.ns_planted() p; \
+             CREATE VIEW mentat_evil.transactions AS SELECT entid AS tx, now() AS tx_instant \
+               FROM public.ns_planted(); \
+             -- A row pointing at a schema create_store() never made.
+             CREATE SCHEMA billing; CREATE TABLE billing.invoices (id INT); \
+             INSERT INTO mentat.stores (store_name, schema_name) VALUES ('billing', 'billing'); \
+             -- A store schema without the old wide layout (datoms is a view).
+             INSERT INTO mentat.stores (store_name, schema_name) VALUES ('odd', 'mentat_odd'); \
+             CREATE SCHEMA mentat_odd; \
+             CREATE VIEW mentat_odd.datoms AS SELECT 1::SMALLINT AS value_type_tag; \
+             -- A store_id row for Row-Level Security, with no schema of its own.
+             INSERT INTO mentat.stores (store_name, schema_name) VALUES ('rls_t', 'mentat_rls_test_t')",
+        )
+        .expect("1.17-style fixtures");
+
+        Spi::run(&upgrade_do_block()).expect("the upgrade DO block");
+        // Again: nothing left to do, and still nothing planted runs.
+        Spi::run(&upgrade_do_block()).expect("the DO block again");
+        let ran: i64 = Spi::get_one("SELECT count(*) FROM public.ns_planted_ran")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ran, 0, "a planted view or trigger ran during the upgrade");
+        Spi::run("DROP TRIGGER ns_planted ON mentat.cache_generation").expect("drop trigger");
+
+        // The old schema is kept as it was, under _pre118; the new one is empty.
+        let kept: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_class WHERE relnamespace = \
+               (SELECT oid FROM pg_namespace WHERE nspname = 'mentat_evil_pre118')",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(kept, 4, "datoms + 3 views kept");
+        let copied: i64 = Spi::get_one("SELECT count(*) FROM mentat_evil.datoms_long_new")
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied, 0, "nothing copied out of the old schema");
+        tx("evil", SCHEMA_TX);
+        tx("evil", "[{:p/name \"rebuilt\"}]");
+        assert_eq!(sorted(names("evil")), vec!["rebuilt"]);
+        // Left alone.
+        let untouched: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_namespace WHERE nspname IN ('billing', 'mentat_odd')",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untouched, 2);
+        let renamed: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_namespace WHERE nspname LIKE '%\\_pre118' AND nspname <> 'mentat_evil_pre118'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(renamed, 0);
+        assert_eq!(
+            text("SELECT to_regclass('billing.invoices')::text"),
+            "billing.invoices"
+        );
+    }
 }
