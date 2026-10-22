@@ -1,5 +1,6 @@
 use crate::error::{self, MentatError};
 use crate::functions::store_management;
+use crate::types::instant::{sql_instant_from_micros, sql_micros_from_instant};
 use edn::entities::{BuiltinTxFn, OpType};
 use edn::parse;
 use pgrx::datum::DatumWithOid;
@@ -754,8 +755,9 @@ fn allocate_tx_id(qs: &str) -> Result<(i64, i64, i64), Box<dyn std::error::Error
     let tx_instant_micros = Spi::get_one_with_args::<i64>(
         &format!(
             "INSERT INTO {}.transactions (tx, tx_instant) VALUES ($1, CURRENT_TIMESTAMP) \
-             RETURNING (EXTRACT(EPOCH FROM tx_instant) * 1000000)::BIGINT",
-            qs
+             RETURNING {}",
+            qs,
+            sql_micros_from_instant("tx_instant")
         ),
         &[DatumWithOid::from(tx_id)],
     )
@@ -897,12 +899,12 @@ fn execute_transaction_inner(
     // --- End per-transaction context setup ---
 
     // Insert :db/txInstant datom for this transaction using typed column
-    // Use to_timestamp() in SQL to convert microseconds to TIMESTAMPTZ
     Spi::run_with_args(
         &format!(
             "INSERT INTO {}.datoms (e, a, value_type_tag, v_instant, tx, added) \
-             VALUES ($1, $2, $3, to_timestamp($4::DOUBLE PRECISION / 1000000.0), $5, $6)",
-            qs
+             VALUES ($1, $2, $3, {}, $5, $6)",
+            qs,
+            sql_instant_from_micros("$4")
         ),
         &[
             DatumWithOid::from(tx_id),
@@ -922,9 +924,10 @@ fn execute_transaction_inner(
     Spi::run_with_args(
         &format!(
             "INSERT INTO {}.current_instant (store_id, e, a, v, tx) \
-             VALUES ($1, $2, $3, to_timestamp($4::DOUBLE PRECISION / 1000000.0), $5) \
+             VALUES ($1, $2, $3, {}, $5) \
              ON CONFLICT (store_id, e, a, v) DO UPDATE SET tx = EXCLUDED.tx",
-            qs
+            qs,
+            sql_instant_from_micros("$4")
         ),
         &[
             DatumWithOid::from(tx_store_id),
@@ -2499,11 +2502,10 @@ fn current_projection_value_for_ea(
         TypedValue::Bytes(_) => ("current_bytes", 11),
     };
     let value_expr = match tag {
-        // Exact: EPOCH::bigint would round to the second first (#375).
-        4 => "((EXTRACT(EPOCH FROM v) * 1000000)::bigint)::text",
-        7 | 8 => "v",
-        11 => "encode(v, 'hex')",
-        _ => "v::text",
+        4 => format!("{}::text", sql_micros_from_instant("v")),
+        7 | 8 => "v".to_string(),
+        11 => "encode(v, 'hex')".to_string(),
+        _ => "v::text".to_string(),
     };
     let query = format!(
         "SELECT {value_expr} AS value FROM mentat.{table} \
@@ -2608,9 +2610,11 @@ fn is_duplicate_cardinality_many(
             ],
         ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM mentat.current_instant \
-             WHERE store_id = $1 AND e = $2 AND a = $3 \
-             AND v = to_timestamp($4::DOUBLE PRECISION / 1000000.0))",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM mentat.current_instant \
+                 WHERE store_id = $1 AND e = $2 AND a = $3 AND v = {})",
+                sql_instant_from_micros("$4")
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(entity_id),
@@ -2681,12 +2685,13 @@ fn dead_retractions(
         });
     }
     let store_id = get_store_id_from_schema(schema)?;
+    let instant = sql_instant_from_micros("t.v");
     for (table, (idx, es, as_, vs)) in probes {
         let v = match table {
             "current_ref" | "current_long" => "t.v::bigint",
             "current_boolean" => "t.v::boolean",
             "current_double" => "t.v::double precision",
-            "current_instant" => "to_timestamp(t.v::double precision / 1000000.0)",
+            "current_instant" => instant.as_str(),
             "current_uuid" => "t.v::uuid",
             "current_bytes" => "decode(t.v, 'hex')",
             _ => "t.v",
@@ -2983,10 +2988,14 @@ fn batch_insert_datoms(
                 ));
             }
             TypedValue::Instant(micros) => {
-                // to_timestamp converts Unix microseconds → TIMESTAMPTZ.
                 instant_vals.push(format!(
-                    "({},{},{},to_timestamp({}::double precision/1000000.0),{},{})",
-                    store_id, e, a, micros, tx, added_sql
+                    "({},{},{},{},{},{})",
+                    store_id,
+                    e,
+                    a,
+                    sql_instant_from_micros(&micros.to_string()),
+                    tx,
+                    added_sql
                 ));
             }
             TypedValue::Text(s) => {
@@ -3086,9 +3095,7 @@ fn typed_value_sql_literal(v: &TypedValue) -> String {
                 format!("{:e}::double precision", f)
             }
         }
-        TypedValue::Instant(micros) => {
-            format!("to_timestamp({}::double precision/1000000.0)", micros)
-        }
+        TypedValue::Instant(micros) => sql_instant_from_micros(&micros.to_string()),
         TypedValue::Text(s) => format!("'{}'", sql_escape_str(s)),
         TypedValue::Keyword(s) => format!("'{}'", sql_escape_str(s)),
         TypedValue::Uuid(u) => format!("'{}'::uuid", u),
@@ -3341,43 +3348,93 @@ fn check_unique_typed_value(
         TypedValue::Ref(id) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_ref_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*id)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*id),
+            ],
+        ),
         TypedValue::Boolean(b) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_boolean_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*b)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*b),
+            ],
+        ),
         TypedValue::Long(n) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_long_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*n)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*n),
+            ],
+        ),
         TypedValue::Double(f) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_double_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*f)]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*f),
+            ],
+        ),
         TypedValue::Text(s) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_text_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(s.as_str())]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(s.as_str()),
+            ],
+        ),
         TypedValue::Keyword(s) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_keyword_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(s.as_str())]),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(s.as_str()),
+            ],
+        ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<i64>(
-            "SELECT e FROM mentat.datoms_instant_new \
-             WHERE store_id = $1 AND a = $2 AND v = to_timestamp($3::DOUBLE PRECISION / 1000000.0) AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(*micros)]),
+            &format!(
+                "SELECT e FROM mentat.datoms_instant_new \
+                 WHERE store_id = $1 AND a = $2 AND v = {} AND added = true LIMIT 1",
+                sql_instant_from_micros("$3")
+            ),
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(*micros),
+            ],
+        ),
         TypedValue::Uuid(u) => {
             let uuid_str = u.to_string();
             Spi::get_one_with_args::<i64>(
                 "SELECT e FROM mentat.datoms_uuid_new \
                  WHERE store_id = $1 AND a = $2 AND v = $3::UUID AND added = true LIMIT 1",
-                &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(uuid_str.as_str())])
+                &[
+                    DatumWithOid::from(store_id),
+                    DatumWithOid::from(attr_id),
+                    DatumWithOid::from(uuid_str.as_str()),
+                ],
+            )
         }
         TypedValue::Bytes(b) => Spi::get_one_with_args::<i64>(
             "SELECT e FROM mentat.datoms_bytes_new \
              WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
-            &[DatumWithOid::from(store_id), DatumWithOid::from(attr_id), DatumWithOid::from(b.clone())]),
-    }.ok().flatten();
+            &[
+                DatumWithOid::from(store_id),
+                DatumWithOid::from(attr_id),
+                DatumWithOid::from(b.clone()),
+            ],
+        ),
+    }
+    .ok()
+    .flatten();
 
     Ok(result)
 }

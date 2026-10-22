@@ -12,6 +12,7 @@ use pgrx::JsonB;
 use serde_json::json;
 
 use crate::types::constants::type_tag;
+use crate::types::instant::sql_micros_from_instant;
 
 /// Look up an entity ID by its ident attribute value
 ///
@@ -94,19 +95,21 @@ fn attribute_values(attr_ident: &str) -> JsonB {
 
     let result: Result<Vec<serde_json::Value>, _> = Spi::connect(|client| {
         // Get distinct values for this attribute
-        let query = "\
-            SELECT value_type_tag, \
-                   v_ref, v_bool, v_long, v_double, \
-                   v_text, v_keyword, \
-                   (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
-                   v_uuid::TEXT, v_bytes \
-            FROM mentat.datoms \
-            WHERE a = $1 AND added = true \
-            ORDER BY value_type_tag, v_ref, v_long, v_text, v_keyword";
+        let query = format!(
+            "SELECT value_type_tag, \
+                    v_ref, v_bool, v_long, v_double, \
+                    v_text, v_keyword, \
+                    {} AS v_instant_micros, \
+                    v_uuid::TEXT, v_bytes \
+             FROM mentat.datoms \
+             WHERE a = $1 AND added = true \
+             ORDER BY value_type_tag, v_ref, v_long, v_text, v_keyword",
+            sql_micros_from_instant("v_instant")
+        );
 
         let mut values = Vec::new();
 
-        for row in client.select(query, None, &[DatumWithOid::from(attr_id)])? {
+        for row in client.select(&query, None, &[DatumWithOid::from(attr_id)])? {
             if let Ok(Some(type_tag)) = row.get::<i16>(1) {
                 if let Ok(decoded) = decode_row_value(&row, type_tag, 2) {
                     values.push(decoded);
@@ -138,20 +141,22 @@ fn attribute_values(attr_ident: &str) -> JsonB {
 #[pg_extern(schema = "mentat")]
 fn retract_entity(entity_id: i64) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
     // Get all current facts for this entity
-    let facts_query = "\
-        SELECT a, value_type_tag, \
-               v_ref, v_bool, v_long, v_double, \
-               v_text, v_keyword, \
-               (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
-               v_uuid::TEXT, v_bytes \
-        FROM mentat.datoms \
-        WHERE e = $1 AND added = true";
+    let facts_query = format!(
+        "SELECT a, value_type_tag, \
+                v_ref, v_bool, v_long, v_double, \
+                v_text, v_keyword, \
+                {} AS v_instant_micros, \
+                v_uuid::TEXT, v_bytes \
+         FROM mentat.datoms \
+         WHERE e = $1 AND added = true",
+        sql_micros_from_instant("v_instant")
+    );
 
     // Collect (attr_id, edn_value_repr) pairs
     let retractions: Vec<(i64, String)> = Spi::connect(|client| {
         let mut retract_list = Vec::new();
 
-        for row in client.select(facts_query, None, &[DatumWithOid::from(entity_id)])? {
+        for row in client.select(&facts_query, None, &[DatumWithOid::from(entity_id)])? {
             if let (Ok(Some(attr_id)), Ok(Some(type_tag))) = (row.get::<i64>(1), row.get::<i16>(2))
             {
                 if let Ok(decoded) = decode_row_value(&row, type_tag, 3) {

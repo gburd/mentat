@@ -239,6 +239,7 @@ fn execute_schema_op() -> Result<JsonValue, Box<dyn std::error::Error + Send + S
 }
 
 use crate::types::constants::type_tag;
+use crate::types::instant::sql_micros_from_instant;
 
 /// Export entities to EDN format
 ///
@@ -267,19 +268,21 @@ fn export_edn(entity_ids: Vec<i64>) -> Result<String, Box<dyn std::error::Error 
     for entity_id in entity_ids {
         // Get all facts for this entity
         let facts = Spi::connect(|client| {
-            let query = "\
-                SELECT a, value_type_tag, \
-                       v_ref, v_bool, v_long, v_double, \
-                       v_text, v_keyword, \
-                       (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
-                       v_uuid::TEXT, v_bytes \
-                FROM mentat.datoms \
-                WHERE e = $1 AND added = true \
-                ORDER BY a";
+            let query = format!(
+                "SELECT a, value_type_tag, \
+                        v_ref, v_bool, v_long, v_double, \
+                        v_text, v_keyword, \
+                        {} AS v_instant_micros, \
+                        v_uuid::TEXT, v_bytes \
+                 FROM mentat.datoms \
+                 WHERE e = $1 AND added = true \
+                 ORDER BY a",
+                sql_micros_from_instant("v_instant")
+            );
 
             let mut entity_facts: Vec<(i64, String)> = Vec::new();
 
-            for row in client.select(query, None, &[DatumWithOid::from(entity_id)])? {
+            for row in client.select(&query, None, &[DatumWithOid::from(entity_id)])? {
                 if let (Ok(Some(attr_id)), Ok(Some(tt))) = (row.get::<i64>(1), row.get::<i16>(2)) {
                     let edn_val = row_value_to_edn(&row, tt, 3)?;
                     entity_facts.push((attr_id, edn_val));

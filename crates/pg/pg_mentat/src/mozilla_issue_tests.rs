@@ -682,6 +682,88 @@ mod tests {
         assert_eq!(pulled(), serde_json::json!(1_609_459_200_000_000_i64));
     }
 
+    // #375: an instant in any year 1..9999 is stored and read back to the microsecond on
+    // every pg version. to_timestamp(double) lost 1 us outside ~1932..2100, and on pg13
+    // (EXTRACT returns double) the read was off by up to 5 us far from 1970, so re-asserting
+    // such a card-one value failed with "ON CONFLICT DO UPDATE command cannot affect row a
+    // second time" and replacing it left two values.
+    #[pg_test]
+    fn instants_are_exact_in_every_year() {
+        setup();
+        tx(
+            "[{:db/ident :mx/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
+             {:db/ident :mx/k :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        let cases = [
+            ("0001-01-01T00:00:00.000001Z", -62_135_596_799_999_999_i64),
+            ("1583-07-14T12:34:56.123457Z", -12_195_746_703_876_543),
+            ("1847-09-09T15:47:02.481870Z", -3_859_776_777_518_130),
+            ("1914-06-18T00:50:07.049709Z", -1_752_707_392_950_291),
+            ("1969-12-31T23:59:59.999999Z", -1),
+            ("2262-04-11T23:47:16.854775Z", 9_223_372_036_854_775),
+            ("4268-06-28T23:42:12.524912Z", 72_533_403_732_524_912),
+            ("9999-12-31T23:59:59.999999Z", 253_402_300_799_999_999),
+        ];
+        let json_of = |sql: &str| -> serde_json::Value {
+            let raw = Spi::get_one::<String>(sql).expect(sql).expect("non-NULL");
+            serde_json::from_str(&raw).unwrap()
+        };
+        let counts = |r: &serde_json::Value| {
+            (
+                r["datoms_asserted"].as_i64(),
+                r["datoms_retracted"].as_i64(),
+            )
+        };
+        for (k, (text, micros)) in cases.iter().enumerate() {
+            let inst = format!(r#"#inst "{text}""#);
+            let i = tx(&format!(r#"[{{:db/id "i" :mx/k {k} :mx/t {inst}}}]"#))["tempids"]["i"]
+                .as_i64()
+                .unwrap();
+            let stored = Spi::get_one::<String>(&format!(
+                "SELECT to_char(v AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
+                 FROM mentat.current_instant WHERE e = {i}"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(stored, *text, "written");
+            let want = serde_json::json!(micros);
+            let found = q(&format!("[:find ?t . :where [{i} :mx/t ?t]]"));
+            assert_eq!(found["result"], serde_json::json!(text), "q {text}");
+            let on = q(&format!("[:find ?e . :where [?e :mx/t {inst}]]"));
+            assert_eq!(on["result"], serde_json::json!(i), "q by value {text}");
+            let pulled = json_of(&format!("SELECT mentat_pull('[:mx/t]', {i})::TEXT"));
+            assert_eq!(pulled[":mx/t"], want, "pull {text}");
+            let ent = json_of(&format!("SELECT mentat_entity({i})::TEXT"));
+            assert_eq!(ent[":mx/t"], want, "entity {text}");
+            let export = Spi::get_one::<String>(&format!("SELECT mentat.export_edn(ARRAY[{i}])"))
+                .unwrap()
+                .unwrap();
+            assert!(
+                export.contains(&format!("#inst {micros}")),
+                "export {text}: {export}"
+            );
+
+            // Re-asserting the same value is a no-op; replacing it leaves one value.
+            let r = tx(&format!("[[:db/add {i} :mx/t {inst}]]"));
+            assert_eq!(counts(&r), (Some(0), Some(0)), "re-assert {text}: {r}");
+            let r = tx(&format!(
+                r#"[[:db/add {i} :mx/t #inst "2021-01-01T00:00:00Z"]]"#
+            ));
+            assert_eq!(counts(&r), (Some(1), Some(1)), "replace {text}: {r}");
+            let retracted = r["tx-data"].as_array().unwrap()[1..]
+                .iter()
+                .find(|d| d[4] == false)
+                .map(|d| d[2]["v"].clone());
+            assert_eq!(retracted, Some(want.clone()), "replace {text}: {r}");
+            let n = Spi::get_one::<i64>(&format!(
+                "SELECT count(*) FROM mentat.current_instant WHERE e = {i}"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(n, 1, "replace {text}");
+        }
+    }
+
     // #179: a comparison over a value of unknown type applies to comparable values only.
     #[pg_test]
     fn inequality_over_untyped_values() {

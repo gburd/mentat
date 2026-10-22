@@ -207,7 +207,7 @@ fn build_union_all_datoms_query(
             UNION ALL \
             SELECT {pfx}{instant_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, \
-                   (EXTRACT(EPOCH FROM v) * 1000000)::BIGINT, NULL, NULL \
+                   {instant_micros}, NULL, NULL \
             FROM {t_instant} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \
@@ -249,6 +249,7 @@ fn build_union_all_datoms_query(
         long_tag = type_tag::LONG,
         double_tag = type_tag::DOUBLE,
         instant_tag = type_tag::INSTANT,
+        instant_micros = crate::types::instant::sql_micros_from_instant("v"),
         text_tag = type_tag::STRING,
         kw_tag = type_tag::KEYWORD,
         uuid_tag = type_tag::UUID,

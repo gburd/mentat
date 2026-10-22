@@ -127,6 +127,7 @@ fn execute_cached_query<'a>(
 }
 
 use crate::types::constants::type_tag;
+use crate::types::instant::{sql_instant_from_micros, sql_micros_from_instant};
 
 /// Run a single-column `SELECT` through *read-only* SPI and return the first
 /// `i64`, or `None`.
@@ -2393,7 +2394,8 @@ fn build_numeric_value_decode_expr(alias: &str) -> String {
     format!(
         "COALESCE({alias}.v_ref, {alias}.v_long, \
          {alias}.v_double::BIGINT, \
-         (EXTRACT(EPOCH FROM {alias}.v_instant) * 1000000)::BIGINT)"
+         {})",
+        sql_micros_from_instant(&format!("{alias}.v_instant"))
     )
 }
 
@@ -2499,7 +2501,8 @@ fn bind_constant_value(
                 let micros = dt.timestamp_micros();
                 let param = builder.bind_bigint(micros);
                 Ok(Some(format!(
-                    "({alias}.v_instant = to_timestamp({param}::DOUBLE PRECISION / 1000000.0) AND {alias}.value_type_tag = {tag})",
+                    "({alias}.v_instant = {} AND {alias}.value_type_tag = {tag})",
+                    sql_instant_from_micros(&param),
                     tag = type_tag::INSTANT
                 )))
             }
@@ -7682,10 +7685,9 @@ fn build_predicate_clause(
         let mut sides = Vec::with_capacity(2);
         for arg in &pred.args {
             sides.push(match arg {
-                FnArg::Constant(NonIntegerConstant::Instant(dt)) => format!(
-                    "to_timestamp({}::DOUBLE PRECISION / 1000000.0)",
-                    builder.bind_bigint(dt.timestamp_micros())
-                ),
+                FnArg::Constant(NonIntegerConstant::Instant(dt)) => {
+                    sql_instant_from_micros(&builder.bind_bigint(dt.timestamp_micros()))
+                }
                 FnArg::Variable(v) => match untyped_value_alias(v, var_to_alias, var_to_type) {
                     Some(alias) if instant => format!("{alias}.v_instant"),
                     Some(alias) => {
