@@ -112,22 +112,25 @@ fn matview_exists(store_name: &str, view_name: &str) -> Result<bool, pgrx::spi::
 
 /// Generate the SQL for the trigger function that refreshes a materialized view
 /// when datoms change.
+///
+/// The view sits in the same schema as the datoms view that fires the
+/// trigger. The schema is taken from TG_TABLE_SCHEMA at run time, not baked
+/// in, so rename_store doesn't break it.
 fn refresh_trigger_function_sql(schema: &str, view_name: &str) -> String {
     let func_name = format!("{}.mentat_matview_refresh_{}", schema, view_name);
-    let qualified_view = format!("{}.{}", schema, view_name);
 
     format!(
         r"
 CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    REFRESH MATERIALIZED VIEW {qualified_view};
+    EXECUTE format('REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, '{view_name}');
     RETURN NULL;
 END;
 $$;
 ",
         func_name = func_name,
-        qualified_view = qualified_view,
+        view_name = view_name,
     )
 }
 
@@ -319,12 +322,22 @@ pub fn materialize(
             query = escaped_query,
         )
     } else {
+        // By store_id, which rename_store keeps: a store name baked into the
+        // view would not survive a rename.
+        let store_id: i64 = Spi::get_one_with_args(
+            "SELECT store_id FROM mentat.stores WHERE store_name = $1",
+            &[DatumWithOid::from(store_name)],
+        )?
+        .ok_or_else(|| MentatError::StoreNotFound {
+            store_name: store_name.to_string(),
+        })?;
         format!(
             "CREATE MATERIALIZED VIEW {schema}.{view} AS \
-             SELECT {cols} FROM mentat_query_view_store('{store}', '{query}', '{{}}'::jsonb)",
+             SELECT {cols} FROM mentat_query_view_store(\
+               (SELECT store_name FROM mentat.stores WHERE store_id = {store_id}), \
+               '{query}', '{{}}'::jsonb)",
             schema = quoted_schema,
             view = quote_ident(view_name),
-            store = store_name.replace('\'', "''"),
             cols = col_defs,
             query = escaped_query,
         )
@@ -589,7 +602,7 @@ mod tests {
     fn test_refresh_trigger_function_sql_contains_key_elements() {
         let sql = refresh_trigger_function_sql("mentat", "people_cache");
         assert!(sql.contains("mentat.mentat_matview_refresh_people_cache"));
-        assert!(sql.contains("REFRESH MATERIALIZED VIEW mentat.people_cache"));
+        assert!(sql.contains("REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, 'people_cache'"));
         assert!(sql.contains("RETURNS trigger"));
     }
 
@@ -606,6 +619,7 @@ mod tests {
     fn test_refresh_trigger_custom_schema() {
         let sql = refresh_trigger_function_sql("mentat_my_store", "my_view");
         assert!(sql.contains("mentat_my_store.mentat_matview_refresh_my_view"));
-        assert!(sql.contains("REFRESH MATERIALIZED VIEW mentat_my_store.my_view"));
+        // The refreshed view's schema is not baked in (rename_store).
+        assert!(!sql.contains("mentat_my_store.my_view"));
     }
 }
