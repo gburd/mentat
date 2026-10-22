@@ -476,7 +476,7 @@ mod tests {
 
     /// The upgrade's DO block, with @extschema@ resolved as PostgreSQL would.
     fn upgrade_do_block() -> String {
-        let script = include_str!("../sql/pg_mentat--1.17.1--1.18.0.sql");
+        let script = include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql");
         let start = script.find("DO $migrate$").expect("DO block");
         let end = script[start..].find("$migrate$;").expect("DO block end") + start;
         let ext_schema = text(
@@ -485,7 +485,7 @@ mod tests {
         script[start..end + "$migrate$;".len()].replace("@extschema@", &ext_schema)
     }
 
-    // The 1.17.1 -> 1.18.0 DO block runs as the bootstrap superuser. It must
+    // The 1.17.2 -> 1.18.0 DO block runs as the bootstrap superuser. It must
     // not rebuild a schema just because mentat.stores (writable by the
     // installing role) names it, and must not read anything in an old store's
     // schema (its owner could have made any table a view over its own
