@@ -131,7 +131,9 @@ Drop `mentat_<name>_pre118` once you have checked the result.
 
 **A store the upgrade skipped.** The upgrade never aborts over a named
 store; it leaves one alone, with a WARNING saying why, when its schema does
-not hold the old layout, `mentat_<name>_pre118` already exists, or its name
+not hold the old layout, `mentat_<name>_pre118` already exists, its name
+is reserved (`default`, `information_schema`, `pg_*`, in any case; only a
+row edited by hand can have one), or its name
 is longer than 56 characters (the limit since 1.18.0: `mentat_` plus the
 name must fit PostgreSQL's 63-character identifiers; 1.17 accepted 63 and
 PostgreSQL cut the schema name short). It also
