@@ -2393,7 +2393,7 @@ fn build_numeric_value_decode_expr(alias: &str) -> String {
     format!(
         "COALESCE({alias}.v_ref, {alias}.v_long, \
          {alias}.v_double::BIGINT, \
-         EXTRACT(EPOCH FROM {alias}.v_instant)::BIGINT * 1000000)"
+         (EXTRACT(EPOCH FROM {alias}.v_instant) * 1000000)::BIGINT)"
     )
 }
 

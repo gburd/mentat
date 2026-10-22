@@ -2499,7 +2499,8 @@ fn current_projection_value_for_ea(
         TypedValue::Bytes(_) => ("current_bytes", 11),
     };
     let value_expr = match tag {
-        4 => "(EXTRACT(EPOCH FROM v)::bigint * 1000000)::text",
+        // Exact: EPOCH::bigint would round to the second first (#375).
+        4 => "((EXTRACT(EPOCH FROM v) * 1000000)::bigint)::text",
         7 | 8 => "v",
         11 => "encode(v, 'hex')",
         _ => "v::text",

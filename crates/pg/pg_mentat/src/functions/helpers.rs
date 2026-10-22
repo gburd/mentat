@@ -98,8 +98,7 @@ fn attribute_values(attr_ident: &str) -> JsonB {
             SELECT value_type_tag, \
                    v_ref, v_bool, v_long, v_double, \
                    v_text, v_keyword, \
-                   EXTRACT(EPOCH FROM v_instant)::BIGINT * 1000000 + \
-                   EXTRACT(MICROSECOND FROM v_instant)::BIGINT % 1000000 AS v_instant_micros, \
+                   (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
                    v_uuid::TEXT, v_bytes \
             FROM mentat.datoms \
             WHERE a = $1 AND added = true \
@@ -143,8 +142,7 @@ fn retract_entity(entity_id: i64) -> Result<i64, Box<dyn std::error::Error + Sen
         SELECT a, value_type_tag, \
                v_ref, v_bool, v_long, v_double, \
                v_text, v_keyword, \
-               EXTRACT(EPOCH FROM v_instant)::BIGINT * 1000000 + \
-               EXTRACT(MICROSECOND FROM v_instant)::BIGINT % 1000000 AS v_instant_micros, \
+               (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
                v_uuid::TEXT, v_bytes \
         FROM mentat.datoms \
         WHERE e = $1 AND added = true";

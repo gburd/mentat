@@ -621,6 +621,67 @@ mod tests {
         }
     }
 
+    // #375: an instant with a fractional second reads back exactly, so replacing it leaves
+    // one live value and re-asserting it is a no-op. Pull and entity return the stored
+    // microseconds (they rounded to the second, then added the fraction).
+    #[pg_test]
+    fn fractional_second_instants() {
+        setup();
+        tx("[{:db/ident :mi/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]");
+        let i = tx(r#"[{:db/id "i" :mi/t #inst "2020-01-01T00:00:00.700001Z"}]"#)["tempids"]["i"]
+            .as_i64()
+            .unwrap();
+        let old = 1_577_836_800_700_001_i64;
+        let pulled = || {
+            let raw = Spi::get_one::<String>(&format!("SELECT mentat_pull('[:mi/t]', {i})::TEXT"))
+                .expect("pull")
+                .expect("non-NULL");
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()[":mi/t"].clone()
+        };
+        let entity = || {
+            let raw = Spi::get_one::<String>(&format!("SELECT mentat_entity({i})::TEXT"))
+                .expect("entity")
+                .expect("non-NULL");
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()[":mi/t"].clone()
+        };
+        assert_eq!(pulled(), serde_json::json!(old));
+        assert_eq!(entity(), serde_json::json!(old));
+
+        let r = tx(&format!(
+            r#"[[:db/add {i} :mi/t #inst "2020-01-01T00:00:00.700001Z"]]"#
+        ));
+        assert_eq!(
+            (
+                r["datoms_asserted"].as_i64(),
+                r["datoms_retracted"].as_i64()
+            ),
+            (Some(0), Some(0)),
+            "{r}"
+        );
+        let r = tx(&format!(
+            r#"[[:db/add {i} :mi/t #inst "2021-01-01T00:00:00Z"]]"#
+        ));
+        assert_eq!(
+            (
+                r["datoms_asserted"].as_i64(),
+                r["datoms_retracted"].as_i64()
+            ),
+            (Some(1), Some(1))
+        );
+        let retracted = r["tx-data"].as_array().unwrap()[1..]
+            .iter()
+            .find(|d| d[4] == false)
+            .map(|d| d[2]["v"].clone());
+        assert_eq!(retracted, Some(serde_json::json!(old)), "{r}");
+        let n = Spi::get_one::<i64>(&format!(
+            "SELECT count(*) FROM mentat.current_instant WHERE e = {i}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(pulled(), serde_json::json!(1_609_459_200_000_000_i64));
+    }
+
     // #179: a comparison over a value of unknown type applies to comparable values only.
     #[pg_test]
     fn inequality_over_untyped_values() {

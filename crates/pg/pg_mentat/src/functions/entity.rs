@@ -99,8 +99,7 @@ pub fn entity(
             WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
             UNION ALL
             SELECT s.ident, 4::SMALLINT,
-                   (EXTRACT(EPOCH FROM d.v)::BIGINT * 1000000 +
-                    EXTRACT(MICROSECOND FROM d.v)::BIGINT % 1000000)::TEXT
+                   ((EXTRACT(EPOCH FROM d.v) * 1000000)::BIGINT)::TEXT
             FROM mentat.datoms_instant_new d
             JOIN mentat.schema s ON d.a = s.entid
             WHERE d.store_id = $1 AND d.e = $2 AND d.added = true

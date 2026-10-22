@@ -207,8 +207,7 @@ fn build_union_all_datoms_query(
             UNION ALL \
             SELECT {pfx}{instant_tag}::SMALLINT, \
                    NULL, NULL, NULL, NULL, NULL, NULL, \
-                   EXTRACT(EPOCH FROM v)::BIGINT * 1000000 + \
-                   EXTRACT(MICROSECOND FROM v)::BIGINT % 1000000, NULL, NULL \
+                   (EXTRACT(EPOCH FROM v) * 1000000)::BIGINT, NULL, NULL \
             FROM {t_instant} AS _t \
             WHERE store_id = {sid} AND {whr} \
             UNION ALL \

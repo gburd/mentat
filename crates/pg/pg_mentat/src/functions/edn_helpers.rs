@@ -271,8 +271,7 @@ fn export_edn(entity_ids: Vec<i64>) -> Result<String, Box<dyn std::error::Error 
                 SELECT a, value_type_tag, \
                        v_ref, v_bool, v_long, v_double, \
                        v_text, v_keyword, \
-                       EXTRACT(EPOCH FROM v_instant)::BIGINT * 1000000 + \
-                       EXTRACT(MICROSECOND FROM v_instant)::BIGINT % 1000000 AS v_instant_micros, \
+                       (EXTRACT(EPOCH FROM v_instant) * 1000000)::BIGINT AS v_instant_micros, \
                        v_uuid::TEXT, v_bytes \
                 FROM mentat.datoms \
                 WHERE e = $1 AND added = true \
