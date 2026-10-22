@@ -103,7 +103,7 @@ fn name_taken(
     let (store, name): (Option<String>, Option<String>) = Spi::get_two_with_args(
         "SELECT s.store_name, s.name FROM (SELECT 1) one LEFT JOIN LATERAL \
            (SELECT store_name, name FROM mentat.subscriptions \
-             WHERE lower(name) = lower($1) \
+             WHERE pg_catalog.lower(name) = pg_catalog.lower($1) \
              ORDER BY (store_name = $2 AND name = $1) DESC, id LIMIT 1) s ON true",
         &[
             DatumWithOid::from(subscription_name),
@@ -345,9 +345,12 @@ pub fn subscribe(
     let trg_sql = trigger_sql(&quoted_schema, subscription_name);
     Spi::run(&trg_sql)?;
 
+    // Quoted when it has capitals: an unquoted LISTEN folds to lower case,
+    // and pg_notify's channel does not.
     Ok(format!(
         "Subscription '{}' created. LISTEN {} to receive notifications.",
-        subscription_name, channel
+        subscription_name,
+        quote_ident(&channel)
     ))
 }
 
