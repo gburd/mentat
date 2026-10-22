@@ -59,6 +59,17 @@ mod tests {
         q(store, "[:find [?n ...] :where [?e :p/name ?n]]", "{}")["result"].clone()
     }
 
+    /// The (store_id, tx) index on each of a schema's current_<type> tables
+    /// (`since` reads the projection by tx; 1.18.0).
+    fn tx_indexes(schema: &str) -> i64 {
+        Spi::get_one::<i64>(&format!(
+            "SELECT count(*) FROM pg_indexes WHERE schemaname = '{schema}' \
+              AND indexname ~ '^idx_current_[a-z]+_tx$' AND indexdef LIKE '%(store_id, tx)'"
+        ))
+        .unwrap()
+        .unwrap()
+    }
+
     fn sorted(v: serde_json::Value) -> Vec<String> {
         let mut out: Vec<String> = v
             .as_array()
@@ -84,6 +95,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(tables, 18, "9 narrow logs + 9 projections");
+        assert_eq!(tx_indexes("mentat_ns_one"), 9, "idx_current_<type>_tx");
 
         // Schema tx then data tx: the first write used to fail with
         // `relation "mentat_ns_one.current_instant" does not exist`.
@@ -551,6 +563,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(copied, 0, "nothing copied out of the old schema");
+        assert_eq!(
+            tx_indexes("mentat_evil"),
+            9,
+            "a rebuilt store has idx_current_<type>_tx"
+        );
         tx("evil", SCHEMA_TX);
         tx("evil", "[{:p/name \"rebuilt\"}]");
         assert_eq!(sorted(names("evil")), vec!["rebuilt"]);
@@ -1163,6 +1180,56 @@ mod tests {
             text("SELECT nspname::text FROM pg_namespace WHERE nspname = 'mentat_up_sv_pre118'"),
             "mentat_up_sv_pre118"
         );
+    }
+
+    // A find-pull on a named store under asOf / since called the 3-argument
+    // pull(store, ...), which reads current state: an as-of query returned
+    // the entity's current value (#364's bug, on named stores).
+    #[pg_test]
+    fn historical_find_pull_on_a_named_store() {
+        setup();
+        Spi::run("SELECT create_store('hp_s')").expect("create");
+        tx("hp_s", SCHEMA_TX);
+        tx("default", SCHEMA_TX);
+        let r = tx("hp_s", "[{:db/id \"x\" :p/name \"v1\" :p/age 1}]");
+        let e = r["tempids"]["x"].as_i64().expect("tempid");
+        let t1 = r["db-after"]["basis-t"].as_i64().unwrap();
+        let t2 = tx("hp_s", &format!("[[:db/add {e} :p/name \"v2\"]]"))["db-after"]["basis-t"]
+            .as_i64()
+            .unwrap();
+        tx("hp_s", &format!("[[:db/add {e} :p/age 3]]"));
+        tx(
+            "default",
+            &format!("[[:db/add {e} :p/name \"in-default\"] [:db/add {e} :p/age 99]]"),
+        );
+        let pull = |opts: &str| -> serde_json::Value {
+            q(
+                "hp_s",
+                "[:find (pull ?e [:p/name :p/age]) . :where [?e :p/name _]]",
+                opts,
+            )["result"]
+                .clone()
+        };
+        let as_of = pull(&format!("{{\"asOf\": {t1}}}"));
+        assert_eq!(as_of[":p/name"], serde_json::json!("v1"), "{as_of}");
+        assert_eq!(as_of[":p/age"], serde_json::json!(1), "{as_of}");
+        // Since t2: only the current datoms transacted after t2 (:p/age 3).
+        let since = q(
+            "hp_s",
+            "[:find (pull ?e [:p/name :p/age]) . :where [?e :p/age _]]",
+            &format!("{{\"since\": {t2}}}"),
+        )["result"]
+            .clone();
+        assert_eq!(since[":p/age"], serde_json::json!(3), "{since}");
+        assert!(since.get(":p/name").is_none(), "{since}");
+        let now = pull("{}");
+        assert_eq!(now[":p/name"], serde_json::json!("v2"), "{now}");
+        // The 4-argument pull directly.
+        let direct = json(&format!(
+            "SELECT pull('hp_s', '[:p/name]', {e}, '{{\"asOf\": {t1}}}'::jsonb)"
+        ));
+        assert_eq!(direct[":p/name"], serde_json::json!("v1"), "{direct}");
+        Spi::run("SELECT drop_store('hp_s')").expect("drop");
     }
 
     // A hand-made mentat.stores row with a name validate_store_name reserves

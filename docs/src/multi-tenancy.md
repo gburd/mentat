@@ -26,6 +26,7 @@ SELECT t('acme', '[{:p/name "Ann"}]');
 SELECT q('acme', '[:find ?n :where [_ :p/name ?n]]', '{}');
 SELECT q('acme', '[:find ?n :where [_ :p/name ?n]]', '{"asOf": 1000000000005}');
 SELECT pull('acme', '[*]', 1000001);
+SELECT pull('acme', '[*]', 1000001, '{"asOf": 1000000000005}');
 SELECT rename_store('acme', 'acme_corp');   -- schema becomes mentat_acme_corp
 SELECT list_stores();
 SELECT drop_store('acme_corp');             -- drops schema mentat_acme_corp
