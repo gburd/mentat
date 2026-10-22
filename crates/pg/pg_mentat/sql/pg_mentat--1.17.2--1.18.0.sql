@@ -317,6 +317,12 @@ BEGIN
     LOOP
         EXECUTE format('ALTER ROUTINE %s OWNER TO %s', r.oid::regprocedure, owner_oid::regrole);
     END LOOP;
+    -- Extended statistics the tables' LIKE ... INCLUDING ALL copied.
+    FOR r IN
+        SELECT s.stxname FROM pg_statistic_ext s WHERE s.stxnamespace = ns AND s.stxowner <> owner_oid
+    LOOP
+        EXECUTE format('ALTER STATISTICS %I.%I OWNER TO %s', p_schema, r.stxname, owner_oid::regrole);
+    END LOOP;
 
     FOR a IN
         SELECT (aclexplode(nspacl)).* FROM pg_namespace WHERE nspname = 'mentat'
@@ -409,11 +415,18 @@ BEGIN
                           'characters. See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name;
             CONTINUE;
         END IF;
-        -- Registered, but its schema was dropped by hand: nothing to rebuild.
-        CONTINUE WHEN st.ns IS NULL;
-        -- Already on the 1.18 layout.
-        CONTINUE WHEN EXISTS (SELECT 1 FROM pg_class
-                               WHERE relnamespace = st.ns AND relname = 'current_instant' AND relkind = 'r');
+        IF st.ns IS NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: its schema % does not exist '
+                          '(dropped by hand?). drop_store(''%'') removes the store.',
+                          st.store_name, st.schema_name, st.store_name;
+            CONTINUE;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_class
+                    WHERE relnamespace = st.ns AND relname = 'current_instant' AND relkind = 'r') THEN
+            RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: schema % already has the 1.18 layout.',
+                          st.store_name, st.schema_name;
+            CONTINUE;
+        END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid
                         WHERE c.relnamespace = st.ns AND c.relname = 'datoms' AND c.relkind = 'r'
                           AND a.attname = 'value_type_tag' AND NOT a.attisdropped) THEN

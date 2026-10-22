@@ -1189,4 +1189,42 @@ mod tests {
         assert!(err.contains("Did you mean ':hint/own_attr'?"), "{err}");
         Spi::run("SELECT drop_store('hint_s')").expect("drop");
     }
+
+    // The upgrade (as superuser) handed a rebuilt store's tables, views,
+    // sequences and functions to the schema's owner, but not the extended
+    // statistics the tables' LIKE ... INCLUDING ALL copied.
+    #[pg_test]
+    fn upgrade_hands_statistics_to_the_store_owner() {
+        setup();
+        Spi::run(
+            "CREATE ROLE ns_stat_owner NOLOGIN; \
+             INSERT INTO mentat.stores (store_name, schema_name) VALUES ('stat_s', 'mentat_stat_s'); \
+             CREATE SCHEMA mentat_stat_s AUTHORIZATION ns_stat_owner; \
+             CREATE TABLE mentat_stat_s.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+               value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL)",
+        )
+        .expect("1.17 store");
+        Spi::run(&upgrade_do_block()).expect("upgrade");
+        let ns = "(SELECT oid FROM pg_namespace WHERE nspname = 'mentat_stat_s')";
+        let stats: i64 = Spi::get_one(&format!(
+            "SELECT count(*) FROM pg_statistic_ext WHERE stxnamespace = {ns}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert!(
+            stats > 0,
+            "the layout copies the default store's statistics"
+        );
+        let foreign: i64 = Spi::get_one(&format!(
+            "SELECT (SELECT count(*) FROM pg_statistic_ext WHERE stxnamespace = {ns} \
+                       AND stxowner <> 'ns_stat_owner'::regrole) \
+                  + (SELECT count(*) FROM pg_class WHERE relnamespace = {ns} \
+                       AND relkind IN ('r', 'v', 'S') AND relowner <> 'ns_stat_owner'::regrole) \
+                  + (SELECT count(*) FROM pg_proc WHERE pronamespace = {ns} \
+                       AND proowner <> 'ns_stat_owner'::regrole)"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(foreign, 0);
+    }
 }
