@@ -424,12 +424,12 @@ mod tests {
         assert_eq!(get_schema_for_store("default"), "mentat");
     }
 
-    // The 1.17.1 -> 1.18.0 upgrade installs the same layout functions as a
+    // The 1.17.2 -> 1.18.0 upgrade installs the same layout functions as a
     // fresh install; the two copies must not drift.
     #[test]
     fn upgrade_script_carries_store_layout_verbatim() {
         let layout = include_str!("../../sql/30_store_layout.sql");
-        let upgrade = include_str!("../../sql/pg_mentat--1.17.1--1.18.0.sql");
+        let upgrade = include_str!("../../sql/pg_mentat--1.17.2--1.18.0.sql");
         assert!(upgrade.contains(layout.trim()));
     }
 
@@ -440,7 +440,7 @@ mod tests {
     // checks the behaviour; this pins the text.
     #[test]
     fn upgrade_do_block_reads_no_store_relation() {
-        let upgrade = include_str!("../../sql/pg_mentat--1.17.1--1.18.0.sql");
+        let upgrade = include_str!("../../sql/pg_mentat--1.17.2--1.18.0.sql");
         let start = upgrade.find("DO $migrate$").expect("DO block");
         let block = &upgrade[start..];
         let block = &block[..block.find("$migrate$;").expect("DO block end")];
