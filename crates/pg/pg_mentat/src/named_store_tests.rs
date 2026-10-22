@@ -359,6 +359,121 @@ mod tests {
         Spi::run("SELECT drop_store('tf_s')").expect("drop");
     }
 
+    // The 1.18.0 transactor checks (#152 lookup refs by a unique value, #286
+    // alterations the data violates, #362 retractions of absent values,
+    // #368 add/retract conflicts, the datom counts) on a named store. The
+    // #286 and #362 checks read mentat.current_<type> with the store's id,
+    // so on a named store they found nothing: a violating alteration went
+    // through and a live retraction was dropped as absent.
+    #[pg_test]
+    fn named_store_lookup_refs_alterations_and_retractions() {
+        setup();
+        let dflt = || -> i64 {
+            Spi::get_one(
+                "SELECT (SELECT count(*) FROM mentat.datoms_text_new) \
+                      + (SELECT count(*) FROM mentat.datoms_long_new) \
+                      + (SELECT count(*) FROM mentat.datoms_ref_new) \
+                      + (SELECT count(*) FROM mentat.schema)",
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let before = dflt();
+        Spi::run("SELECT create_store('mz_s')").expect("create");
+        tx("mz_s", SCHEMA_TX);
+        tx(
+            "mz_s",
+            "[{:db/ident :p/tags :db/valueType :db.type/string :db/cardinality :db.cardinality/many} \
+              {:db/ident :p/code :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        );
+        let r = tx(
+            "mz_s",
+            "[{:db/id \"a\" :p/name \"Ann\" :p/tags [\"x\" \"y\"] :p/code \"same\"} \
+              {:db/id \"b\" :p/name \"Bob\" :p/code \"same\"}]",
+        );
+        let ann = r["tempids"]["a"].as_i64().unwrap();
+        let capture = |edn: &str| {
+            text(&format!(
+                "SELECT pg_temp.capture($q$SELECT t('mz_s', '{}')$q$)",
+                edn.replace('\'', "''")
+            ))
+        };
+
+        // #152: [a v] lookup refs, in entity and in value position.
+        tx("mz_s", "[[:db/add [:p/name \"Ann\"] :p/age 5]]");
+        tx(
+            "mz_s",
+            "[[:db/add [:p/name \"Bob\"] :p/friend [:p/name \"Ann\"]]]",
+        );
+        let friend = q(
+            "mz_s",
+            "[:find ?n . :where [?b :p/name \"Bob\"] [?b :p/friend ?f] [?f :p/name ?n]]",
+            "{}",
+        );
+        assert_eq!(friend["result"], "Ann", "{friend}");
+        // A card-many ref's value [:p/name "Ann"] is one lookup ref, because
+        // :p/name is unique/identity in this store (the default store has no
+        // :p/name).
+        tx("mz_s", "[{:p/name \"Cy\" :p/friend [:p/name \"Ann\"]}]");
+        let cy = q(
+            "mz_s",
+            "[:find [?n ...] :where [?c :p/name \"Cy\"] [?c :p/friend ?f] [?f :p/name ?n]]",
+            "{}",
+        );
+        assert_eq!(sorted(cy["result"].clone()), vec!["Ann"], "{cy}");
+
+        // #286: alterations the store's data violates are refused.
+        let e = capture("[[:db/add :p/tags :db/cardinality :db.cardinality/one]]");
+        assert!(
+            e.contains("Cannot alter schema attribute :p/tags to be :db.cardinality/one"),
+            "{e:?}"
+        );
+        let e = capture(
+            "[[:db/add :p/code :db/unique :db.unique/identity] [:db/add :p/code :db/index true]]",
+        );
+        assert!(
+            e.contains("Cannot alter schema attribute :p/code to be :db.unique/identity"),
+            "{e:?}"
+        );
+
+        // #362: a live retraction applies and an absent one is dropped.
+        let r = tx(
+            "mz_s",
+            &format!("[[:db/retract {ann} :p/tags \"x\"] [:db/retract {ann} :p/tags \"zz\"]]"),
+        );
+        assert_eq!(
+            (
+                r["datoms_asserted"].as_i64(),
+                r["datoms_retracted"].as_i64()
+            ),
+            (Some(0), Some(1)),
+            "{r}"
+        );
+        let tags = q(
+            "mz_s",
+            &format!("[:find [?t ...] :where [{ann} :p/tags ?t]]"),
+            "{}",
+        );
+        assert_eq!(sorted(tags["result"].clone()), vec!["y"]);
+        // Now Ann holds one tag: the alteration goes through.
+        tx(
+            "mz_s",
+            "[[:db/add :p/tags :db/cardinality :db.cardinality/one]]",
+        );
+
+        // #368: asserting and retracting one datom in one transaction.
+        let e = capture(&format!(
+            "[[:db/add {ann} :p/age 9] [:db/retract {ann} :p/age 9]]"
+        ));
+        assert!(
+            e.contains("AddRetractConflict") && e.contains("a: :p/age"),
+            "{e:?}"
+        );
+
+        assert_eq!(dflt(), before, "the default store is untouched");
+        Spi::run("SELECT drop_store('mz_s')").expect("drop");
+    }
+
     // A mixed-case name gets the quoted schema "mentat_MyStore". A text ->
     // regnamespace cast folds that to mentat_mystore: create_store('MyStore')
     // failed ("schema already exists"), and with a lower-case twin present
