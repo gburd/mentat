@@ -88,6 +88,27 @@ const TXS: &[&str] = &[
         {:p/name "Eve"   :p/bio "Hello darkness, my old friend" :p/tags ["nightlife"]}]"#,
     // Replacing a fulltext value: the old text no longer matches for Bob.
     r#"[{:p/name "Bob" :p/bio "talk is cheap"}]"#,
+    // FTS4 syntax corners: texts that tell a phrase from an AND of its
+    // words, and SQLite's unicode61 tokens and case folds.
+    r#"[{:db/ident :p/note :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]"#,
+    r#"[{:p/name "n1"  :p/note "hello world"}
+        {:p/name "n2"  :p/note "world says hello"}
+        {:p/name "n3"  :p/note "don t"}
+        {:p/name "n4"  :p/note "t don"}
+        {:p/name "n5"  :p/note "b a"}
+        {:p/name "n6"  :p/note "a bc"}
+        {:p/name "n7"  :p/note "not a"}
+        {:p/name "n8"  :p/note "or a"}
+        {:p/name "n9"  :p/note "hello or world"}
+        {:p/name "n10" :p/note "c or java"}
+        {:p/name "n11" :p/note "a b"}
+        {:p/name "n12" :p/note "́abc x́y"}
+        {:p/name "n13" :p/note "हिंदी"}
+        {:p/name "n14" :p/note "İstanbul"}
+        {:p/name "n15" :p/note "ΣΊΣΥΦΟΣ"}
+        {:p/name "n16" :p/note "σίσυφοσ"}
+        {:p/name "n17" :p/note "Ⓐ foo_bar ﬁle"}
+        {:p/name "n18" :p/note "a c"}]"#,
 ];
 
 const QUERIES: &[&str] = &[
@@ -198,6 +219,38 @@ const FULLTEXT: &[&str] = &[
     // (Pull has no order for cardinality-many values; tags are compared above.)
     "[:find (pull ?e [:p/name :p/bio]) . :where [?e :p/name \"Alice\"]]",
     "[:find ?n :where [(fulltext $ :p/bio \"darkness\") [[?e]]] [?e :p/name ?n] [?e :p/age 25]]",
+    "[:find ?n :where [(fulltext $ :p/note \"hello-world\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"don't\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"a*b\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"\\\"a b\\\"*\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"--- NOT a\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"--- OR a\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"hello. OR world\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"C++ OR java\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"a \\\"\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"\\\"\\\" OR a\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"a NOT \\\"\\\"\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"a NOT b NEAR c\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"^a\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"^b\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"b ^a\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"text:hello\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"searchid:1\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"abc\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"x\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"द\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"ह\") [[?e]]] [?e :p/name ?n]]",
+    // (`istanbul` would differ: DuckDB folds İ to i, SQLite keeps it.)
+    "[:find ?n :where [(fulltext $ :p/note \"İstanbul\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"σίσυφος\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"ς\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"ⓐ\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"foo\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"file\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"ﬁle\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"a NEAR b\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"(a b) c\") [[?e]]] [?e :p/name ?n]]",
+    "[:find ?n :where [(fulltext $ :p/note \"a (b c)\") [[?e]]] [?e :p/name ?n]]",
 ];
 
 /// Malformed FTS4 queries: both engines must reject them.
@@ -209,6 +262,10 @@ const FULLTEXT_BAD: &[&str] = &[
     "\\\"hello",
     "AND",
     "hello NOT ---",
+    "() OR a",
+    "(a OR b) NEAR c",
+    "a NEAR (b OR c)",
+    "a (NOT b)",
 ];
 
 const ORDERED: &[&str] = &[

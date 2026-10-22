@@ -437,21 +437,33 @@ keep them.
 
 `(fulltext $ :attr "query") [[?e ?v ?tx ?score]]` works on any
 `:db/fulltext true` attribute, with SQLite FTS4's query syntax: words (all
-must appear), `AND`, `OR`, `NOT`, parentheses, `"exact phrases"` and
-`prefix*`. Matching is case-insensitive on whole tokens, which are runs of
-letters, digits and combining marks, as in SQLite's `unicode61` tokenizer
-(`dark` doesn't match `darkness`; `hello-world` matches `Hello World`;
-`cafe` doesn't match `café`). A malformed query is an error ("malformed MATCH
-expression"), as on SQLite. The `differential` harness test checks 30
-fulltext queries against SQLite's results.
+must appear), `AND`, `OR`, `NOT`, `NEAR`, parentheses, `"exact phrases"`,
+`prefix*`, `^first` and `text:` column filters, read the way SQLite reads
+them (so `hello-world` is `hello AND world`, and `"a b"*` is the phrase
+`a b`). Matching is case-insensitive on whole tokens, split with the token
+characters of SQLite's `unicode61` tokenizer (`remove_diacritics=0`), taken
+from SQLite's own table (`dark` doesn't match `darkness`; `cafe` doesn't
+match `café`). A malformed query is an error ("malformed MATCH
+expression"), as on SQLite, and so is one nested past SQLite's limits. The
+`differential` harness test checks 60 fulltext queries against SQLite's
+results.
 
 The value is stored as a plain string in `datoms` and tokenized at query
 time with DuckDB's built-in regex functions, so there is no index to keep up
 to date and no extension to load. The price is a scan of the attribute's
-values on every query. `?score` is always `0.0`, as on SQLite. `NEAR` and
-`NEAR/n` are treated as `AND`, column filters (`text:x`) and `^x` have no
-special meaning, and a search term bound from another pattern matches when
-the text contains all of its tokens.
+values on every query (100k texts: about 0.3 s). `?score` is always `0.0`,
+as on SQLite, and a search term bound from another pattern matches when the
+text contains all of its tokens. Differences from SQLite:
+
+- `NEAR` and `NEAR/n` are `AND`: the distance isn't checked.
+- Case folding is DuckDB's `lower()` plus the 12 folds SQLite makes that it
+  doesn't (final `ς` matches `σ`). `lower()` also folds about 400 characters
+  SQLite doesn't: `İstanbul` matches `istanbul` here, not on SQLite; so do
+  Cherokee and Georgian Mtavruli capitals, and capitals added to Unicode
+  after 6.1.
+- `searchid:x` matches nothing, and a column filter right before a quote or
+  parenthesis (`text:"a b"`) is ignored.
+- Parentheses nest at most 100 deep (SQLite: 1000).
 
 ## Known gaps
 
