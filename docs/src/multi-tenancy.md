@@ -71,6 +71,14 @@ GRANT SELECT ON mentat.stores, mentat.cache_generation TO acme_app;
 GRANT UPDATE ON mentat.cache_generation TO acme_app;   -- schema transactions bump it
 ```
 
+A writer to a store with an `on_write` materialized view refreshes the
+view in every `t()`, so it must own the view, or on PostgreSQL 17 and later
+hold `MAINTAIN` on it (`GRANT MAINTAIN ON mentat_acme.<view> TO acme_app`).
+Otherwise every `t()` fails with `permission denied for materialized view`.
+A role that runs `rename_store` or `drop_store` also needs `UPDATE` and
+`DELETE` on `mentat.subscriptions` and `mentat.materialized_views`; the
+installing role of a trusted install has them.
+
 ### Upgrading from 1.17
 
 `create_store` used to build the pre-1.5 wide layout, which no release
@@ -80,7 +88,10 @@ holds only rows someone inserted by hand. `ALTER EXTENSION pg_mentat
 UPDATE TO '1.18.0'` rebuilds each such store: the old schema is renamed
 `mentat_<name>_pre118` and kept, and a new, empty `mentat_<name>` is built
 with the store's owner and grants. A WARNING names each store rebuilt
-and where its old tables are.
+and where its old tables are. A 1.17 subscription or materialized view on
+the store stays with the old tables and stops working; the upgrade names
+each one in a WARNING: run `unsubscribe` / `drop_matview`, then
+`subscribe` / `materialize` again.
 
 The upgrade copies nothing out of the old schema. It runs as a superuser,
 and the old schema belongs to the store's owner, who could have replaced
