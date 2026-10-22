@@ -50,9 +50,77 @@ enum Node {
     /// No tokens (`---`, `()`): dropped from an AND, matches nothing alone.
     Empty,
     Phrase(Vec<(String, bool)>),
-    And(Box<Node>, Box<Node>),
-    Or(Box<Node>, Box<Node>),
+    /// Two or more operands (a chain of one operator is one node, so a long
+    /// query never nests deeply).
+    And(Vec<Node>),
+    Or(Vec<Node>),
     Not(Box<Node>, Box<Node>),
+}
+
+/// SQLite's limits: the tree must rebalance within
+/// `SQLITE_FTS3_MAX_EXPR_DEPTH` (12) levels, and parentheses nest at most
+/// `SQLITE_MAX_EXPR_DEPTH` (1000) deep; past either the query is malformed.
+/// Checked while parsing, so a hostile query can't overflow the stack.
+// shortcut: parentheses nest at most 100 deep here (1000 levels of this
+// recursive parser overflow a 2 MB thread stack in a debug build). Past 12
+// they can only wrap a single operand; make the parser iterative if that
+// ever matters.
+const MAX_PARENS: usize = 100;
+const MAX_DEPTH: u32 = 12;
+
+impl Node {
+    /// The tree's depth after SQLite's `fts3ExprBalance(_, m)`, or None if
+    /// SQLite rejects it. An AND (or OR) chain's operands, each balanced with
+    /// `m - 1`, are merged pairwise like a binary counter of `m` slots (more
+    /// than `2^m - 1` operands overflow it); a NOT costs one level; nothing
+    /// may sit at level `m == 0`.
+    fn balanced_depth(&self, m: u32) -> Option<u32> {
+        if m == 0 {
+            return None;
+        }
+        match self {
+            Node::Empty | Node::Phrase(_) => Some(0),
+            Node::Not(l, r) => Some(1 + l.balanced_depth(m - 1)?.max(r.balanced_depth(m - 1)?)),
+            Node::And(xs) | Node::Or(xs) => {
+                let mut slots: Vec<Option<u32>> = vec![None; m as usize];
+                for x in xs {
+                    let mut carry = Some(x.balanced_depth(m - 1)?);
+                    for slot in slots.iter_mut() {
+                        match (slot.take(), carry) {
+                            (None, c) => {
+                                *slot = c;
+                                carry = None;
+                                break;
+                            }
+                            (Some(d), Some(c)) => carry = Some(1 + d.max(c)),
+                            (Some(_), None) => unreachable!(),
+                        }
+                    }
+                    carry.is_none().then_some(())?;
+                }
+                slots.into_iter().flatten().reduce(|acc, d| 1 + acc.max(d))
+            }
+        }
+    }
+}
+
+/// `l AND r` (`and`) or `l OR r` as one chain node. An operand that is itself
+/// the same kind of chain (`(a b) c`) is spliced in, as SQLite's rebalancing
+/// does.
+fn chain(l: Node, r: Node, and: bool) -> Node {
+    let mut xs = Vec::new();
+    for n in [l, r] {
+        match n {
+            Node::And(ys) if and => xs.extend(ys),
+            Node::Or(ys) if !and => xs.extend(ys),
+            n => xs.push(n),
+        }
+    }
+    if and {
+        Node::And(xs)
+    } else {
+        Node::Or(xs)
+    }
 }
 
 fn malformed(q: &str) -> SQLError {
@@ -138,6 +206,8 @@ struct Parser<'q> {
     lexemes: Vec<Lexeme>,
     pos: usize,
     q: &'q str,
+    /// Open parentheses around the current position.
+    parens: usize,
 }
 
 impl Parser<'_> {
@@ -153,7 +223,7 @@ impl Parser<'_> {
             if left == Node::Empty || right == Node::Empty {
                 return Err(malformed(self.q));
             }
-            left = Node::Or(Box::new(left), Box::new(right));
+            left = chain(left, right, false);
         }
         Ok(left)
     }
@@ -170,13 +240,14 @@ impl Parser<'_> {
             left = match (left, right) {
                 (Node::Empty, r) => r,
                 (l, Node::Empty) => l,
-                (l, r) => Node::And(Box::new(l), Box::new(r)),
+                (l, r) => chain(l, r, true),
             };
         }
     }
 
     fn not(&mut self) -> Result<Node, SQLError> {
         let mut left = self.primary()?;
+        let mut nots = 0;
         while self.peek() == Some(&Lexeme::Not) {
             self.pos += 1;
             let right = self.primary()?;
@@ -185,6 +256,11 @@ impl Parser<'_> {
             }
             if left != Node::Empty {
                 left = Node::Not(Box::new(left), Box::new(right));
+                // A NOT chain nests; stop while it is still shallow.
+                nots += 1;
+                if nots >= MAX_DEPTH {
+                    return Err(malformed(self.q));
+                }
             }
         }
         Ok(left)
@@ -208,11 +284,16 @@ impl Parser<'_> {
                     self.pos += 1;
                     return Ok(Node::Empty);
                 }
+                self.parens += 1;
+                if self.parens > MAX_PARENS {
+                    return Err(malformed(self.q));
+                }
                 let inner = self.or()?;
                 if self.peek() != Some(&Lexeme::Close) {
                     return Err(malformed(self.q));
                 }
                 self.pos += 1;
+                self.parens -= 1;
                 Ok(inner)
             }
             _ => Err(malformed(self.q)),
@@ -225,12 +306,13 @@ fn parse(q: &str) -> Result<Node, SQLError> {
         lexemes: lex(q)?,
         pos: 0,
         q,
+        parens: 0,
     };
     if p.lexemes.is_empty() {
         return Ok(Node::Empty);
     }
     let node = p.or()?;
-    if p.pos != p.lexemes.len() {
+    if p.pos != p.lexemes.len() || node.balanced_depth(MAX_DEPTH).is_none_or(|d| d > MAX_DEPTH) {
         return Err(malformed(q));
     }
     Ok(node)
@@ -274,14 +356,25 @@ fn push_node(
             }
             out.push_sql(")");
         }
-        Node::And(l, r) | Node::Or(l, r) | Node::Not(l, r) => {
+        Node::And(xs) | Node::Or(xs) => {
+            let op = if matches!(node, Node::And(_)) {
+                " AND "
+            } else {
+                " OR "
+            };
+            out.push_sql("(");
+            for (i, x) in xs.iter().enumerate() {
+                if i > 0 {
+                    out.push_sql(op);
+                }
+                push_node(out, text, x)?;
+            }
+            out.push_sql(")");
+        }
+        Node::Not(l, r) => {
             out.push_sql("(");
             push_node(out, text, l)?;
-            out.push_sql(match node {
-                Node::And(..) => " AND ",
-                Node::Or(..) => " OR ",
-                _ => " AND NOT ",
-            });
+            out.push_sql(" AND NOT ");
             push_node(out, text, r)?;
             out.push_sql(")");
         }
@@ -329,8 +422,8 @@ mod tests {
                 .map(|(w, pre)| format!("{w}{}", if *pre { "*" } else { "" }))
                 .collect::<Vec<_>>()
                 .join("_"),
-            Node::And(l, r) => format!("(& {} {})", show(l), show(r)),
-            Node::Or(l, r) => format!("(| {} {})", show(l), show(r)),
+            Node::And(xs) => format!("(& {})", xs.iter().map(show).collect::<Vec<_>>().join(" ")),
+            Node::Or(xs) => format!("(| {})", xs.iter().map(show).collect::<Vec<_>>().join(" ")),
             Node::Not(l, r) => format!("(- {} {})", show(l), show(r)),
         }
     }
@@ -351,7 +444,7 @@ mod tests {
         assert_eq!(p("a\"b\""), "(& a b)");
         assert_eq!(p("a(b)"), "(& a b)");
         assert_eq!(p("hello-world"), "hello-world");
-        assert_eq!(p("a and b"), "(& (& a and) b)");
+        assert_eq!(p("a and b"), "(& a and b)");
         // Token-less terms: dropped from an AND, nothing alone, an error
         // under OR / NOT (all as SQLite).
         assert_eq!(p("hello ---"), "hello");
@@ -375,5 +468,29 @@ mod tests {
         ] {
             assert_eq!(p(bad), "ERR", "{bad}");
         }
+    }
+
+    /// SQLite 3.51 FTS4's limits, measured: up to 11 chained NOTs, 4095
+    /// ANDed words, and the 5-deep `(... OR b) c` nest below parse; one more
+    /// is an error. Parentheses nest up to 100 deep (SQLite: 1000). A hostile
+    /// nest is an error, not a stack overflow.
+    #[test]
+    fn depth_limits_like_fts4() {
+        let nots = |n: usize| format!("a{}", " NOT b".repeat(n));
+        let ands = |n: usize| vec!["a"; n].join(" ");
+        let alts = |n: usize| (0..n).fold("a".to_string(), |q, _| format!("({q} OR b) c"));
+        let parens = |n: usize| format!("{}a{}", "(".repeat(n), ")".repeat(n));
+        for (ok, bad) in [
+            (nots(11), nots(12)),
+            (ands(4095), ands(4096)),
+            (alts(5), alts(6)),
+            (parens(100), parens(101)),
+        ] {
+            assert_ne!(p(&ok), "ERR", "{}", &ok[..ok.len().min(60)]);
+            assert_eq!(p(&bad), "ERR", "{}", &bad[..bad.len().min(60)]);
+        }
+        assert_eq!(p(&parens(100_000)), "ERR");
+        assert_eq!(p(&nots(100_000)), "ERR");
+        assert_eq!(p(&format!("{}a", "(a NOT ".repeat(100_000))), "ERR");
     }
 }
