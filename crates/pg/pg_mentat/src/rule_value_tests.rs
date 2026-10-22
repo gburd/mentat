@@ -362,4 +362,60 @@ mod tests {
             assert!(err.contains("rule-not-found"), "{q}: {err}");
         }
     }
+
+    fn query_with(query: &str, inputs: serde_json::Value) -> serde_json::Value {
+        crate::functions::query::mentat_query(query, pgrx::JsonB(inputs))
+            .expect(query)
+            .0
+    }
+
+    /// A recursive rule doing arithmetic on a value its recursive call
+    /// binds keeps it a long: the hop count was stored as a double from the
+    /// second hop on, so (depth ?e 2) matched nothing and (max ?n) was 3.0.
+    #[pg_test]
+    fn test_rule_recursive_arithmetic_is_long() {
+        let [a, b, c, d] = setup_chain();
+        let depth = "[[(depth ?e ?n) [?e :rv/name \"ann\"] [(+ 0 0) ?n]] \
+                      [(depth ?e ?n) [?e :rv/boss ?b] (depth ?b ?m) [(+ ?m 1) ?n]]]";
+        assert_eq!(
+            rows(&format!(
+                "[:find ?e ?n :rules {depth} :where (depth ?e ?n)]"
+            )),
+            sorted(vec![
+                format!("[{a},0]"),
+                format!("[{b},1]"),
+                format!("[{c},2]"),
+                format!("[{d},3]"),
+            ])
+        );
+        assert_eq!(
+            rows(&format!("[:find ?e :rules {depth} :where (depth ?e 2)]")),
+            [format!("[{c}]")]
+        );
+        let q = format!("[:find ?e :in ?k :rules {depth} :where (depth ?e ?k)]");
+        assert_eq!(
+            query_with(&q, serde_json::json!({"inputs": [2]}))["results"],
+            serde_json::json!([[c]])
+        );
+        let q = format!("[:find (max ?n) . :rules {depth} :where (depth ?e ?n)]");
+        assert_eq!(
+            query_with(&q, serde_json::json!({}))["result"],
+            serde_json::json!(3)
+        );
+        assert_eq!(
+            rows(&format!(
+                "[:find ?e :rules {depth} :where (depth ?e ?n) [(> ?n 1)]]"
+            )),
+            sorted(vec![format!("[{c}]"), format!("[{d}]")])
+        );
+        // The recursive clause listed first: the same types.
+        let depth_rev = "[[(depth ?e ?n) [?e :rv/boss ?b] (depth ?b ?m) [(+ ?m 1) ?n]] \
+                          [(depth ?e ?n) [?e :rv/name \"ann\"] [(+ 0 0) ?n]]]";
+        assert_eq!(
+            rows(&format!(
+                "[:find ?e :rules {depth_rev} :where (depth ?e 3)]"
+            )),
+            [format!("[{d}]")]
+        );
+    }
 }

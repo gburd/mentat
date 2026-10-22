@@ -8167,25 +8167,54 @@ fn rule_body_var_type(body: &[WhereClause], var: &str, schema_prefix: &str) -> O
     })
 }
 
+/// The position of `var` among the arguments of the rule's own recursive
+/// call in a clause body, if that call binds it.
+fn self_call_position(body: &[WhereClause], rule_name: &str, var: &str) -> Option<usize> {
+    body.iter().find_map(|wc| match wc {
+        WhereClause::RuleExpr(ri) if ri.name.0 == rule_name => ri
+            .args
+            .iter()
+            .position(|a| matches!(a, FnArg::Variable(x) if x.as_str() == var)),
+        _ => None,
+    })
+}
+
 /// The value type of a rule body function result `[(f ...) ?x]`: text for
 /// the phonetic functions; a long for integer arithmetic (every argument an
 /// integer constant or a long/ref variable), else a double, so a value is
-/// never truncated.
-fn rule_fn_type(wf: &WhereFn, body: &[WhereClause], schema_prefix: &str) -> &'static str {
+/// never truncated. `rec` types a variable no pattern binds: the column type
+/// of the recursive call that binds it, or None while the clause fixpoint
+/// has not decided it -- and then so is the result.
+fn rule_fn_type(
+    wf: &WhereFn,
+    body: &[WhereClause],
+    schema_prefix: &str,
+    rec: &dyn Fn(&str) -> Option<Option<String>>,
+) -> Option<&'static str> {
+    // Some(true): an integer; None: not decided yet.
     let int_arg = |a: &FnArg| match a {
-        FnArg::EntidOrInteger(_) => true,
-        FnArg::Variable(v) => matches!(
-            rule_body_var_type(body, v.as_str(), schema_prefix).as_deref(),
-            Some("long" | "ref")
-        ),
-        _ => false,
+        FnArg::EntidOrInteger(_) => Some(true),
+        FnArg::Variable(v) => rule_body_var_type(body, v.as_str(), schema_prefix)
+            .map(Some)
+            .or_else(|| rec(v.as_str()))
+            .map(|t| matches!(t.as_deref(), Some("long" | "ref"))),
+        _ => Some(false),
     };
-    match wf.operator.0.as_str() {
+    Some(match wf.operator.0.as_str() {
         "soundex" | "metaphone" | "daitch-mokotoff" => "string",
         "levenshtein" | "infer-implies" => "long",
-        "*" | "+" | "-" if wf.args.iter().all(int_arg) => "long",
+        "*" | "+" | "-" => {
+            let ints: Vec<Option<bool>> = wf.args.iter().map(int_arg).collect();
+            if ints.contains(&Some(false)) {
+                "double"
+            } else if ints.contains(&None) {
+                return None;
+            } else {
+                "long"
+            }
+        }
         _ => "double",
-    }
+    })
 }
 
 /// The value type of each column of `rule`: the type every clause binds it
@@ -8205,35 +8234,29 @@ fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
                 let t: Option<Option<String>> = match arg {
                     FnArg::Variable(v) => {
                         let var = v.as_str();
-                        let direct =
-                            rule_body_var_type(&clause.body, var, schema_prefix).or_else(|| {
-                                clause.body.iter().find_map(|wc| match wc {
-                                    WhereClause::WhereFn(wf)
-                                        if matches!(&wf.binding,
-                                        Binding::BindScalar(b) if b.as_str() == var) =>
-                                    {
-                                        Some(
-                                            rule_fn_type(wf, &clause.body, schema_prefix)
-                                                .to_string(),
-                                        )
-                                    }
-                                    _ => None,
-                                })
-                            });
-                        let recursive = || {
-                            clause.body.iter().find_map(|wc| match wc {
-                                WhereClause::RuleExpr(ri) if ri.name == rule.name => {
-                                    ri.args.iter().position(
-                                        |a| matches!(a, FnArg::Variable(x) if x.as_str() == var),
-                                    )
-                                }
-                                _ => None,
-                            })
+                        // A variable bound by the recursive call has that
+                        // column's type so far; any other is of unknown type.
+                        let rec = |x: &str| match self_call_position(&clause.body, &rule.name.0, x)
+                        {
+                            Some(m) => cols.get(m).cloned().flatten(),
+                            None => Some(None),
                         };
-                        match (direct, recursive()) {
-                            (Some(t), _) => Some(Some(t)),
-                            (None, Some(m)) => cols.get(m).cloned().flatten(),
-                            (None, None) => Some(None),
+                        let bound_by_fn = clause.body.iter().find_map(|wc| match wc {
+                            WhereClause::WhereFn(wf)
+                                if matches!(&wf.binding,
+                                    Binding::BindScalar(b) if b.as_str() == var) =>
+                            {
+                                Some(wf)
+                            }
+                            _ => None,
+                        });
+                        if let Some(t) = rule_body_var_type(&clause.body, var, schema_prefix) {
+                            Some(Some(t))
+                        } else if let Some(wf) = bound_by_fn {
+                            rule_fn_type(wf, &clause.body, schema_prefix, &rec)
+                                .map(|t| Some(t.to_string()))
+                        } else {
+                            rec(var)
                         }
                     }
                     _ => Some(None),
@@ -8939,7 +8962,13 @@ fn build_rule_clause_sql(
         if let WhereClause::WhereFn(wf) = wc {
             if let Some((result_var, computed_expr)) = build_where_fn_binding(wf, builder)? {
                 let resolved_expr = resolve_var_refs_for_rule(&computed_expr, &body_var_to_alias);
-                let ty = rule_fn_type(wf, &clause.body, schema_prefix);
+                let rec = |x: &str| {
+                    Some(
+                        self_call_position(&clause.body, rule_name, x)
+                            .and_then(|m| col_types.get(m).cloned().flatten()),
+                    )
+                };
+                let ty = rule_fn_type(wf, &clause.body, schema_prefix, &rec).unwrap_or("double");
                 computed_expressions.insert(result_var, (resolved_expr, ty));
             }
         }
