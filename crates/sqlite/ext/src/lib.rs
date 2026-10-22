@@ -29,8 +29,7 @@ use serde_json::{json, Value as Json};
 
 use mentat::edn::query::{Element, FindSpec};
 use mentat::{
-    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TemporalBound, TxReport,
-    TypedValue, Variable,
+    Binding, QueryInputs, QueryResults, Queryable, StructuredMap, TxReport, TypedValue, Variable,
 };
 
 type Res<T> = Result<T, String>;
@@ -451,12 +450,9 @@ fn query_json(db: &str, query: &str, opts: Option<&str>) -> Res<String> {
         let (inputs, temporal) =
             mentat::options_from_json(&store.conn().current_schema(), query, &opts)
                 .map_err(|e| format!("edn_q: {e}"))?;
-        match temporal {
-            Some(TemporalBound::AsOf(t)) => store.q_once_as_of(query, inputs, t),
-            Some(TemporalBound::Since(t)) => store.q_once_since(query, inputs, t),
-            None => store.q_once(query, inputs),
-        }
-        .map_err(|e| e.to_string())
+        store
+            .q_once_temporal(query, inputs, temporal)
+            .map_err(|e| e.to_string())
     })
     .map_err(ctx("edn_q"))?;
     Ok(results_json(&out.spec, out.results).to_string())

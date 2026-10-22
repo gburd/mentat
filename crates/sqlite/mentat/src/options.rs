@@ -44,6 +44,11 @@ mod tests {
             opts(&s, q, json!({"since": 9})).unwrap().1,
             Some(TemporalBound::Since(9))
         );
+        // Both: Datomic's (since (as-of db 9) 7).
+        assert_eq!(
+            opts(&s, q, json!({"asOf": 9, "since": 7})).unwrap().1,
+            Some(TemporalBound::AsOfSince { as_of: 9, since: 7 })
+        );
     }
 
     #[test]
@@ -53,7 +58,6 @@ mod tests {
         for (o, want) in [
             (json!([1]), "must be a JSON object"),
             (json!({"asOf": "x"}), "integer tx id"),
-            (json!({"asOf": 1, "since": 2}), "mutually exclusive"),
             (json!({"bogus": 1}), "unknown option \"bogus\""),
             (json!({"inputs": 3}), "must be an array"),
             (

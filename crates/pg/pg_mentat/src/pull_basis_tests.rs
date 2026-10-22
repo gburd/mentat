@@ -129,6 +129,20 @@ mod tests {
         assert_eq!(sorted(&since[":pb/tags"]), ["\"z\""]);
         assert!(since.get(":pb/name").is_none(), "{since}");
 
+        // Both bounds: S < tx <= T, not retracted by T (Datomic's
+        // `(since (as-of db T) S)`). Nothing Alice has was asserted after t1
+        // and by t1.
+        let both = pull(a, pat, &format!("{{\"asOf\": {t1}, \"since\": {t1}}}"));
+        assert!(both.get(":pb/age").is_none(), "{both}");
+        assert!(both.get(":pb/tags").is_none(), "{both}");
+        let t_last: i64 = text("SELECT max(tx)::TEXT FROM mentat.transactions")
+            .parse()
+            .expect("tx");
+        let both = pull(a, pat, &format!("{{\"asOf\": {t_last}, \"since\": {t1}}}"));
+        assert_eq!(both[":pb/age"], json!(31), "{both}");
+        assert_eq!(sorted(&both[":pb/tags"]), ["\"z\""]);
+        assert!(both.get(":pb/name").is_none(), "{both}");
+
         // A map spec follows the ref on the basis: Bob's friend as of t1.
         let bob = pull(
             b,
@@ -153,10 +167,6 @@ mod tests {
     #[pg_test]
     fn edn_pull_rejects_bad_options() {
         let (a, _, _) = setup();
-        let e = err(&format!(
-            "SELECT edn_pull('[:pb/age]', {a}, '{{\"asOf\": 1, \"since\": 2}}'::jsonb)"
-        ));
-        assert!(e.contains("mutually exclusive"), "{e}");
         let e = err(&format!(
             "SELECT edn_pull('[:pb/age]', {a}, '{{\"asOf\": \"x\"}}'::jsonb)"
         ));

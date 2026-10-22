@@ -177,19 +177,12 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
-        let known = Known::new(&schema, Some(&cache));
-        mentat_transaction::query::q_once_temporal(
-            sqlite,
-            known,
-            query,
-            inputs,
-            mentat_query_algebrizer::TemporalBound::AsOf(tx),
-        )
+        let basis = mentat_query_algebrizer::TemporalBound::AsOf(tx);
+        self.q_once_temporal(sqlite, query, inputs, basis)
     }
 
-    /// Query the store seeing only datoms transacted after transaction `tx`
-    /// (`since`).
+    /// Query the store seeing only the current datoms transacted after
+    /// transaction `tx` (Datomic's `since`).
     pub fn q_once_since<T>(
         &self,
         sqlite: &rusqlite::Connection,
@@ -200,15 +193,24 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
+        let basis = mentat_query_algebrizer::TemporalBound::Since(tx);
+        self.q_once_temporal(sqlite, query, inputs, basis)
+    }
+
+    /// Query the store on a historical basis (as-of, since, or both).
+    pub fn q_once_temporal<T>(
+        &self,
+        sqlite: &rusqlite::Connection,
+        query: &str,
+        inputs: T,
+        basis: mentat_query_algebrizer::TemporalBound,
+    ) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
         let (schema, cache) = self.snapshot();
         let known = Known::new(&schema, Some(&cache));
-        mentat_transaction::query::q_once_temporal(
-            sqlite,
-            known,
-            query,
-            inputs,
-            mentat_query_algebrizer::TemporalBound::Since(tx),
-        )
+        mentat_transaction::query::q_once_temporal(sqlite, known, query, inputs, basis)
     }
 
     /// Query the Mentat store, using the given connection and the current metadata,

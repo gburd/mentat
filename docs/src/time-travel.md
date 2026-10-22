@@ -57,7 +57,21 @@ SELECT mentat_as_of('default', 1050,
 
 ## Since Queries
 
-Query only datoms asserted after a specific transaction. This shows what has changed.
+Query the current datoms that were asserted after a specific transaction
+(Datomic's `since`): a value asserted after T and since retracted or replaced
+does not show. To see every change after T, assertions and retractions, use a
+history pattern `[?e ?a ?v ?tx ?added]` with `since`.
+
+`asOf` and `since` together give the assertions with `since < tx <= asOf` that
+were not retracted by `asOf` (Datomic's `(since (as-of db T) S)`).
+
+Before 1.18.0 `since` returned different results on each backend: pg also
+showed values asserted after T and later replaced, and the embedded and
+DuckDB engines also counted retractions after T as values. With `:x/n` 1 at
+t1, 2 at t2 and 3 at t3, `[:find ?v :where [_ :x/n ?v]]` since t1 now
+returns `[3]` everywhere (was `[2 3]` on pg, `[1 2 3]` on SQLite and DuckDB).
+pg rejected `asOf` with `since` in `edn_pull`; the embedded engine dropped
+`since`.
 
 ```sql
 SELECT edn_q(
@@ -144,11 +158,19 @@ SELECT mentat.diff('default', 1000, 1050);
 
 As-of queries add a `tx <= ?target_tx` filter to every pattern in the generated SQL. The query compiler:
 1. Adds `AND d.tx <= $as_of` to each table join
-2. Applies retraction filtering: excludes datoms where a later retraction exists with `tx <= target`
+2. Applies retraction filtering: excludes an assertion when a retraction of the
+   same entity, attribute and value exists with a later `tx <= target`. This
+   hides a value retracted at or before the target whether or not a new value
+   replaced it. (Before 1.18.0 pg hid only a cardinality-one value replaced by
+   a newer one, so a plainly retracted value, or a retracted cardinality-many
+   value, still showed as of a later transaction.)
 
 ### Since Implementation
 
-Since queries add `AND d.tx > $since_tx` to include only newer assertions.
+Since queries add `AND d.tx > $since_tx` and the same retraction filtering
+(any later retraction, no upper bound), so they return the current datoms
+asserted after `since_tx`. A history pattern gets only the tx bound and sees
+retractions too.
 
 ### History Implementation
 

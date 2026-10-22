@@ -709,3 +709,216 @@ pub fn pull_nested_map_specs(it: &mut Interpreter) {
         "\"Alice\""
     );
 }
+
+/// t1: n 1, tags p q, s "a"; t2: n 2, tag p retracted, s retracted;
+/// t3: n 3, tag r. Returns (x, t1, t2, t3).
+fn seed_t364(it: &mut Interpreter) -> (String, i64, i64, i64) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :t364/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :t364/tag :db/valueType :db.type/string :db/cardinality :db.cardinality/many} \
+            {:db/ident :t364/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    let basis = |it: &mut Interpreter| -> i64 {
+        it.eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    it.eval_to_string(
+        "(mentat.store/transact c [{:db/id \"x\" :t364/n 1 :t364/s \"a\"} \
+           [:db/add \"x\" :t364/tag \"p\"] [:db/add \"x\" :t364/tag \"q\"]])",
+    )
+    .unwrap();
+    let t1 = basis(it);
+    let x = it
+        .eval_to_string("(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :t364/n _]])")
+        .unwrap();
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/n 2] [:db/retract {x} :t364/tag \"p\"] \
+           [:db/retract {x} :t364/s \"a\"]])"
+    ))
+    .unwrap();
+    let t2 = basis(it);
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/n 3] [:db/add {x} :t364/tag \"r\"]])"
+    ))
+    .unwrap();
+    (x, t1, t2, basis(it))
+}
+
+/// `(as-of (since db S) T)` etc.: `None` leaves that bound off.
+fn db_on(as_of: Option<i64>, since: Option<i64>) -> String {
+    let mut d = "(mentat.store/db c)".to_string();
+    if let Some(t) = as_of {
+        d = format!("(mentat.store/as-of {d} {t})");
+    }
+    if let Some(s) = since {
+        d = format!("(mentat.store/since {d} {s})");
+    }
+    d
+}
+
+/// `q` as a sorted vector, so expected values are exact.
+fn q_sorted(it: &mut Interpreter, d: &str, query: &str) -> String {
+    it.eval_to_string(&format!("(vec (sort (mentat.store/q {d} '{query})))"))
+        .unwrap_or_else(|e| panic!("{d} {query}: {e}"))
+}
+
+const Q364_N: &str = "[:find [?v ...] :where [_ :t364/n ?v]]";
+const Q364_TAG: &str = "[:find [?v ...] :where [_ :t364/tag ?v]]";
+const Q364_S: &str = "[:find [?v ...] :where [_ :t364/s ?v]]";
+const Q364_HIST: &str = "[:find ?v ?added :where [_ :t364/n ?v _ ?added]]";
+
+fn check_q364(it: &mut Interpreter, d: &str, n: &str, tag: &str, s: &str) {
+    assert_eq!(q_sorted(it, d, Q364_N), n, "{d} :t364/n");
+    assert_eq!(q_sorted(it, d, Q364_TAG), tag, "{d} :t364/tag");
+    assert_eq!(q_sorted(it, d, Q364_S), s, "{d} :t364/s");
+}
+
+/// As of T hides a value retracted at or before T, cardinality-one and
+/// -many, replaced or plainly retracted (Datomic's as-of). Before 1.18.0
+/// pg's edn_q showed retracted values unless a newer cardinality-one value
+/// replaced them.
+pub fn as_of_hides_retracted_values(it: &mut Interpreter) {
+    let (_, t1, t2, t3) = seed_t364(it);
+    check_q364(
+        it,
+        &db_on(Some(t1), None),
+        "[1]",
+        "[\"p\" \"q\"]",
+        "[\"a\"]",
+    );
+    check_q364(it, &db_on(Some(t2), None), "[2]", "[\"q\"]", "[]");
+    check_q364(it, &db_on(Some(t3), None), "[3]", "[\"q\" \"r\"]", "[]");
+    // A history pattern as of T is the log up to T, retractions included.
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t2), None), Q364_HIST),
+        "[[1 false] [1 true] [2 true]]"
+    );
+}
+
+/// A value retracted and asserted again later: hidden as of the retraction,
+/// visible again as of the re-assertion, and `since` the retraction shows it
+/// (the live assertion is the later one).
+pub fn as_of_sees_a_value_reasserted_after_retraction(it: &mut Interpreter) {
+    let (x, t1, t2, t3) = seed_t364(it);
+    // t4: tag "p" (retracted at t2) is asserted again.
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/tag \"p\"]])"
+    ))
+    .unwrap();
+    let t4: i64 = it
+        .eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let tags = |it: &mut Interpreter, d: &str| q_sorted(it, d, Q364_TAG);
+    assert_eq!(tags(it, &db_on(Some(t1), None)), "[\"p\" \"q\"]");
+    assert_eq!(tags(it, &db_on(Some(t2), None)), "[\"q\"]");
+    assert_eq!(tags(it, &db_on(Some(t3), None)), "[\"q\" \"r\"]");
+    assert_eq!(tags(it, &db_on(Some(t4), None)), "[\"p\" \"q\" \"r\"]");
+    assert_eq!(tags(it, &db_on(None, Some(t3))), "[\"p\"]");
+    assert_eq!(tags(it, &db_on(None, Some(t1))), "[\"p\" \"r\"]");
+    assert_eq!(tags(it, &db_on(Some(t4), Some(t2))), "[\"p\" \"r\"]");
+    assert_eq!(tags(it, &db_on(Some(t3), Some(t1))), "[\"r\"]");
+
+    // Retract and re-assert "q" in one transaction. Datomic and the embedded
+    // transactor refuse it (add/retract conflict); pg accepts it and the
+    // retraction wins (a transactor difference, not a read-rule one). Either
+    // way, as of that transaction reads what current state reads.
+    let same = it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/retract {x} :t364/tag \"q\"] [:db/add {x} :t364/tag \"q\"]])"
+    ));
+    if same.is_ok() {
+        let now = "(mentat.store/db c)";
+        let t5: i64 = it
+            .eval_to_string(&format!("(:mentat.store/basis-tx {now})"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(tags(it, &db_on(Some(t5), None)), tags(it, now));
+    }
+}
+
+/// Datomic's `since S` (issue #364): the current datoms whose tx is after S,
+/// so a value added after S and since replaced is gone. Before 1.18.0
+/// `since t1` below returned [1 2 3] on SQLite and DuckDB (retraction rows
+/// counted) and [2 3] on pg (replaced values counted). A 5-place history
+/// pattern under since still reads the log after S, retractions included.
+pub fn since_reads_current_datoms_added_after_t(it: &mut Interpreter) {
+    let (x, t1, t2, t3) = seed_t364(it);
+    check_q364(it, &db_on(None, Some(t1)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(None, Some(t2)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(None, Some(t3)), "[]", "[]", "[]");
+    assert_eq!(
+        q_sorted(it, &db_on(None, Some(t1)), Q364_HIST),
+        "[[1 false] [2 false] [2 true] [3 true]]"
+    );
+    // read and pull agree with q.
+    let since = db_on(None, Some(t1));
+    assert_eq!(
+        it.eval_to_string(&format!("(mentat.store/read {since} {x} :t364/n)"))
+            .unwrap(),
+        "3"
+    );
+    assert_eq!(
+        it.eval_to_string(&format!(
+            "(let [m (mentat.store/pull {since} {x} '[:t364/n :t364/tag :t364/s])] \
+               [(:t364/n m) (vec (sort (:t364/tag m))) (:t364/s m)])"
+        ))
+        .unwrap(),
+        "[3 [\"r\"] nil]"
+    );
+}
+
+/// `(since (as-of db T) S)`: the assertions with S < tx <= T not retracted by
+/// T, in either order, for q, pull, read and entities; a history pattern sees
+/// the log with S < tx <= T. Before 1.18.0 pg raised "mutually exclusive" and
+/// SQLite and DuckDB dropped `since`.
+pub fn as_of_and_since_together(it: &mut Interpreter) {
+    let (x, t1, t2, t3) = seed_t364(it);
+    check_q364(it, &db_on(Some(t2), Some(t1)), "[2]", "[]", "[]");
+    check_q364(it, &db_on(Some(t3), Some(t1)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(Some(t3), Some(t2)), "[3]", "[\"r\"]", "[]");
+    check_q364(it, &db_on(Some(t1), Some(t1)), "[]", "[]", "[]");
+    // Order doesn't matter.
+    let swapped =
+        format!("(mentat.store/as-of (mentat.store/since (mentat.store/db c) {t1}) {t2})");
+    assert_eq!(q_sorted(it, &swapped, Q364_N), "[2]");
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t2), Some(t1)), Q364_HIST),
+        "[[1 false] [2 true]]"
+    );
+
+    let pull = |it: &mut Interpreter, d: &str| {
+        it.eval_to_string(&format!(
+            "(let [m (mentat.store/pull {d} {x} '[:t364/n :t364/tag :t364/s])] \
+               [(:t364/n m) (vec (sort (:t364/tag m))) (:t364/s m)])"
+        ))
+        .unwrap_or_else(|e| panic!("pull {d}: {e}"))
+    };
+    assert_eq!(pull(it, &db_on(Some(t2), Some(t1))), "[2 [] nil]");
+    assert_eq!(pull(it, &db_on(Some(t3), Some(t1))), "[3 [\"r\"] nil]");
+    let ents = |it: &mut Interpreter, d: &str| {
+        it.eval_to_string(&format!("(count (mentat.store/entities {d} :t364/tag))"))
+            .unwrap()
+    };
+    assert_eq!(ents(it, &db_on(Some(t2), Some(t1))), "0");
+    assert_eq!(ents(it, &db_on(Some(t3), Some(t1))), "1");
+    let read = |it: &mut Interpreter, d: &str| {
+        it.eval_to_string(&format!("(mentat.store/read {d} {x} :t364/n)"))
+            .unwrap()
+    };
+    assert_eq!(read(it, &db_on(Some(t2), Some(t1))), "2");
+    assert_eq!(read(it, &db_on(Some(t1), Some(t1))), "nil");
+    let entity = it
+        .eval_to_string(&format!(
+            "(:t364/n (mentat.store/entity {} {x}))",
+            db_on(Some(t2), Some(t1))
+        ))
+        .unwrap();
+    assert_eq!(entity, "2");
+}

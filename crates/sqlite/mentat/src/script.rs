@@ -19,8 +19,9 @@
 //! # Temporal reads
 //!
 //!   * `datoms`/`entity`/`read` on the **current** basis use the live `datoms`
-//!     table; `since T` uses `debug::datoms_after`; `as-of T` is reconstructed
-//!     by replaying `transactions_after` up to and including T.
+//!     table; `since S` uses `debug::datoms_after`; `as-of T` (with or without
+//!     `since S`) is reconstructed by replaying `transactions_after` up to and
+//!     including T, keeping the live assertions made after S.
 //!   * `q`, `pull` and `entities` run on any basis: the engine's temporal
 //!     Datalog and the basis-aware pull read the transaction log.
 //!
@@ -269,12 +270,10 @@ impl ScriptBackend for MentatBackend {
         // Issue #328: an as-of/since db runs the query as temporal Datalog.
         // The embedded engine has had a historical query rewrite since 1.8.0
         // (Store::q_once_as_of / q_once_since); the old refusal predated it.
-        let out = match (db.as_of, db.since) {
-            (Some(t), _) => store.q_once_as_of(query_edn, query_inputs, t),
-            (None, Some(t)) => store.q_once_since(query_edn, query_inputs, t),
-            (None, None) => store.q_once(query_edn, query_inputs),
-        }
-        .map_err(|e| e.to_string())?;
+        let basis = crate::TemporalBound::new(db.as_of, db.since);
+        let out = store
+            .q_once_temporal(query_edn, query_inputs, basis)
+            .map_err(|e| e.to_string())?;
         Ok(query_output_value(out))
     }
 
@@ -284,12 +283,10 @@ impl ScriptBackend for MentatBackend {
             .get(&db.conn)
             .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
         // An as-of / since db pulls that basis (before 1.18.0 this refused).
-        let sm = match (db.as_of, db.since) {
-            (Some(t), _) => store.pull_as_of(eid, pattern_edn, t),
-            (None, Some(t)) => store.pull_since(eid, pattern_edn, t),
-            (None, None) => store.pull(eid, pattern_edn),
-        }
-        .map_err(|e| e.to_string())?;
+        let basis = crate::TemporalBound::new(db.as_of, db.since);
+        let sm = store
+            .pull_temporal(eid, pattern_edn, basis)
+            .map_err(|e| e.to_string())?;
         Ok(structured_map_value(&sm))
     }
 
@@ -483,7 +480,9 @@ fn basis_datoms(db: &DbRef, store: &Store) -> Result<Vec<(i64, Keyword, edn::Val
         const TX0: i64 = 0x1000_0000;
         let txns = debug::transactions_after(sqlite, &*schema, TX0 - 1)
             .map_err(|e| format!("transactions_after: {e}"))?;
-        let mut live: BTreeMap<(i64, String, String), (i64, Keyword, edn::Value)> = BTreeMap::new();
+        // (e, a, printed v) -> (e, a, v, tx of the live assertion)
+        type Live = BTreeMap<(i64, String, String), (i64, Keyword, edn::Value, i64)>;
+        let mut live = Live::new();
         for group in &txns.0 {
             for d in &group.0 {
                 if d.tx > t {
@@ -497,12 +496,18 @@ fn basis_datoms(db: &DbRef, store: &Store) -> Result<Vec<(i64, Keyword, edn::Val
                         live.remove(&key);
                     }
                     _ => {
-                        live.insert(key, (e, a, d.v.clone()));
+                        live.insert(key, (e, a, d.v.clone(), d.tx));
                     }
                 }
             }
         }
-        Ok(live.into_values().collect())
+        // `(since (as-of db T) S)`: only the live assertions made after S.
+        let since = db.since.unwrap_or(i64::MIN);
+        Ok(live
+            .into_values()
+            .filter(|(_, _, _, tx)| *tx > since)
+            .map(|(e, a, v, _)| (e, a, v))
+            .collect())
     } else if let Some(s) = db.since {
         let ds =
             debug::datoms_after(sqlite, &*schema, s).map_err(|e| format!("datoms_after: {e}"))?;

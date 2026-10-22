@@ -260,10 +260,11 @@ also repairs a store that was already hit.
 |---|---|
 | `"inputs": [v1, v2, ...]` | Positional, one element per `:in` binding form (`$` source vars are not counted). The count must match. |
 | `"asOf": T` | Query the database as of tx `T` (inclusive). |
-| `"since": T` | Only datoms transacted after tx `T` (pair with a history pattern `[?e ?a ?v ?tx ?added]`). |
+| `"since": T` | The current datoms transacted after tx `T` (Datomic's `since`). A history pattern `[?e ?a ?v ?tx ?added]` sees every datom after `T`, retractions too. |
 
-`asOf` and `since` are mutually exclusive; either may be combined with
-`inputs`. Unknown keys and malformed JSON are errors.
+`asOf` T and `since` S together are the assertions with S < tx <= T not
+retracted by T. Either may be combined with `inputs`. Unknown keys and
+malformed JSON are errors.
 
 Binding forms: scalar `?x` -> a JSON value; collection `[?x ...]` -> a JSON
 array; tuple `[?a ?b]` -> a JSON array (one row); relation `[[?a ?b]]` -> an

@@ -44,14 +44,15 @@ fn get_store_id_from_schema(schema: &str) -> Result<i64, PullError> {
 // UNION ALL query builders for type-specific tables
 // ---------------------------------------------------------------------------
 
-/// The basis a pull reads: `None` = current state (the `current_<type>`
-/// projection), `AsOf(t)` = the state after tx `t`, `Since(t)` = the current
-/// datoms transacted after `t`. Set for the duration of one `pull` call by
-/// [`with_basis`]; every pull read goes through [`basis_table`].
+/// The basis a pull reads (`None` = current state, the `current_<type>`
+/// projection): as of tx `as_of` and/or only what was transacted after
+/// `since`, with Datomic's meaning (see [`basis_table`]). Set for the
+/// duration of one `pull` call by [`with_basis`]; every pull read goes
+/// through [`basis_table`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PullBasis {
-    AsOf(i64),
-    Since(i64),
+struct PullBasis {
+    as_of: Option<i64>,
+    since: Option<i64>,
 }
 
 thread_local! {
@@ -71,7 +72,8 @@ fn with_basis<T>(basis: Option<PullBasis>, f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// Parse `{"asOf": T}` / `{"since": T}` pull options (edn_q's temporal keys).
+/// Parse `{"asOf": T}` / `{"since": S}` pull options (edn_q's temporal keys;
+/// both together are `S < tx <= T`).
 fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, PullError> {
     let get = |k: &str| match options.get(k) {
         None | Some(serde_json::Value::Null) => Ok(None),
@@ -96,37 +98,42 @@ fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, 
                         .into(),
                 )
             }
-            other => return Err(format!(
+            other => {
+                return Err(format!(
                 ":db.error/invalid-pull-options unknown option \"{other}\" (expected asOf, since)"
             )
-            .into()),
+                .into())
+            }
         }
     }
-    match (get("asOf")?, get("since")?) {
-        (Some(_), Some(_)) => {
-            Err(":db.error/invalid-pull-options asOf and since are mutually exclusive".into())
-        }
-        (Some(t), None) => Ok(Some(PullBasis::AsOf(t))),
-        (None, Some(t)) => Ok(Some(PullBasis::Since(t))),
-        (None, None) => Ok(None),
-    }
+    // Both: Datomic's `(since (as-of db T) S)`.
+    let (as_of, since) = (get("asOf")?, get("since")?);
+    Ok((as_of.is_some() || since.is_some()).then_some(PullBasis { as_of, since }))
 }
 
 /// The table (or subquery) of live `(store_id, e, a, v, tx)` rows for value
-/// type `ty` (`ref`, `text`, ...) on the current pull basis. As of T: the
-/// assertions with tx <= T that no retraction with a later tx <= T cancels
-/// (edn_q's as-of rule). Since T: the current datoms transacted after T.
+/// type `ty` (`ref`, `text`, ...) on the current pull basis, with Datomic's
+/// meaning (edn_q's rule, issue #364). As of T: the assertions with tx <= T
+/// that no retraction with a later tx <= T cancels. Since S: the current
+/// datoms transacted after S. Both: the as-of rule with tx > S too.
 fn basis_table(ty: &str) -> String {
     match PULL_BASIS.with(|b| b.get()) {
         None => format!("mentat.current_{ty}"),
-        Some(PullBasis::AsOf(t)) => format!(
-            "(SELECT g.store_id, g.e, g.a, g.v, g.tx FROM mentat.datoms_{ty}_new g \
-             WHERE g.added AND g.tx <= {t} AND NOT EXISTS (SELECT 1 FROM mentat.datoms_{ty}_new r \
-             WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a AND r.v = g.v \
-             AND NOT r.added AND r.tx > g.tx AND r.tx <= {t}))"
-        ),
-        Some(PullBasis::Since(t)) => {
-            format!("(SELECT store_id, e, a, v, tx FROM mentat.current_{ty} WHERE tx > {t})")
+        Some(PullBasis {
+            as_of: None,
+            since: Some(s),
+        }) => format!("(SELECT store_id, e, a, v, tx FROM mentat.current_{ty} WHERE tx > {s})"),
+        Some(PullBasis { as_of, since }) => {
+            let t = as_of.unwrap_or(i64::MAX);
+            let lower = since
+                .map(|s| format!(" AND g.tx > {s}"))
+                .unwrap_or_default();
+            format!(
+                "(SELECT g.store_id, g.e, g.a, g.v, g.tx FROM mentat.datoms_{ty}_new g \
+                 WHERE g.added AND g.tx <= {t}{lower} AND NOT EXISTS (SELECT 1 FROM mentat.datoms_{ty}_new r \
+                 WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a AND r.v = g.v \
+                 AND NOT r.added AND r.tx > g.tx AND r.tx <= {t}))"
+            )
         }
     }
 }
@@ -435,8 +442,9 @@ pub fn mentat_pull(pattern: &str, entity_id: i64) -> Result<JsonB, PullError> {
 
 /// `edn_pull(pattern, entity_id, options)`: [`mentat_pull`] on a historical
 /// basis. `options` takes edn_q's temporal keys: `{"asOf": T}` pulls the state
-/// after tx T, `{"since": T}` only the current datoms transacted after T; `{}`
-/// is the current state. (New in 1.18.0; before it pull always read current
+/// after tx T, `{"since": S}` only the current datoms transacted after S, both
+/// the assertions with S < tx <= T not retracted by T; `{}` is the current
+/// state. (New in 1.18.0; before it pull always read current
 /// state.)
 #[pg_extern(name = "edn_pull")]
 pub fn mentat_pull_with_options(

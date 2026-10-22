@@ -202,20 +202,26 @@ fn refs_in(b: Binding) -> Vec<Entid> {
 /// rows. A fulltext value is still its `fulltext_values` rowid on SQLite.
 fn basis_datoms_sql(basis: TemporalBound) -> String {
     match basis {
-        // Same rule as the algebrizer's as-of rewrite: an assertion at or
-        // before t with no retraction of the same (e, a, v) after it and at or
-        // before t. `added` is 0/1 on SQLite and BOOLEAN on DuckDB; bare
-        // `t.added` / `NOT r.added` read the same on both.
-        TemporalBound::AsOf(t) => format!(
-            "(SELECT t.a AS a, t.e AS e, t.v AS v, t.value_type_tag AS value_type_tag \
-             FROM transactions t WHERE t.tx <= {t} AND t.added AND NOT EXISTS (\
-             SELECT 1 FROM transactions r WHERE r.a = t.a AND r.e = t.e \
-             AND r.value_type_tag = t.value_type_tag AND r.v = t.v \
-             AND NOT r.added AND r.tx > t.tx AND r.tx <= {t}))"
-        ),
         // Datomic's `since`: the current datoms whose tx is after t.
         TemporalBound::Since(t) => {
             format!("(SELECT a, e, v, value_type_tag FROM datoms WHERE tx > {t})")
+        }
+        // Same rule as the algebrizer's as-of rewrite: an assertion at or
+        // before t (and after `since`, if set) with no retraction of the same
+        // (e, a, v) after it and at or before t. `added` is 0/1 on SQLite and
+        // BOOLEAN on DuckDB; bare `t.added` / `NOT r.added` read the same on both.
+        TemporalBound::AsOf(t) | TemporalBound::AsOfSince { as_of: t, .. } => {
+            let lower = basis
+                .since()
+                .map(|s| format!(" AND t.tx > {s}"))
+                .unwrap_or_default();
+            format!(
+                "(SELECT t.a AS a, t.e AS e, t.v AS v, t.value_type_tag AS value_type_tag \
+                 FROM transactions t WHERE t.tx <= {t}{lower} AND t.added AND NOT EXISTS (\
+                 SELECT 1 FROM transactions r WHERE r.a = t.a AND r.e = t.e \
+                 AND r.value_type_tag = t.value_type_tag AND r.v = t.v \
+                 AND NOT r.added AND r.tx > t.tx AND r.tx <= {t}))"
+            )
         }
     }
 }

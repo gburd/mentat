@@ -28,7 +28,7 @@ use core_traits::StructuredMap;
 
 use mentat::{
     Binding, CacheDirection, Keyword, QueryExplanation, QueryInputs, QueryOutput, QueryResults,
-    Queryable, Store, TemporalBound, TxReport, TypedValue, Variable,
+    Queryable, Store, TxReport, TypedValue, Variable,
 };
 
 use crate::command_parser::Command;
@@ -386,11 +386,7 @@ impl Repl {
         };
         let schema = self.store.conn().current_schema();
         let (inputs, temporal) = mentat::options_from_json(&schema, query, &opts)?;
-        Ok(match temporal {
-            Some(TemporalBound::AsOf(t)) => self.store.q_once_as_of(query, inputs, t)?,
-            Some(TemporalBound::Since(t)) => self.store.q_once_since(query, inputs, t)?,
-            None => self.store.q_once(query, inputs)?,
-        })
+        Ok(self.store.q_once_temporal(query, inputs, temporal)?)
     }
 
     fn pull(&mut self, pattern: &str, entity: &str) {

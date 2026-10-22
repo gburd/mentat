@@ -405,7 +405,7 @@ fn q_takes_in_inputs() {
 }
 // q_mixed_inputs, history_patterns_see_added, cas_and_retract_entity and
 // q_runs_against_as_of_and_since, pull_reads_the_as_of_and_since_basis and
-// pull_nested_map_specs need a
+// pull_nested_map_specs and the as-of / since (#364) tests need a
 // real engine (Datalog joins, the log, tx fns, temporal Datalog): run on the
 // SQLite, DuckDB and pg backends only.
 #[test]

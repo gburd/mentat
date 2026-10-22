@@ -122,11 +122,7 @@ fn imported_store_matches_the_sqlite_store() {
 
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>| {
-        let a = match temporal {
-            Some(TemporalBound::AsOf(t)) => sqlite.q_once_as_of(q, None, t),
-            Some(TemporalBound::Since(t)) => sqlite.q_once_since(q, None, t),
-            None => sqlite.q_once(q, None),
-        };
+        let a = sqlite.q_once_temporal(q, None, temporal);
         let b = duck.q(q, None, temporal);
         match (a, b) {
             (Ok(a), Ok(b)) => {

@@ -2207,6 +2207,73 @@ fn reads_history(temporal: &TemporalOption, pattern: &edn::query::Pattern) -> bo
     temporal.history || pattern.added != PatternNonValuePlace::Placeholder
 }
 
+/// The temporal WHERE conditions for one log-table pattern alias, with
+/// Datomic's as-of / since meaning (issue #364):
+///
+///   * History (`history`: a 5-place pattern or {"history": true}): the log in
+///     the window, retractions too: `tx > since`, `tx <= asOf`.
+///   * Otherwise the live assertions in the window: `added`, the same tx
+///     bounds, and no retraction of the same (e, a, v) after this row (and at
+///     or before `asOf`). So `since S` is the current datoms added after S,
+///     and as-of T hides a value retracted at or before T whether or not a new
+///     value replaced it.
+///
+/// `typed` is the pattern's typed table info (its log table, and the alias
+/// column its `v` lands in), or `None` for the nine-way UNION (attribute or
+/// type unknown).
+fn temporal_conditions(
+    temporal: &TemporalOption,
+    history: bool,
+    alias: &str,
+    typed: Option<&TypedTableInfo>,
+    store_id_param: &str,
+    builder: &mut SqlBuilder<'_>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if !history {
+        out.push(format!("{alias}.added = true"));
+    }
+    let upper = temporal.as_of.map(|t| builder.bind_bigint(t));
+    if let Some(p) = &upper {
+        out.push(format!("{alias}.tx <= {p}"));
+    }
+    if let Some(s) = temporal.since {
+        let p = builder.bind_bigint(s);
+        out.push(format!("{alias}.tx > {p}"));
+    }
+    if history || (temporal.as_of.is_none() && temporal.since.is_none()) {
+        return out;
+    }
+    let retractions = match typed {
+        Some(t) => format!("{} AS r WHERE r.store_id = {store_id_param} AND", t.table),
+        None => format!("{} AS r WHERE", build_datoms_union_subquery(store_id_param)),
+    };
+    // A typed table has one `v` column; the UNION carries one per type.
+    let same_v = match typed {
+        Some(t) => format!("r.v = {alias}.{}", t.value_column),
+        None => format!(
+            "r.value_type_tag = {alias}.value_type_tag \
+             AND r.v_ref IS NOT DISTINCT FROM {alias}.v_ref \
+             AND r.v_bool IS NOT DISTINCT FROM {alias}.v_bool \
+             AND r.v_long IS NOT DISTINCT FROM {alias}.v_long \
+             AND r.v_double IS NOT DISTINCT FROM {alias}.v_double \
+             AND r.v_text IS NOT DISTINCT FROM {alias}.v_text \
+             AND r.v_keyword IS NOT DISTINCT FROM {alias}.v_keyword \
+             AND r.v_instant IS NOT DISTINCT FROM {alias}.v_instant \
+             AND r.v_uuid IS NOT DISTINCT FROM {alias}.v_uuid \
+             AND r.v_bytes IS NOT DISTINCT FROM {alias}.v_bytes"
+        ),
+    };
+    let r_upper = upper
+        .map(|p| format!(" AND r.tx <= {p}"))
+        .unwrap_or_default();
+    out.push(format!(
+        "NOT EXISTS (SELECT 1 FROM {retractions} r.e = {alias}.e AND r.a = {alias}.a \
+         AND {same_v} AND NOT r.added AND r.tx > {alias}.tx{r_upper})"
+    ));
+    out
+}
+
 /// Extract a variable name string from a PatternNonValuePlace, if it is a variable.
 fn non_value_var_name(place: &PatternNonValuePlace) -> Option<String> {
     match place {
@@ -6075,73 +6142,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         // it to its transactions table the same way.)
         let history = reads_history(temporal, pattern);
 
-        // Temporal filtering per datom table
-        if history {
-            // History mode: include both added=true and added=false (no filter)
-        } else {
-            where_clauses.push(format!("{alias}.added = true"));
-        }
-
-        if let Some(as_of_tx) = temporal.as_of {
-            let param = builder.bind_bigint(as_of_tx);
-            where_clauses.push(format!("{alias}.tx <= {param}"));
-
-            // For as-of queries on cardinality-one attributes, exclude datoms
-            // that have been superseded by a newer assertion within the as-of
-            // window.  Cardinality-many attributes must NOT be filtered this
-            // way because multiple values for the same (e, a) are valid.
-            //
-            // We check cardinality at query-compile time when the attribute is
-            // a known constant; when it is a variable we skip the filter
-            // entirely (cardinality-one correctness is still guaranteed by the
-            // explicit retraction inserted during transact).
-            let is_cardinality_many = match &pattern.attribute {
-                PatternNonValuePlace::Ident(kw) => {
-                    let ident_str = keyword_to_ident(kw);
-                    crate::cache::get_cache()
-                        .resolve_ident(&ident_str)
-                        .and_then(|entid| crate::cache::get_cache().get_attribute(entid))
-                        .map(|info| info.cardinality == "many")
-                        .unwrap_or(false)
-                }
-                PatternNonValuePlace::Entid(id) => crate::cache::get_cache()
-                    .get_attribute(*id)
-                    .map(|info| info.cardinality == "many")
-                    .unwrap_or(false),
-                _ => false, // variable or placeholder: skip filter (safe due to explicit retractions)
-            };
-
-            // History as of T is every datom with tx <= T: nothing is superseded.
-            if !is_cardinality_many && !history {
-                let param2 = builder.bind_bigint(as_of_tx);
-                // Use single typed table for NOT EXISTS when attribute type is known.
-                // This avoids the 9-way UNION ALL in the correlated subquery.
-                if let Some(info) = &typed_info {
-                    where_clauses.push(format!(
-                        "NOT EXISTS (SELECT 1 FROM {table} AS newer \
-                         WHERE newer.store_id = {sid} \
-                         AND newer.e = {alias}.e AND newer.a = {alias}.a \
-                         AND newer.added = true \
-                         AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                        table = info.table,
-                        sid = store_id_param,
-                    ));
-                } else {
-                    where_clauses.push(format!(
-                        "NOT EXISTS (SELECT 1 FROM {} AS newer \
-                         WHERE newer.e = {alias}.e AND newer.a = {alias}.a \
-                         AND newer.added = true \
-                         AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                        build_datoms_union_subquery(store_id_param)
-                    ));
-                }
-            }
-        }
-
-        if let Some(since_tx) = temporal.since {
-            let param = builder.bind_bigint(since_tx);
-            where_clauses.push(format!("{alias}.tx > {param}"));
-        }
+        // Temporal filtering per datom table (as-of / since / history).
+        where_clauses.extend(temporal_conditions(
+            temporal,
+            history,
+            &alias,
+            typed_info.as_ref(),
+            store_id_param,
+            builder,
+        ));
 
         // Handle added position (5th element in pattern, e.g. [?e ?a ?v ?tx ?added])
         if let Some(added_var) = non_value_var_name(&pattern.added) {
@@ -7280,58 +7289,15 @@ fn build_not_exists_subquery(
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
-                // Temporal filtering in subquery too
-                if !temporal.history {
-                    sub_where.push(format!("{alias}.added = true"));
-                }
-                if let Some(as_of_tx) = temporal.as_of {
-                    let param = builder.bind_bigint(as_of_tx);
-                    sub_where.push(format!("{alias}.tx <= {param}"));
-
-                    // Only add NOT EXISTS for cardinality-one attributes
-                    let is_cardinality_many = match &p.attribute {
-                        PatternNonValuePlace::Ident(kw) => {
-                            let ident_str = keyword_to_ident(kw);
-                            crate::cache::get_cache()
-                                .resolve_ident(&ident_str)
-                                .and_then(|entid| crate::cache::get_cache().get_attribute(entid))
-                                .map(|info| info.cardinality == "many")
-                                .unwrap_or(false)
-                        }
-                        PatternNonValuePlace::Entid(id) => crate::cache::get_cache()
-                            .get_attribute(*id)
-                            .map(|info| info.cardinality == "many")
-                            .unwrap_or(false),
-                        _ => false,
-                    };
-
-                    if !is_cardinality_many {
-                        let param2 = builder.bind_bigint(as_of_tx);
-                        if let Some(info) = &typed_info {
-                            sub_where.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {table} AS newer \
-                                 WHERE newer.store_id = {sid} \
-                                 AND newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                table = info.table,
-                                sid = store_id_param,
-                            ));
-                        } else {
-                            sub_where.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {} AS newer \
-                                 WHERE newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                build_datoms_union_subquery(store_id_param)
-                            ));
-                        }
-                    }
-                }
-                if let Some(since_tx) = temporal.since {
-                    let param = builder.bind_bigint(since_tx);
-                    sub_where.push(format!("{alias}.tx > {param}"));
-                }
+                // Temporal filtering in subquery too.
+                sub_where.extend(temporal_conditions(
+                    temporal,
+                    temporal.history,
+                    &alias,
+                    typed_info.as_ref(),
+                    store_id_param,
+                    builder,
+                ));
 
                 // Build pushdown conditions for NOT-clause subquery
                 let not_pushdown = {
@@ -8221,58 +8187,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
-                // Temporal filtering
-                if !temporal.history {
-                    where_parts.push(format!("{alias}.added = true"));
-                }
-                if let Some(as_of) = temporal.as_of {
-                    let param = builder.bind_bigint(as_of);
-                    where_parts.push(format!("{alias}.tx <= {param}"));
-
-                    // Only add NOT EXISTS for cardinality-one attributes
-                    let is_cardinality_many = match &p.attribute {
-                        PatternNonValuePlace::Ident(kw) => {
-                            let ident_str = keyword_to_ident(kw);
-                            crate::cache::get_cache()
-                                .resolve_ident(&ident_str)
-                                .and_then(|entid| crate::cache::get_cache().get_attribute(entid))
-                                .map(|info| info.cardinality == "many")
-                                .unwrap_or(false)
-                        }
-                        PatternNonValuePlace::Entid(id) => crate::cache::get_cache()
-                            .get_attribute(*id)
-                            .map(|info| info.cardinality == "many")
-                            .unwrap_or(false),
-                        _ => false,
-                    };
-
-                    if !is_cardinality_many {
-                        let param2 = builder.bind_bigint(as_of);
-                        if let Some(info) = &typed_info {
-                            where_parts.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {table} AS newer \
-                                 WHERE newer.store_id = {sid} \
-                                 AND newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                table = info.table,
-                                sid = store_id_param,
-                            ));
-                        } else {
-                            where_parts.push(format!(
-                                "NOT EXISTS (SELECT 1 FROM {} AS newer \
-                                 WHERE newer.e = {alias}.e AND newer.a = {alias}.a \
-                                 AND newer.added = true \
-                                 AND newer.tx > {alias}.tx AND newer.tx <= {param2})",
-                                build_datoms_union_subquery(store_id_param)
-                            ));
-                        }
-                    }
-                }
-                if let Some(since) = temporal.since {
-                    let param = builder.bind_bigint(since);
-                    where_parts.push(format!("{alias}.tx > {param}"));
-                }
+                // Temporal filtering.
+                where_parts.extend(temporal_conditions(
+                    temporal,
+                    temporal.history,
+                    &alias,
+                    typed_info.as_ref(),
+                    store_id_param,
+                    builder,
+                ));
 
                 // Build pushdown conditions for rule-body subquery
                 let rule_pushdown = {

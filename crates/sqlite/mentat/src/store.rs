@@ -308,6 +308,34 @@ impl Store {
         self.conn.pull_on(&self.sqlite, entity, pattern, basis)
     }
 
+    /// Pull `pattern` for `entity` on `basis` (`None` = current; as-of, since,
+    /// or both: `TemporalBound::AsOfSince`).
+    pub fn pull_temporal(
+        &self,
+        entity: Entid,
+        pattern: &str,
+        basis: Option<crate::TemporalBound>,
+    ) -> Result<StructuredMap> {
+        self.conn.pull_on(&self.sqlite, entity, pattern, basis)
+    }
+
+    /// Run a Datalog query on `basis` (`None` = current, via `q_once`; as-of,
+    /// since, or both).
+    pub fn q_once_temporal<T>(
+        &self,
+        query: &str,
+        inputs: T,
+        basis: Option<crate::TemporalBound>,
+    ) -> Result<QueryOutput>
+    where
+        T: Into<Option<QueryInputs>>,
+    {
+        match basis {
+            Some(b) => self.conn.q_once_temporal(&self.sqlite, query, inputs, b),
+            None => self.q_once(query, inputs),
+        }
+    }
+
     /// Run a Datalog query seeing only datoms transacted after transaction `tx`
     /// (`since`). Typically used with a history pattern `[?e ?a ?v ?tx ?added]`.
     pub fn q_once_since<T>(&self, query: &str, inputs: T, tx: Entid) -> Result<QueryOutput>

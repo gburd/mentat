@@ -866,22 +866,23 @@ impl ConjoiningClauses {
         Ok(())
     }
 
-    /// Constrain a `transactions` alias according to a whole-query temporal bound.
+    /// Constrain a `transactions` alias according to a whole-query temporal bound
+    /// (Datomic's as-of / since; see `TemporalBound`).
     ///
-    ///   * `Since(t)`: keep only datoms transacted after `t` (`tx > t`).
-    ///   * `AsOf(t)`: reconstruct the state at `t`. For a *current-state* pattern
-    ///     (`added` is a placeholder) that means: the assertion (`added = 1`) at
-    ///     or before `t` (`tx <= t`) with no later retraction at or before `t`
-    ///     (a correlated `NOT EXISTS` on `transactions`). For a *history* pattern
-    ///     (an explicit `added`) it means simply `tx <= t`, so all of history up
-    ///     to `t` is visible.
+    ///   * Every pattern: `tx > since` and `tx <= as_of`, for whichever is set.
+    ///   * A *current-state* pattern (`added` is a placeholder) also needs the
+    ///     row to be an assertion (`added = 1`) with no retraction of the same
+    ///     (e, a, v) after it (and at or before `as_of`, if set): a correlated
+    ///     `NOT EXISTS` on `transactions`. So `since S` is the current datoms
+    ///     added after S, not the log after S.
+    ///   * A *history* pattern (an explicit `added`) gets only the tx bounds:
+    ///     the log in that window, retractions included.
     fn apply_temporal_bound(
         &mut self,
         temporal: crate::clauses::TemporalBound,
         col: &crate::types::TableAlias,
         pattern: &EvolvedPattern,
     ) {
-        use crate::clauses::TemporalBound;
         use crate::types::{
             Column, ComputedTable, Inequality, QualifiedAlias, QueryValue, TransactionsColumn,
         };
@@ -893,90 +894,82 @@ impl ConjoiningClauses {
                 Column::Transactions(TransactionsColumn::Tx),
             ))
         };
+        let (as_of, since) = (temporal.as_of(), temporal.since());
 
-        match temporal {
-            TemporalBound::Since(t) => {
-                // tx > t
-                self.wheres.add_intersection(ColumnConstraint::Inequality {
-                    operator: Inequality::LessThan,
-                    left: QueryValue::TypedValue(TypedValue::Ref(t)),
-                    right: tx_col(col),
-                });
-            }
-            TemporalBound::AsOf(t) => {
-                // tx <= t
-                self.wheres.add_intersection(ColumnConstraint::Inequality {
-                    operator: Inequality::LessThanOrEquals,
-                    left: tx_col(col),
-                    right: QueryValue::TypedValue(TypedValue::Ref(t)),
-                });
-
-                if pattern.added == EvolvedNonValuePlace::Placeholder {
-                    // Current-state reconstruction: this row must be an assertion
-                    // (added = 1)...
-                    self.wheres.add_intersection(ColumnConstraint::Equals(
-                        QualifiedAlias(
-                            col.clone(),
-                            Column::Transactions(TransactionsColumn::Added),
-                        ),
-                        QueryValue::TypedValue(TypedValue::Boolean(true)),
-                    ));
-
-                    // ...with no later retraction (added = 0) of the same (e, a, v)
-                    // at a tx after this one and still at or before t.
-                    let inner_alias = self.next_alias_for_table(DatomsTable::Transactions);
-                    let mut sub = ConjoiningClauses::default();
-                    sub.from
-                        .push(SourceAlias(DatomsTable::Transactions, inner_alias.clone()));
-
-                    let inner = |c: TransactionsColumn| {
-                        QualifiedAlias(inner_alias.clone(), Column::Transactions(c))
-                    };
-                    let outer = |c: TransactionsColumn| {
-                        QueryValue::Column(QualifiedAlias(col.clone(), Column::Transactions(c)))
-                    };
-
-                    // Correlate e, a, v with the outer row.
-                    sub.wheres.add_intersection(ColumnConstraint::Equals(
-                        inner(TransactionsColumn::Entity),
-                        outer(TransactionsColumn::Entity),
-                    ));
-                    sub.wheres.add_intersection(ColumnConstraint::Equals(
-                        inner(TransactionsColumn::Attribute),
-                        outer(TransactionsColumn::Attribute),
-                    ));
-                    sub.wheres.add_intersection(ColumnConstraint::Equals(
-                        inner(TransactionsColumn::Value),
-                        outer(TransactionsColumn::Value),
-                    ));
-                    sub.wheres.add_intersection(ColumnConstraint::Equals(
-                        inner(TransactionsColumn::ValueTypeTag),
-                        outer(TransactionsColumn::ValueTypeTag),
-                    ));
-                    // The later row is a retraction (added = 0).
-                    sub.wheres.add_intersection(ColumnConstraint::Equals(
-                        inner(TransactionsColumn::Added),
-                        QueryValue::TypedValue(TypedValue::Boolean(false)),
-                    ));
-                    // ...transacted after this row's tx.
-                    sub.wheres.add_intersection(ColumnConstraint::Inequality {
-                        operator: Inequality::LessThan,
-                        left: outer(TransactionsColumn::Tx),
-                        right: tx_col(&inner_alias),
-                    });
-                    // ...and still at or before t.
-                    sub.wheres.add_intersection(ColumnConstraint::Inequality {
-                        operator: Inequality::LessThanOrEquals,
-                        left: tx_col(&inner_alias),
-                        right: QueryValue::TypedValue(TypedValue::Ref(t)),
-                    });
-
-                    self.wheres.add_intersection(ColumnConstraint::NotExists(
-                        ComputedTable::Subquery(Box::new(sub)),
-                    ));
-                }
-            }
+        if let Some(s) = since {
+            // s < tx
+            self.wheres.add_intersection(ColumnConstraint::Inequality {
+                operator: Inequality::LessThan,
+                left: QueryValue::TypedValue(TypedValue::Ref(s)),
+                right: tx_col(col),
+            });
         }
+        if let Some(t) = as_of {
+            // tx <= t
+            self.wheres.add_intersection(ColumnConstraint::Inequality {
+                operator: Inequality::LessThanOrEquals,
+                left: tx_col(col),
+                right: QueryValue::TypedValue(TypedValue::Ref(t)),
+            });
+        }
+        if pattern.added != EvolvedNonValuePlace::Placeholder {
+            return;
+        }
+
+        // Current-state reconstruction: this row must be an assertion
+        // (added = 1)...
+        self.wheres.add_intersection(ColumnConstraint::Equals(
+            QualifiedAlias(col.clone(), Column::Transactions(TransactionsColumn::Added)),
+            QueryValue::TypedValue(TypedValue::Boolean(true)),
+        ));
+
+        // ...with no later retraction (added = 0) of the same (e, a, v), at a tx
+        // after this one (and still at or before `as_of`, if set).
+        let inner_alias = self.next_alias_for_table(DatomsTable::Transactions);
+        let mut sub = ConjoiningClauses::default();
+        sub.from
+            .push(SourceAlias(DatomsTable::Transactions, inner_alias.clone()));
+
+        let inner =
+            |c: TransactionsColumn| QualifiedAlias(inner_alias.clone(), Column::Transactions(c));
+        let outer = |c: TransactionsColumn| {
+            QueryValue::Column(QualifiedAlias(col.clone(), Column::Transactions(c)))
+        };
+
+        // Correlate e, a, v with the outer row.
+        for c in [
+            TransactionsColumn::Entity,
+            TransactionsColumn::Attribute,
+            TransactionsColumn::Value,
+            TransactionsColumn::ValueTypeTag,
+        ] {
+            sub.wheres
+                .add_intersection(ColumnConstraint::Equals(inner(c.clone()), outer(c)));
+        }
+        // The later row is a retraction (added = 0).
+        sub.wheres.add_intersection(ColumnConstraint::Equals(
+            inner(TransactionsColumn::Added),
+            QueryValue::TypedValue(TypedValue::Boolean(false)),
+        ));
+        // ...transacted after this row's tx.
+        sub.wheres.add_intersection(ColumnConstraint::Inequality {
+            operator: Inequality::LessThan,
+            left: outer(TransactionsColumn::Tx),
+            right: tx_col(&inner_alias),
+        });
+        if let Some(t) = as_of {
+            // ...and still at or before t.
+            sub.wheres.add_intersection(ColumnConstraint::Inequality {
+                operator: Inequality::LessThanOrEquals,
+                left: tx_col(&inner_alias),
+                right: QueryValue::TypedValue(TypedValue::Ref(t)),
+            });
+        }
+
+        self.wheres
+            .add_intersection(ColumnConstraint::NotExists(ComputedTable::Subquery(
+                Box::new(sub),
+            )));
     }
 }
 
