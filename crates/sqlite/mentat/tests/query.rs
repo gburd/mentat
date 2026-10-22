@@ -2077,6 +2077,74 @@ fn test_named_rule_expansion() {
     let _ = (alice, carol);
 }
 
+// Rule head variables bound to non-ref values, and rule invocations sharing
+// a variable (the pg_mentat rule cases fixed in 1.18.0): the inlined rule
+// gives the same rows as the hand-inlined query. pg_mentat's
+// rule_value_tests use these as its expected values.
+#[test]
+fn test_rule_values_and_shared_variables() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :rv/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/dbl :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/ok :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/kw :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/inst :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/uuid :db/valueType :db.type/uuid :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/bytes :db/valueType :db.type/bytes :db/cardinality :db.cardinality/one}
+                {:db/ident :rv/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    // ann (30) <- bob (12) <- cy (5)
+    store
+        .transact(
+            r#"[{:db/id "a" :rv/name "ann" :rv/age 30 :rv/dbl 2.5 :rv/ok false :rv/kw :rv/k
+                 :rv/inst #inst "2024-01-15T10:30:00Z"
+                 :rv/uuid #uuid "550e8400-e29b-41d4-a716-446655440000" :rv/bytes #bytes 0a0b}
+                {:db/id "b" :rv/name "bob" :rv/age 12 :rv/boss "a"}
+                {:db/id "c" :rv/name "cy" :rv/age 5 :rv/boss "b"}]"#,
+        )
+        .expect("data");
+    let rows = |q: &str| -> Vec<Vec<Binding>> {
+        let mut v: Vec<Vec<Binding>> = store
+            .q_once(q, None)
+            .into_rel_result()
+            .expect(q)
+            .rows()
+            .map(|r| r.to_vec())
+            .collect();
+        v.sort_by_key(|r| format!("{r:?}"));
+        v
+    };
+    for attr in [
+        "name", "age", "dbl", "ok", "kw", "inst", "uuid", "bytes", "boss",
+    ] {
+        let ruled =
+            format!("[:find ?e ?v :rules [[(has ?e ?v) [?e :rv/{attr} ?v]]] :where (has ?e ?v)]");
+        let plain = format!("[:find ?e ?v :where [?e :rv/{attr} ?v]]");
+        let got = rows(&ruled);
+        assert!(!got.is_empty(), "{ruled}");
+        assert_eq!(got, rows(&plain), "{ruled}");
+    }
+    // Two rules sharing ?p: nobody is both an adult and a kid.
+    let q = r#"[:find ?p :rules [[(adult ?p) [?p :rv/age ?a] [(>= ?a 18)]]
+                                 [(kid ?p) [?p :rv/age ?a] [(< ?a 18)]]]
+                :where (adult ?p) (kid ?p)]"#;
+    assert!(rows(q).is_empty());
+    // The same rule twice, chained on ?y: cy's boss's boss is ann.
+    let q = r#"[:find ?xn ?zn :rules [[(boss ?e ?b) [?e :rv/boss ?b]]]
+                :where (boss ?x ?y) (boss ?y ?z) [?x :rv/name ?xn] [?z :rv/name ?zn]]"#;
+    assert_eq!(
+        rows(q),
+        vec![vec![
+            Binding::Scalar(TypedValue::from("cy")),
+            Binding::Scalar(TypedValue::from("ann"))
+        ]]
+    );
+}
+
 // A recursive rule must produce a clear error (not a panic), pending WITH
 // RECURSIVE support in the SQL IR.
 #[test]

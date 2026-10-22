@@ -3129,7 +3129,9 @@ fn build_sql_from_datalog_enriched(
 
     let mut cte_prefix = String::new();
     let mut rule_cte_info: Option<RuleCteInfo> = None;
-    if !all_rule_invocations.is_empty() && !parsed.rules.is_empty() {
+    // An invocation of an undefined rule is an error (rule-not-found), not
+    // ignored, also when the query defines no rules at all.
+    if !all_rule_invocations.is_empty() {
         let cte_sql = build_rule_ctes(
             &parsed.rules,
             &all_rule_invocations,
@@ -6192,6 +6194,16 @@ fn build_extended_pattern_query(
             var_to_alias.insert(var_name.clone(), (alias.clone(), col));
         }
         var_to_type.extend(cte_info.var_to_type.clone());
+        where_clauses.extend(cte_info.where_parts.iter().cloned());
+        for (view, arg, ty) in &cte_info.constants {
+            where_clauses.push(rule_constant_filter(
+                view,
+                arg,
+                ty.as_deref(),
+                builder,
+                schema_prefix,
+            )?);
+        }
     }
 
     // Pre-populate var_to_alias from any FTS-style joins that bind an
@@ -8068,6 +8080,11 @@ struct RuleCteInfo {
     var_to_col: HashMap<String, (String, &'static str)>,
     /// Value types of the rule-bound variables, for var_to_type.
     var_to_type: HashMap<String, Option<String>>,
+    /// Joins between invocations (or argument positions) sharing a variable.
+    where_parts: Vec<String>,
+    /// Constant invocation arguments: (argument view, constant, column
+    /// type), filtered by `rule_constant_filter` with the consumer's builder.
+    constants: Vec<(String, FnArg, Option<String>)>,
 }
 
 /// The value columns of a datoms alias, which each rule CTE column `colN`
@@ -8151,66 +8168,92 @@ fn rule_body_var_type(body: &[WhereClause], var: &str, schema_prefix: &str) -> O
 }
 
 /// The value type of a rule body function result `[(f ...) ?x]`: text for
-/// the phonetic functions; else a number, a double when an argument is
-/// (or for `/`), else a long.
+/// the phonetic functions; a long for integer arithmetic (every argument an
+/// integer constant or a long/ref variable), else a double, so a value is
+/// never truncated.
 fn rule_fn_type(wf: &WhereFn, body: &[WhereClause], schema_prefix: &str) -> &'static str {
+    let int_arg = |a: &FnArg| match a {
+        FnArg::EntidOrInteger(_) => true,
+        FnArg::Variable(v) => matches!(
+            rule_body_var_type(body, v.as_str(), schema_prefix).as_deref(),
+            Some("long" | "ref")
+        ),
+        _ => false,
+    };
     match wf.operator.0.as_str() {
         "soundex" | "metaphone" | "daitch-mokotoff" => "string",
         "levenshtein" | "infer-implies" => "long",
-        "/" | "infer-similar" => "double",
-        _ if wf.args.iter().any(|a| match a {
-            FnArg::Constant(NonIntegerConstant::Float(_)) => true,
-            FnArg::Variable(v) => {
-                rule_body_var_type(body, v.as_str(), schema_prefix).as_deref() == Some("double")
-            }
-            _ => false,
-        }) =>
-        {
-            "double"
-        }
-        _ => "long",
+        "*" | "+" | "-" if wf.args.iter().all(int_arg) => "long",
+        _ => "double",
     }
 }
 
-/// The value type of column `n` of `rule` when every clause binds it to the
-/// same type, else None (the column then holds values of several types and
-/// is read through the generic decode, as a variable-attribute value is).
-/// A clause that binds it only through its own recursive call adds nothing.
-fn rule_col_type(rule: &Rule, n: usize, schema_prefix: &str) -> Option<String> {
-    let mut ty: Option<String> = None;
-    for clause in &rule.clauses {
-        let FnArg::Variable(v) = clause.head.args.get(n)? else {
-            return None;
-        };
-        let var = v.as_str();
-        let t = rule_body_var_type(&clause.body, var, schema_prefix).or_else(|| {
-            clause.body.iter().find_map(|wc| match wc {
-                WhereClause::WhereFn(wf)
-                    if matches!(&wf.binding, Binding::BindScalar(b) if b.as_str() == var) =>
-                {
-                    Some(rule_fn_type(wf, &clause.body, schema_prefix).to_string())
+/// The value type of each column of `rule`: the type every clause binds it
+/// to, or None when clauses disagree or one binds it to a value of unknown
+/// type (the column then holds values of several types and is read through
+/// the generic decode, as a variable-attribute value is). A head variable
+/// bound only by the rule's own recursive call takes the type of that
+/// call's column, so the types are a fixpoint over the clauses.
+fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
+    let arity = rule.clauses.first().map_or(0, |c| c.head.args.len());
+    // None: no clause decided yet; Some(None): several or unknown types.
+    let mut cols: Vec<Option<Option<String>>> = vec![None; arity];
+    loop {
+        let mut changed = false;
+        for clause in &rule.clauses {
+            for (n, arg) in clause.head.args.iter().enumerate().take(arity) {
+                let t: Option<Option<String>> = match arg {
+                    FnArg::Variable(v) => {
+                        let var = v.as_str();
+                        let direct =
+                            rule_body_var_type(&clause.body, var, schema_prefix).or_else(|| {
+                                clause.body.iter().find_map(|wc| match wc {
+                                    WhereClause::WhereFn(wf)
+                                        if matches!(&wf.binding,
+                                        Binding::BindScalar(b) if b.as_str() == var) =>
+                                    {
+                                        Some(
+                                            rule_fn_type(wf, &clause.body, schema_prefix)
+                                                .to_string(),
+                                        )
+                                    }
+                                    _ => None,
+                                })
+                            });
+                        let recursive = || {
+                            clause.body.iter().find_map(|wc| match wc {
+                                WhereClause::RuleExpr(ri) if ri.name == rule.name => {
+                                    ri.args.iter().position(
+                                        |a| matches!(a, FnArg::Variable(x) if x.as_str() == var),
+                                    )
+                                }
+                                _ => None,
+                            })
+                        };
+                        match (direct, recursive()) {
+                            (Some(t), _) => Some(Some(t)),
+                            (None, Some(m)) => cols.get(m).cloned().flatten(),
+                            (None, None) => Some(None),
+                        }
+                    }
+                    _ => Some(None),
+                };
+                let merged = match (&cols[n], t) {
+                    (cur, None) => cur.clone(),
+                    (None, Some(t)) => Some(t),
+                    (Some(Some(x)), Some(Some(y))) if *x == y => Some(Some(y)),
+                    (Some(_), Some(_)) => Some(None),
+                };
+                if merged != cols[n] {
+                    cols[n] = merged;
+                    changed = true;
                 }
-                _ => None,
-            })
-        });
-        let t = match t {
-            Some(t) => t,
-            // Bound by the recursive call in the same position: no new type.
-            None if clause.body.iter().any(|wc| {
-                matches!(wc, WhereClause::RuleExpr(ri) if ri.name == rule.name
-                    && matches!(ri.args.get(n), Some(FnArg::Variable(a)) if a.as_str() == var))
-            }) =>
-            {
-                continue
             }
-            None => return None,
-        };
-        if ty.as_ref().is_some_and(|x| *x != t) {
-            return None;
         }
-        ty = Some(t);
+        if !changed {
+            return cols.into_iter().map(Option::flatten).collect();
+        }
     }
-    ty
 }
 
 /// The join condition for a value place of `alias` bound to the value of
@@ -8282,9 +8325,7 @@ fn build_rule_ctes(
             )
             .into());
         };
-        let col_types: Vec<Option<String>> = (0..arity)
-            .map(|n| rule_col_type(rule, n, schema_prefix))
-            .collect();
+        let col_types = rule_col_types(rule, schema_prefix);
         let cte_col_list = (0..arity)
             .flat_map(|n| {
                 RULE_VALUE_COLS
@@ -8298,8 +8339,17 @@ fn build_rule_ctes(
         // Use UNION (not UNION ALL) to eliminate duplicate rows across rule
         // clauses, matching Datalog set-semantics. Multiple rule clauses may
         // produce the same binding tuple, and the result should be a set.
+        // PostgreSQL takes `non-recursive UNION recursive`: list the clauses
+        // that call the rule itself last, whatever order the query has.
+        let self_call = |c: &&edn::query::RuleClause| {
+            c.body
+                .iter()
+                .any(|wc| matches!(wc, WhereClause::RuleExpr(ri) if ri.name == rule.name))
+        };
+        let mut clauses: Vec<&edn::query::RuleClause> = rule.clauses.iter().collect();
+        clauses.sort_by_key(self_call);
         let mut union_parts = Vec::new();
-        for clause in &rule.clauses {
+        for clause in clauses {
             let clause_sql = build_rule_clause_sql(
                 clause,
                 &col_types,
@@ -8348,45 +8398,85 @@ fn build_rule_ctes(
 /// individual OR-arm) needs in order to JOIN the right rule tables and
 /// bind the right variables.
 ///
-/// `from_fragments` holds each rule CTE referenced by `invocations` and a
-/// LATERAL view per argument position (`rule_arg_lateral`); `var_to_col`
-/// binds each argument variable to its view as a value (`v`).
+/// Each invocation is its own FROM item over the rule's CTE, with a LATERAL
+/// view per argument (`rule_arg_lateral`): `(boss ?x ?y) (boss ?y ?z)` is
+/// two rows of `boss`, joined on ?y. A variable bound by an earlier
+/// invocation joins it; a constant argument filters its view.
 fn make_per_arm_rule_cte_info(
     invocations: &[&RuleInvocation],
     rules: &[Rule],
     schema_prefix: &str,
 ) -> RuleCteInfo {
-    let mut from_fragments: Vec<String> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut var_to_col: HashMap<String, (String, &'static str)> = HashMap::new();
-    let mut var_to_type: HashMap<String, Option<String>> = HashMap::new();
-    for invocation in invocations {
+    let mut info = RuleCteInfo {
+        from_fragments: Vec::new(),
+        var_to_col: HashMap::new(),
+        var_to_type: HashMap::new(),
+        where_parts: Vec::new(),
+        constants: Vec::new(),
+    };
+    for (k, invocation) in invocations.iter().enumerate() {
         let name = invocation.name.0.as_str();
-        let cte = quote_ident(name);
-        if seen.insert(cte.clone()) {
-            from_fragments.push(cte.clone());
-        }
-        let rule = rules.iter().find(|r| r.name == invocation.name);
+        let item = quote_ident(&format!("{name} {k}"));
+        info.from_fragments
+            .push(format!("{} AS {item}", quote_ident(name)));
+        let col_types = rules
+            .iter()
+            .find(|r| r.name == invocation.name)
+            .map(|r| rule_col_types(r, schema_prefix))
+            .unwrap_or_default();
         for (i, arg) in invocation.args.iter().enumerate() {
-            if let FnArg::Variable(v) = arg {
-                let alias = quote_ident(&format!("{name} v{i}"));
-                if seen.insert(alias.clone()) {
-                    from_fragments.push(rule_arg_lateral(&cte, i, &alias));
+            let view = quote_ident(&format!("{name} {k} v{i}"));
+            info.from_fragments.push(rule_arg_lateral(&item, i, &view));
+            let ty = col_types.get(i).cloned().flatten();
+            match arg {
+                FnArg::Variable(v) => {
+                    let var_name = format!("{}", v);
+                    if let Some((existing, _)) = info.var_to_col.get(&var_name) {
+                        let known = info.var_to_type.get(&var_name).cloned().flatten();
+                        info.where_parts
+                            .push(value_join(&view, existing, known.or(ty).as_deref()));
+                    } else {
+                        info.var_to_type.insert(var_name.clone(), ty);
+                        info.var_to_col.insert(var_name, (view, "v"));
+                    }
                 }
-                let var_name = format!("{}", v);
-                var_to_type.insert(
-                    var_name.clone(),
-                    rule.and_then(|r| rule_col_type(r, i, schema_prefix)),
-                );
-                var_to_col.insert(var_name, (alias, "v"));
+                _ => info.constants.push((view, arg.clone(), ty)),
             }
         }
     }
-    RuleCteInfo {
-        from_fragments,
-        var_to_col,
-        var_to_type,
-    }
+    info
+}
+
+/// The filter a constant rule argument puts on its argument view. A
+/// keyword in a ref column is an ident (an entity), else a keyword value.
+fn rule_constant_filter(
+    view: &str,
+    arg: &FnArg,
+    ty: Option<&str>,
+    builder: &mut SqlBuilder<'_>,
+    schema_prefix: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let place = match arg {
+        FnArg::IdentOrKeyword(kw) if ty == Some("ref") => {
+            let param = builder.bind_text(keyword_to_ident(kw));
+            return Ok(format!(
+                "{view}.v_ref = (SELECT entid FROM {schema_prefix}idents WHERE ident = {param})"
+            ));
+        }
+        FnArg::IdentOrKeyword(kw) => {
+            PatternValuePlace::IdentOrKeyword(edn::ValueRc::new(kw.clone()))
+        }
+        FnArg::EntidOrInteger(i) => PatternValuePlace::EntidOrInteger(*i),
+        FnArg::Constant(c) => PatternValuePlace::Constant(c.clone()),
+        _ => {
+            return Err(
+                ":db.error/unsupported-rule-arg A rule invocation argument must be a \
+                        variable or a constant (number, string, keyword, boolean, instant, uuid)."
+                    .into(),
+            )
+        }
+    };
+    Ok(bind_constant_value(view, &place, builder, ty)?.unwrap_or_else(|| "TRUE".to_string()))
 }
 
 /// Build a SQL WHERE condition from a Datalog predicate in a rule body.
@@ -8773,11 +8863,20 @@ fn build_rule_clause_sql(
                 let rec = quote_ident(&format!("rec_{rule_name}"));
                 recursive_join.push(format!("{cte} {rec}"));
                 for (i, arg) in ri.args.iter().enumerate() {
-                    let FnArg::Variable(v) = arg else { continue };
                     let view = quote_ident(&format!("rec_{rule_name} v{i}"));
                     recursive_join.push(rule_arg_lateral(&rec, i, &view));
-                    let var_name = format!("{}", v);
                     let col_type = col_types.get(i).cloned().flatten();
+                    let FnArg::Variable(v) = arg else {
+                        where_parts.push(rule_constant_filter(
+                            &view,
+                            arg,
+                            col_type.as_deref(),
+                            builder,
+                            schema_prefix,
+                        )?);
+                        continue;
+                    };
+                    let var_name = format!("{}", v);
                     match body_var_to_alias.get(&var_name) {
                         Some((existing, "v")) => {
                             let ty = body_var_to_type.get(&var_name).cloned().flatten();

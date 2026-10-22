@@ -158,8 +158,9 @@ mod tests {
         assert_eq!(rows(q), ["[\"hi\"]"]);
     }
 
-    /// Recursive rules (transitive closure) still work, right or left
-    /// recursive, and carry a value through the recursion.
+    /// Recursive rules (transitive closure) work right or left recursive,
+    /// with the recursive clause first or last, and carry a value through
+    /// the recursion.
     #[pg_test]
     fn test_rule_recursive_carries_values() {
         setup();
@@ -181,6 +182,9 @@ mod tests {
         for q in [
             "[:find ?e ?b :rules [[(up ?e ?b) [?e :rv/boss ?b]] \
                                  [(up ?e ?b) [?e :rv/boss ?x] (up ?x ?b)]] :where (up ?e ?b)]",
+            // The recursive clause listed first (a SQL error before 1.18.0).
+            "[:find ?e ?b :rules [[(up ?e ?b) [?e :rv/boss ?x] (up ?x ?b)] \
+                                 [(up ?e ?b) [?e :rv/boss ?b]]] :where (up ?e ?b)]",
             // Recursive call before the pattern (left recursion).
             "[:find ?e ?b :rules [[(up ?e ?b) [?e :rv/boss ?b]] \
                                  [(up ?e ?b) (up ?e ?x) [?x :rv/boss ?b]]] :where (up ?e ?b)]",
@@ -199,5 +203,163 @@ mod tests {
                 format!("[{d},\"c\"]"),
             ])
         );
+    }
+
+    /// ann (30) <- bob (12) <- cy (5) <- dee (40), by :rv/boss.
+    fn setup_chain() -> [i64; 4] {
+        setup();
+        tx("[{:db/ident :rv/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             {:db/ident :rv/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+             {:db/ident :rv/role :db/valueType :db.type/keyword :db/cardinality :db.cardinality/one}
+             {:db/ident :rv/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]");
+        let j = tx(
+            "[{:db/id \"a\" :db/ident :rv/ann :rv/name \"ann\" :rv/age 30 :rv/role :rv/lead}
+                     {:db/id \"b\" :rv/name \"bob\" :rv/age 12 :rv/boss \"a\" :rv/role :rv/dev}
+                     {:db/id \"c\" :rv/name \"cy\" :rv/age 5 :rv/boss \"b\" :rv/role :rv/dev}
+                     {:db/id \"d\" :rv/name \"dee\" :rv/age 40 :rv/boss \"c\"}]",
+        );
+        let id = |k: &str| j["tempids"][k].as_i64().unwrap();
+        [id("a"), id("b"), id("c"), id("d")]
+    }
+
+    const UP: &str = "[[(up ?e ?b) [?e :rv/boss ?b]] [(up ?e ?b) [?e :rv/boss ?x] (up ?x ?b)]]";
+
+    /// Two invocations sharing a variable join on it (they were a cross
+    /// product: `(adult ?p) (kid ?p)` returned the kids).
+    #[pg_test]
+    fn test_rule_invocations_join_on_shared_variable() {
+        let [a, _b, _c, d] = setup_chain();
+        let rules = "[[(adult ?p) [?p :rv/age ?n] [(>= ?n 18)]] \
+                      [(kid ?p) [?p :rv/age ?n] [(< ?n 18)]] \
+                      [(lead ?p) [?p :rv/role :rv/lead]]]";
+        assert!(rows(&format!(
+            "[:find ?p :rules {rules} :where (adult ?p) (kid ?p)]"
+        ))
+        .is_empty());
+        assert_eq!(
+            rows(&format!(
+                "[:find ?p :rules {rules} :where (adult ?p) (lead ?p)]"
+            )),
+            [format!("[{a}]")]
+        );
+        // A shared variable in an or arm, next to a top-level invocation.
+        assert_eq!(
+            rows(&format!(
+                "[:find ?p :rules {rules} :where (adult ?p) (or (kid ?p) (lead ?p))]"
+            )),
+            [format!("[{a}]")]
+        );
+        // Recursive: everyone above dee who is an adult.
+        let q = "[:find ?b :rules [[(up ?e ?b) [?e :rv/boss ?b]] \
+                                   [(up ?e ?b) [?e :rv/boss ?x] (up ?x ?b)] \
+                                   [(adult ?p) [?p :rv/age ?n] [(>= ?n 18)]]] \
+                 :where [?e :rv/name \"dee\"] (up ?e ?b) (adult ?b)]";
+        assert_eq!(rows(q), [format!("[{a}]")]);
+        let _ = d;
+    }
+
+    /// A constant rule argument filters the rule (it was ignored).
+    #[pg_test]
+    fn test_rule_constant_arguments() {
+        let [a, b, c, d] = setup_chain();
+        let named = "[[(named ?e ?n) [?e :rv/name ?n]]]";
+        assert_eq!(
+            rows(&format!(
+                "[:find ?e :rules {named} :where (named ?e \"bob\")]"
+            )),
+            [format!("[{b}]")]
+        );
+        let aged = "[[(aged ?e ?n) [?e :rv/age ?n]]]";
+        assert_eq!(
+            rows(&format!("[:find ?e :rules {aged} :where (aged ?e 5)]")),
+            [format!("[{c}]")]
+        );
+        let role = "[[(role ?e ?r) [?e :rv/role ?r]]]";
+        assert_eq!(
+            rows(&format!(
+                "[:find ?e :rules {role} :where (role ?e :rv/lead)]"
+            )),
+            [format!("[{a}]")]
+        );
+        // An entity argument: an entid, or an ident, of a recursive rule.
+        let under_ann = sorted(vec![format!("[{b}]"), format!("[{c}]"), format!("[{d}]")]);
+        assert_eq!(
+            rows(&format!("[:find ?e :rules {UP} :where (up ?e {a})]")),
+            under_ann
+        );
+        assert_eq!(
+            rows(&format!("[:find ?e :rules {UP} :where (up ?e :rv/ann)]")),
+            under_ann
+        );
+        assert_eq!(
+            rows(&format!("[:find ?b :rules {UP} :where (up {d} ?b)]")),
+            sorted(vec![format!("[{a}]"), format!("[{b}]"), format!("[{c}]")])
+        );
+        // A constant argument of the recursive call in a rule body filters
+        // the recursion: (r ?t ann) is only bob, so dee gets bob, not cy too.
+        let q = format!(
+            "[:find ?t :rules [[(r ?e ?t) [?e :rv/boss ?t]] \
+                              [(r ?e ?t) [?e :rv/age 40] (r ?t {a})]] :where (r {d} ?t)]"
+        );
+        assert_eq!(rows(&q), sorted(vec![format!("[{b}]"), format!("[{c}]")]));
+    }
+
+    /// The same rule invoked twice is two rows of its CTE (it was one, so
+    /// `(boss ?x ?y) (boss ?y ?z)` returned one-hop pairs).
+    #[pg_test]
+    fn test_rule_invoked_twice() {
+        let [a, b, c, d] = setup_chain();
+        let boss = "[[(boss ?e ?b) [?e :rv/boss ?b]]]";
+        assert_eq!(
+            rows(&format!(
+                "[:find ?x ?z :rules {boss} :where (boss ?x ?y) (boss ?y ?z)]"
+            )),
+            sorted(vec![format!("[{c},{a}]"), format!("[{d},{b}]")])
+        );
+        // A recursive rule invoked twice, joined on ?y: x is above y is above z.
+        assert_eq!(
+            rows(&format!(
+                "[:find ?x ?z :rules {UP} :where (up ?x ?y) (up ?y ?z)]"
+            )),
+            sorted(vec![
+                format!("[{c},{a}]"),
+                format!("[{d},{a}]"),
+                format!("[{d},{b}]"),
+            ])
+        );
+        // Twice with no shared variable is a cross product of the two.
+        assert_eq!(
+            rows(&format!(
+                "[:find ?x ?z :rules {boss} :where (boss ?x {a}) (boss ?z {b})]"
+            )),
+            [format!("[{b},{c}]")]
+        );
+    }
+
+    /// A rule with several bodies (an or), joined to patterns.
+    #[pg_test]
+    fn test_rule_multiple_bodies() {
+        let [_a, _b, c, d] = setup_chain();
+        // dev-or-old: bob, cy (devs), dee (40). Whose boss has a boss: not
+        // bob (ann has none).
+        let q = "[:find ?e :rules [[(dev-or-old ?e) [?e :rv/role :rv/dev]] \
+                                   [(dev-or-old ?e) [?e :rv/age ?n] [(> ?n 35)]]] \
+                 :where (dev-or-old ?e) [?e :rv/boss ?x] [?x :rv/boss _]]";
+        assert_eq!(rows(q), sorted(vec![format!("[{c}]"), format!("[{d}]")]));
+    }
+
+    /// Invoking a rule the query doesn't define is an error, also when it
+    /// defines no rules (that invocation was ignored, matching every row).
+    #[pg_test]
+    fn test_rule_undefined_is_an_error() {
+        setup_chain();
+        for q in [
+            "[:find ?e :where [?e :rv/name _] (nope ?e)]",
+            "[:find ?e :rules [[(boss ?e ?b) [?e :rv/boss ?b]]] :where [?e :rv/name _] (nope ?e)]",
+        ] {
+            let r = crate::functions::query::mentat_query(q, pgrx::JsonB(serde_json::json!({})));
+            let err = r.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(err.contains("rule-not-found"), "{q}: {err}");
+        }
     }
 }
