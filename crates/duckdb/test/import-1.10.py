@@ -32,7 +32,9 @@ diff = open(os.path.join(HERE, "../store/tests-harness/src/fixtures.rs")).read()
 TXS = re.findall(r'r#"(.*?)"#', diff.split("pub const TXS")[1].split("];")[0], re.S)
 QS = [json.loads(q) for q in re.findall(r'^\s*("\[.*\]"),$',
                                        diff.split("pub const QUERIES")[1].split("];")[0], re.M)]
-assert len(TXS) == 5 and len(QS) > 40, (len(TXS), len(QS))
+assert len(TXS) >= 5 and len(QS) > 40, (len(TXS), len(QS))
+# The rest use 1.18.0 tx syntax 1.10.x rejects ([a v] lookup refs, #152).
+TXS = TXS[:5]
 TMP = tempfile.mkdtemp(prefix="mentat-import-")
 OLD_STORE = os.path.join(TMP, "old-1.10.mentat")
 NEW_DB = os.path.join(TMP, "new.duckdb")
@@ -115,10 +117,15 @@ def norm_err(v):
     return "ERR" if isinstance(v, str) else v
 
 
-# A query 1.10.x can't run (get-else / missing? came later, #335) is
+# A query 1.10.x can't run (get-else / missing? came later, #335; string
+# predicates, #267; min/max over refs, #249; sum over no rows, #237) is
 # answered by this build: an engine change, not an import one. Only those
 # may differ; tests/import.rs compares them against the current engine.
-NEWER = ("no function named get-else", "no function named missing?")
+NEWER = ("no function named get-else", "no function named missing?",
+         "no function named like", "no function named ilike",
+         "no function named starts-with?", "no function named ends-with?",
+         "no function named includes?", "cannot apply projection operation M",
+         "pair: (Null, 5)")
 newer = [i for i in range(len(QUERIES)) if isinstance(want[i], str)
          and any(m in want[i] for m in NEWER) and not isinstance(got[i], str)]
 bad = [(QUERIES[i][:2], want[i], got[i]) for i in range(len(QUERIES))
