@@ -456,6 +456,27 @@ BEGIN
                       'are in schema % and were not copied: see "Upgrading from 1.17" in '
                       'docs/src/multi-tenancy.md. DROP SCHEMA % CASCADE once you no longer need them.',
                       st.store_name, st.schema_name, old_schema, pg_catalog.quote_ident(old_schema);
+        -- 1.17 subscriptions and materialized views on the store stayed with
+        -- the old tables, so they no longer fire or refresh. Not re-created
+        -- here: subscribe() splices the stored query text (which the
+        -- installing role can write) into a function body, and this runs as
+        -- superuser.
+        FOR rec IN SELECT s.name FROM mentat.subscriptions s
+                    WHERE s.store_name = st.store_name ORDER BY s.name
+        LOOP
+            RAISE WARNING 'pg_mentat upgrade: subscription "%" on named store "%" no longer fires: its '
+                          'trigger stayed with the old tables in schema %. Run unsubscribe(%, %), then '
+                          'subscribe again.', rec.name, st.store_name, old_schema,
+                          pg_catalog.quote_literal(st.store_name), pg_catalog.quote_literal(rec.name);
+        END LOOP;
+        FOR rec IN SELECT v.view_name FROM mentat.materialized_views v
+                    WHERE v.store_name = st.store_name ORDER BY v.view_name
+        LOOP
+            RAISE WARNING 'pg_mentat upgrade: materialized view "%" on named store "%" stayed with the '
+                          'old tables in schema %. Run drop_matview(%, %), then materialize again.',
+                          rec.view_name, st.store_name, old_schema,
+                          pg_catalog.quote_literal(st.store_name), pg_catalog.quote_literal(rec.view_name);
+        END LOOP;
     END LOOP;
     PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
