@@ -5875,6 +5875,8 @@ fn append_order_by(
                                 return match ty.as_str() {
                                     "long" | "ref" => Some("BIGINT"),
                                     "instant" => Some("TIMESTAMPTZ"),
+                                    // Longs and doubles: decoded_number_sql.
+                                    "number" => Some("NUMBER"),
                                     _ => None,
                                 };
                             }
@@ -5898,7 +5900,10 @@ fn append_order_by(
                     Direction::Descending => "DESC",
                 };
                 if has_numeric_order {
-                    if let Some(cast_ty) = numeric_cast_for(&var_name) {
+                    if let Some("NUMBER") = numeric_cast_for(&var_name) {
+                        let c = format!("_c{}", col_pos + 1);
+                        order_parts.push(format!("{} {dir}", decoded_number_sql(&c)));
+                    } else if let Some(cast_ty) = numeric_cast_for(&var_name) {
                         order_parts.push(format!("_c{}::{} {}", col_pos + 1, cast_ty, dir));
                     } else {
                         order_parts.push(format!("_c{} {}", col_pos + 1, dir));
@@ -7063,6 +7068,8 @@ enum ArgKind {
     Int,
     Double,
     Text,
+    /// Longs and doubles (a rule column of both), in their decoded TEXT form.
+    Number,
 }
 
 /// SQL for a variable's value within the join, in its native typed column
@@ -7088,6 +7095,8 @@ fn var_value_sql(
             Some("long") => (format!("{alias}.v_long"), ArgKind::Int),
             Some("ref") => (format!("{alias}.v_ref"), ArgKind::Int),
             Some("double") => (format!("{alias}.v_double"), ArgKind::Double),
+            // Decoded text, so 5 and 5.0 stay distinct in the aggregated set.
+            Some("number") => (build_value_decode_expr(alias), ArgKind::Number),
             _ => (build_value_decode_expr(alias), ArgKind::Text),
         });
     }
@@ -7122,6 +7131,24 @@ fn aggregate_arg_sql(
 /// Render a double so `decode_text_result` reads it back exactly.
 fn double_text(expr: &str) -> String {
     format!("'d:' || ('x' || encode(float8send({expr}), 'hex'))::bit(64)::bigint::TEXT")
+}
+
+/// The decoded text `c` of a long, or of a double (`double_text`: 'd:' and its
+/// IEEE-754 bits), as DOUBLE PRECISION: how a column of longs and doubles
+/// orders and aggregates. Exact: sign * (1 + mantissa / 2^52) * 2^(exp - 1023),
+/// subnormals with exponent 1 and no implicit 1.
+fn decoded_number_sql(c: &str) -> String {
+    let b = format!("substr({c}, 3)::BIGINT");
+    let e = format!("(({b} >> 52) & 2047)");
+    let m = format!("({b} & 4503599627370495)");
+    format!(
+        "(CASE WHEN {c} NOT LIKE 'd:%' THEN {c}::DOUBLE PRECISION \
+         WHEN {e} = 2047 THEN (CASE WHEN {m} <> 0 THEN 'NaN' WHEN {b} < 0 THEN '-Infinity' \
+         ELSE 'Infinity' END)::DOUBLE PRECISION \
+         ELSE (CASE WHEN {b} < 0 THEN -1 ELSE 1 END) \
+         * ((CASE WHEN {e} = 0 THEN 0 ELSE 1 END) + {m} / 4503599627370496.0::DOUBLE PRECISION) \
+         * 2::DOUBLE PRECISION ^ (GREATEST({e}, 1) - 1023) END)"
+    )
 }
 
 /// The aggregate call over `arg`, rendered as TEXT. `count_rows`: every row
@@ -7160,6 +7187,8 @@ fn aggregate_call_sql(
         ("count", _) => format!("COUNT({arg})::TEXT"),
         ("count-distinct", _) => format!("COUNT(DISTINCT {arg})::TEXT"),
         (_, ArgKind::Double) => double_text(&format!("{sql_func}({arg})")),
+        // As on the embedded engine, a long-and-double aggregate is a double.
+        (_, ArgKind::Number) => double_text(&format!("{sql_func}({})", decoded_number_sql(arg))),
         ("sum" | "avg", ArgKind::Text) => format!("{sql_func}(({arg})::NUMERIC)::TEXT"),
         _ => format!("{sql_func}({arg})::TEXT"),
     })
@@ -7771,72 +7800,16 @@ fn build_predicate_clause(
         }
     }
 
-    // #179: an ordering comparison on a value of unknown type ([_ ?a ?v]) against a number
-    // or an instant applies to comparable values only, as on the embedded engine: numbers
-    // against a number, instants against an instant. Other values compare as NULL, so they
-    // don't match. Against anything else (a string) the text comparison below is kept.
-    let kinds: Vec<Option<&str>> = pred
-        .args
-        .iter()
-        .map(|a| match a {
-            FnArg::EntidOrInteger(_) | FnArg::Constant(NonIntegerConstant::Float(_)) => Some("num"),
-            FnArg::Constant(NonIntegerConstant::Instant(_)) => Some("instant"),
-            FnArg::Variable(v) if untyped_value_alias(v, var_to_alias, var_to_type).is_some() => {
-                None
-            }
-            FnArg::Variable(v) => {
-                let name = format!("{v}");
-                match var_to_type.get(name.as_str()) {
-                    Some(Some(t)) if matches!(t.as_str(), "long" | "double" | "ref") => Some("num"),
-                    Some(Some(t)) if t == "instant" => Some("instant"),
-                    _ if input_bindings
-                        .get(name.as_str())
-                        .is_some_and(|j| j.is_number()) =>
-                    {
-                        Some("num")
-                    }
-                    _ => Some("other"),
-                }
-            }
-            _ => Some("other"),
-        })
-        .collect();
-    let known: Vec<&str> = kinds.iter().flatten().copied().collect();
-    let comparable = kinds.contains(&None)
-        && (known.iter().all(|k| *k == "num") || known.iter().all(|k| *k == "instant"));
-    if matches!(op, "<" | ">" | "<=" | ">=") && comparable {
-        let instant = known.contains(&"instant");
-        let mut sides = Vec::with_capacity(2);
-        for arg in &pred.args {
-            sides.push(match arg {
-                FnArg::Constant(NonIntegerConstant::Instant(dt)) => {
-                    sql_instant_from_micros(&builder.bind_bigint(dt.timestamp_micros()))
-                }
-                FnArg::Variable(v) => match untyped_value_alias(v, var_to_alias, var_to_type) {
-                    Some(alias) if instant => format!("{alias}.v_instant"),
-                    Some(alias) => {
-                        format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)")
-                    }
-                    None => pred_arg_to_sql(
-                        arg,
-                        var_to_alias,
-                        var_to_type,
-                        computed,
-                        input_bindings,
-                        builder,
-                    )?,
-                },
-                _ => pred_arg_to_sql(
-                    arg,
-                    var_to_alias,
-                    var_to_type,
-                    computed,
-                    input_bindings,
-                    builder,
-                )?,
-            });
-        }
-        return Ok(format!("({} {} {})", sides[0], sql_op, sides[1]));
+    if let Some(sql) = untyped_comparison_sql(
+        pred,
+        sql_op,
+        var_to_alias,
+        var_to_type,
+        computed,
+        input_bindings,
+        builder,
+    )? {
+        return Ok(sql);
     }
 
     let left = pred_arg_to_sql(
@@ -7941,7 +7914,7 @@ fn check_predicate_type_mismatch(
         return Some(true);
     }
     // Numeric variables compared against string literals → mismatch
-    if matches!(vt, "long" | "double" | "ref") && literal_is_string {
+    if matches!(vt, "long" | "double" | "ref" | "number") && literal_is_string {
         return Some(true);
     }
     Some(false)
@@ -8059,6 +8032,117 @@ fn pred_arg_to_sql(
                 .into(),
         ),
     }
+}
+
+/// A comparison with a value of unknown type (`[_ ?a ?v]`, or a rule column
+/// bound to values of several types, \"number\" for longs and doubles) against a number, an instant or a
+/// boolean: it applies to values of that kind only, compared in their own
+/// column (numbers as DOUBLE PRECISION); other values compare as NULL and
+/// don't match. Against anything else the text comparison of every column
+/// (pred_arg_to_sql) is kept, with the other side cast to text, so a string
+/// still compares as text. None when the predicate has no untyped value.
+///
+/// This is #179's rule for ordering comparisons (branch fix/mozilla-issues,
+/// build_predicate_clause), extended to = and != and to booleans, so no
+/// comparison of an untyped value raises "operator does not exist: text >
+/// bigint". At merge, #179's block can go: this covers its cases with the
+/// same SQL.
+fn untyped_comparison_sql(
+    pred: &Predicate,
+    sql_op: &str,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
+    input_bindings: &HashMap<String, serde_json::Value>,
+    builder: &mut SqlBuilder<'_>,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let untyped = |a: &FnArg| -> Option<&str> {
+        let FnArg::Variable(v) = a else { return None };
+        let name = format!("{v}");
+        let ty = var_to_type.get(&name).cloned().flatten();
+        match (var_to_alias.get(&name), ty.as_deref()) {
+            // "number": a rule column of longs and doubles.
+            (Some((alias, "v")), None | Some("number")) => Some(alias.as_str()),
+            _ => None,
+        }
+    };
+    let ordering = matches!(sql_op, "<" | ">" | "<=" | ">=");
+    // The kind of each argument; None for an untyped value.
+    let kinds: Vec<Option<&str>> = pred
+        .args
+        .iter()
+        .map(|a| match a {
+            _ if untyped(a).is_some() => None,
+            FnArg::EntidOrInteger(_) | FnArg::Constant(NonIntegerConstant::Float(_)) => Some("num"),
+            FnArg::Constant(NonIntegerConstant::Instant(_)) => Some("instant"),
+            FnArg::Constant(NonIntegerConstant::Boolean(_)) => Some("bool"),
+            FnArg::Variable(v) => {
+                let name = format!("{v}");
+                let input = input_bindings.get(&name);
+                match var_to_type.get(&name).cloned().flatten().as_deref() {
+                    // An entity is equal to a ref value; ordered as #179 orders it.
+                    Some("ref") if !ordering => Some("ref"),
+                    Some("long" | "double" | "ref") => Some("num"),
+                    Some("instant") => Some("instant"),
+                    Some("boolean") => Some("bool"),
+                    _ if input.is_some_and(|j| j.is_number()) => Some("num"),
+                    _ if input.is_some_and(|j| j.is_boolean()) => Some("bool"),
+                    _ => Some("other"),
+                }
+            }
+            _ => Some("other"),
+        })
+        .collect();
+    if !kinds.contains(&None) {
+        return Ok(None);
+    }
+    // One untyped side: the other side's kind. Both untyped: numbers for an
+    // ordering (as #179) or two long-and-double rule columns, else text.
+    let all_numbers = pred.args.iter().all(|a| {
+        matches!(a, FnArg::Variable(v)
+            if var_to_type.get(&format!("{v}")).cloned().flatten().as_deref() == Some("number"))
+    });
+    let kind = match kinds.iter().flatten().next() {
+        Some(k) => *k,
+        None if all_numbers || ordering => "num",
+        None => "other",
+    };
+    let mut sides = Vec::with_capacity(2);
+    for arg in &pred.args {
+        sides.push(match (untyped(arg), arg) {
+            (Some(alias), _) if kind != "other" => match kind {
+                "instant" => format!("{alias}.v_instant"),
+                "ref" => format!("{alias}.v_ref"),
+                "bool" => format!(
+                    "CASE WHEN {alias}.v_bool IS NULL THEN NULL \
+                     WHEN {alias}.v_bool THEN 1 ELSE 0 END"
+                ),
+                _ => format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)"),
+            },
+            (None, FnArg::Constant(NonIntegerConstant::Instant(dt))) => format!(
+                "to_timestamp({}::DOUBLE PRECISION / 1000000.0)",
+                builder.bind_bigint(dt.timestamp_micros())
+            ),
+            (untyped_side, _) => {
+                let sql = pred_arg_to_sql(
+                    arg,
+                    var_to_alias,
+                    var_to_type,
+                    computed,
+                    input_bindings,
+                    builder,
+                )?;
+                // Against text, the other side compares as text too, so its
+                // SQL type (a number, a function result) is never an error.
+                if kind == "other" && untyped_side.is_none() {
+                    format!("({sql})::TEXT")
+                } else {
+                    sql
+                }
+            }
+        });
+    }
+    Ok(Some(format!("({} {sql_op} {})", sides[0], sides[1])))
 }
 
 // ============================================================================
@@ -8287,10 +8371,16 @@ fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
                     }
                     _ => Some(None),
                 };
+                let numeric = |t: &str| matches!(t, "long" | "double" | "number");
                 let merged = match (&cols[n], t) {
                     (cur, None) => cur.clone(),
                     (None, Some(t)) => Some(t),
                     (Some(Some(x)), Some(Some(y))) if *x == y => Some(Some(y)),
+                    // Longs and doubles: a "number" column, compared and
+                    // aggregated numerically.
+                    (Some(Some(x)), Some(Some(y))) if numeric(x) && numeric(&y) => {
+                        Some(Some("number".to_string()))
+                    }
                     (Some(_), Some(_)) => Some(None),
                 };
                 if merged != cols[n] {
@@ -8598,6 +8688,18 @@ fn build_predicate_clause_for_rule(
         ).into());
     }
 
+    let (computed, inputs) = (HashMap::new(), HashMap::new());
+    if let Some(sql) = untyped_comparison_sql(
+        pred,
+        sql_op,
+        var_to_alias,
+        var_to_type,
+        &computed,
+        &inputs,
+        builder,
+    )? {
+        return Ok(sql);
+    }
     let left = pred_arg_to_sql_for_rule(&pred.args[0], var_to_alias, var_to_type, builder)?;
     let right = pred_arg_to_sql_for_rule(&pred.args[1], var_to_alias, var_to_type, builder)?;
 

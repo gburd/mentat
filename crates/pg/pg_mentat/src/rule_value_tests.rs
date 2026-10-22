@@ -434,6 +434,90 @@ mod tests {
         let _ = (a, c, d);
     }
 
+    /// A rule column of longs and doubles compares, orders and aggregates
+    /// numerically: `[(> ?v 6)]` and `[(= ?v 5)]` were SQL errors ("text >
+    /// bigint"), min/max/:order were text order (max 7.5 of 40) and sum an
+    /// error. A column of other mixed types compares without a SQL error.
+    #[pg_test]
+    fn test_rule_long_and_double_column_is_numeric() {
+        let [a, b, c, d] = setup_chain();
+        tx("[{:db/ident :rv/score :db/valueType :db.type/double :db/cardinality :db.cardinality/one}]");
+        tx(&format!(
+            "[{{:db/id {a} :rv/score 2.5}} {{:db/id {b} :rv/score 7.5}} {{:db/id {c} :rv/score 5.0}}]"
+        ));
+        // ages ann 30, bob 12, cy 5, dee 40; scores ann 2.5, bob 7.5, cy 5.0.
+        let num = "[[(num ?e ?v) [?e :rv/age ?v]] [(num ?e ?v) [?e :rv/score ?v]]]";
+        let q = |body: &str| format!("[:find ?e ?v :rules {num} :where (num ?e ?v) {body}]");
+        assert_eq!(
+            rows(&q("[(> ?v 6)]")),
+            sorted(vec![
+                format!("[{a},30]"),
+                format!("[{b},12]"),
+                format!("[{b},7.5]"),
+                format!("[{d},40]"),
+            ])
+        );
+        // 5 (cy's age) and 5.0 (cy's score) are both 5, as on the embedded engine.
+        assert_eq!(
+            rows(&q("[(= ?v 5)]")),
+            sorted(vec![format!("[{c},5]"), format!("[{c},5.0]")])
+        );
+        assert_eq!(rows(&q("[(<= ?v 2.5)]")), [format!("[{a},2.5]")]);
+        assert_eq!(
+            rows(&q("[(!= ?v 5)] [?e :rv/name \"cy\"]")),
+            Vec::<String>::new()
+        );
+        let k = format!("[:find ?e :in ?k :rules {num} :where (num ?e ?v) [(> ?v ?k)]]");
+        assert_eq!(
+            query_with(&k, serde_json::json!({"inputs": [35]}))["results"],
+            serde_json::json!([[d]])
+        );
+        let agg = |f: &str| {
+            query_with(
+                &format!("[:find ({f} ?v) . :rules {num} :where (num ?e ?v)]"),
+                serde_json::json!({}),
+            )["result"]
+                .as_f64()
+                .unwrap_or(f64::NAN)
+        };
+        assert_eq!(agg("max"), 40.0);
+        assert_eq!(agg("min"), 2.5);
+        assert_eq!(agg("sum"), 30.0 + 12.0 + 5.0 + 40.0 + 2.5 + 7.5 + 5.0);
+        assert!((agg("avg") - 102.0 / 7.0).abs() < 1e-9);
+        let ordered = query_with(
+            &format!(
+                "[:find ?v :order (desc ?v) :rules {num} :where (num ?e ?v) [?e :rv/name \"bob\"]]"
+            ),
+            serde_json::json!({}),
+        );
+        assert_eq!(ordered["results"], serde_json::json!([[12], [7.5]]));
+        // In a rule body: a value of unknown type compared with a number.
+        let big = "[:find ?e ?v :rules [[(big ?e ?v) [?e :rv/name _] [?e ?a ?v] [(> ?v 35)]]] \
+                   :where (big ?e ?v)]";
+        assert_eq!(rows(big), [format!("[{d},40]")]);
+        // A ref value in a mixed column equals an entity.
+        let boss = "[[(val ?e ?v) [?e :rv/age ?v]] [(val ?e ?v) [?e :rv/boss ?v]]]";
+        assert_eq!(
+            rows(&format!(
+                "[:find ?e :rules {boss} :where (val ?e ?v) [?b :rv/name \"ann\"] [(= ?v ?b)]]"
+            )),
+            [format!("[{b}]")]
+        );
+        // Against a string a number matches nothing; no SQL error.
+        assert!(rows(&q("[(= ?v \"x\")]")).is_empty());
+        // A column of longs and strings: a number compares the longs, a
+        // string the strings, neither raises a SQL error.
+        let val = "[[(val ?e ?v) [?e :rv/age ?v]] [(val ?e ?v) [?e :rv/name ?v]]]";
+        let qv = |body: &str| format!("[:find ?e :rules {val} :where (val ?e ?v) {body}]");
+        assert_eq!(
+            rows(&qv("[(> ?v 20)]")),
+            sorted(vec![format!("[{a}]"), format!("[{d}]")])
+        );
+        assert_eq!(rows(&qv("[(= ?v \"cy\")]")), [format!("[{c}]")]);
+        assert_eq!(rows(&qv("[(= ?v 12)]")), [format!("[{b}]")]);
+        assert_eq!(query_error(&qv("[(> ?v ?e)]")), "");
+    }
+
     /// The error a query raises, or "" if it runs.
     fn query_error(query: &str) -> String {
         crate::functions::query::mentat_query(query, pgrx::JsonB(serde_json::json!({})))
