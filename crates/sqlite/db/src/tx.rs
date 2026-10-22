@@ -126,8 +126,10 @@ where
 /// A value-position vector `[:attr v]` read as Datomic's lookup ref (#152): two elements, a
 /// keyword naming a `:db/unique` attribute, then a plain value. With `identity_only`, only a
 /// `:db.unique/identity` attribute qualifies: that is DataScript's rule for the one ambiguous
-/// place, the whole value of a cardinality-many ref, where `[:a/b :c/d]` may also be a list
-/// of two idents. A list of lookup refs is a vector of them (`[[:a/id "x"] [:a/id "y"]]`).
+/// place, the whole value of a cardinality-many ref in map form, where `[:a/b :c/d]` may also
+/// be a list of two idents. A list of lookup refs is a vector of them
+/// (`[[:a/id "x"] [:a/id "y"]]`). In list form `[op e a v]`, `v` is one value, so it is never
+/// a list.
 fn vector_lookup_ref<V: TransactableValue>(
     schema: &Schema,
     vs: &[ValuePlace<V>],
@@ -659,13 +661,15 @@ where
 
         // We want to handle entities in the order they're given to us, while also "exploding" some
         // entities into many.  We therefore push the initial entities onto the back of the deque,
-        // take from the front of the deque, and explode onto the front as well.
-        let mut deque: VecDeque<Entity<V>> = VecDeque::default();
-        deque.extend(entities);
+        // take from the front of the deque, and explode onto the front as well.  Each entity
+        // carries `one_value`: it was given in list form, `[op e a v]`, whose `v` is one value
+        // (Datomic's grammar), so on a ref attribute a vector `v` is a lookup ref (#152).
+        let mut deque: VecDeque<(Entity<V>, bool)> = VecDeque::default();
+        deque.extend(entities.into_iter().map(|e| (e, true)));
 
         let mut terms: Vec<TermWithTempIdsAndLookupRefs> = Vec::with_capacity(deque.len());
 
-        while let Some(entity) = deque.pop_front() {
+        while let Some((entity, one_value)) = deque.pop_front() {
             match entity {
                 Entity::MapNotation(mut map_notation) => {
                     // :db/id is optional; if it's not given, we generate a special internal tempid
@@ -677,12 +681,15 @@ where
                     // We're not nested, so :db/isComponent is not relevant.  We just explode the
                     // map notation.
                     for (a, v) in map_notation {
-                        deque.push_front(Entity::AddOrRetract {
-                            op: OpType::Add,
-                            e: db_id.clone(),
-                            a: AttributePlace::Entid(a),
-                            v,
-                        });
+                        deque.push_front((
+                            Entity::AddOrRetract {
+                                op: OpType::Add,
+                                e: db_id.clone(),
+                                a: AttributePlace::Entid(a),
+                                v,
+                            },
+                            false,
+                        ));
                     }
                 }
 
@@ -864,18 +871,26 @@ where
                             entmod::ValuePlace::Vector(vs) => {
                                 let is_ref = attribute.value_type == ValueType::Ref;
                                 if is_ref {
-                                    if let Some(lr) =
-                                        vector_lookup_ref(self.schema, &vs, attribute.multival)
-                                    {
-                                        deque.push_front(Entity::AddOrRetract {
-                                            op,
-                                            e: e.clone(),
-                                            a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(
-                                                a,
-                                            )),
-                                            v: entmod::ValuePlace::LookupRef(lr),
-                                        });
-                                        continue;
+                                    // Map form's whole value of a cardinality-many ref is the
+                                    // one ambiguous place: DataScript's identity-only rule.
+                                    let identity_only = attribute.multival && !one_value;
+                                    match vector_lookup_ref(self.schema, &vs, identity_only) {
+                                        Some(lr) => {
+                                            deque.push_front((
+                                                Entity::AddOrRetract {
+                                                    op,
+                                                    e: e.clone(),
+                                                    a: AttributePlace::Entid(
+                                                        entmod::EntidOrIdent::Entid(a),
+                                                    ),
+                                                    v: entmod::ValuePlace::LookupRef(lr),
+                                                },
+                                                one_value,
+                                            ));
+                                            continue;
+                                        }
+                                        None if one_value => bail!(DbErrorKind::NotYetImplemented(format!("The value of ref attribute {} in [:db/add e a v] is one value, so a vector there must be a lookup ref [:unique/attr value]", a))),
+                                        None => {}
                                     }
                                 }
                                 if !attribute.multival {
@@ -894,12 +909,17 @@ where
                                         }
                                         vv => vv,
                                     };
-                                    deque.push_front(Entity::AddOrRetract {
-                                        op,
-                                        e: e.clone(),
-                                        a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(a)),
-                                        v: vv,
-                                    });
+                                    deque.push_front((
+                                        Entity::AddOrRetract {
+                                            op,
+                                            e: e.clone(),
+                                            a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(
+                                                a,
+                                            )),
+                                            v: vv,
+                                        },
+                                        false,
+                                    ));
                                 }
                                 continue;
                             }
@@ -970,14 +990,17 @@ where
                                             dangling = false;
                                         }
 
-                                        deque.push_front(Entity::AddOrRetract {
-                                            op: OpType::Add,
-                                            e: db_id.clone(),
-                                            a: AttributePlace::Entid(entmod::EntidOrIdent::Entid(
-                                                inner_a,
-                                            )),
-                                            v: inner_v,
-                                        });
+                                        deque.push_front((
+                                            Entity::AddOrRetract {
+                                                op: OpType::Add,
+                                                e: db_id.clone(),
+                                                a: AttributePlace::Entid(
+                                                    entmod::EntidOrIdent::Entid(inner_a),
+                                                ),
+                                                v: inner_v,
+                                            },
+                                            false,
+                                        ));
                                     }
                                 }
 

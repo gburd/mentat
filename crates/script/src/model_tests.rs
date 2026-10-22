@@ -1228,3 +1228,90 @@ pub fn rename_and_retract_logs_one_retraction(it: &mut Interpreter) {
         "\"One\" is retracted"
     );
 }
+
+/// Issue #152: in list form, `[:db/add e a v]` takes one value (Datomic's grammar), so on a
+/// ref attribute, cardinality-one or -many, a vector `v` is a lookup ref under any
+/// `:db/unique` attribute, and one that doesn't resolve is an error. It used to make, for a
+/// `:db.unique/value` attribute, a ref to the attribute plus a new empty entity "x". Map
+/// form keeps DataScript's rule (only `:db.unique/identity` makes the whole value a lookup
+/// ref), so there it is still two refs.
+pub fn list_form_ref_vector_is_one_lookup_ref(it: &mut Interpreter) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :l/uv :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+             :db/unique :db.unique/value :db/index true} \
+            {:db/ident :l/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+             :db/unique :db.unique/identity :db/index true} \
+            {:db/ident :l/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :l/many :db/valueType :db.type/ref :db/cardinality :db.cardinality/many} \
+            {:db/ident :l/one :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    it.eval_to_string(
+        "(mentat.store/transact c [{:l/uv \"x\" :l/id \"x\"} {:l/uv \"y\" :l/id \"y\"}])",
+    )
+    .expect("data");
+    let q = |it: &mut Interpreter, query: &str| {
+        it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+            .unwrap()
+    };
+    for attr in [":l/many", ":l/one"] {
+        let report = it
+            .eval_to_string(&format!(
+                "(mentat.store/transact c [[:db/add \"s\" :l/id \"s{attr}\"] \
+                   [:db/add \"s\" {attr} [:l/uv \"x\"]]])"
+            ))
+            .unwrap_or_else(|e| panic!("{attr}: {e}"));
+        // Only "s" is a tempid: "x" is a lookup ref, not a new entity.
+        assert!(!report.contains("\"x\""), "{attr}: {report}");
+        assert!(
+            report.contains(":mentat.store/datoms-asserted 2"),
+            "{attr}: {report}"
+        );
+        assert_eq!(
+            q(
+                it,
+                &format!(
+                    "[:find [?i ...] :where [?s :l/id \"s{attr}\"] [?s {attr} ?r] [?r :l/id ?i]]"
+                )
+            ),
+            "[\"x\"]",
+            "{attr}"
+        );
+    }
+    // Retracting it the same way finds the same entity.
+    it.eval_to_string(
+        "(mentat.store/transact c [[:db/retract [:l/id \"s:l/many\"] :l/many [:l/uv \"x\"]]])",
+    )
+    .expect("retract by lookup ref");
+    assert_eq!(
+        q(
+            it,
+            "[:find ?r . :where [?s :l/id \"s:l/many\"] [?s :l/many ?r]]"
+        ),
+        "nil"
+    );
+    // One value: an unresolved lookup ref, a non-unique attribute or a list is an error.
+    for v in [
+        "[:l/uv \"nope\"]",
+        "[:l/n 1]",
+        "[[:l/uv \"x\"] [:l/uv \"y\"]]",
+    ] {
+        assert!(
+            it.eval(&format!(
+                "(mentat.store/transact c [[:db/add [:l/id \"x\"] :l/many {v}]])"
+            ))
+            .is_err(),
+            "{v}"
+        );
+    }
+    // Map form: DataScript's rule, so [:l/uv :l/n] under :db.unique/value is two refs.
+    let report = it
+        .eval_to_string("(mentat.store/transact c [{:db/id \"m\" :l/many [:l/uv :l/n]}])")
+        .expect("map form");
+    assert!(
+        report.contains(":mentat.store/datoms-asserted 2"),
+        "{report}"
+    );
+}

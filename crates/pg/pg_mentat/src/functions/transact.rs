@@ -1118,7 +1118,14 @@ fn execute_transaction_inner(
                 let e = resolve_entity_place(&entity_vec[1], &mut tempid_map, &qs)?;
                 let a = resolve_attribute(&entity_vec[2])?;
                 let added = matches!(op, OpType::Add);
-                for value in exploded_values(a, &entity_vec[3]) {
+                // List form takes one value (Datomic's grammar), so on a ref attribute a
+                // vector is a lookup ref under any :db/unique attribute, never a list (#152).
+                let values = if lookup_value_type(a).as_deref() == Some("ref") {
+                    vec![&entity_vec[3]]
+                } else {
+                    exploded_values(a, &entity_vec[3])
+                };
+                for value in values {
                     let v = encode_attr_value(a, value, &mut tempid_map, &qs)?;
                     pending_datoms.push(PendingDatom { e, a, v, added });
                 }
@@ -2209,12 +2216,13 @@ fn encode_attr_value(
     }
 }
 
-/// The values a value-position vector stands for, as on the embedded engine (#152): on a
+/// The values a map-form value stands for, as on the embedded engine (#152): on a
 /// cardinality-many attribute a vector is a list of values (nested vectors flatten). On a
 /// cardinality-many ref, `[:identity/attr v]` is one lookup ref (DataScript's rule for the
 /// ambiguity: only a :db.unique/identity attribute), and otherwise each element is one value,
 /// so an inner vector is a lookup ref on any :db/unique attribute (resolve_entity_place).
 /// Anything else is one value; a lookup ref in any other place may use any unique attribute.
+/// (List form's value on a ref attribute is always one value; see the :db/add arm.)
 fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
     fn is_identity_lookup_ref(v: &edn::Value) -> bool {
         match v {

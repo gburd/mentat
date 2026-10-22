@@ -19,7 +19,7 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
 | Tempids | Yes | Yes | **Complete** |
-| Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs (see [Lookup refs in a list of values](#lookup-refs-in-a-list-of-values)). The embedded engine and DuckDB accept the vector form since 1.18.0 |
+| Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; in map form, for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs (see [Lookup refs in a list of values](#lookup-refs-in-a-list-of-values)). The embedded engine and DuckDB accept the vector form since 1.18.0 |
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
 | Negative tempids | Yes | No | N/A -- use string tempids |
@@ -32,9 +32,14 @@ A lookup ref `[:attr v]` names the entity whose `:attr` is `v`, for any
 `:db/id`, entity position, reverse notation, and as the value of a
 cardinality-one ref.
 
-The whole value of a cardinality-many ref attribute is the one ambiguous
-place: a two-element vector there can be one lookup ref or a list of two
-values. Every backend reads it the way DataScript does: when the first
+In list form, `[:db/add e a v]` takes one value, as in Datomic, so on a ref
+attribute (cardinality-one or -many) a vector `v` is always a lookup ref, and
+an error if it doesn't resolve. To add several values, use several `:db/add`s
+or map form.
+
+The whole value of a cardinality-many ref attribute in map form is the one
+ambiguous place: a two-element vector there can be one lookup ref or a list
+of two values. Every backend reads it the way DataScript does: when the first
 element is the ident of a `:db.unique/identity` attribute, the vector is one
 lookup ref. Otherwise it is a list of values, and each vector in that list is
 a lookup ref (any `:db/unique` attribute; one that doesn't resolve is an
@@ -48,6 +53,9 @@ error).
 {:db/id [:user/email "a@x"] :user/name "A"}      ; :db/id may use either kind
 ;; :user/name is not unique
 {:form/fields [:user/email :user/name]}          ; two refs, to the two attribute entities
+;; list form: one value
+[:db/add "f" :form/owners [:user/email "a@x"]]   ; one ref, by :user/email
+[:db/add "f" :form/fields [:user/email :user/name]] ; error: a lookup ref that does not resolve
 ```
 
 `:db/ident` is itself `:db.unique/identity`, so `[:db/ident :user/name]` is a
