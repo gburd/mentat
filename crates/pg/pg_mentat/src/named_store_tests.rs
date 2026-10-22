@@ -961,4 +961,55 @@ mod tests {
         Spi::run("SELECT unsubscribe('sbr_b', 'sbr_names')").expect("unsubscribe");
         Spi::run("SELECT drop_store('sbr_b')").expect("drop");
     }
+
+    // An on_write materialized view's trigger baked in the store's schema,
+    // and its body the store's name: after rename_store every t() on the
+    // store failed with `schema "mentat_mv_a" does not exist`.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn on_write_matview_survives_rename_store() {
+        setup();
+        Spi::run("SELECT create_store('mvr_a')").expect("create");
+        tx("mvr_a", SCHEMA_TX);
+        // materialize's column inference is the next fix's subject.
+        tx("default", SCHEMA_TX);
+        tx("mvr_a", "[{:p/name \"one\"}]");
+        Spi::run(
+            "SELECT materialize('mvr_a', 'mvr_names', '[:find ?n :where [_ :p/name ?n]]', 'on_write')",
+        )
+        .expect("materialize");
+        let rows = |schema: &str| -> Vec<String> {
+            let v = json(&format!(
+                "SELECT coalesce(jsonb_agg(n ORDER BY n), '[]') FROM {schema}.mvr_names"
+            ));
+            sorted(v)
+        };
+        tx("mvr_a", "[{:p/name \"two\"}]");
+        // The trigger fires on the txInstant row, written first: the view
+        // trails by one transaction (as subscriptions do).
+        tx("mvr_a", "[{:p/age 1}]");
+        assert_eq!(rows("mentat_mvr_a"), vec!["one", "two"]);
+        Spi::run("SELECT rename_store('mvr_a', 'mvr_b')").expect("rename");
+        tx("mvr_b", "[{:p/name \"three\"}]");
+        tx("mvr_b", "[{:p/age 2}]");
+        assert_eq!(rows("mentat_mvr_b"), vec!["one", "three", "two"]);
+        Spi::run("SELECT refresh('mvr_b', 'mvr_names')").expect("refresh under the new name");
+        let listed = json("SELECT list_matviews('mvr_b')");
+        assert_eq!(listed.as_array().map(|a| a.len()), Some(1), "{listed}");
+        Spi::run("SELECT drop_matview('mvr_b', 'mvr_names')").expect("drop_matview");
+        tx("mvr_b", "[{:p/name \"four\"}]");
+        // drop_store forgets the store's views: the name can be used again.
+        Spi::run(
+            "SELECT materialize('mvr_b', 'mvr_names', '[:find ?n :where [_ :p/name ?n]]', 'on_write')",
+        )
+        .expect("materialize again");
+        Spi::run("SELECT drop_store('mvr_b')").expect("drop");
+        Spi::run("SELECT create_store('mvr_b')").expect("create again");
+        tx("mvr_b", SCHEMA_TX);
+        Spi::run(
+            "SELECT materialize('mvr_b', 'mvr_names', '[:find ?n :where [_ :p/name ?n]]', 'manual')",
+        )
+        .expect("materialize in the new store");
+        Spi::run("SELECT drop_store('mvr_b')").expect("drop");
+    }
 }
