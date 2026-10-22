@@ -399,13 +399,13 @@ Options are passed in the JSON `inputs` parameter:
 | Key | Type | Description |
 |-----|------|-------------|
 | `"inputs"` | array | Positional input values (first is always `null` for `$`) |
-| `"as_of"` | integer | Transaction ID for point-in-time query |
+| `"asOf"` | integer | Transaction ID for point-in-time query |
 | `"since"` | integer | Transaction ID for "changes since" query |
 | `"limit"` | integer | Maximum result rows |
 
 ```sql
 SELECT edn_q(
   '[:find ?name :where [?e :person/name ?name]]',
-  '{"as_of": 1000, "limit": 10}'
+  '{"asOf": 1000, "limit": 10}'
 );
 ```

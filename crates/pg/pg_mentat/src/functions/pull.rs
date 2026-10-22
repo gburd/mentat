@@ -83,6 +83,25 @@ fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, 
     if !options.is_object() && !options.is_null() {
         return Err(":db.error/invalid-pull-options options must be a JSON object".into());
     }
+    // An unknown key (e.g. time-travel.md's old `as_of` spelling) would
+    // otherwise pull current values silently.
+    for k in options.as_object().into_iter().flat_map(|o| o.keys()) {
+        match k.as_str() {
+            "asOf" | "since" => {}
+            "history" => {
+                return Err(
+                    ":db.error/invalid-pull-options \"history\" does not apply to \
+                            pull (a pull shows one basis, not the log); use edn_q with a \
+                            [?e ?a ?v ?tx ?added] pattern"
+                        .into(),
+                )
+            }
+            other => return Err(format!(
+                ":db.error/invalid-pull-options unknown option \"{other}\" (expected asOf, since)"
+            )
+            .into()),
+        }
+    }
     match (get("asOf")?, get("since")?) {
         (Some(_), Some(_)) => {
             Err(":db.error/invalid-pull-options asOf and since are mutually exclusive".into())

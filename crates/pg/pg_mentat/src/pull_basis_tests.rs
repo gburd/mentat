@@ -161,5 +161,15 @@ mod tests {
             "SELECT edn_pull('[:pb/age]', {a}, '{{\"asOf\": \"x\"}}'::jsonb)"
         ));
         assert!(e.contains("integer tx id"), "{e}");
+        // An unknown key is an error, not a silent current-state pull: `as_of`
+        // (time-travel.md's old spelling) used to return current values.
+        let e = err(&format!(
+            "SELECT edn_pull('[:pb/age]', {a}, '{{\"as_of\": 1}}'::jsonb)"
+        ));
+        assert!(e.contains("unknown option \"as_of\""), "{e}");
+        let e = err(&format!(
+            "SELECT edn_pull('[:pb/age]', {a}, '{{\"history\": true}}'::jsonb)"
+        ));
+        assert!(e.contains("does not apply to pull"), "{e}");
     }
 }

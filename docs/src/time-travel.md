@@ -36,7 +36,7 @@ SELECT edn_q(
     :where
     [?e :person/name ?name]
     [?e :person/age ?age]]',
-  '{"as_of": 1050}'
+  '{"asOf": 1050}'
 );
 ```
 
