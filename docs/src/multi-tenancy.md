@@ -51,9 +51,10 @@ store's own tables; `mentat.create_fts_index` indexes the default store's
 table only. `subscribe('acme', ...)` re-runs its query against `acme`, and
 a `(pull ?e [...])` in a `q('acme', ...)` find pulls from `acme`.
 Subscriptions and materialized views move with `rename_store` and go away
-with `drop_store`. A subscription name is shared by all stores, because its
-channel (`mentat_<name>`) is: `subscribe` refuses a name another store
-already uses.
+with `drop_store`. A subscription name is shared by all stores and ignores
+case, because its channel (`mentat_<name>`) does: `subscribe` refuses a
+name that any store already uses in any case (a unique index on
+`lower(name)` in `mentat.subscriptions` enforces it).
 
 **Permissions.** The role that calls `create_store` owns the new schema and
 everything in it. Every role with a privilege on the default store's
@@ -93,6 +94,15 @@ and where its old tables are. A 1.17 subscription or materialized view on
 the store stays with the old tables and stops working; the upgrade names
 each one in a WARNING: run `unsubscribe` / `drop_matview`, then
 `subscribe` / `materialize` again.
+
+1.17 let two subscriptions share a name that differs only in case, or the
+same name on two stores, and then their listeners got each other's
+results. The upgrade deletes none of them: a WARNING names each group and
+the `unsubscribe` calls that leave one. While any are left, the upgrade
+does not create the unique index on `lower(name)`, and says so;
+`subscribe` still refuses a name in use, but two `subscribe` calls of one
+name at the same moment can both succeed. Once each name is held once, a
+superuser can create the index with the statement the WARNING prints.
 
 The upgrade copies nothing out of the old schema. It runs as a superuser,
 and the old schema belongs to the store's owner, who could have replaced
