@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use core_traits::{Entid, TypedValue};
+use edn::entities::Entity;
 use mentat_core::{IdentMap, Schema, TxReport};
 use mentat_db::db::TypedSQLValue;
 use mentat_db::{entids, NullWatcher, Partition, PartitionMap, SchemaBuilding};
@@ -46,13 +47,52 @@ thread_local! {
 /// so writes to a store take turns; reads, and writes to other stores, don't
 /// wait. Per process: another process can't open the same database file
 /// for writing (DuckDB locks it).
-fn write_lock(schema: &str) -> Arc<Mutex<()>> {
+pub(crate) fn write_lock(schema: &str) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
     let mut locks = LOCKS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     locks.entry(schema.to_string()).or_default().clone()
+}
+
+/// SQL run on a connection when this is dropped, unless `run` or `disarm`
+/// ran first: the ROLLBACK of an open transaction, the DETACH of an import's
+/// source. Dropped on a panic too, which matters: duckdb-rs catches a panic
+/// at the function boundary and the extension reuses the connection, so an
+/// open transaction left behind would wedge writes to the store.
+pub(crate) struct OnDrop<'c> {
+    conn: &'c dyn SqlConn,
+    sql: Option<String>,
+}
+
+impl<'c> OnDrop<'c> {
+    pub(crate) fn new(conn: &'c dyn SqlConn, sql: impl Into<String>) -> Self {
+        OnDrop {
+            conn,
+            sql: Some(sql.into()),
+        }
+    }
+
+    /// Run it now.
+    pub(crate) fn run(mut self) -> Result<()> {
+        match self.sql.take() {
+            Some(sql) => Ok(self.conn.execute_batch(&sql)?),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn disarm(mut self) {
+        self.sql = None;
+    }
+}
+
+impl Drop for OnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(sql) = self.sql.take() {
+            let _ = self.conn.execute_batch(&sql);
+        }
+    }
 }
 
 /// One store (a DuckDB schema) on one connection. Cheap to construct; holds
@@ -106,6 +146,10 @@ impl<'c> DuckStore<'c> {
 
     pub fn schema_name(&self) -> &str {
         &self.schema
+    }
+
+    pub(crate) fn conn(&self) -> &'c dyn SqlConn {
+        self.conn
     }
 
     fn storing(&self) -> DuckStoring<'_> {
@@ -189,37 +233,67 @@ impl<'c> DuckStore<'c> {
         if let Some(opened) = cached {
             return Ok((gen, opened));
         }
-        self.drop_legacy_indexes()?;
+        let checked = self.drop_legacy_indexes()?;
         let opened = self.read()?;
-        OPENED.with(|c| {
-            c.borrow_mut()
-                .insert(self.schema.clone(), (gen, opened.clone()))
-        });
+        // Cache only once the legacy-index check could run: a check that
+        // failed (a SQLite file was attached) must run again on this thread's
+        // next open, not after the next schema change.
+        if checked {
+            OPENED.with(|c| {
+                c.borrow_mut()
+                    .insert(self.schema.clone(), (gen, opened.clone()))
+            });
+        }
         Ok((gen, opened))
     }
 
     /// Drop the secondary indexes that 1.11.0-1.14.0 created (see
-    /// `schema::LEGACY_INDEXES`). Runs on a schema-cache miss, so once per
-    /// thread and generation; a no-op once they are gone. This also repairs a
-    /// store whose index #26828 already corrupted.
-    fn drop_legacy_indexes(&self) -> Result<()> {
-        let present = self.conn.query_opt(
+    /// `schema::LEGACY_INDEXES`), once per store: `meta` then records it
+    /// (a store created since has the row from the start). Runs on a
+    /// schema-cache miss. This also repairs a store whose index #26828
+    /// already corrupted. Returns false if the check couldn't run.
+    fn drop_legacy_indexes(&self) -> Result<bool> {
+        let done = self.conn.query_opt(
+            &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.schema),
+            &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
+            |r| r.get_i64(0),
+        )?;
+        if done.is_some() {
+            return Ok(true);
+        }
+        // duckdb_indexes() fails ("syntax error at or near "0"") while any
+        // SQLite mentat file is ATTACHed: DuckDB's sqlite scanner hands it
+        // SQLite's partial-index SQL to parse. Read that as none present and
+        // record nothing, so a later open checks again.
+        let Ok(present) = self.conn.query_opt(
             &format!(
                 "SELECT count(*) FROM duckdb_indexes() WHERE schema_name = ? AND index_name IN ({})",
                 schema::LEGACY_INDEXES.map(|i| format!("'{i}'")).join(", ")
             ),
             &[SqlValue::Text(self.schema.clone())],
             |r| r.get_i64(0),
-        )?;
+        ) else {
+            return Ok(false);
+        };
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         if present.unwrap_or(0) > 0 {
-            let lock = write_lock(&self.schema);
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             for i in schema::LEGACY_INDEXES {
                 self.conn
                     .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.schema))?;
             }
         }
-        Ok(())
+        // Under the write lock, so it can't conflict with a transact. Best
+        // effort: a read-only database can't record it, and then the check
+        // just runs again on the next open.
+        let _ = self.conn.execute(
+            &format!(
+                "INSERT INTO {}.meta VALUES (?, '1') ON CONFLICT DO NOTHING",
+                self.schema
+            ),
+            &[SqlValue::Text(schema::LEGACY_INDEXES_DROPPED.into())],
+        );
+        Ok(true)
     }
 
     fn create(&self) -> Result<()> {
@@ -278,25 +352,37 @@ impl<'c> DuckStore<'c> {
     /// Read the partition map (3 rows; cached: no filter, one table).
     fn read_partition_map(&self) -> Result<PartitionMap> {
         let mut parts = PartitionMap::default();
+        let mut bad = None;
         self.conn.query_cached(
             "SELECT part, start, \"end\", idx, allow_excision FROM known_parts",
             &[],
             &mut |r| {
-                let p = Partition::new(
-                    r.get_i64(1)?,
-                    r.get_i64(2)?,
-                    r.get_i64(3)?,
-                    r.get_i64(4)? != 0,
+                let (start, end, idx) = (r.get_i64(1)?, r.get_i64(2)?, r.get_i64(3)?);
+                // Partition::new asserts this; an imported file may break it.
+                if !(start <= idx && idx <= end) {
+                    bad = Some(format!(
+                        "partition {}: start {start}, end {end}, next entid {idx}",
+                        r.get_text(0)?
+                    ));
+                    return Ok(());
+                }
+                parts.insert(
+                    r.get_text(0)?,
+                    Partition::new(start, end, idx, r.get_i64(4)? != 0),
                 );
-                parts.insert(r.get_text(0)?, p);
                 Ok(())
             },
         )?;
+        if let Some(bad) = bad {
+            return Err(MentatError::IoError(std::io::Error::other(format!(
+                "bad known_parts row ({bad}): need start <= next entid <= end"
+            ))));
+        }
         Ok(parts)
     }
 
     /// Read the partition map and schema (the `idents`/`schema` views).
-    fn read(&self) -> Result<Opened> {
+    pub(crate) fn read(&self) -> Result<Opened> {
         let partition_map = self.read_partition_map()?;
         let triples = |table: &str| {
             self.conn.query_rows(
@@ -336,56 +422,104 @@ impl<'c> DuckStore<'c> {
     }
 
     /// Run `f` in one DuckDB transaction: committed if it returns Ok, rolled
-    /// back otherwise.
-    fn in_tx<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
-        self.conn.execute_batch("BEGIN TRANSACTION")?;
-        match f(self) {
-            Ok(v) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(v)
-            }
-            Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
+    /// back otherwise, panics included.
+    pub(crate) fn in_tx<T>(&self, f: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let rollback = self.begin()?;
+        let v = f(self)?;
+        self.conn.execute_batch("COMMIT")?;
+        rollback.disarm();
+        Ok(v)
     }
 
-    /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction.
+    /// BEGIN, and the ROLLBACK that undoes it when dropped.
+    fn begin(&self) -> Result<OnDrop<'c>> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        Ok(OnDrop::new(self.conn, "ROLLBACK"))
+    }
+
+    /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction,
+    /// so not inside one already open on the connection (see
+    /// `with_speculative`).
     pub fn transact(&self, edn: &str) -> Result<TxReport> {
         let entities = edn::parse::entities(edn)?;
         let (gen, opened) = self.open_gen()?;
         let lock = write_lock(&self.schema);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.in_tx(|s| {
-            // The partition map is read inside the writing transaction; the
-            // schema is reused unless another writer changed it since `open`.
-            let partition_map = s.read_partition_map()?;
-            let schema = if s.generation()? == Some(gen) {
-                opened.schema
-            } else {
-                s.read()?.schema
-            };
-            let storing = DuckStoring {
-                conn: s.conn,
-                read: Some(partition_map.clone()),
-            };
-            let (report, _next_partition_map, next_schema, _w) = mentat_db::transact(
-                &storing,
-                partition_map,
-                &schema,
-                &schema,
-                NullWatcher(),
-                entities,
+        self.in_tx(|s| s.apply(entities, gen, &opened.schema))
+    }
+
+    /// Speculatively transact `edns` in order (Datomic `d/with`) and return
+    /// the last report. They run in one DuckDB transaction on this
+    /// connection that is always rolled back: no other connection sees them,
+    /// and nothing is left behind, on success or error (partition counters
+    /// and the schema generation included). Holds the store's write lock, as
+    /// `transact` does.
+    ///
+    /// DuckDB has no savepoints, so this (like `transact`) can't nest inside
+    /// a transaction already open on the connection: its BEGIN fails with
+    /// "cannot start a transaction within a transaction", and DuckDB then
+    /// aborts the caller's transaction too, losing its uncommitted writes
+    /// (its COMMIT fails). Not guarded: detecting an open transaction takes
+    /// two extra statements per write, and the extension's connections never
+    /// have one. A direct Rust caller must not call this inside its own
+    /// transaction.
+    pub fn with_speculative(&self, edns: &[&str]) -> Result<TxReport> {
+        let txs = edns
+            .iter()
+            .map(|edn| edn::parse::entities(edn))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let (gen, opened) = self.open_gen()?;
+        let lock = write_lock(&self.schema);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let rollback = self.begin()?;
+        let report = txs.into_iter().try_fold(None, |_, entities| {
+            self.apply(entities, gen, &opened.schema).map(Some)
+        });
+        let rolled_back = rollback.run();
+        let report = report?;
+        rolled_back?;
+        report.ok_or_else(|| MentatError::NotYetImplemented("with: no tx-data".into()))
+    }
+
+    /// Apply `edn` inside the caller's DuckDB transaction (no BEGIN/COMMIT).
+    /// `schema` is the store's as of generation `gen`; it is reread if
+    /// another writer (or an earlier `apply` in this transaction) changed it.
+    fn apply(
+        &self,
+        entities: Vec<Entity<edn::ValueAndSpan>>,
+        gen: i64,
+        schema: &Schema,
+    ) -> Result<TxReport> {
+        // The partition map is read inside the writing transaction.
+        let partition_map = self.read_partition_map()?;
+        let reread;
+        let schema = if self.generation()? == Some(gen) {
+            schema
+        } else {
+            reread = self.read()?.schema;
+            &reread
+        };
+        let storing = DuckStoring {
+            conn: self.conn,
+            read: Some(partition_map.clone()),
+        };
+        let (report, _next_partition_map, next_schema, _w) = mentat_db::transact(
+            &storing,
+            partition_map,
+            schema,
+            schema,
+            NullWatcher(),
+            entities,
+        )?;
+        #[cfg(feature = "failpoints")]
+        crate::failpoints::hit("apply");
+        if next_schema.is_some() {
+            self.conn.execute(
+                "UPDATE meta SET value = ((hash(uuid()) >> 1)::BIGINT)::VARCHAR WHERE key = 'generation'",
+                &[],
             )?;
-            if next_schema.is_some() {
-                s.conn.execute(
-                    "UPDATE meta SET value = ((hash(uuid()) >> 1)::BIGINT)::VARCHAR WHERE key = 'generation'",
-                    &[],
-                )?;
-            }
-            Ok(report)
-        })
+        }
+        Ok(report)
     }
 
     /// Run a Datalog query with the shared JSON options

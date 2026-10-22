@@ -4,6 +4,8 @@
 //!   - `edn_q(store, query, options)`       table fn -> rows, all VARCHAR.
 //!   - `edn_pull(store, pattern, entity)`   scalar -> VARCHAR (JSON map).
 //!   - `edn_eval(store, script)`            scalar -> VARCHAR (EDN), feature `script`.
+//!   - `mentat_import(store, path)`         scalar -> VARCHAR (JSON): import a
+//!     SQLite-format store file (1.10.x and earlier) into `store`.
 //!
 //! `store` names a mentat store in the DuckDB database the extension was
 //! loaded into: a DuckDB schema holding its tables (`mentat` for `'default'`,
@@ -404,6 +406,53 @@ impl VScalar for EdnEval {
 }
 
 // ---------------------------------------------------------------------------
+// mentat_import(store, path) -> VARCHAR (JSON). Reads a SQLite-format store
+// (what this extension wrote before 1.11) through DuckDB's sqlite extension.
+// ---------------------------------------------------------------------------
+
+struct MentatImport;
+
+impl VScalar for MentatImport {
+    type State = ();
+
+    fn invoke(
+        _: &(),
+        input: &mut DataChunkHandle,
+        output: &mut dyn WritableVector,
+    ) -> Result<(), BoxErr> {
+        map_rows(input, output, |i| {
+            let (Some(db), Some(path)) = (str_arg(input, 0, i), str_arg(input, 1, i)) else {
+                return Ok(None);
+            };
+            let (store, _lease) = store(&db)?;
+            // As text: DuckDB appends an error's source chain, which would repeat it.
+            let r = store.import_sqlite(&path).map_err(|e| e.to_string())?;
+            Ok(Some(
+                json!({
+                    "store": db,
+                    "datoms": r.datoms,
+                    "transactions": r.transactions,
+                    "last_tx": r.last_tx,
+                })
+                .to_string(),
+            ))
+        })
+    }
+
+    fn signatures() -> Vec<ScalarFunctionSignature> {
+        vec![ScalarFunctionSignature::exact(
+            vec![varchar(), varchar()],
+            varchar(),
+        )]
+    }
+
+    /// Writes the store: evaluate exactly once per row.
+    fn volatile() -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
 // edn_q options: {"inputs": [...], "asOf": T, "since": T} (pg_mentat's shape).
 // Parsed by mentat_transaction::options::options_from_json, shared with the SQLite extension and CLI.
 // ---------------------------------------------------------------------------
@@ -543,5 +592,6 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     con.register_scalar_function::<EdnPull>("edn_pull")?;
     #[cfg(feature = "script")]
     con.register_scalar_function::<EdnEval>("edn_eval")?;
+    con.register_scalar_function::<MentatImport>("mentat_import")?;
     Ok(())
 }

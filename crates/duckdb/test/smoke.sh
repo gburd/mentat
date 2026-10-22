@@ -87,6 +87,12 @@ SELECT 'eval=' || edn_eval('$DB', '(def c (mentat.store/open))
   (count (mentat.store/q (mentat.store/db c) (quote [:find ?n :where [_ :person/name ?n]])))');
 SELECT 'after_eval=' || string_agg(n, ',' ORDER BY n)
   FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '') AS t(n);
+-- mentat.store/with: speculative, rolled back; a later edn_q doesn't see it.
+SELECT 'with=' || edn_eval('$DB', '(def c (mentat.store/open))
+  (pos? (:mentat.store/tx-id (:mentat.store/tx-report
+    (mentat.store/with (mentat.store/db c) [{:person/name "Zed"}]))))');
+SELECT 'after_with=' || count(*)
+  FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '') AS t(n);
 
 -- The datoms are DuckDB rows: native SQL sees them, in the store's schema.
 SELECT 'native=' || count(*) FROM mentat.datoms d JOIN mentat.idents i ON i.e = d.a
@@ -118,6 +124,8 @@ expect "pull_id=true"
 expect "pull_attrs=31"
 expect "eval=3"
 expect "after_eval=Alice,Bob,Carol"
+expect "with=true"
+expect "after_with=3"
 expect "native=3"
 expect "tables=5"
 expect "old_name=true"
@@ -150,6 +158,9 @@ expect_err() {
 expect_err "SELECT edn_eval('$DB', '(slurp \"/etc/passwd\")');" "unbound symbol: slurp"
 expect_err "SELECT * FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '{\"bogus\":1}');" 'unknown option "bogus"'
 expect_err "SELECT * FROM edn_q('$DB', '[:find ?n :where [_ :person/name ?n]]', '{nope');" "not valid JSON"
+# With or without DuckDB's sqlite extension at hand (can't open / needs the
+# extension). Not just "mentat_import": an unregistered function matches that.
+expect_err "SELECT mentat_import('imp', '/nonexistent/old.mentat');" "mentat_import: can't open\\|mentat_import needs"
 expect_err "SELECT * FROM mentat_hello();" "mentat_hello does not exist"
 expect_err "SELECT mentat_transact('$DB', '[]');" "mentat_transact does not exist"
 expect_err "SELECT * FROM mentat_query('$DB', '[:find ?e :where [?e _ _]]', '{}');" "mentat_query does not exist"

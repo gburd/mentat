@@ -39,6 +39,10 @@ pub const VERSION: i64 = 1;
 /// Secondary indexes created by 1.11.0-1.14.0; dropped on open (see above).
 pub const LEGACY_INDEXES: [&str; 3] = ["idx_datoms_ea", "idx_datoms_a", "idx_tt_tx"];
 
+/// The `meta` key recording that a store has none of `LEGACY_INDEXES`
+/// (written at creation, or once `open` has dropped them).
+pub const LEGACY_INDEXES_DROPPED: &str = "legacy_indexes_dropped";
+
 /// The type of every `v` column.
 pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
 
@@ -114,6 +118,7 @@ pub fn create_statements(s: &str) -> Vec<String> {
         format!(
             "INSERT INTO {s}.meta VALUES ('version', '{VERSION}')"
         ),
+        format!("INSERT INTO {s}.meta VALUES ('{LEGACY_INDEXES_DROPPED}', '1')"),
     ]
 }
 

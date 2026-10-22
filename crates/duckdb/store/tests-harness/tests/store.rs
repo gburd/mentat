@@ -3,7 +3,7 @@
 //! history / as-of / cas / retractEntity behave as on SQLite.
 
 use duckdb::Connection;
-use mentat_duckdb_store::{DuckStore, SqlConn};
+use mentat_duckdb_store::{failpoints, DuckStore, SqlConn};
 use mentat_duckdb_store_tests::DuckConn;
 use mentat_query_algebrizer::{QueryInputs, TemporalBound};
 use mentat_query_projector::QueryResults;
@@ -345,11 +345,13 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     let _s = seeded(&c);
     assert_eq!(index_count(&c), 0, "new stores have no secondary indexes");
 
-    // Recreate the 1.14.0 layout's indexes, as an old store has them.
+    // Recreate the 1.14.0 layout: its indexes, and no
+    // `legacy_indexes_dropped` meta row.
     c.execute_batch(
         "CREATE INDEX idx_datoms_ea ON mentat.datoms (e, a); \
          CREATE INDEX idx_datoms_a ON mentat.datoms (a); \
          CREATE INDEX idx_tt_tx ON mentat.timelined_transactions (tx); \
+         DELETE FROM mentat.meta WHERE key = 'legacy_indexes_dropped'; \
          UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
     )
     .unwrap();
@@ -359,6 +361,15 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     let names = q(&s, "[:find ?n :where [_ :person/name ?n]]");
     assert_eq!(names.len(), 2, "the store still answers: {names:?}");
     assert_eq!(index_count(&c), 0, "legacy indexes dropped on open");
+    // Recorded, so later opens don't look again.
+    let recorded: i64 = c
+        .query_row(
+            "SELECT count(*) FROM mentat.meta WHERE key = 'legacy_indexes_dropped'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 1);
 }
 
 /// The same query, run before and after each write, on two stores sharing
@@ -424,4 +435,44 @@ fn query_before_a_new_attribute_sees_it_after() {
         .tempids["z"];
     assert_eq!(q(&s, ids), vec![vec!["1".to_string()]]);
     assert_eq!(q(&s, by_value), vec![vec![e.to_string()]]);
+}
+
+/// A panic inside a write (`transact`, `with`) rolls its DuckDB transaction
+/// back. The extension reuses connections (and duckdb-rs turns the panic
+/// into an error), so a transaction left open would keep the speculative
+/// rows visible on that connection and wedge every later write to the store.
+#[test]
+fn a_panic_mid_write_leaves_no_transaction_open() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    let other = c.try_clone().unwrap();
+    let count = |c: &Connection| -> i64 {
+        c.query_row("SELECT count(*) FROM mentat.datoms", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = count(&c);
+    // The failpoint fires in `apply` after the engine's writes.
+    let panics = |f: &dyn Fn()| {
+        failpoints::arm("apply");
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        assert!(r.is_err(), "the failpoint didn't fire");
+    };
+    panics(&|| drop(s.with_speculative(&[r#"[{:person/name "Ghost"}]"#])));
+    assert_eq!(count(&c), before, "with: rows left on this connection");
+    panics(&|| drop(s.transact(r#"[{:person/name "Ghost"}]"#)));
+    assert_eq!(count(&c), before, "transact: rows left on this connection");
+    assert_eq!(count(&other), before);
+    // No transaction open on the connection, and both connections write.
+    c.execute_batch("BEGIN; ROLLBACK").unwrap();
+    s.transact(r#"[{:person/name "Real"}]"#).unwrap();
+    let odc = DuckConn::new(&other);
+    DuckStore::new(&odc as &dyn SqlConn, "default")
+        .transact(r#"[{:person/name "Other"}]"#)
+        .unwrap();
+    let mut names: Vec<String> = q(&s, "[:find ?n :where [_ :person/name ?n]]")
+        .into_iter()
+        .flatten()
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Alice", "Bob", "Other", "Real"]);
 }

@@ -14,8 +14,8 @@
 //! shape; this backend owns storage. Every handle names a store in the DuckDB
 //! database the extension was loaded into. Queries against an as-of/since db
 //! value run as temporal Datalog (`TemporalBound`), so `q` works on any basis.
-//! `with` (speculative transact) isn't supported: DuckDB has no savepoints to
-//! roll a transaction back inside the caller's.
+//! `with` (speculative transact) applies the tx-data in a DuckDB transaction
+//! on this call's connection and rolls it back (`DuckStore::with_speculative`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -115,8 +115,21 @@ impl ScriptBackend for DuckBackend {
         })
     }
 
-    fn with(&mut self, _db: &DbRef, _edn: &str) -> Result<(i64, TxReport), String> {
-        Err("mentat.store/with is not supported on DuckDB-backed stores".into())
+    fn with(&mut self, db: &DbRef, edn: &str) -> Result<(i64, TxReport), String> {
+        let name = {
+            let map = self.stores.borrow();
+            map.get(&db.conn)
+                .cloned()
+                .ok_or_else(|| format!("no open store for handle {}", db.conn))?
+        };
+        let r = with(self.conn, &name, edn).map_err(|e| e.to_string())?;
+        Ok((
+            r.tx_id,
+            TxReport {
+                tx_id: r.tx_id,
+                tempids: r.tempids.into_iter().collect(),
+            },
+        ))
     }
 
     fn q(&self, db: &DbRef, query_edn: &str) -> Result<Value, String> {
@@ -224,17 +237,50 @@ pub fn transact(
     edn: &str,
 ) -> public_traits::errors::Result<mentat_core::TxReport> {
     let s = DuckStore::new(conn, store);
+    let (define, expanded) = expand_tx_fns(conn, &s, store, edn)?;
+    if define {
+        s.transact(DB_FN_ATTRIBUTE)?;
+    }
+    s.transact(&expanded)
+}
+
+/// `mentat.store/with`: [`transact`]'s expansion, then the tx-data applied
+/// and rolled back (`DuckStore::with_speculative`). A first function's
+/// `:db/fn` attribute is defined inside the rolled-back transaction too, so
+/// `with` commits nothing.
+pub fn with(
+    conn: &'static dyn SqlConn,
+    store: &str,
+    edn: &str,
+) -> public_traits::errors::Result<mentat_core::TxReport> {
+    let s = DuckStore::new(conn, store);
+    let (define, expanded) = expand_tx_fns(conn, &s, store, edn)?;
+    let edns: Vec<&str> = define
+        .then_some(DB_FN_ATTRIBUTE)
+        .into_iter()
+        .chain([expanded.as_str()])
+        .collect();
+    s.with_speculative(&edns)
+}
+
+const DB_FN_ATTRIBUTE: &str =
+    "[{:db/ident :db/fn :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]";
+
+/// `edn` with its tx-fn calls expanded, and whether the store first needs
+/// the `:db/fn` attribute (`edn` installs its first function). A store
+/// without `:db/fn` has no functions, so nothing to expand.
+fn expand_tx_fns(
+    conn: &'static dyn SqlConn,
+    s: &DuckStore<'_>,
+    store: &str,
+    edn: &str,
+) -> public_traits::errors::Result<(bool, String)> {
     let has_db_fn = s
         .current_schema()?
         .get_entid(&Keyword::namespaced("db", "fn"))
         .is_some();
-    if !has_db_fn && edn.contains(":db/fn") {
-        s.transact(
-            "[{:db/ident :db/fn :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
-        )?;
-    }
-    if !(has_db_fn || edn.contains(":db/fn")) {
-        return s.transact(edn);
+    if !has_db_fn {
+        return Ok((edn.contains(":db/fn"), edn.to_string()));
     }
     let max_depth = std::env::var("MENTAT_TXFN_MAX_DEPTH")
         .ok()
@@ -244,11 +290,11 @@ pub fn transact(
     let expanded = mentat_script::txfn::expand_str(
         edn,
         max_depth,
-        |ident| db_fn_source(&s, ident),
+        |ident| db_fn_source(s, ident),
         |form| it.eval_to_string(form),
     )
     .map_err(public_traits::errors::MentatError::TransactionFunction)?;
-    s.transact(&expanded)
+    Ok((false, expanded))
 }
 
 /// The live `:db/fn` source on the entity whose `:db/ident` is `ident`, if any.

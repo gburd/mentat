@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 duckdb = { version = "~1.10506.0", features = ["bundled"] }
-mentat_duckdb_store = { path = "..", features = ["script"], version = "=1.17.2" }
+mentat_duckdb_store = { path = "..", features = ["script", "failpoints"], version = "=1.17.2" }
 mentat_script = { path = "../../../script", version = "=1.17.2" }
 mino-rs = { path = "../../../mino", version = "=1.17.2" }
 mentat_query_algebrizer = { path = "../../../sqlite/query-algebrizer", version = "=1.17.2" }
