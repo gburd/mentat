@@ -235,9 +235,15 @@ pub fn drop_store(store_name: &str) -> Result<String, Box<dyn std::error::Error 
     // Drop the schema with CASCADE
     Spi::run(&format!("DROP SCHEMA IF EXISTS {} CASCADE", quoted_schema))?;
 
-    // Remove from metadata table
+    // Remove from metadata table. The store's subscriptions went with its
+    // schema; a stale row would block a later store of this name (or a
+    // rename to it).
     Spi::run_with_args(
         "DELETE FROM mentat.stores WHERE store_name = $1",
+        &[DatumWithOid::from(store_name)],
+    )?;
+    Spi::run_with_args(
+        "DELETE FROM mentat.subscriptions WHERE store_name = $1",
         &[DatumWithOid::from(store_name)],
     )?;
     // Bump, don't delete: a backend that cached this store must reload if a
@@ -343,6 +349,12 @@ pub fn rename_store(
             DatumWithOid::from(new_schema.as_str()),
             DatumWithOid::from(old_name),
         ],
+    )?;
+    // Subscription triggers moved with the schema and find their store by
+    // schema at run time; their rows follow the name.
+    Spi::run_with_args(
+        "UPDATE mentat.subscriptions SET store_name = $1 WHERE store_name = $2",
+        &[DatumWithOid::from(new_name), DatumWithOid::from(old_name)],
     )?;
     bump_generation(old_name)?;
     bump_generation(new_name)?;
