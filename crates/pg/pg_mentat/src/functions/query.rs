@@ -2785,7 +2785,13 @@ fn build_sql_from_datalog_enriched(
             // search backed by the optional pg_turbovec extension (issue #332).
             // Vectors live in the per-attribute aux table created by
             // mentat.attach_turbovec_attribute(...). See build_turbovec_near_join.
-            let fj = build_turbovec_near_join(wf, fts_idx, builder, &mut extra_var_bindings)?;
+            let fj = build_turbovec_near_join(
+                wf,
+                fts_idx,
+                builder,
+                &mut extra_var_bindings,
+                schema_prefix,
+            )?;
             fts_joins.push(fj);
         } else if op_name == "bm25-match" {
             // (bm25-match $ :attr "query" k)  — BM25-ranked full-text search
@@ -2840,7 +2846,8 @@ fn build_sql_from_datalog_enriched(
             //   (geom-intersects $ :attr "WKT") — ST_Intersects filter
             //     binds [[?e]]
             // See build_postgis_join + docs/src/postgis.md.
-            let fj = build_postgis_join(wf, fts_idx, builder, &mut extra_var_bindings)?;
+            let fj =
+                build_postgis_join(wf, fts_idx, builder, &mut extra_var_bindings, schema_prefix)?;
             fts_joins.push(fj);
         } else if op_name == "get-else" {
             // [(get-else $ ?e :attr default-val) ?result]
@@ -3404,6 +3411,7 @@ fn build_sql_from_datalog_enriched(
                         fts_idx,
                         &mut arm_builder,
                         &mut arm_extra_var_bindings,
+                        schema_prefix,
                     )?;
                     arm_fts_joins.push(fts_join);
                 } else if op_name == "bm25-match" {
@@ -3447,6 +3455,7 @@ fn build_sql_from_datalog_enriched(
                         fts_idx,
                         &mut arm_builder,
                         &mut arm_extra_var_bindings,
+                        schema_prefix,
                     )?;
                     arm_fts_joins.push(fts_join);
                 } else if matches!(
@@ -3779,6 +3788,10 @@ fn resolve_fts_language(attr_ident: &str, schema_prefix: &str) -> String {
     // Look up the attribute's entid, then find its :db/doc datom.
     // The attr_ident comes from keyword_to_ident which strips the leading colon,
     // e.g. "person/bio". The schema table stores idents without the colon prefix.
+    // The store's own rows: a named store's carry its store_id, not 0.
+    let Ok(store_id) = resolve_store_id(schema_prefix) else {
+        return "english".to_string();
+    };
     let lang = pgrx::spi::Spi::connect(|client| {
         // Two-step query: find the entid for :db/doc (entid 8 in bootstrap), then
         // look up the doc string for our attribute entity.
@@ -3786,7 +3799,7 @@ fn resolve_fts_language(attr_ident: &str, schema_prefix: &str) -> String {
             "SELECT dt.v \
              FROM {schema_prefix}schema s \
              JOIN {schema_prefix}datoms_text_new dt \
-               ON dt.store_id = 0 AND dt.e = s.entid AND dt.added = true \
+               ON dt.store_id = {store_id} AND dt.e = s.entid AND dt.added = true \
              WHERE s.ident = '{ident}' \
                AND dt.a = (SELECT entid FROM {schema_prefix}schema WHERE ident = ':db/doc') \
              LIMIT 1",
@@ -4433,9 +4446,14 @@ fn build_vector_near_join(
     fts_idx: usize,
     builder: &mut SqlBuilder<'_>,
     var_bindings: &mut HashMap<String, String>,
-    _schema_prefix: &str,
+    schema_prefix: &str,
     _store_id_param: &str,
 ) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    default_store_only(
+        "vector-near",
+        "mentat.attach_vector_attribute",
+        schema_prefix,
+    )?;
     if wf.args.len() < 4 || wf.args.len() > 5 {
         return Err(format!(
             ":db.error/fn-arity vector-near requires 4 or 5 arguments \
@@ -4604,11 +4622,12 @@ fn build_vector_near_join(
 fn where_fn_attr_entid(
     fn_name: &str,
     attr_ident: &str,
+    schema_prefix: &str,
 ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
     let lookup = attr_ident.to_string();
     let entid_opt: Option<i64> = pgrx::Spi::connect(|client| {
         let mut tt = client.select(
-            "SELECT entid FROM mentat.schema WHERE ident = $1",
+            &format!("SELECT entid FROM {schema_prefix}schema WHERE ident = $1"),
             Some(1),
             &[lookup.clone().into()],
         )?;
@@ -4629,6 +4648,27 @@ fn where_fn_attr_entid(
         )
         .into()
     })
+}
+
+/// The per-attribute tables behind vector-near, turbovec-near and geom-*
+/// (`mentat.attr_<entid>_vector` / `_tvec` / `_geom`) are made by the
+/// `mentat.attach_*` helpers for the default store only. On a named store
+/// they would read another store's rows, so refuse.
+fn default_store_only(
+    fn_name: &str,
+    helper: &str,
+    schema_prefix: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let store = store_name_from_prefix(schema_prefix);
+    if store == "default" {
+        return Ok(());
+    }
+    Err(format!(
+        ":db.error/unsupported {fn_name} is not supported for named stores yet (store '{store}'): \
+         {helper} makes its per-attribute table for the default store only. \
+         Query the default store, or use the built-in fulltext / fuzzy / trigram where-fns."
+    )
+    .into())
 }
 
 /// Bind the `[[?e ?score]]` relation of a ranked where-fn (vector distance or
@@ -4674,7 +4714,13 @@ fn build_turbovec_near_join(
     fts_idx: usize,
     builder: &mut SqlBuilder<'_>,
     var_bindings: &mut HashMap<String, String>,
+    schema_prefix: &str,
 ) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    default_store_only(
+        "turbovec-near",
+        "mentat.attach_turbovec_attribute",
+        schema_prefix,
+    )?;
     if wf.args.len() < 4 || wf.args.len() > 5 {
         return Err(format!(
             ":db.error/fn-arity turbovec-near requires 4 or 5 arguments \
@@ -4746,7 +4792,7 @@ fn build_turbovec_near_join(
         "<=>"
     };
 
-    let entid = where_fn_attr_entid("turbovec-near", &attr_ident)?;
+    let entid = where_fn_attr_entid("turbovec-near", &attr_ident, schema_prefix)?;
     let aux_table = format!("mentat.attr_{}_tvec", entid);
     let vec_param = builder.bind_text(vec_literal);
     let k_param = builder.bind_bigint(k);
@@ -4832,7 +4878,8 @@ fn build_bm25_match_join(
     // the query's predicate provably implies it, which a subquery or a bind
     // parameter does not. Inline the entid and store_id literals so it can.
     // (Both are integers we resolved ourselves, never user text.)
-    let entid = where_fn_attr_entid("bm25-match", &attr_ident)?;
+    // The store's own attribute: rows below are read from its schema.
+    let entid = where_fn_attr_entid("bm25-match", &attr_ident, schema_prefix)?;
     let _ = store_id_param; // inlined below as a literal instead
     let store_id = resolve_store_id(schema_prefix)?;
     let q_param = builder.bind_text(query);
@@ -5344,8 +5391,10 @@ fn build_postgis_join(
     fts_idx: usize,
     builder: &mut SqlBuilder<'_>,
     var_bindings: &mut HashMap<String, String>,
+    schema_prefix: &str,
 ) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
     let op = wf.operator.0.as_str();
+    default_store_only(op, "mentat.attach_geometry_attribute", schema_prefix)?;
     let dt_alias = format!("geo_d{}", fts_idx);
 
     // Per-op arity validation.
