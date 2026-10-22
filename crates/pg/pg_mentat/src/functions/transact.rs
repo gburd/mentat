@@ -1946,7 +1946,8 @@ fn resolve_entity_place(
                 .unwrap_or_else(|| format!("entid:{}", a));
             let attr_info = lookup_attribute_info(a).ok_or_else(
                 || -> Box<dyn std::error::Error + Send + Sync> {
-                    error::attribute_not_found(&attr_ident_display).into()
+                    error::attribute_not_found(&attr_ident_display, store_cache().db_schema())
+                        .into()
                 },
             )?;
             if attr_info.unique_constraint.is_none() {
@@ -1992,7 +1993,7 @@ fn resolve_attribute(value: &edn::Value) -> Result<i64, Box<dyn std::error::Erro
             let ident_str = format!("{}", kw);
             store_cache().resolve_ident(&ident_str).ok_or_else(
                 || -> Box<dyn std::error::Error + Send + Sync> {
-                    error::attribute_not_found(&ident_str).into()
+                    error::attribute_not_found(&ident_str, store_cache().db_schema()).into()
                 },
             )
         }
@@ -2105,7 +2106,7 @@ fn validate_datom_constraints(
             let ident_name = store_cache()
                 .get_ident(datom.a)
                 .unwrap_or_else(|| format!("entid:{}", datom.a));
-            error::attribute_not_found(&ident_name).into()
+            error::attribute_not_found(&ident_name, store_cache().db_schema()).into()
         },
     )?;
 
