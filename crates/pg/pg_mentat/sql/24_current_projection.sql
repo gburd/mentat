@@ -123,12 +123,15 @@ CREATE INDEX IF NOT EXISTS idx_current_boolean_avet ON mentat.current_boolean (s
 DO $$
 DECLARE t TEXT;
 BEGIN
+    -- Script-time code runs as the bootstrap superuser: resolve calls in
+    -- pg_catalog only (see sql/10_narrow_storage.sql).
+    SET LOCAL search_path = pg_catalog, pg_temp;
     FOREACH t IN ARRAY ARRAY[
         'current_ref', 'current_long', 'current_text', 'current_double',
         'current_instant', 'current_keyword', 'current_uuid', 'current_bytes',
         'current_boolean'
     ] LOOP
-        EXECUTE format(
+        EXECUTE pg_catalog.format(
             'ALTER TABLE mentat.%I SET ('
             || 'autovacuum_vacuum_scale_factor = 0, '
             || 'autovacuum_vacuum_threshold = 10000, '

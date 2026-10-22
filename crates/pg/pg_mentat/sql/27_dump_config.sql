@@ -24,7 +24,7 @@
 
 DO $dump$
 DECLARE
-    seed_filter CONSTANT jsonb := jsonb_build_object(
+    seed_filter CONSTANT jsonb := pg_catalog.jsonb_build_object(
         'stores',           $f$WHERE store_name <> 'default'$f$,
         'idents',           'WHERE entid >= 100',
         'schema',           'WHERE entid >= 100',
