@@ -8418,8 +8418,17 @@ fn build_rule_ctes(
             )
         });
 
+        // A non-recursive rule is inlined at each invocation, so the planner
+        // pushes the query's filters into it; referenced twice, PostgreSQL
+        // would otherwise materialize the whole rule relation (33x slower on
+        // a 200k-entity rule). PG12+; a recursive CTE is always materialized.
+        let materialized = if is_recursive {
+            ""
+        } else {
+            "NOT MATERIALIZED "
+        };
         cte_parts.push(format!(
-            "{}({cte_col_list}) AS ({cte_body})",
+            "{}({cte_col_list}) AS {materialized}({cte_body})",
             quote_ident(rule_name)
         ));
         if is_recursive {

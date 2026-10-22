@@ -369,6 +369,29 @@ mod tests {
             .0
     }
 
+    /// A non-recursive rule invoked twice is inlined, not materialized, so
+    /// the query's own filters reach its datoms: a plan with no CTE Scan.
+    /// (Materialized, a 200k-entity rule invoked twice ran 33x slower.) A
+    /// recursive rule stays a CTE.
+    #[pg_test]
+    fn test_rule_non_recursive_is_inlined() {
+        let [_a, b, _c, _d] = setup_chain();
+        let plan = |q: &str| -> String {
+            Spi::get_one::<String>(&format!(
+                "SELECT mentat_explain($q${q}$q$, '{{}}'::jsonb)->>'explain_plan'"
+            ))
+            .expect("explain")
+            .expect("NULL plan")
+        };
+        let q = "[:find ?e :rules [[(aged ?e ?n) [?e :rv/age ?n]]] \
+                 :where [?e :rv/name \"bob\"] (aged ?e ?n) (aged ?e ?m)]";
+        let p = plan(q);
+        assert!(!p.contains("CTE Scan"), "{q}:\n{p}");
+        assert_eq!(rows(q), [format!("[{b}]")]);
+        let q = format!("[:find ?e :rules {UP} :where (up ?e ?b) (up ?b ?c)]");
+        assert!(plan(&q).contains("CTE Scan"), "{q}");
+    }
+
     /// The error a query raises, or "" if it runs.
     fn query_error(query: &str) -> String {
         crate::functions::query::mentat_query(query, pgrx::JsonB(serde_json::json!({})))
