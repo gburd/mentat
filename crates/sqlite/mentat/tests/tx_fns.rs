@@ -516,3 +516,64 @@ fn test_retract_of_absent_value_keeps_cache_and_observers_quiet() {
     assert!(changes.contains(&r_n));
     assert!(!changes.contains(&r_m), "{changes:?}");
 }
+
+// #152: only a :db.unique/identity attribute makes `[:attr v]` in a cardinality-many ref's
+// value a lookup ref (DataScript's rule). Two idents of other attributes stay two refs.
+#[test]
+fn test_vector_of_idents_on_a_ref_list() {
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :user/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/value :db/index true}
+                {:db/ident :user/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :user/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                {:db/ident :form/fields :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        )
+        .expect("schema");
+    let fields = |store: &mut Store, tx: &str| -> Vec<String> {
+        let f = *store
+            .transact(tx)
+            .unwrap_or_else(|e| panic!("{tx}: {e}"))
+            .tempids
+            .get("f")
+            .unwrap();
+        let mut v: Vec<String> = store
+            .q_once(
+                &format!("[:find [?i ...] :where [{f} :form/fields ?r] [?r :db/ident ?i]]"),
+                None,
+            )
+            .into_coll_result()
+            .unwrap()
+            .into_iter()
+            .map(|b| b.into_kw().expect("keyword").to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    // :user/email is :db.unique/value: two refs.
+    assert_eq!(
+        fields(
+            &mut store,
+            r#"[{:db/id "f" :form/fields [:user/email :user/name]}]"#
+        ),
+        [":user/email", ":user/name"]
+    );
+    // :db/ident is :db.unique/identity, so this is a lookup ref to :user/name ...
+    assert_eq!(
+        fields(
+            &mut store,
+            r#"[{:db/id "f" :form/fields [:db/ident :user/name]}]"#
+        ),
+        [":user/name"]
+    );
+    // ... and the way to write the two refs is to make the first a lookup ref.
+    assert_eq!(
+        fields(
+            &mut store,
+            r#"[{:db/id "f" :form/fields [[:db/ident :user/id] :user/name]}]"#
+        ),
+        [":user/id", ":user/name"]
+    );
+}

@@ -124,9 +124,11 @@ where
 }
 
 /// A value-position vector `[:attr v]` read as Datomic's lookup ref (#152): two elements, a
-/// keyword naming a `:db/unique` attribute, then a plain value. Datomic resolves the
-/// ambiguity with a list of values the same way: `[:a/b "x"]` is a lookup ref, and a list of
-/// lookup refs is a vector of them (`[[:a/b "x"] [:a/b "y"]]`).
+/// keyword naming a `:db.unique/identity` attribute, then a plain value. This is DataScript's
+/// rule for the ambiguity with a list of values: `[:a/id "x"]` is a lookup ref, and a list of
+/// lookup refs is a vector of them (`[[:a/id "x"] [:a/id "y"]]`). A `:db.unique/value`
+/// attribute does not qualify. To give a cardinality-many ref the two idents
+/// `[:a/id :b/c]`, write the first as a lookup ref: `[[:db/ident :a/id] :b/c]`.
 fn vector_lookup_ref<V: TransactableValue>(
     schema: &Schema,
     vs: &[ValuePlace<V>],
@@ -147,7 +149,7 @@ fn vector_lookup_ref<V: TransactableValue>(
     };
     schema
         .attribute_for_ident(kw)
-        .filter(|(attr, _)| attr.unique.is_some())?;
+        .filter(|(attr, _)| attr.unique == Some(attribute::Unique::Identity))?;
     Some(entmod::LookupRef {
         a: AttributePlace::Entid(a),
         v: v.clone(),

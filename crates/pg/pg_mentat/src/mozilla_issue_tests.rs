@@ -336,6 +336,39 @@ mod tests {
         );
     }
 
+    // #152: only a :db.unique/identity attribute makes `[:attr v]` in a cardinality-many ref's
+    // value a lookup ref, as on the embedded engine (DataScript's rule).
+    #[pg_test]
+    fn vector_of_idents_on_a_ref_list() {
+        setup();
+        tx(
+            r#"[{:db/ident :mf/email :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                :db/unique :db.unique/value :db/index true}
+               {:db/ident :mf/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                :db/unique :db.unique/identity :db/index true}
+               {:db/ident :mf/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+               {:db/ident :mf/fields :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}]"#,
+        );
+        let fields = |t: &str| {
+            let f = tx(t)["tempids"]["f"].as_i64().unwrap();
+            coll(&format!(
+                "[:find [?i ...] :where [{f} :mf/fields ?r] [?r :db/ident ?i]]"
+            ))
+        };
+        assert_eq!(
+            fields(r#"[{:db/id "f" :mf/fields [:mf/email :mf/name]}]"#),
+            [":mf/email", ":mf/name"]
+        );
+        assert_eq!(
+            fields(r#"[{:db/id "f" :mf/fields [:db/ident :mf/name]}]"#),
+            [":mf/name"]
+        );
+        assert_eq!(
+            fields(r#"[{:db/id "f" :mf/fields [[:db/ident :mf/id] :mf/name]}]"#),
+            [":mf/id", ":mf/name"]
+        );
+    }
+
     // #179: a comparison over a value of unknown type applies to comparable values only.
     #[pg_test]
     fn inequality_over_untyped_values() {

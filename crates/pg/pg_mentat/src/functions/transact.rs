@@ -2166,14 +2166,16 @@ fn encode_attr_value(
 
 /// The values a value-position vector stands for, as on the embedded engine (#152): on a
 /// cardinality-many attribute a vector is a list of values (nested vectors flatten), except
-/// that `[:unique/attr v]` on a ref attribute is one lookup ref. Anything else is one value.
+/// that `[:identity/attr v]` on a ref attribute is one lookup ref (DataScript's rule: only a
+/// :db.unique/identity attribute). Anything else is one value.
 fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
     fn is_lookup_ref(v: &edn::Value) -> bool {
         match v {
             edn::Value::Vector(pair) if pair.len() == 2 => match &pair[0] {
+                // named-stores: per-store cache
                 edn::Value::Keyword(kw) => crate::cache::get_cache()
                     .get_attribute_by_ident(&format!("{kw}"))
-                    .is_some_and(|attr| attr.unique_constraint.is_some()),
+                    .is_some_and(|attr| attr.unique_constraint.as_deref() == Some("identity")),
                 _ => false,
             },
             _ => false,

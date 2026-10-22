@@ -19,11 +19,37 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
 | Tempids | Yes | Yes | **Complete** |
-| Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs. The embedded engine and DuckDB accept the vector form since 1.18.0 |
+| Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs (see [Lookup refs in a list of values](#lookup-refs-in-a-list-of-values)). The embedded engine and DuckDB accept the vector form since 1.18.0 |
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
 | Negative tempids | Yes | No | N/A -- use string tempids |
 | `:db/fn` (database functions) | Yes (Clojure) | Yes (mino) | pg_mentat 1.14.0 (`script` builds); embedded SQLite (`mino` feature) and the DuckDB extension in 1.15.0 -- sandboxed mino `(fn [db & args] ...)` returning tx-data; see [Transaction functions](#transaction-functions) |
+
+### Lookup refs in a list of values
+
+For a cardinality-many ref attribute, a two-element vector is ambiguous: it
+can be one lookup ref or a list of two values. Every backend reads it the way
+DataScript does: when the first element is the ident of a
+`:db.unique/identity` attribute, the vector is one lookup ref. Otherwise it is
+a list of values. A `:db.unique/value` attribute does not make it a lookup ref.
+
+```clojure
+;; :user/id is :db.unique/identity
+{:form/owners [:user/id "u1"]}                 ; one ref: the entity with :user/id "u1"
+{:form/owners [[:user/id "u1"] [:user/id "u2"]]} ; two refs, one per lookup ref
+;; :user/email is :db.unique/value, :user/name is not unique
+{:form/fields [:user/email :user/name]}        ; two refs, to the two attribute entities
+```
+
+`:db/ident` is itself `:db.unique/identity`, so `[:db/ident :user/name]` is a
+lookup ref to the entity named `:user/name`, not refs to `:db/ident` and
+`:user/name`. The same goes for a list whose first element names any identity
+attribute. To write two refs in that case, make the first one a lookup ref
+(or use entids):
+
+```clojure
+{:form/fields [[:db/ident :user/id] :user/name]} ; two refs: :user/id and :user/name
+```
 
 ### Transaction functions
 
