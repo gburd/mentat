@@ -259,6 +259,30 @@ mod tests {
             r#"SELECT edn_q('[:find ?s :where [_ :ms/name ?s] [(includes? ?s)]]'::TEXT, '{}'::jsonb)"#,
         );
         assert!(e.contains("requires exactly 2 arguments, got 1"), "{e}");
+
+        // A value of unknown type matches only if it is a string, as on the embedded engine:
+        // the long 17 and the keyword :k/17 don't match "1%" as text.
+        tx(
+            "[{:db/ident :ms/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/identity :db/index true}
+              {:db/ident :ms/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        tx(r#"[{:ms/id "E" :ms/name "17a" :ms/n 17 :ms/kw :k/17}]"#);
+        for pred in [
+            r#"(starts-with? ?v "1")"#,
+            r#"(like ?v "1%")"#,
+            r#"(ilike ?v "%7%")"#,
+            r#"(includes? ?v "7")"#,
+            r#"(ends-with? ?v "7a")"#,
+        ] {
+            assert_eq!(
+                coll(&format!(
+                    r#"[:find [?v ...] :where [?e :ms/id "E"] [?e ?a ?v] [{pred}]]"#
+                )),
+                vec!["17a"],
+                "{pred}"
+            );
+        }
     }
 
     // #281: the tx report counts asserted and retracted datoms, as on the embedded engine.

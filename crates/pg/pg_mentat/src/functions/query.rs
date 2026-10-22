@@ -7553,7 +7553,7 @@ fn build_predicate_clause(
             )
             .into());
         }
-        let left = pred_arg_to_sql(
+        let left = string_pred_arg_to_sql(
             &pred.args[0],
             var_to_alias,
             var_to_type,
@@ -7561,7 +7561,7 @@ fn build_predicate_clause(
             input_bindings,
             builder,
         )?;
-        let right = pred_arg_to_sql(
+        let right = string_pred_arg_to_sql(
             &pred.args[1],
             var_to_alias,
             var_to_type,
@@ -7587,7 +7587,7 @@ fn build_predicate_clause(
         }
         let mut sql = Vec::with_capacity(2);
         for arg in &pred.args {
-            sql.push(pred_arg_to_sql(
+            sql.push(string_pred_arg_to_sql(
                 arg,
                 var_to_alias,
                 var_to_type,
@@ -7731,6 +7731,32 @@ fn build_predicate_clause(
     )?;
 
     Ok(format!("({} {} {})", left, sql_op, right))
+}
+
+/// An argument of a string predicate (like, ilike, starts-with?, ...). A value of unknown
+/// type matches only if it is a string, as on the embedded engine (#267): its text column,
+/// NULL for every other type, rather than the COALESCE of all columns as text.
+fn string_pred_arg_to_sql(
+    arg: &FnArg,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
+    input_bindings: &HashMap<String, serde_json::Value>,
+    builder: &mut SqlBuilder<'_>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    if let FnArg::Variable(v) = arg {
+        if let Some(alias) = untyped_value_alias(v, var_to_alias, var_to_type) {
+            return Ok(format!("{alias}.v_text"));
+        }
+    }
+    pred_arg_to_sql(
+        arg,
+        var_to_alias,
+        var_to_type,
+        computed,
+        input_bindings,
+        builder,
+    )
 }
 
 /// The table alias of `v` when it is bound to a datom's value column and its type is not
