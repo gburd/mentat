@@ -216,6 +216,10 @@ not retracted by T). `'{}'` is the current state. Any other key is an error;
 SELECT edn_pull('[:person/name :person/age]', 10001, '{"asOf": 1000}');
 ```
 
+On a named store, `pull(store, pattern, eid, options)` takes the same
+options; `q(store, ...)` uses it for a `(pull ?e [...])` find under `asOf` /
+`since`.
+
 ### `mentat.pull_many(pattern, eids)` / `mentat_pull_many(pattern, eids)`
 
 Pull the same pattern for multiple entities. Returns a JSON array.

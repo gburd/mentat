@@ -463,6 +463,20 @@ pub fn mentat_pull_with_options(
     with_basis(basis, || pull("default", pattern, entity_id))
 }
 
+/// `pull(store, pattern, entity_id, options)`: [`pull`] on a historical basis,
+/// with [`mentat_pull_with_options`]'s options. edn_q's find-pull on a named
+/// store calls it under an asOf / since query.
+#[pg_extern(name = "pull")]
+pub fn pull_with_options(
+    store: &str,
+    pattern: &str,
+    entity_id: i64,
+    options: JsonB,
+) -> Result<JsonB, PullError> {
+    let basis = basis_from_options(&options.0)?;
+    with_basis(basis, || pull(store, pattern, entity_id))
+}
+
 /// Pull entity data using a pull pattern from a named store.
 ///
 /// Supports the same pull patterns as edn_pull but operates on the specified store.
