@@ -637,6 +637,60 @@ mod tests {
         assert_eq!(left_alone, 1);
     }
 
+    // create_virtual_tables (create_store, rename_store, and the upgrade's DO
+    // block, which pins search_path to pg_catalog) built the optional
+    // trigram indexes with an unqualified gin_trgm_ops. With pg_trgm in a
+    // schema off the path, create_store failed, and with pg_trgm anywhere the
+    // 1.18.0 upgrade aborted: 'operator class "gin_trgm_ops" does not exist'.
+    #[pg_test]
+    fn pg_trgm_in_its_own_schema() {
+        setup();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_trgm'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run(
+            "DROP EXTENSION IF EXISTS pg_trgm CASCADE; \
+             CREATE SCHEMA ns_ext; CREATE EXTENSION pg_trgm SCHEMA ns_ext",
+        )
+        .expect("pg_trgm in schema ns_ext");
+        let trgm_indexes = |schema: &str| -> i64 {
+            Spi::get_one(&format!(
+                "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+                  WHERE c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}') \
+                    AND c.relname LIKE 'idx\\_%\\_trgm\\_%' \
+                    AND i.indclass[0] = (SELECT o.oid FROM pg_opclass o \
+                          WHERE o.opcname = 'gin_trgm_ops' AND o.opcnamespace = 'ns_ext'::regnamespace)"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+
+        // A store made after pg_trgm, with ns_ext off the search path.
+        Spi::run("SELECT create_store('trgm_new')").expect("create_store");
+        assert_eq!(trgm_indexes("mentat_trgm_new"), 2);
+        tx("trgm_new", SCHEMA_TX);
+        tx("trgm_new", "[{:p/name \"fresh\"}]");
+        assert_eq!(sorted(names("trgm_new")), vec!["fresh"]);
+
+        // A 1.17 store rebuilt by the upgrade.
+        Spi::run(
+            "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('trgm_old', 'mentat_trgm_old'); \
+             CREATE SCHEMA mentat_trgm_old; \
+             CREATE TABLE mentat_trgm_old.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+               value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL)",
+        )
+        .expect("1.17 store");
+        Spi::run(&upgrade_do_block()).expect("the upgrade must not abort");
+        assert_eq!(trgm_indexes("mentat_trgm_old"), 2);
+        tx("trgm_old", SCHEMA_TX);
+        tx("trgm_old", "[{:p/name \"rebuilt\"}]");
+        assert_eq!(sorted(names("trgm_old")), vec!["rebuilt"]);
+    }
+
     // vector-near / turbovec-near / geom-* read mentat.attr_<entid>_* tables
     // that the mentat.attach_* helpers make for the default store only. On a
     // named store they joined the default store's rows by another store's
