@@ -444,7 +444,8 @@ fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
 /// The table that answers "does e have a live value for attribute a"
 /// (`missing?`), as `<table> AS g WHERE <live>`: the rows live on the
 /// query's basis, from the projection or the log (Datomic's as-of / since
-/// rule, as in [`temporal_conditions`]).
+/// rule, as in [`temporal_conditions`]). It reads a value, not the log, so
+/// {"history": true} doesn't apply (get-else likewise).
 fn attr_lookup_table(
     value_type: &str,
     temporal: &TemporalOption,
@@ -453,14 +454,14 @@ fn attr_lookup_table(
 ) -> String {
     match value_type_to_table_info(value_type) {
         Some(info) => {
-            let from = if reads_projection(temporal, temporal.history) {
+            let from = if reads_projection(temporal, false) {
                 info.current_table
             } else {
                 info.table
             };
             let live = temporal_conditions(
                 temporal,
-                temporal.history,
+                false,
                 "g",
                 Some(&TypedTableInfo {
                     value_column: "v",
@@ -6302,18 +6303,20 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             };
 
             // Current state reads the projection (one row per card-one e/a).
-            // as-of / since / history read the log rows live on that basis
-            // (temporal_conditions: Datomic's rule, issue #364).
+            // as-of / since read the log rows live on that basis
+            // (temporal_conditions: Datomic's rule, issue #364). get-else
+            // reads a value, not the log, so {"history": true} doesn't apply:
+            // the log would hand back a retraction row's value.
             let (from, extra) = match value_type_to_table_info(&info.value_type) {
                 Some(t) => {
-                    let from = if reads_projection(temporal, temporal.history) {
+                    let from = if reads_projection(temporal, false) {
                         t.current_table
                     } else {
                         t.table
                     };
                     let live = temporal_conditions(
                         temporal,
-                        temporal.history,
+                        false,
                         "g",
                         Some(&TypedTableInfo {
                             value_column: "v",
