@@ -346,4 +346,84 @@ mod tests {
         assert_eq!(leaked, 0);
         Spi::run("SELECT drop_store('tf_s')").expect("drop");
     }
+
+    // A mixed-case name gets the quoted schema "mentat_MyStore". A text ->
+    // regnamespace cast folds that to mentat_mystore: create_store('MyStore')
+    // failed ("schema already exists"), and with a lower-case twin present
+    // _store_grants re-owned the twin's functions.
+    #[pg_test]
+    fn mixed_case_store_name() {
+        setup();
+        Spi::run("SELECT create_store('MyStore')").expect("create mixed case");
+        tx("MyStore", SCHEMA_TX);
+        tx("MyStore", "[{:p/name \"upper\"}]");
+        assert_eq!(sorted(names("MyStore")), vec!["upper"]);
+        let in_schema: i64 =
+            Spi::get_one("SELECT count(*) FROM \"mentat_MyStore\".current_text WHERE v = 'upper'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(in_schema, 1);
+        let e = q(
+            "MyStore",
+            "[:find ?e . :where [?e :p/name \"upper\"]]",
+            "{}",
+        )["result"]
+            .clone();
+        let pulled = json(&format!("SELECT pull('MyStore', '[:p/name]', {e})"));
+        assert_eq!(pulled[":p/name"], serde_json::json!("upper"), "{pulled}");
+
+        Spi::run("SELECT rename_store('MyStore', 'MyOther')").expect("rename");
+        tx("MyOther", "[{:p/name \"again\"}]");
+        assert_eq!(sorted(names("MyOther")), vec!["again", "upper"]);
+        let n: i64 = Spi::get_one(
+            "SELECT count(*) FROM \"mentat_MyOther\".facts WHERE attribute = ':p/name'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(n, 2);
+        Spi::run("SELECT drop_store('MyOther')").expect("drop");
+        let gone: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_namespace WHERE nspname = 'mentat_MyOther'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(gone, 0);
+    }
+
+    #[pg_test]
+    fn mixed_case_store_with_lower_case_twin() {
+        setup();
+        Spi::run("SELECT create_store('twincase')").expect("create twin");
+        // The twin's functions belong to another role: _store_grants for
+        // "mentat_TwinCase" must not hand them to its caller.
+        Spi::run(
+            "CREATE ROLE ns_twin_owner NOLOGIN; \
+             DO $$ DECLARE r RECORD; BEGIN \
+               FOR r IN SELECT oid::regprocedure AS p FROM pg_proc WHERE pronamespace = \
+                        (SELECT oid FROM pg_namespace WHERE nspname = 'mentat_twincase') LOOP \
+                 EXECUTE format('ALTER ROUTINE %s OWNER TO ns_twin_owner', r.p); \
+               END LOOP; END $$",
+        )
+        .expect("re-own twin functions");
+        let twin_owned = "SELECT count(*) FROM pg_proc WHERE proowner = 'ns_twin_owner'::regrole \
+             AND pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'mentat_twincase')";
+        let before: i64 = Spi::get_one(twin_owned).unwrap().unwrap();
+        assert!(before > 0);
+
+        Spi::run("SELECT create_store('TwinCase')").expect("create mixed case");
+        assert_eq!(Spi::get_one::<i64>(twin_owned).unwrap().unwrap(), before);
+        for s in ["TwinCase", "twincase"] {
+            tx(s, SCHEMA_TX);
+        }
+        tx("TwinCase", "[{:p/name \"upper\"}]");
+        tx("twincase", "[{:p/name \"lower\"}]");
+        assert_eq!(sorted(names("TwinCase")), vec!["upper"]);
+        assert_eq!(sorted(names("twincase")), vec!["lower"]);
+        Spi::run("SELECT drop_store('TwinCase')").expect("drop mixed case");
+        assert_eq!(
+            sorted(names("twincase")),
+            vec!["lower"],
+            "twin survives the drop"
+        );
+        Spi::run("SELECT drop_store('twincase')").expect("drop twin");
+    }
 }
