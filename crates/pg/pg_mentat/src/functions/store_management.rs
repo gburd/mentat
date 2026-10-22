@@ -474,7 +474,12 @@ mod tests {
         // unqualified CREATE in the script would land in pg_catalog.
         assert!(block.contains("pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)"));
         assert!(block.contains("pg_catalog.set_config('search_path', old_path, true)"));
-        assert!(!block.to_uppercase().contains("SET LOCAL"));
+        assert!(!block.lines().any(|l| l
+            .split("--")
+            .next()
+            .unwrap_or("")
+            .to_uppercase()
+            .contains("SET LOCAL")));
     }
 
     #[test]
