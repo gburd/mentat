@@ -393,6 +393,14 @@ BEGIN
             END IF;
             CONTINUE;
         END IF;
+        -- validate_store_name's reserved names: create_store() never made
+        -- these, and create_virtual_tables (below) would refuse them.
+        IF pg_catalog.lower(st.store_name) IN ('default', 'information_schema')
+           OR pg_catalog.lower(st.store_name) LIKE 'pg\_%' THEN
+            RAISE WARNING 'pg_mentat upgrade: named store "%" not rebuilt: "%" is a reserved store name. '
+                          'See "Upgrading from 1.17" in docs/src/multi-tenancy.md.', st.store_name, st.store_name;
+            CONTINUE;
+        END IF;
         -- 'mentat_' + 56 characters is the 63-character identifier limit.
         -- 1.17 took names up to 63 and PostgreSQL cut the schema name short,
         -- so the row no longer names its schema.

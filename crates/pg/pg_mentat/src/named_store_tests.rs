@@ -1063,4 +1063,36 @@ mod tests {
         );
         Spi::run("SELECT drop_store('fp_s')").expect("drop");
     }
+
+    // A hand-made mentat.stores row with a name validate_store_name reserves
+    // passed the upgrade's name check; create_virtual_tables then refused it
+    // and ALTER EXTENSION UPDATE aborted. Such rows are skipped now.
+    #[pg_test]
+    fn upgrade_skips_reserved_store_names() {
+        setup();
+        for name in ["pg_x", "PG_Y", "information_schema", "Default"] {
+            Spi::run(&format!(
+                "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('{name}', 'mentat_{name}'); \
+                 CREATE SCHEMA \"mentat_{name}\"; \
+                 CREATE TABLE \"mentat_{name}\".datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+                   value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL)"
+            ))
+            .expect("1.17-style row");
+        }
+        Spi::run(&upgrade_do_block()).expect("the upgrade must not abort");
+        let renamed: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_namespace WHERE nspname LIKE '%\\_pre118'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(renamed, 0, "reserved-name stores are left alone");
+        let wide: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
+              WHERE c.relname = 'datoms' AND a.attname = 'value_type_tag' AND c.relnamespace IN \
+                (SELECT oid FROM pg_namespace WHERE nspname IN \
+                  ('mentat_pg_x', 'mentat_PG_Y', 'mentat_information_schema', 'mentat_Default'))",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(wide, 4);
+    }
 }
