@@ -363,7 +363,9 @@ mod protocol_unit_tests {
 
     #[tokio::test]
     async fn test_session_expiration_and_cleanup() {
-        let store = SessionStore::new(Duration::from_millis(1));
+        // Long enough that the three sessions are still live when counted on a
+        // loaded machine (1 ms flaked: a session expired before the first count).
+        let store = SessionStore::new(Duration::from_millis(300));
 
         store.create("db1".to_string()).await;
         store.create("db2".to_string()).await;
@@ -371,7 +373,7 @@ mod protocol_unit_tests {
 
         assert_eq!(store.active_count().await, 3);
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
 
         // All expired
         assert_eq!(store.active_count().await, 0);
