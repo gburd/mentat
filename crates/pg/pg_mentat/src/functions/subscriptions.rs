@@ -100,18 +100,21 @@ fn subscription_exists(
 /// on datom changes and issues NOTIFY if results differ.
 ///
 /// The trigger function:
-/// 1. Runs the subscribed Datalog query via edn_q
+/// 1. Runs the subscribed Datalog query against the subscribed store, via q()
 /// 2. Computes an MD5 hash of the result
 /// 3. Compares with the last known hash (stored in a session variable)
 /// 4. Sends NOTIFY on the subscription channel if the hash changed
 fn trigger_function_sql(
     schema: &str,
+    store_name: &str,
     subscription_name: &str,
     channel: &str,
     query: &str,
 ) -> String {
     // Escape single quotes in the query for embedding in PL/pgSQL
     let escaped_query = query.replace('\'', "''");
+    // The trigger sits on this store's datoms view: query the same store.
+    let escaped_store = store_name.replace('\'', "''");
     let func_name = format!("{}.mentat_sub_{}", schema, subscription_name);
 
     // The session variable key stores the last known hash for this subscription.
@@ -128,7 +131,7 @@ DECLARE
     result_json JSONB;
 BEGIN
     -- Re-evaluate the subscribed Datalog query
-    SELECT edn_q('{escaped_query}', '{{}}'::jsonb) INTO result_json;
+    SELECT q('{escaped_store}', '{escaped_query}', '{{}}'::jsonb) INTO result_json;
 
     -- Compute hash of current results
     new_hash := md5(result_json::TEXT);
@@ -151,6 +154,7 @@ END;
 $$;
 ",
         func_name = func_name,
+        escaped_store = escaped_store,
         escaped_query = escaped_query,
         var_name = var_name,
         channel = channel,
@@ -253,7 +257,13 @@ pub fn subscribe(
     let channel = channel_name(subscription_name);
 
     // Create the trigger function
-    let func_sql = trigger_function_sql(&quoted_schema, subscription_name, &channel, query);
+    let func_sql = trigger_function_sql(
+        &quoted_schema,
+        store_name,
+        subscription_name,
+        &channel,
+        query,
+    );
     Spi::run(&func_sql)?;
 
     // Create the trigger on the datoms table.
@@ -436,12 +446,13 @@ mod tests {
     fn test_trigger_function_sql_contains_key_elements() {
         let sql = trigger_function_sql(
             "mentat",
+            "default",
             "test_sub",
             "mentat_test_sub",
             "[:find ?e :where [?e :person/name]]",
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
-        assert!(sql.contains("edn_q"));
+        assert!(sql.contains("q('default', '[:find"));
         assert!(sql.contains("pg_notify"));
         assert!(sql.contains("mentat_test_sub"));
         assert!(sql.contains("[:find ?e :where [?e :person/name]]"));
@@ -451,16 +462,32 @@ mod tests {
     fn test_trigger_function_sql_escapes_quotes() {
         let sql = trigger_function_sql(
             "mentat",
+            "default",
             "test_sub",
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
         );
-        // Single quotes are doubled once for the edn_q('...') string
+        // Single quotes are doubled once for the q('...') string
         // literal embedded inside the $$-quoted function body. The function
         // body is dollar-quoted, so the quotes inside it are literal -- there
         // is no second nesting level, hence one level of doubling (O''Brien),
         // not two (O''''Brien).
         assert!(sql.contains("O''Brien"));
+    }
+
+    // The trigger fires on the subscribed store's datoms view; it must query
+    // that store, not the default one (edn_q).
+    #[test]
+    fn test_trigger_function_sql_queries_its_store() {
+        let sql = trigger_function_sql(
+            "mentat_acme",
+            "acme",
+            "s",
+            "mentat_s",
+            "[:find ?n :where [_ :p/name ?n]]",
+        );
+        assert!(sql.contains("q('acme', '[:find ?n"), "{sql}");
+        assert!(!sql.contains("edn_q"), "{sql}");
     }
 
     #[test]
