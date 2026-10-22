@@ -8113,9 +8113,19 @@ enum RuleArg {
     Null,
 }
 
-/// The SELECT expressions filling one CTE column group, in RULE_VALUE_COLS
-/// order. An entity id is stored as a ref value, as Datalog treats them.
-fn rule_value_cols(arg: &RuleArg) -> Vec<String> {
+/// The SELECT expressions filling one CTE column group (see
+/// `rule_col_group`). An entity id is stored as a ref value, as Datalog
+/// treats them. `col_type`: the column's value type, when every clause
+/// binds it to one type.
+fn rule_value_cols(arg: &RuleArg, col_type: Option<&str>) -> Vec<String> {
+    if let Some(info) = col_type.and_then(value_type_to_table_info) {
+        let (vc, sql_type) = (info.value_column, info.sql_type);
+        return vec![match arg {
+            RuleArg::Value(a) => format!("{a}.{vc}"),
+            RuleArg::Typed(x, _) => format!("({x})::{sql_type}"),
+            RuleArg::Null => format!("NULL::{sql_type}"),
+        }];
+    }
     let typed = match arg {
         RuleArg::Typed(x, ty) => value_type_to_table_info(ty).map(|info| (x, info)),
         _ => None,
@@ -8135,13 +8145,29 @@ fn rule_value_cols(arg: &RuleArg) -> Vec<String> {
         .collect()
 }
 
+/// The columns a rule CTE stores for column group `colN`: with the value
+/// type known, only that type's value column (the tag is a constant, the
+/// other columns NULL), so a typed rule row is as narrow as a plain one;
+/// else the type tag and every value column.
+fn rule_col_group(col_type: Option<&str>) -> Vec<&'static str> {
+    match col_type.and_then(value_type_to_table_info) {
+        Some(info) => vec![info.value_column],
+        None => RULE_VALUE_COLS.iter().map(|(c, _)| *c).collect(),
+    }
+}
+
 /// A LATERAL view of column group `colN` of the rule CTE `cte` under the
 /// column names of a datoms alias, so a variable bound to it binds as a
-/// pattern value does.
-fn rule_arg_lateral(cte: &str, n: usize, alias: &str) -> String {
+/// pattern value does. A typed group's tag and other columns are constants.
+fn rule_arg_lateral(cte: &str, n: usize, alias: &str, col_type: Option<&str>) -> String {
+    let info = col_type.and_then(value_type_to_table_info);
     let cols: Vec<String> = RULE_VALUE_COLS
         .iter()
-        .map(|(c, _)| format!("{cte}.col{n}_{c} AS {c}"))
+        .map(|(c, ty)| match &info {
+            Some(i) if *c == "value_type_tag" => format!("{}::SMALLINT AS {c}", i.type_tag),
+            Some(i) if *c != i.value_column => format!("NULL::{ty} AS {c}"),
+            _ => format!("{cte}.col{n}_{c} AS {c}"),
+        })
         .collect();
     format!("LATERAL (SELECT {}) AS {alias}", cols.join(", "))
 }
@@ -8376,9 +8402,9 @@ fn build_rule_ctes(
         let col_types = rule_col_types(rule, schema_prefix);
         let cte_col_list = (0..arity)
             .flat_map(|n| {
-                RULE_VALUE_COLS
-                    .iter()
-                    .map(move |(c, _)| format!("col{n}_{c}"))
+                rule_col_group(col_types.get(n).cloned().flatten().as_deref())
+                    .into_iter()
+                    .map(move |c| format!("col{n}_{c}"))
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -8483,8 +8509,9 @@ fn make_per_arm_rule_cte_info(
             .unwrap_or_default();
         for (i, arg) in invocation.args.iter().enumerate() {
             let view = quote_ident(&format!("{name} {k} v{i}"));
-            info.from_fragments.push(rule_arg_lateral(&item, i, &view));
             let ty = col_types.get(i).cloned().flatten();
+            info.from_fragments
+                .push(rule_arg_lateral(&item, i, &view, ty.as_deref()));
             match arg {
                 FnArg::Variable(v) => {
                     let var_name = format!("{}", v);
@@ -8921,8 +8948,8 @@ fn build_rule_clause_sql(
                 recursive_join.push(format!("{cte} {rec}"));
                 for (i, arg) in ri.args.iter().enumerate() {
                     let view = quote_ident(&format!("rec_{rule_name} v{i}"));
-                    recursive_join.push(rule_arg_lateral(&rec, i, &view));
                     let col_type = col_types.get(i).cloned().flatten();
+                    recursive_join.push(rule_arg_lateral(&rec, i, &view, col_type.as_deref()));
                     let FnArg::Variable(v) = arg else {
                         where_parts.push(rule_constant_filter(
                             &view,
@@ -9009,7 +9036,7 @@ fn build_rule_clause_sql(
     }
 
     let mut select_parts = Vec::new();
-    for arg in &clause.head.args {
+    for (n, arg) in clause.head.args.iter().enumerate() {
         let rule_arg = match arg {
             FnArg::Variable(v) => {
                 let var_name = format!("{}", v);
@@ -9031,7 +9058,8 @@ fn build_rule_clause_sql(
             }
             _ => RuleArg::Null,
         };
-        select_parts.extend(rule_value_cols(&rule_arg));
+        let col_type = col_types.get(n).cloned().flatten();
+        select_parts.extend(rule_value_cols(&rule_arg, col_type.as_deref()));
     }
 
     // Combine FROM

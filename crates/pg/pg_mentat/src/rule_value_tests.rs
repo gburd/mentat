@@ -392,6 +392,48 @@ mod tests {
         assert!(plan(&q).contains("CTE Scan"), "{q}");
     }
 
+    /// A rule column of one known type is stored as that one typed column,
+    /// so a recursive rule's rows are as narrow as a plain CTE's (they were
+    /// 10 columns per argument, doubling the temp files of a transitive
+    /// closure); a column of mixed types keeps the type tag and every value
+    /// column. Both still answer.
+    #[pg_test]
+    fn test_rule_typed_columns_are_narrow() {
+        let [a, b, c, d] = setup_chain();
+        let sql = |q: &str| -> String {
+            Spi::get_one::<String>(&format!(
+                "SELECT mentat_explain($q${q}$q$, '{{}}'::jsonb)->>'generated_sql'"
+            ))
+            .expect("explain")
+            .expect("NULL sql")
+        };
+        let q = format!("[:find ?e ?b :rules {UP} :where (up ?e ?b)]");
+        assert!(
+            sql(&q).contains("up(col0_v_ref, col1_v_ref) AS ("),
+            "{}",
+            sql(&q)
+        );
+        assert_eq!(rows(&q).len(), 6);
+        let q =
+            "[:find ?e ?v :rules [[(val ?e ?v) [?e :rv/age ?v]] [(val ?e ?v) [?e :rv/name ?v]]] \
+                 :where (val ?e ?v) [?e :rv/name \"bob\"]]";
+        let s = sql(q);
+        assert!(
+            s.contains("(col0_v_ref, col1_value_type_tag, col1_v_ref, col1_v_bool, col1_v_long"),
+            "{s}"
+        );
+        assert_eq!(
+            rows(q),
+            sorted(vec![format!("[{b},12]"), format!("[{b},\"bob\"]")])
+        );
+        // A typed string column carried through a recursion, joined to a pattern.
+        let q = "[:find ?n :rules [[(boss-name ?e ?n) [?e :rv/boss ?b] [?b :rv/name ?n]] \
+                                   [(boss-name ?e ?n) [?e :rv/boss ?x] (boss-name ?x ?n)]] \
+                 :where [?e :rv/name \"dee\"] (boss-name ?e ?n) [?o :rv/name ?n] [?o :rv/age 30]]";
+        assert_eq!(rows(q), ["[\"ann\"]"]);
+        let _ = (a, c, d);
+    }
+
     /// The error a query raises, or "" if it runs.
     fn query_error(query: &str) -> String {
         crate::functions::query::mentat_query(query, pgrx::JsonB(serde_json::json!({})))
