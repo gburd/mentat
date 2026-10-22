@@ -10,7 +10,9 @@
 
 use thiserror::Error;
 
+/// New variants may be added in minor releases: match with a `_` arm.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SQLError {
     #[error("invalid parameter name: {0}")]
     InvalidParameterName(String),
