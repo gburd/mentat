@@ -1398,6 +1398,105 @@ mod tests {
         assert_eq!(index(), 1);
     }
 
+    // A subscription name is at most 48 characters, so its trigger name
+    // (mentat_sub_trg_<name>) fits 63. 1.17 took 58: a 57-character name
+    // made every t() on its store fail ("channel name too long"), and two
+    // names over 48 that start the same way shared one trigger.
+    // (subscribe() uses CREATE OR REPLACE TRIGGER, PostgreSQL 14+.)
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_names_are_at_most_48_characters() {
+        setup();
+        Spi::run("SELECT create_store('sl_s')").expect("create");
+        tx("sl_s", SCHEMA_TX);
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        let n48 = format!("sl_{}", "a".repeat(45));
+        Spi::run(&format!("SELECT subscribe('sl_s', '{n48}', '{query}')")).expect("48 is fine");
+        let trg: i64 = Spi::get_one(&format!(
+            "SELECT count(*) FROM pg_trigger WHERE tgname = 'mentat_sub_trg_{n48}'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(trg, 1, "the trigger name is not cut");
+        tx("sl_s", "[{:p/name \"after-48\"}]");
+        for n in [49, 52, 57, 58] {
+            let name = format!("sl_{}", "b".repeat(n - 3));
+            let err = text(&format!(
+                "SELECT pg_temp.capture($$SELECT subscribe('sl_s', '{name}', '{query}')$$)"
+            ));
+            assert!(
+                err.contains(&format!("is {n} characters; the limit is 48")),
+                "{n}: {err:?}"
+            );
+        }
+        let rows: i64 =
+            Spi::get_one("SELECT count(*) FROM mentat.subscriptions WHERE name LIKE 'sl\\_b%'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(rows, 0);
+        tx("sl_s", "[{:p/name \"after-refusals\"}]");
+        // A longer name left by 1.17 can still be unsubscribed.
+        let old = format!("sl_{}", "c".repeat(54));
+        Spi::run(&format!(
+            "INSERT INTO mentat.subscriptions (store_name, name, query) VALUES ('sl_s', '{old}', 'q')"
+        ))
+        .unwrap();
+        Spi::run(&format!("SELECT unsubscribe('sl_s', '{old}')")).expect("unsubscribe old");
+        Spi::run(&format!("SELECT unsubscribe('sl_s', '{n48}')")).expect("unsubscribe");
+    }
+
+    // The upgrade names each subscription over 48 characters in a WARNING
+    // (the channel note for 57 and over), and changes no row.
+    #[pg_test]
+    fn upgrade_warns_on_long_subscription_names() {
+        setup();
+        let (n57, n50, n48) = (
+            format!("ul_{}", "a".repeat(54)),
+            format!("ul_{}", "b".repeat(47)),
+            format!("ul_{}", "c".repeat(45)),
+        );
+        Spi::run(&format!(
+            "INSERT INTO mentat.subscriptions (store_name, name, query) VALUES \
+               ('ul_a', '{n57}', 'q1'), ('ul_b', '{n50}', 'q2'), ('ul_c', '{n48}', 'q3')"
+        ))
+        .expect("1.17 rows");
+        let raised = || -> String {
+            let block = upgrade_block("subnames").replace(
+                "RAISE WARNING 'pg_mentat upgrade: subscription % on",
+                "RAISE EXCEPTION 'pg_mentat upgrade: subscription % on",
+            );
+            text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"))
+        };
+        let w = raised();
+        assert!(
+            w.contains(&format!(
+                "subscription '{n57}' on store 'ul_a' has a name of 57 characters"
+            )) && w.contains("channel name too long")
+                && w.contains(&format!(
+                    "Run unsubscribe('ul_a', '{n57}') and subscribe it again"
+                )),
+            "{w:?}"
+        );
+        Spi::run("UPDATE mentat.subscriptions SET store_name = 'ul_z' WHERE store_name = 'ul_a'")
+            .unwrap();
+        let w = raised();
+        assert!(
+            w.contains(&format!(
+                "subscription '{n50}' on store 'ul_b' has a name of 50 characters"
+            )) && w.contains("shares its trigger")
+                && !w.contains("channel name too long"),
+            "{w:?}"
+        );
+        // As WARNINGs they don't stop the upgrade; no row changes.
+        Spi::run(&upgrade_block("subnames")).expect("upgrade");
+        let names: Vec<String> = sorted(json(
+            "SELECT jsonb_agg(name) FROM mentat.subscriptions WHERE name LIKE 'ul\\_%'",
+        ));
+        let mut want = vec![n57, n50, n48];
+        want.sort();
+        assert_eq!(names, want);
+    }
+
     // An on_write materialized view's trigger baked in the store's schema,
     // and its body the store's name: after rename_store every t() on the
     // store failed with `schema "mentat_mv_a" does not exist`.

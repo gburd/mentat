@@ -538,6 +538,12 @@ $migrate$;
 -- (subscribe() still refuses a name in use, but two calls at once can both
 -- take it). The SHARE lock is the one CREATE INDEX takes: no subscribe()
 -- can add a duplicate between the check and the build.
+--
+-- Names are at most 48 characters from 1.18.0 (1.17 allowed 58), so that
+-- the trigger name mentat_sub_trg_<name> fits 63: a longer one was cut, and
+-- two long names on one store that start the same way shared one trigger.
+-- A name of 57 or 58 made every write to its store fail (its channel is
+-- over 63). Each longer name gets a WARNING; none is renamed or deleted.
 -- ---------------------------------------------------------------------------
 DO $subnames$
 DECLARE
@@ -572,6 +578,20 @@ BEGIN
                       CASE WHEN rec.shares_trigger THEN pg_catalog.format(
                           ' Then run unsubscribe(%L, %L) and subscribe it again: on one store they '
                           'share one trigger.', rec.keep_store, rec.keep_name) ELSE '' END;
+    END LOOP;
+    FOR rec IN SELECT s.store_name, s.name, pg_catalog.length(s.name) AS len
+                 FROM mentat.subscriptions s
+                WHERE pg_catalog.length(s.name) > 48
+                ORDER BY s.store_name, s.name
+    LOOP
+        RAISE WARNING 'pg_mentat upgrade: subscription % on store % has a name of % characters; the '
+                      'limit is 48 from 1.18.0. Its trigger name was cut to 63 characters, so another '
+                      'long name on that store that starts the same way shares its trigger.% Run % and '
+                      'subscribe it again under a shorter name.',
+                      pg_catalog.quote_literal(rec.name), pg_catalog.quote_literal(rec.store_name), rec.len,
+                      CASE WHEN rec.len > 56 THEN ' Its channel is over 63 characters, so every write '
+                          'to the store fails with "channel name too long".' ELSE '' END,
+                      pg_catalog.format('unsubscribe(%L, %L)', rec.store_name, rec.name);
     END LOOP;
     IF dups THEN
         RAISE WARNING 'pg_mentat upgrade: index mentat.idx_subscriptions_lower_name not created, because of '

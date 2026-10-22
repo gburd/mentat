@@ -9,30 +9,41 @@ use serde_json::json;
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-/// Maximum length for a subscription name.
-const MAX_SUBSCRIPTION_NAME_LEN: usize = 58;
+/// Maximum length for a subscription name: its trigger, mentat_sub_trg_<name>,
+/// fits the 63-character identifier limit. Longer names were cut, so two of
+/// them on one store shared one trigger; a 57-character one made every
+/// write fail (its channel, mentat_<name>, is 64).
+const MAX_SUBSCRIPTION_NAME_LEN: usize = 63 - "mentat_sub_trg_".len();
 
 /// Validate a subscription name.
 ///
 /// Rules:
 /// - Must not be empty
-/// - Must be <= 58 characters (channel name = "mentat_" prefix + name, max 63)
+/// - Must be <= 48 characters (see [`MAX_SUBSCRIPTION_NAME_LEN`])
 /// - Must start with a letter or underscore
 /// - Must contain only letters, digits, and underscores
 fn validate_subscription_name(name: &str) -> Result<(), MentatError> {
-    if name.is_empty() {
-        return Err(MentatError::InvalidQuery {
-            message: "Subscription name cannot be empty.".to_string(),
-            suggestion: None,
-        });
-    }
-
     if name.len() > MAX_SUBSCRIPTION_NAME_LEN {
         return Err(MentatError::InvalidQuery {
             message: format!(
-                "Subscription name exceeds maximum length of {} characters.",
+                "Subscription name '{}' is {} characters; the limit is {}, so that its \
+                 trigger name (mentat_sub_trg_<name>) fits PostgreSQL's 63.",
+                name,
+                name.len(),
                 MAX_SUBSCRIPTION_NAME_LEN
             ),
+            suggestion: Some("Choose a shorter subscription name.".to_string()),
+        });
+    }
+    validate_subscription_name_chars(name)
+}
+
+/// The character rules alone. unsubscribe() uses these, so a subscription
+/// made before 1.18.0 with a longer name can still be removed.
+fn validate_subscription_name_chars(name: &str) -> Result<(), MentatError> {
+    if name.is_empty() {
+        return Err(MentatError::InvalidQuery {
+            message: "Subscription name cannot be empty.".to_string(),
             suggestion: None,
         });
     }
@@ -374,7 +385,7 @@ pub fn unsubscribe(
     subscription_name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     validate_store_name(store_name)?;
-    validate_subscription_name(subscription_name)?;
+    validate_subscription_name_chars(subscription_name)?;
 
     // Verify subscription exists
     if !subscription_exists(store_name, subscription_name)? {
@@ -485,8 +496,13 @@ mod tests {
 
     #[test]
     fn test_validate_subscription_name_too_long() {
-        let long_name = "a".repeat(59);
-        assert!(validate_subscription_name(&long_name).is_err());
+        assert_eq!(MAX_SUBSCRIPTION_NAME_LEN, 48);
+        assert!(validate_subscription_name(&"a".repeat(48)).is_ok());
+        assert_eq!(format!("mentat_sub_trg_{}", "a".repeat(48)).len(), 63);
+        for n in [49, 57, 58, 59] {
+            let e = validate_subscription_name(&"a".repeat(n)).unwrap_err();
+            assert!(e.to_string().contains("the limit is 48"), "{n}: {e}");
+        }
     }
 
     #[test]
