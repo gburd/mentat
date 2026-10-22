@@ -60,14 +60,81 @@ GRANT SELECT ON mentat.stores, mentat.cache_generation TO acme_app;
 GRANT UPDATE ON mentat.cache_generation TO acme_app;   -- schema transactions bump it
 ```
 
-**Upgrading from 1.17 or earlier.** `create_store` used to build the
-pre-1.5 wide layout, which no release since 1.5.0 could write to (the first
-`t()` failed with `relation "mentat_<name>.current_instant" does not
-exist`). `ALTER EXTENSION pg_mentat UPDATE TO '1.18.0'` rebuilds each such
-store: the old schema is renamed `mentat_<name>_pre118` and kept, a new
-`mentat_<name>` is built, and any attributes, idents, transactions and
-datoms found in the old schema are copied over. A NOTICE reports each
-store. Drop `mentat_<name>_pre118` once you have checked the result.
+### Upgrading from 1.17
+
+`create_store` used to build the pre-1.5 wide layout, which no release
+since 1.5.0 could write to (the first `t()` failed with `relation
+"mentat_<name>.current_instant" does not exist`). So a 1.17 named store
+holds only rows someone inserted by hand. `ALTER EXTENSION pg_mentat
+UPDATE TO '1.18.0'` rebuilds each such store: the old schema is renamed
+`mentat_<name>_pre118` and kept, and a new, empty `mentat_<name>` is built
+with the store's owner and grants. A message names each store rebuilt.
+
+The upgrade copies nothing out of the old schema. It runs as a superuser,
+and the old schema belongs to the store's owner, who could have replaced
+any table in it with a view; reading it would run that view as superuser.
+If the old store holds rows you want, copy them yourself, as the store's
+owner (shown for a store named `acme`):
+
+```sql
+BEGIN;
+INSERT INTO mentat_acme.schema
+    SELECT entid, ident, value_type, cardinality, unique_constraint,
+           indexed, fulltext, component, no_history
+      FROM mentat_acme_pre118.schema ON CONFLICT DO NOTHING;
+INSERT INTO mentat_acme.idents (ident, entid)
+    SELECT ident, entid FROM mentat_acme_pre118.idents ON CONFLICT DO NOTHING;
+INSERT INTO mentat_acme.transactions (tx, tx_instant)
+    SELECT tx, tx_instant FROM mentat_acme_pre118.transactions ON CONFLICT DO NOTHING;
+-- The store's datoms view routes each row to its narrow log table.
+INSERT INTO mentat_acme.datoms (e, a, value_type_tag, v_ref, v_bool, v_long, v_double,
+                                v_text, v_keyword, v_instant, v_uuid, v_bytes, tx, added)
+    SELECT e, a, value_type_tag, v_ref, v_bool, v_long, v_double,
+           v_text, v_keyword, v_instant, v_uuid, v_bytes, tx, added
+      FROM mentat_acme_pre118.datoms
+     WHERE num_nonnulls(v_ref, v_bool, v_long, v_double, v_text,
+                        v_keyword, v_instant, v_uuid, v_bytes) = 1;
+-- The current-state projection: per (e, a, v), the latest tx wins.
+DO $$ DECLARE ty TEXT; BEGIN
+  FOREACH ty IN ARRAY ARRAY['ref', 'boolean', 'long', 'double', 'instant',
+                            'text', 'keyword', 'uuid', 'bytes'] LOOP
+    EXECUTE format('INSERT INTO mentat_acme.current_%1$s (store_id, e, a, v, tx)
+                    SELECT store_id, e, a, v, tx FROM (
+                      SELECT DISTINCT ON (e, a, v) store_id, e, a, v, tx, added
+                        FROM mentat_acme.datoms_%1$s_new ORDER BY e, a, v, tx DESC) l
+                    WHERE added ON CONFLICT DO NOTHING', ty);
+  END LOOP; END $$;
+-- Never re-issue an id the copied rows use.
+SELECT setval('mentat_acme.partition_db_seq', GREATEST(
+    (SELECT last_value FROM mentat_acme.partition_db_seq),
+    (SELECT max(entid) FROM mentat_acme.idents WHERE entid BETWEEN 100 AND 999999)));
+SELECT setval('mentat_acme.partition_user_seq', GREATEST(
+    (SELECT last_value FROM mentat_acme.partition_user_seq),
+    (SELECT max(e) FROM mentat_acme_pre118.datoms WHERE e BETWEEN 1000001 AND 999999999999)));
+SELECT setval('mentat_acme.partition_tx_seq', GREATEST(
+    (SELECT last_value FROM mentat_acme.partition_tx_seq),
+    (SELECT max(tx) FROM mentat_acme.transactions
+      WHERE tx BETWEEN 1000000000000 AND 1999999999999)));
+-- Other sessions reload the store's attributes.
+UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = 'acme';
+COMMIT;
+```
+
+Drop `mentat_<name>_pre118` once you have checked the result.
+
+**A store the upgrade skipped.** The upgrade never aborts over a named
+store; it leaves one alone, with a WARNING saying why, when its schema does
+not hold the old layout or `mentat_<name>_pre118` already exists. It also
+leaves alone any `mentat.stores` row that `create_store` would not have
+made (its schema is not `mentat_<store_name>`). To rebuild a skipped store
+after the upgrade, set its schema aside and create the store again, then
+copy as above from the schema you set aside:
+
+```sql
+ALTER SCHEMA mentat_acme RENAME TO mentat_acme_old;
+DELETE FROM mentat.stores WHERE store_name = 'acme';
+SELECT create_store('acme');
+```
 
 ## Row-Level Security over `store_id` (shared `mentat` tables)
 

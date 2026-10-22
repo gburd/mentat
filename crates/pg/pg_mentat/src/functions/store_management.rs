@@ -429,6 +429,40 @@ mod tests {
         assert!(upgrade.contains(layout.trim()));
     }
 
+    // The upgrade's DO block runs as superuser. It must read only catalogs
+    // and mentat.stores, never a relation in an old store's schema: the
+    // store's owner controls those and could make one a view over its own
+    // function. named_store_tests::upgrade_trusts_no_user_owned_relation
+    // checks the behaviour; this pins the text.
+    #[test]
+    fn upgrade_do_block_reads_no_store_relation() {
+        let upgrade = include_str!("../../sql/pg_mentat--1.17.1--1.18.0.sql");
+        let start = upgrade.find("DO $migrate$").expect("DO block");
+        let block = &upgrade[start..];
+        let block = &block[..block.find("$migrate$;").expect("DO block end")];
+        let mut reads = 0;
+        for line in block.lines() {
+            let code = line.split("--").next().unwrap_or("");
+            if code.contains("EXECUTE") {
+                assert!(!code.contains("SELECT") && !code.contains("FROM"), "{line}");
+            }
+            for kw in ["FROM ", "JOIN "] {
+                for (at, _) in code.match_indices(kw) {
+                    if code[..at].ends_with("DISTINCT ") {
+                        continue;
+                    }
+                    let rel = code[at + kw.len()..].trim_start();
+                    assert!(
+                        rel.starts_with("pg_") || rel.starts_with("mentat.stores "),
+                        "the upgrade reads {rel:?}: {line}"
+                    );
+                    reads += 1;
+                }
+            }
+        }
+        assert!(reads > 0);
+    }
+
     #[test]
     fn test_get_schema_for_store_custom() {
         assert_eq!(get_schema_for_store("my_store"), "mentat_my_store");
