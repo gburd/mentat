@@ -1054,6 +1054,15 @@ pub trait MentatStoring {
     /// After `materialize_mentat_transaction`: how many datoms transaction `tx_id` asserts and
     /// retracts, not counting its own `:db/txInstant` (see `TxReport::datoms_asserted`).
     fn transaction_datom_counts(&self, tx_id: Entid) -> Result<(usize, usize)>;
+
+    /// After `materialize_mentat_transaction`: the retractions in the last transaction that
+    /// matched no datom, as `(e, a, v)`. The transactor leaves them out of what it tells the
+    /// attribute caches and transaction observers (#362).
+    ///
+    /// The default reports none, so every retraction is passed on, as before 1.18.0.
+    fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
+        Ok(Vec::new())
+    }
 }
 
 /// A SQLite transaction is a store too (it derefs to its connection).
@@ -1115,6 +1124,9 @@ impl MentatStoring for rusqlite::Transaction<'_> {
     }
     fn transaction_datom_counts(&self, tx_id: Entid) -> Result<(usize, usize)> {
         (**self).transaction_datom_counts(tx_id)
+    }
+    fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
+        (**self).unmatched_retractions()
     }
 }
 
@@ -1730,6 +1742,30 @@ impl MentatStoring for rusqlite::Connection {
         );
         let (a, r): (i64, i64) = self.query_row(&s, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok((a as usize, r as usize))
+    }
+
+    fn unmatched_retractions(&self) -> Result<Vec<(Entid, Entid, TypedValue)>> {
+        // A fulltext search value is a fulltext_values rowid; report the text.
+        let s = format!(
+            r#"
+            SELECT s.e0, s.a0, CASE WHEN s.flags0 & {ft} IS NOT 0 THEN f.text ELSE s.v0 END,
+                   s.value_type_tag0
+            FROM temp.search_results AS s
+            LEFT JOIN fulltext_values AS f ON s.flags0 & {ft} IS NOT 0 AND f.rowid = s.v0
+            WHERE s.added0 IS 0 AND s.rid IS NULL"#,
+            ft = AttributeBitFlags::IndexFulltext as u8
+        );
+        let mut stmt = self.prepare_cached(&s)?;
+        let rows: Result<Vec<_>> = stmt
+            .query_and_then([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    TypedValue::from_sql_value_pair(row.get(2)?, row.get(3)?)?,
+                ))
+            })?
+            .collect();
+        rows
     }
 }
 

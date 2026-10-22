@@ -426,3 +426,93 @@ fn test_vector_lookup_refs() {
         .transact(r#"[[:db/add (lookup-ref :t/id "e3") :t/n 7]]"#)
         .expect("lookup-ref");
 }
+
+// #362: a retraction of an absent value leaves an attribute's cache alone, and an observer of
+// the attribute hears nothing, because nothing changed.
+#[test]
+fn test_retract_of_absent_value_keeps_cache_and_observers_quiet() {
+    use mentat::{kw, CacheDirection, HasSchema, TxObserver};
+    use std::collections::BTreeSet;
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                {:db/ident :r/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+                {:db/ident :r/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/unique :db.unique/identity :db/index true}
+                {:db/ident :r/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+                 :db/fulltext true :db/index true}]"#,
+        )
+        .expect("schema");
+    let a = *store
+        .transact(r#"[{:db/id "a" :r/n 1 :r/m 1 :r/id "A" :r/s "x"}]"#)
+        .expect("a")
+        .tempids
+        .get("a")
+        .unwrap();
+    store.cache(&kw!(:r/n), CacheDirection::Forward).unwrap();
+    store.cache(&kw!(:r/id), CacheDirection::Both).unwrap();
+
+    let schema = store.conn().current_schema();
+    let attr = |k| schema.get_entid(&k).map(|e| e.0).unwrap();
+    let (r_n, r_m) = (attr(kw!(:r/n)), attr(kw!(:r/m)));
+    let attrs: BTreeSet<_> = [r_n, r_m, attr(kw!(:r/id)), attr(kw!(:r/s))].into();
+    let (send, heard) = mpsc::channel();
+    let send = Mutex::new(send);
+    store.register_observer(
+        "watch".to_string(),
+        Arc::new(TxObserver::new(attrs, move |_key, batch| {
+            for (tx, changes) in batch {
+                send.lock().unwrap().send((*tx, changes.clone())).unwrap();
+            }
+        })),
+    );
+
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/n 7] [:db/retract {a} :r/m 7] [:db/retract {a} :r/id \"B\"]
+              [:db/retract {a} :r/s \"y\"]]"
+        ))
+        .expect("retract absent");
+    assert!(r.is_empty());
+    let n = |store: &Store| {
+        store
+            .q_once(&format!("[:find ?v . :where [{a} :r/n ?v]]"), None)
+            .into_scalar_result()
+            .unwrap()
+    };
+    assert_eq!(n(&store), Some(TypedValue::Long(1).into()));
+    let ip = store.begin_read().unwrap();
+    assert_eq!(
+        ip.lookup_value_for_attribute(a, &kw!(:r/n)).unwrap(),
+        Some(TypedValue::Long(1))
+    );
+    assert_eq!(
+        ip.lookup_value_for_attribute(a, &kw!(:r/id)).unwrap(),
+        Some(TypedValue::typed_string("A"))
+    );
+    drop(ip);
+    assert!(
+        heard
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "observer notified of a transaction that changed nothing"
+    );
+
+    // A real retraction still updates the cache and notifies.
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/n 1] [:db/retract {a} :r/m 7]]"
+        ))
+        .expect("retract present");
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 1));
+    assert_eq!(n(&store), None);
+    let (tx, changes) = heard
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("notified");
+    assert_eq!(tx, r.tx_id);
+    assert!(changes.contains(&r_n));
+    assert!(!changes.contains(&r_m), "{changes:?}");
+}

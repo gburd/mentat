@@ -46,7 +46,7 @@
 //! keep everything straight.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::iter::once;
 
 use crate::db;
@@ -1212,8 +1212,6 @@ where
                         .map(|v| (true, v))
                         .chain(ars.retract.into_iter().map(|v| (false, v)))
                     {
-                        let op = if added { OpType::Add } else { OpType::Retract };
-                        self.watcher.datom(op, e, a, &v);
                         // A retraction must match its value: the inexact (e, a) search of
                         // cardinality-one assertions would find, and retract, whatever value
                         // [e a] has. So every retraction takes the exact (e, a, v) search.
@@ -1260,6 +1258,29 @@ where
                 }
             }
             datom_counts = self.store.transaction_datom_counts(self.tx_id)?;
+
+            // The watchers (attribute caches, observers) see what the transaction did: a
+            // retraction that matched no datom is left out (#362).
+            let has_retractions = [&non_fts_one, &non_fts_many, &fts_one, &fts_many]
+                .iter()
+                .any(|q| q.iter().any(|r| !r.4));
+            let unmatched: HashSet<(Entid, Entid, TypedValue)> = if has_retractions {
+                self.store.unmatched_retractions()?.into_iter().collect()
+            } else {
+                HashSet::new()
+            };
+            for (e, a, _, v, added) in non_fts_one
+                .iter()
+                .chain(&non_fts_many)
+                .chain(&fts_one)
+                .chain(&fts_many)
+            {
+                if *added {
+                    self.watcher.datom(OpType::Add, *e, *a, v);
+                } else if unmatched.is_empty() || !unmatched.contains(&(*e, *a, v.clone())) {
+                    self.watcher.datom(OpType::Retract, *e, *a, v);
+                }
+            }
         }
 
         self.watcher.done(&self.tx_id, self.schema)?;
