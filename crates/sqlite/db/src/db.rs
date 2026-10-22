@@ -770,7 +770,8 @@ impl TypedSQLValue for TypedValue {
     fn from_edn_value(value: &Value) -> Option<TypedValue> {
         match value {
             Value::Boolean(x) => Some(TypedValue::Boolean(*x)),
-            Value::Instant(x) => Some(TypedValue::Instant(*x)),
+            // Truncated to microseconds, as stored, so a term, the cache and storage agree.
+            Value::Instant(x) => Some((*x).into()),
             Value::Integer(x) => Some(TypedValue::Long(*x)),
             Value::Uuid(x) => Some(TypedValue::Uuid(*x)),
             Value::Float(ref x) => Some(TypedValue::Double(*x)),

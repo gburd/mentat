@@ -671,3 +671,62 @@ fn test_unique_value_lookup_refs() {
         assert!(store.transact(tx).is_err(), "{tx}");
     }
 }
+
+// #362: instants are kept to the microsecond. A retraction of an instant that differs from
+// the stored one only below a microsecond, and isn't the stored one once truncated, is a
+// retraction of an absent value: it leaves the datom and the cache alone. One that truncates
+// to the stored value retracts it. A sub-microsecond assertion caches the truncated value.
+#[test]
+fn test_sub_microsecond_instants() {
+    use mentat::{kw, CacheDirection};
+
+    let mut store = Store::open("").expect("opened");
+    store
+        .transact(
+            r#"[{:db/ident :r/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]"#,
+        )
+        .expect("schema");
+    let a = *store
+        .transact(r#"[{:db/id "a" :r/t #inst "2020-01-01T00:00:00.000001Z"}]"#)
+        .expect("a")
+        .tempids
+        .get("a")
+        .unwrap();
+    store.cache(&kw!(:r/t), CacheDirection::Forward).unwrap();
+    let stored = TypedValue::instant(1_577_836_800_000_001);
+    let cached = |store: &mut Store| store.lookup_value_for_attribute(a, &kw!(:r/t)).unwrap();
+    let queried = |store: &Store| {
+        store
+            .q_once(&format!("[:find ?v . :where [{a} :r/t ?v]]"), None)
+            .into_scalar_result()
+            .unwrap()
+    };
+
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/t #inst \"2020-01-01T00:00:00.0000027Z\"]]"
+        ))
+        .expect("retract absent");
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 0));
+    assert_eq!(cached(&mut store), Some(stored.clone()));
+    assert_eq!(queried(&store), Some(stored.into()));
+
+    let r = store
+        .transact(&format!(
+            "[[:db/retract {a} :r/t #inst \"2020-01-01T00:00:00.0000017Z\"]]"
+        ))
+        .expect("retract present");
+    assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 1));
+    assert_eq!(cached(&mut store), None);
+    assert_eq!(queried(&store), None);
+
+    store
+        .transact(&format!(
+            "[[:db/add {a} :r/t #inst \"2020-01-01T00:00:00.0000027Z\"]]"
+        ))
+        .expect("assert");
+    assert_eq!(
+        cached(&mut store),
+        Some(TypedValue::instant(1_577_836_800_000_002))
+    );
+}
