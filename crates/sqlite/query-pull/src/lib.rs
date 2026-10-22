@@ -432,12 +432,15 @@ impl Puller {
 
     /// The entities that refer to `e` through `attr` on this puller's basis.
     fn referrers(&self, db: &dyn SqlConn, attr: Entid, e: Entid) -> Result<Vec<Entid>> {
-        // `<> 0`, not SQLite's `IS NOT 0`: the same on non-NULL flags, and DuckDB has it.
+        // `IS DISTINCT FROM 0` is SQLite's `IS NOT 0`, so it matches the
+        // partial idx_datoms_vaet (`... WHERE index_vaet IS NOT 0`); DuckDB
+        // has it too. `<> 0` (1.11.0-1.17.x) missed the index and scanned
+        // every datom of the attribute. Since S: the same live rows, tx > S.
+        let live = "SELECT DISTINCT e FROM datoms \
+                    WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet IS DISTINCT FROM 0";
         let sql = match self.basis {
-            None => "SELECT DISTINCT e FROM datoms \
-                     WHERE a = ? AND v = ? AND value_type_tag = 0 AND index_vaet <> 0 \
-                     ORDER BY e ASC"
-                .to_string(),
+            None => format!("{live} ORDER BY e ASC"),
+            Some(TemporalBound::Since(s)) => format!("{live} AND tx > {s} ORDER BY e ASC"),
             Some(basis) => format!(
                 "SELECT DISTINCT e FROM {} b \
                  WHERE a = ? AND v = ? AND value_type_tag = 0 ORDER BY e ASC",

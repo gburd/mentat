@@ -403,3 +403,34 @@ fn test_wal_stays_bounded_under_continuous_readers() {
         "WAL grew to {max_wal} bytes with a 262144-byte restart threshold"
     );
 }
+
+/// A reverse pull (`:ns/_ref`) finds its referrers through the partial
+/// `idx_datoms_vaet`, on the current basis and under since. Through 1.17.x the
+/// lookup said `index_vaet <> 0`, which doesn't imply the index's
+/// `index_vaet IS NOT 0`, so SQLite searched `idx_datoms_aevt (a=?)`: every
+/// datom of the attribute, per pulled entity. (As-of still reads the log,
+/// whose only index for this is `(a, e, ...)`: see docs/src/pull.md.)
+#[test]
+fn test_reverse_pull_uses_the_vaet_index() {
+    let sql = "SELECT DISTINCT e FROM datoms WHERE a = 65537 AND v = 9 AND value_type_tag = 0 \
+               AND index_vaet IS DISTINCT FROM 0";
+    let store = Store::open("").expect("open");
+    let plan: String = store
+        .sqlite_ref()
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {sql} AND tx > 1 ORDER BY e ASC"
+        ))
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("\n");
+    assert!(plan.contains("idx_datoms_vaet (v=? AND a=?)"), "{plan}");
+    // The puller's SQL is this one: pin the predicate it relies on.
+    let src = include_str!("../../query-pull/src/lib.rs");
+    assert!(
+        src.contains("index_vaet IS DISTINCT FROM 0"),
+        "Puller::referrers must keep the predicate that matches idx_datoms_vaet"
+    );
+}

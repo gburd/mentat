@@ -215,3 +215,13 @@ FROM people;
 - **Deep recursion** can generate many SPI calls. Use bounded recursion in production.
 - **Pull many** is more efficient than calling `edn_pull` in a loop because it batches schema lookups.
 - The pull implementation uses the schema cache, so the first call after a schema change may be slightly slower.
+- **Reverse references on a historical basis (embedded SQLite and DuckDB).**
+  On the current basis and under `since`, a reverse lookup (`:ns/_ref`) uses
+  the value index on `datoms` (since 1.18.0; before, it searched every datom
+  of the attribute). As of T it reads the transaction log, whose index is
+  ordered by attribute then entity, so each pulled entity's lookup searches
+  every log row of that ref attribute: about 10 ms per entity for a
+  200,000-row attribute on SQLite. A covering `(a, v, e, tx, added)` index
+  on the log would make it 0.1 ms, but would add about 26 bytes per ref log
+  row (12% on a measured store), so mentat does not create one. pg_mentat
+  indexes the log by value (`idx_datoms_ref_new_vaet`) and is not affected.
