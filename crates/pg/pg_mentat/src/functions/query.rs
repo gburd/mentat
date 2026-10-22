@@ -8054,11 +8054,9 @@ fn pred_arg_to_sql(
 /// (pred_arg_to_sql) is kept, with the other side cast to text, so a string
 /// still compares as text. None when the predicate has no untyped value.
 ///
-/// This is #179's rule for ordering comparisons (branch fix/mozilla-issues,
-/// build_predicate_clause), extended to = and != and to booleans, so no
-/// comparison of an untyped value raises "operator does not exist: text >
-/// bigint". At merge, #179's block can go: this covers its cases with the
-/// same SQL.
+/// This is #179's rule for ordering comparisons, extended to = and != and to
+/// booleans, so no comparison of an untyped value raises "operator does not
+/// exist: text > bigint". An instant constant is exact (#375).
 fn untyped_comparison_sql(
     pred: &Predicate,
     sql_op: &str,
@@ -8131,10 +8129,9 @@ fn untyped_comparison_sql(
                 ),
                 _ => format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)"),
             },
-            (None, FnArg::Constant(NonIntegerConstant::Instant(dt))) => format!(
-                "to_timestamp({}::DOUBLE PRECISION / 1000000.0)",
-                builder.bind_bigint(dt.timestamp_micros())
-            ),
+            (None, FnArg::Constant(NonIntegerConstant::Instant(dt))) => {
+                sql_instant_from_micros(&builder.bind_bigint(dt.timestamp_micros()))
+            }
             (untyped_side, _) => {
                 let sql = pred_arg_to_sql(
                     arg,
