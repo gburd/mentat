@@ -25,9 +25,8 @@ use mentat_core::SQLTypeAffinity;
 use edn::query::{Direction, Limit, Variable};
 
 use mentat_query_algebrizer::{
-    Column, DatomsColumn, FulltextColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias,
-    StringMatchOp,
-    TableAlias, TransactionsColumn, VariableColumn,
+    Column, DatomsColumn, DatomsTable, FulltextColumn, OrderBy, QualifiedAlias, QueryValue,
+    SourceAlias, StringMatchOp, TableAlias, TransactionsColumn, VariableColumn,
 };
 
 use sql_traits::errors::{BuildQueryResult, SQLError};
@@ -443,7 +442,22 @@ impl QueryFragment for Constraint {
                 out.push_sql(" ");
                 op.push_sql(out)?;
                 out.push_sql(" ");
-                push_comparand(out, right, mode)
+                push_comparand(out, right, mode)?;
+                if fts_join {
+                    // And the same attribute, so DuckDB reads only its texts.
+                    if let (
+                        ColumnOrExpression::Column(QualifiedAlias(l, _)),
+                        ColumnOrExpression::Column(QualifiedAlias(r, _)),
+                    ) = (left, right)
+                    {
+                        out.push_sql(" AND ");
+                        out.push_identifier(l.as_str())?;
+                        out.push_sql(".a = ");
+                        out.push_identifier(r.as_str())?;
+                        out.push_sql(".a");
+                    }
+                }
+                Ok(())
             }
 
             IsNull { ref value } => {
@@ -750,6 +764,17 @@ fn qualified_alias_push_sql(out: &mut dyn QueryBuilder, qa: &QualifiedAlias) -> 
 // We don't own SourceAlias or QueryFragment, so we can't implement the trait.
 fn source_alias_push_sql(out: &mut dyn QueryBuilder, sa: &SourceAlias) -> BuildQueryResult {
     let SourceAlias(table, alias) = sa;
+    if out.dialect() == Dialect::DuckDb && *table == DatomsTable::FulltextValues {
+        // A DuckDB store keeps fulltext values as plain strings in `datoms`:
+        // each distinct text is keyed by itself. Read from `datoms` here, not
+        // the store's `fulltext_values` view, so a store from before 1.18
+        // (an empty table of that name) matches too, even read-only.
+        out.push_sql(
+            "(SELECT DISTINCT a, v_s AS rowid, v_s AS text FROM datoms WHERE index_fulltext)",
+        );
+        out.push_sql(" AS ");
+        return out.push_identifier(alias.as_str());
+    }
     out.push_identifier(table.name())?;
     out.push_sql(" AS ");
     out.push_identifier(alias.as_str())
@@ -982,8 +1007,6 @@ impl SelectQuery {
 mod tests {
     use super::*;
     use std::rc::Rc;
-
-    use mentat_query_algebrizer::DatomsTable;
 
     fn build_query(c: &dyn QueryFragment) -> SQLQuery {
         let mut builder = SQLiteQueryBuilder::new();

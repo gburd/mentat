@@ -366,7 +366,8 @@ impl<'c> DuckStore<'c> {
     /// records it (a store created since has the row from the start). Runs on
     /// a schema-cache miss. A read-only database (`duckdb -readonly`,
     /// `ATTACH ... (READ_ONLY)`) is left as it is, and every query still
-    /// works; returns false then, so a later writable open upgrades it.
+    /// works (`(fulltext ...)` reads the texts from `datoms`, not this table
+    /// or view); returns false then, so a later writable open upgrades it.
     fn upgrade_fulltext_values(&self) -> Result<bool> {
         let done = self.conn.query_opt(
             &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.qualified),

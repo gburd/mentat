@@ -345,13 +345,18 @@ fn push_node(
         Node::Phrase(words) => {
             // The words' tokens hold only token characters, never a regex
             // metacharacter, so they can be spliced into the pattern.
+            // The pattern is a constant expression -- the words are inlined
+            // as SQL literals, not bound -- so DuckDB folds it and compiles
+            // the regex once, not once per row. (NUL, a separator either
+            // way, can't sit in a literal.)
             out.push_sql("regexp_matches(");
             push_token_text(out, text)?;
             out.push_sql(", ' '");
             for (w, prefix) in words {
-                out.push_sql(" || array_to_string(");
-                push_tokens(out, &ColumnOrExpression::Value(TypedValue::typed_string(w)))?;
-                out.push_sql(", ' ')");
+                let lit = w.replace('\'', "''").replace('\0', " ");
+                out.push_sql(&format!(
+                    " || array_to_string(regexp_extract_all(lower('{lit}'), {TOKEN_RE}), ' ')"
+                ));
                 out.push_sql(if *prefix { " || '[^ ]* '" } else { " || ' '" });
             }
             out.push_sql(")");
