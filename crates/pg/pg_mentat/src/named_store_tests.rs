@@ -1012,4 +1012,55 @@ mod tests {
         .expect("materialize in the new store");
         Spi::run("SELECT drop_store('mvr_b')").expect("drop");
     }
+
+    // (pull ?e [...]) in :find called edn_pull, which reads the default
+    // store: on a named store it returned the default store's values for the
+    // same entity id. Entity ids overlap across stores.
+    #[pg_test]
+    fn find_pull_on_a_named_store_reads_that_store() {
+        setup();
+        Spi::run("SELECT create_store('fp_s')").expect("create");
+        tx("fp_s", SCHEMA_TX);
+        tx("default", SCHEMA_TX);
+        let e = tx("fp_s", "[{:db/id \"x\" :p/name \"in-named\" :p/age 7}]")["tempids"]["x"]
+            .as_i64()
+            .expect("tempid");
+        tx(
+            "default",
+            &format!("[[:db/add {e} :p/name \"in-default\"]]"),
+        );
+        let got = q(
+            "fp_s",
+            "[:find (pull ?e [:p/name :p/age]) . :where [?e :p/name _]]",
+            "{}",
+        );
+        assert_eq!(
+            got["result"][":p/name"],
+            serde_json::json!("in-named"),
+            "{got}"
+        );
+        assert_eq!(got["result"][":p/age"], serde_json::json!(7), "{got}");
+        let rel = q(
+            "fp_s",
+            "[:find ?n (pull ?e [:p/name]) :where [?e :p/name ?n]]",
+            "{}",
+        );
+        assert_eq!(
+            rel["results"][0][1][":p/name"],
+            serde_json::json!("in-named"),
+            "{rel}"
+        );
+        // The default store still pulls its own.
+        let dflt = q(
+            "default",
+            "[:find (pull ?e [:p/name]) . :where [?e :p/name _]]",
+            "{}",
+        );
+        assert_eq!(
+            dflt["result"][":p/name"],
+            serde_json::json!("in-default"),
+            "{dflt}"
+        );
+        Spi::run("SELECT drop_store('fp_s')").expect("drop");
+    }
 }
