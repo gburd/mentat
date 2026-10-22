@@ -441,17 +441,39 @@ fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
     }
 }
 
-/// The table + liveness filter that answers "does e have a live value for
-/// attribute a" (get-else, missing?): the current-state projection for
-/// current-time queries -- the log with `AND added` would also match
-/// superseded assertions (a replaced cardinality-one value) -- and the log
-/// otherwise.
-fn attr_lookup_table(value_type: &str, temporal: &TemporalOption) -> String {
-    let current = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+/// The table that answers "does e have a live value for attribute a"
+/// (`missing?`), as `<table> AS g WHERE <live>`: the rows live on the
+/// query's basis, from the projection or the log (Datomic's as-of / since
+/// rule, as in [`temporal_conditions`]).
+fn attr_lookup_table(
+    value_type: &str,
+    temporal: &TemporalOption,
+    store_id_param: &str,
+    builder: &mut SqlBuilder<'_>,
+) -> String {
     match value_type_to_table_info(value_type) {
-        Some(info) if current => info.current_table.to_string(),
-        _ => format!(
-            "(SELECT * FROM mentat.{} WHERE added)",
+        Some(info) => {
+            let from = if reads_projection(temporal, temporal.history) {
+                info.current_table
+            } else {
+                info.table
+            };
+            let live = temporal_conditions(
+                temporal,
+                temporal.history,
+                "g",
+                Some(&TypedTableInfo {
+                    value_column: "v",
+                    ..info
+                }),
+                store_id_param,
+                builder,
+            );
+            let live: String = live.iter().map(|c| format!(" AND {c}")).collect();
+            format!("{from} AS g WHERE true{live}")
+        }
+        None => format!(
+            "(SELECT * FROM mentat.{} WHERE added) AS g WHERE true",
             typed_table_for_value_type(value_type)
         ),
     }
@@ -2207,6 +2229,14 @@ fn reads_history(temporal: &TemporalOption, pattern: &edn::query::Pattern) -> bo
     temporal.history || pattern.added != PatternNonValuePlace::Placeholder
 }
 
+/// Whether a pattern reads the current-state projection (`current_<type>`)
+/// rather than the log: current-time and since-only reads of a non-history
+/// pattern. The live datoms added after S are exactly the projection rows
+/// with tx > S, so since needs no retraction check (issue #364).
+fn reads_projection(temporal: &TemporalOption, history: bool) -> bool {
+    temporal.as_of.is_none() && !history
+}
+
 /// The temporal WHERE conditions for one log-table pattern alias, with
 /// Datomic's as-of / since meaning (issue #364):
 ///
@@ -2230,6 +2260,14 @@ fn temporal_conditions(
     builder: &mut SqlBuilder<'_>,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    if reads_projection(temporal, history) {
+        // The projection: every row is live; since S keeps tx > S.
+        if let Some(s) = temporal.since {
+            let p = builder.bind_bigint(s);
+            out.push(format!("{alias}.tx > {p}"));
+        }
+        return out;
+    }
     if !history {
         out.push(format!("{alias}.added = true"));
     }
@@ -2241,7 +2279,7 @@ fn temporal_conditions(
         let p = builder.bind_bigint(s);
         out.push(format!("{alias}.tx > {p}"));
     }
-    if history || (temporal.as_of.is_none() && temporal.since.is_none()) {
+    if history {
         return out;
     }
     let retractions = match typed {
@@ -6187,11 +6225,11 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             }
         };
 
-        // Read from the current-state projection for current-time queries
-        // (no as-of / since / history): it holds only live datoms, so it
-        // needs no `added` filter or latest-tx-wins resolution. Temporal
-        // queries must read the append-only log.
-        let use_projection = temporal.as_of.is_none() && temporal.since.is_none() && !history;
+        // Read from the current-state projection for current-time and since
+        // queries (no as-of / history): it holds only live datoms, so it
+        // needs no `added` filter or retraction check. As-of and history
+        // read the append-only log.
+        let use_projection = reads_projection(temporal, history);
 
         // Use the typed single-table FROM fragment or fall back to UNION ALL
         if let Some(info) = &typed_info {
@@ -6264,36 +6302,28 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             };
 
             // Current state reads the projection (one row per card-one e/a).
-            // as-of / since / history read the log: the latest assertion with
-            // tx <= T that no later retraction (tx <= T) cancels.
-            let current = temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history;
+            // as-of / since / history read the log rows live on that basis
+            // (temporal_conditions: Datomic's rule, issue #364).
             let (from, extra) = match value_type_to_table_info(&info.value_type) {
-                Some(t) if current => (t.current_table.to_string(), String::new()),
                 Some(t) => {
-                    let upper = match temporal.as_of {
-                        Some(tx) => {
-                            let p = builder.bind_bigint(tx);
-                            format!(" AND g.tx <= {p}")
-                        }
-                        None => String::new(),
+                    let from = if reads_projection(temporal, temporal.history) {
+                        t.current_table
+                    } else {
+                        t.table
                     };
-                    let lower = match temporal.since {
-                        Some(tx) => {
-                            let p = builder.bind_bigint(tx);
-                            format!(" AND g.tx > {p}")
-                        }
-                        None => String::new(),
-                    };
-                    (
-                        t.table.to_string(),
-                        format!(
-                            " AND g.added{upper}{lower} AND NOT EXISTS (SELECT 1 FROM {tbl} r \
-                             WHERE r.store_id = g.store_id AND r.e = g.e AND r.a = g.a \
-                             AND r.tx > g.tx{r_upper})",
-                            tbl = t.table,
-                            r_upper = upper.replace("g.tx", "r.tx"),
-                        ),
-                    )
+                    let live = temporal_conditions(
+                        temporal,
+                        temporal.history,
+                        "g",
+                        Some(&TypedTableInfo {
+                            value_column: "v",
+                            ..t
+                        }),
+                        store_id_param,
+                        builder,
+                    );
+                    let extra: String = live.iter().map(|c| format!(" AND {c}")).collect();
+                    (from.to_string(), extra)
                 }
                 None => continue,
             };
@@ -6356,16 +6386,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
         let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
         if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-            let table = attr_lookup_table(&info.value_type, temporal);
-
             let entity_expr = if let Some((alias, col)) = var_to_alias.get(mc.entity_var.as_str()) {
                 format!("{}.{}", alias, col)
             } else {
                 continue;
             };
+            let table = attr_lookup_table(&info.value_type, temporal, store_id_param, builder);
 
             let not_exists = format!(
-                "NOT EXISTS (SELECT 1 FROM {table} WHERE store_id = {sid} AND e = {entity} AND a = {attr})",
+                "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
                 table = table,
                 sid = store_id_param,
                 entity = entity_expr,
@@ -6538,11 +6567,12 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 let attr_info = attr_entid.and_then(|eid| cache.get_attribute(eid));
 
                 if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
-                    let table = attr_lookup_table(&info.value_type, temporal);
                     if let Some((alias, col)) = var_to_alias.get(entity_var.as_str()) {
+                        let table =
+                            attr_lookup_table(&info.value_type, temporal, store_id_param, builder);
                         let entity_expr = format!("{}.{}", alias, col);
                         let not_exists = format!(
-                            "NOT EXISTS (SELECT 1 FROM {table} WHERE store_id = {sid} AND e = {entity} AND a = {attr})",
+                            "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
                             table = table,
                             sid = store_id_param,
                             entity = entity_expr,
@@ -7327,13 +7357,13 @@ fn build_not_exists_subquery(
                         store_id_param,
                         info,
                         Some(&not_pushdown),
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
                     ));
                 } else {
                     sub_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
                     ));
                 }
 
@@ -8225,13 +8255,13 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                         store_id_param,
                         info,
                         Some(&rule_pushdown),
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
                     ));
                 } else {
                     pattern_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        temporal.as_of.is_none() && temporal.since.is_none() && !temporal.history,
+                        reads_projection(temporal, temporal.history),
                     ));
                 }
             }

@@ -59,11 +59,7 @@ fn duckdb_matches_sqlite() {
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>, ordered: bool| {
         use mentat::Queryable;
-        let a = match temporal {
-            Some(TemporalBound::AsOf(t)) => sqlite.q_once_as_of(q, None, t),
-            Some(TemporalBound::Since(t)) => sqlite.q_once_since(q, None, t),
-            None => sqlite.q_once(q, None),
-        };
+        let a = sqlite.q_once_temporal(q, None, temporal);
         let b = duck.q(q, None, temporal);
         let f = if ordered { norm_ordered } else { norm };
         match (a, b) {
@@ -104,7 +100,12 @@ fn duckdb_matches_sqlite() {
         .copied()
         .chain(pulls.copied())
         .collect();
-    for &t in &tx_ids {
+    // And both bounds: since the previous tx, as of this one.
+    for (i, &t) in tx_ids.iter().enumerate() {
+        let window = i.checked_sub(1).map(|p| TemporalBound::AsOfSince {
+            as_of: t,
+            since: tx_ids[p],
+        });
         for q in &temporal {
             check(&format!("asOf {t}"), q, Some(TemporalBound::AsOf(t)), false);
             check(
@@ -113,6 +114,9 @@ fn duckdb_matches_sqlite() {
                 Some(TemporalBound::Since(t)),
                 false,
             );
+            if let Some(w) = window {
+                check(&format!("{w:?}"), q, Some(w), false);
+            }
         }
     }
     assert!(

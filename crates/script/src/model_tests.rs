@@ -843,6 +843,23 @@ pub fn as_of_sees_a_value_reasserted_after_retraction(it: &mut Interpreter) {
     }
 }
 
+/// `missing?` and `get-else` read the db's basis like any pattern: as of t1
+/// :t364/s is "a"; it was retracted at t2.
+pub fn missing_and_get_else_read_the_basis(it: &mut Interpreter) {
+    let (x, t1, t2, _) = seed_t364(it);
+    let missing = "[:find [?e ...] :where [?e :t364/n _] [(missing? $ ?e :t364/s)]]";
+    let get_else = "[:find [?s ...] :where [?e :t364/n _] [(get-else $ ?e :t364/s \"none\") ?s]]";
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), missing), "[]");
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t2), None), missing),
+        format!("[{x}]")
+    );
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), get_else), "[\"a\"]");
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), get_else), "[\"none\"]");
+    // since t1: :t364/n's live value (3) is from t3, :t364/s none.
+    assert_eq!(q_sorted(it, &db_on(None, Some(t1)), get_else), "[\"none\"]");
+}
+
 /// Datomic's `since S` (issue #364): the current datoms whose tx is after S,
 /// so a value added after S and since replaced is gone. Before 1.18.0
 /// `since t1` below returned [1 2 3] on SQLite and DuckDB (retraction rows

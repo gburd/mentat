@@ -230,6 +230,16 @@ fn history_as_of_since() {
             vec!["40".to_string(), "true".into()]
         ]
     );
+    // A current-state pattern under since: only the live datoms added after
+    // t1 (Datomic's since; issue #364), not the retraction of 30.
+    let since_now = s
+        .q(
+            "[:find ?a :where [_ :person/age ?a]]",
+            None,
+            Some(TemporalBound::Since(t1)),
+        )
+        .unwrap();
+    assert_eq!(rows(since_now.results), vec![vec!["40".to_string()]]);
     // A 5-place history pattern sees the retraction of 30.
     let hist = q(
         &s,
