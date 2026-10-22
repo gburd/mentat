@@ -469,6 +469,12 @@ mod tests {
         // NOTICE would never reach the user.
         assert!(!block.contains("RAISE NOTICE"));
         assert!(block.contains("RAISE WARNING 'pg_mentat upgrade: rebuilt named store"));
+        // The path is pinned for the block and restored, never SET LOCAL:
+        // that lasts to the end of the script's transaction, so every later
+        // unqualified CREATE in the script would land in pg_catalog.
+        assert!(block.contains("pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)"));
+        assert!(block.contains("pg_catalog.set_config('search_path', old_path, true)"));
+        assert!(!block.to_uppercase().contains("SET LOCAL"));
     }
 
     #[test]
