@@ -106,15 +106,12 @@ fn subscription_exists(
 /// 4. Sends NOTIFY on the subscription channel if the hash changed
 fn trigger_function_sql(
     schema: &str,
-    store_name: &str,
     subscription_name: &str,
     channel: &str,
     query: &str,
 ) -> String {
     // Escape single quotes in the query for embedding in PL/pgSQL
     let escaped_query = query.replace('\'', "''");
-    // The trigger sits on this store's datoms view: query the same store.
-    let escaped_store = store_name.replace('\'', "''");
     let func_name = format!("{}.mentat_sub_{}", schema, subscription_name);
 
     // The session variable key stores the last known hash for this subscription.
@@ -126,12 +123,21 @@ fn trigger_function_sql(
 CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
+    sub_store TEXT;
     new_hash TEXT;
     old_hash TEXT;
     result_json JSONB;
 BEGIN
+    -- The store whose datoms view fired this trigger. Looked up from the
+    -- view's schema on every call, not baked in, so rename_store doesn't
+    -- break it.
+    SELECT s.store_name INTO sub_store FROM mentat.stores s WHERE s.schema_name = TG_TABLE_SCHEMA;
+    IF sub_store IS NULL THEN
+        RAISE EXCEPTION 'subscription {subscription_name}: no store has schema %', TG_TABLE_SCHEMA;
+    END IF;
+
     -- Re-evaluate the subscribed Datalog query
-    SELECT q('{escaped_store}', '{escaped_query}', '{{}}'::jsonb) INTO result_json;
+    SELECT q(sub_store, '{escaped_query}', '{{}}'::jsonb) INTO result_json;
 
     -- Compute hash of current results
     new_hash := md5(result_json::TEXT);
@@ -154,7 +160,7 @@ END;
 $$;
 ",
         func_name = func_name,
-        escaped_store = escaped_store,
+        subscription_name = subscription_name,
         escaped_query = escaped_query,
         var_name = var_name,
         channel = channel,
@@ -257,13 +263,7 @@ pub fn subscribe(
     let channel = channel_name(subscription_name);
 
     // Create the trigger function
-    let func_sql = trigger_function_sql(
-        &quoted_schema,
-        store_name,
-        subscription_name,
-        &channel,
-        query,
-    );
+    let func_sql = trigger_function_sql(&quoted_schema, subscription_name, &channel, query);
     Spi::run(&func_sql)?;
 
     // Create the trigger on the datoms table.
@@ -446,13 +446,12 @@ mod tests {
     fn test_trigger_function_sql_contains_key_elements() {
         let sql = trigger_function_sql(
             "mentat",
-            "default",
             "test_sub",
             "mentat_test_sub",
             "[:find ?e :where [?e :person/name]]",
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
-        assert!(sql.contains("q('default', '[:find"));
+        assert!(sql.contains("q(sub_store, '[:find"));
         assert!(sql.contains("pg_notify"));
         assert!(sql.contains("mentat_test_sub"));
         assert!(sql.contains("[:find ?e :where [?e :person/name]]"));
@@ -462,7 +461,6 @@ mod tests {
     fn test_trigger_function_sql_escapes_quotes() {
         let sql = trigger_function_sql(
             "mentat",
-            "default",
             "test_sub",
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
@@ -476,17 +474,19 @@ mod tests {
     }
 
     // The trigger fires on the subscribed store's datoms view; it must query
-    // that store, not the default one (edn_q).
+    // that store, not the default one (edn_q), and find it by the view's
+    // schema at run time: a store name baked in breaks on rename_store.
     #[test]
     fn test_trigger_function_sql_queries_its_store() {
         let sql = trigger_function_sql(
             "mentat_acme",
-            "acme",
             "s",
             "mentat_s",
             "[:find ?n :where [_ :p/name ?n]]",
         );
-        assert!(sql.contains("q('acme', '[:find ?n"), "{sql}");
+        assert!(sql.contains("q(sub_store, '[:find ?n"), "{sql}");
+        assert!(sql.contains("schema_name = TG_TABLE_SCHEMA"), "{sql}");
+        assert!(!sql.contains("acme'"), "{sql}");
         assert!(!sql.contains("edn_q"), "{sql}");
     }
 

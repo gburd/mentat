@@ -906,4 +906,59 @@ mod tests {
         Spi::run("SELECT unsubscribe('sb_s', 'sb_names')").expect("unsubscribe");
         Spi::run("SELECT drop_store('sb_s')").expect("drop");
     }
+
+    // The subscription trigger baked in the store's name: after rename_store
+    // every t() on the store failed with "Store 'sb_a' not found", and
+    // unsubscribe could not remove the trigger under either name.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_survives_rename_store() {
+        setup();
+        Spi::run("SELECT create_store('sbr_a')").expect("create");
+        tx("sbr_a", SCHEMA_TX);
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        Spi::run(&format!(
+            "SELECT subscribe('sbr_a', 'sbr_names', '{query}')"
+        ))
+        .expect("subscribe");
+        tx("sbr_a", "[{:p/name \"before\"}]");
+        Spi::run("SELECT rename_store('sbr_a', 'sbr_b')").expect("rename");
+        tx("sbr_b", "[{:p/name \"after\"}]");
+        tx("sbr_b", "[{:p/age 1}]");
+        // The trigger ran q() on the renamed store (see
+        // subscribe_on_a_named_store_queries_that_store for the hash).
+        let sent = text("SELECT current_setting('mentat.sub_hash_sbr_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('sbr_b', '{query}', '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        assert_eq!(sorted(names("sbr_b")), vec!["after", "before"]);
+        let listed = json("SELECT list_subscriptions('sbr_b')");
+        assert_eq!(listed.as_array().map(|a| a.len()), Some(1), "{listed}");
+        Spi::run("SELECT unsubscribe('sbr_b', 'sbr_names')")
+            .expect("unsubscribe under the new name");
+        let triggers: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_trigger WHERE tgname = 'mentat_sub_trg_sbr_names'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(triggers, 0);
+        tx("sbr_b", "[{:p/name \"unsubscribed\"}]");
+
+        // drop_store forgets the store's subscriptions: a new store of the
+        // same name can subscribe again, and a rename can take the name.
+        Spi::run(&format!(
+            "SELECT subscribe('sbr_b', 'sbr_names', '{query}')"
+        ))
+        .expect("again");
+        Spi::run("SELECT drop_store('sbr_b')").expect("drop");
+        Spi::run("SELECT create_store('sbr_c')").expect("create c");
+        Spi::run(&format!(
+            "SELECT subscribe('sbr_c', 'sbr_names', '{query}')"
+        ))
+        .expect("sub c");
+        Spi::run("SELECT rename_store('sbr_c', 'sbr_b')").expect("rename to a dropped name");
+        Spi::run("SELECT unsubscribe('sbr_b', 'sbr_names')").expect("unsubscribe");
+        Spi::run("SELECT drop_store('sbr_b')").expect("drop");
+    }
 }
