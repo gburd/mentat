@@ -447,10 +447,12 @@ mod tests {
     }
 
     // The upgrade's DO block runs as superuser. It must read only catalogs
-    // and mentat.stores, never a relation in an old store's schema: the
-    // store's owner controls those and could make one a view over its own
-    // function. named_store_tests::upgrade_trusts_no_user_owned_relation
-    // checks the behaviour; this pins the text.
+    // and the extension's own tables (mentat.stores, and mentat.subscriptions
+    // / mentat.materialized_views for their names, only to WARN), never a
+    // relation in an old store's schema: the store's owner controls those and
+    // could make one a view over its own function.
+    // named_store_tests::upgrade_trusts_no_user_owned_relation checks the
+    // behaviour; this pins the text.
     #[test]
     fn upgrade_do_block_reads_no_store_relation() {
         let upgrade = include_str!("../../sql/pg_mentat--1.17.2--1.18.0.sql");
@@ -470,7 +472,14 @@ mod tests {
                     }
                     let rel = code[at + kw.len()..].trim_start();
                     assert!(
-                        rel.starts_with("pg_") || rel.starts_with("mentat.stores "),
+                        rel.starts_with("pg_")
+                            || [
+                                "mentat.stores ",
+                                "mentat.subscriptions ",
+                                "mentat.materialized_views "
+                            ]
+                            .iter()
+                            .any(|t| rel.starts_with(t)),
                         "the upgrade reads {rel:?}: {line}"
                     );
                     reads += 1;
