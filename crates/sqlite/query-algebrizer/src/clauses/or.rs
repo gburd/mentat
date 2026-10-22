@@ -146,7 +146,10 @@ impl ConjoiningClauses {
         // ```
         // [:find ?x :where [?x :foo/bar ?y] [?x :foo/baz ?y]]
         // ```
-        if !or_join.is_fully_unified() {
+        // A temporal bound (as-of / since) needs every arm on the transactions
+        // path (apply_pattern -> apply_history_pattern); the simple form's
+        // shared `datoms` alias would read current state.
+        if !or_join.is_fully_unified() || self.temporal.is_some() {
             // It's complex because we need to make sure that non-unified vars
             // mentioned in the body of the `or-join` do not unify with variables
             // outside the `or-join`. We can't naïvely collect clauses into the

@@ -37,6 +37,8 @@ model_test!(as_of_sees_a_value_reasserted_after_retraction);
 model_test!(since_reads_current_datoms_added_after_t);
 model_test!(as_of_and_since_together);
 model_test!(missing_and_get_else_read_the_basis);
+model_test!(or_reads_the_basis);
+model_test!(not_or_reads_the_basis);
 model_test!(pull_of_an_unknown_attribute_is_empty);
 model_test!(tx_report_has_the_datomic_shape);
 model_test!(q_takes_in_inputs);

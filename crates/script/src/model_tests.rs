@@ -959,3 +959,97 @@ pub fn pull_of_an_unknown_attribute_is_empty(it: &mut Interpreter) {
         .unwrap();
     assert_eq!(none, "{}");
 }
+
+/// t1: :t364or/n 1, :t364or/m 10; t2: n 2; t3: n 3; t4: n 1 again.
+/// Returns (x, [t1, t2, t3, t4]).
+fn seed_t364_or(it: &mut Interpreter) -> (String, [i64; 4]) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :t364or/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :t364or/m :db/valueType :db.type/long :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    let basis = |it: &mut Interpreter| -> i64 {
+        it.eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    it.eval_to_string("(mentat.store/transact c [{:db/id \"x\" :t364or/n 1 :t364or/m 10}])")
+        .unwrap();
+    let t1 = basis(it);
+    let x = it
+        .eval_to_string(
+            "(mentat.store/q (mentat.store/db c) '[:find ?e . :where [?e :t364or/m _]])",
+        )
+        .unwrap();
+    let mut ts = [t1, 0, 0, 0];
+    for (i, n) in [2, 3, 1].into_iter().enumerate() {
+        it.eval_to_string(&format!(
+            "(mentat.store/transact c [[:db/add {x} :t364or/n {n}]])"
+        ))
+        .unwrap();
+        ts[i + 1] = basis(it);
+    }
+    (x, ts)
+}
+
+/// An `or` (and an `or-join`, and an `or` inside `not`) reads the db's
+/// basis like any pattern, with Datomic's as-of / since meaning. Before
+/// 1.18.0 SQLite and DuckDB answered an `or` whose arms are plain patterns
+/// on the same table from current state under as-of and since.
+pub fn or_reads_the_basis(it: &mut Interpreter) {
+    let (x, [t1, t2, t3, t4]) = seed_t364_or(it);
+    let or = "[:find [?v ...] :where (or [?e :t364or/n ?v] [?e :t364or/m ?v])]";
+    let cases: [(Option<i64>, Option<i64>, &str); 9] = [
+        (None, None, "[1 10]"),
+        (Some(t1), None, "[1 10]"),
+        (Some(t2), None, "[2 10]"),
+        (Some(t3), None, "[3 10]"),
+        (None, Some(t1), "[1]"),
+        (None, Some(t3), "[1]"),
+        (None, Some(t4), "[]"),
+        (Some(t2), Some(t1), "[2]"),
+        (Some(t3), Some(t2), "[3]"),
+    ];
+    for (as_of, since, want) in cases {
+        assert_eq!(
+            q_sorted(it, &db_on(as_of, since), or),
+            want,
+            "{as_of:?} {since:?}"
+        );
+    }
+
+    // A fully unified or-join (the same shape as an `or`).
+    let or_join = "[:find [?e ...] :where (or-join [?e] [?e :t364or/n 2] [?e :t364or/n 3])]";
+    let ex = format!("[{x}]");
+    assert_eq!(q_sorted(it, &db_on(None, None), or_join), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), or_join), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), or_join), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), None), or_join), ex);
+    assert_eq!(q_sorted(it, &db_on(None, Some(t1)), or_join), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t2)), or_join), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t3)), or_join), "[]");
+}
+
+/// An `or` inside `not` reads the db's basis (as [`or_reads_the_basis`]).
+/// Not run on pg, which refuses `(not (or ...))` on any basis.
+pub fn not_or_reads_the_basis(it: &mut Interpreter) {
+    let (x, [t1, t2, t3, _]) = seed_t364_or(it);
+    let ex = format!("[{x}]");
+    let not_n =
+        "[:find [?e ...] :where [?e :t364or/m _] (not (or [?e :t364or/n 2] [?e :t364or/n 3]))]";
+    assert_eq!(q_sorted(it, &db_on(None, None), not_n), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t1), None), not_n), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), not_n), "[]");
+    assert_eq!(q_sorted(it, &db_on(Some(t3), None), not_n), "[]");
+    // Since t3 :t364or/m (asserted at t1) is outside the window, so the `or`
+    // can't match and `not` keeps x.
+    let not_m =
+        "[:find [?e ...] :where [?e :t364or/n _] (not (or [?e :t364or/m 10] [?e :t364or/m 11]))]";
+    assert_eq!(q_sorted(it, &db_on(None, None), not_m), "[]");
+    assert_eq!(q_sorted(it, &db_on(None, Some(t3)), not_m), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), Some(t1)), not_m), ex);
+    assert_eq!(q_sorted(it, &db_on(Some(t3), None), not_m), "[]");
+}
