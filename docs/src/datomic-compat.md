@@ -29,8 +29,9 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 
 A lookup ref `[:attr v]` names the entity whose `:attr` is `v`, for any
 `:db/unique` attribute (`:db.unique/identity` or `:db.unique/value`), in
-`:db/id`, entity position, reverse notation, and as the value of a
-cardinality-one ref.
+`:db/id`, entity position, and as the value of a cardinality-one ref. The
+embedded engine and DuckDB also take one in reverse notation
+(`{:a/_ref [:attr v]}`); pg_mentat has no reverse notation in transactions.
 
 In list form, `[:db/add e a v]` takes one value, as in Datomic, so on a ref
 attribute (cardinality-one or -many) a vector `v` is always a lookup ref, and
