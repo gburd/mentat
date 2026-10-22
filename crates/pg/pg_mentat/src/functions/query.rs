@@ -248,8 +248,8 @@ fn resolve_store_id(schema_prefix: &str) -> Result<i64, Box<dyn std::error::Erro
 /// NULLs for the others, replicating the old wide-row layout.
 ///
 /// `store_id_param` is the $N placeholder for the store_id parameter.
-fn build_datoms_union_subquery(store_id_param: &str) -> String {
-    build_datoms_union_subquery_opt(store_id_param, false)
+fn build_datoms_union_subquery(store_id_param: &str, schema_prefix: &str) -> String {
+    build_datoms_union_subquery_opt(store_id_param, false, schema_prefix)
 }
 
 /// UNION-ALL over the nine type tables. When `use_projection` is true, reads
@@ -257,13 +257,17 @@ fn build_datoms_union_subquery(store_id_param: &str) -> String {
 /// `true AS added`) instead of the append-only log tables. Used for
 /// variable-typed-attribute patterns where the type isn't known at compile
 /// time so a single typed table can't be selected.
-fn build_datoms_union_subquery_opt(store_id_param: &str, use_projection: bool) -> String {
+fn build_datoms_union_subquery_opt(
+    store_id_param: &str,
+    use_projection: bool,
+    schema_prefix: &str,
+) -> String {
     // Pick log vs projection table names and the `added` column expression.
     let t = |log: &str, cur: &str| -> String {
         if use_projection {
-            format!("mentat.{cur}")
+            format!("{schema_prefix}{cur}")
         } else {
-            format!("mentat.{log}")
+            format!("{schema_prefix}{log}")
         }
     };
     let added = if use_projection { "true" } else { "added" };
@@ -337,12 +341,28 @@ fn build_datoms_union_subquery_opt(store_id_param: &str, use_projection: bool) -
 /// Build a FROM-clause fragment for a single datoms-like table alias.
 ///
 /// This generates `(UNION ALL subquery) AS alias` with store_id filtering.
-fn build_datoms_from_fragment(alias: &str, store_id_param: &str, use_projection: bool) -> String {
+fn build_datoms_from_fragment(
+    alias: &str,
+    store_id_param: &str,
+    use_projection: bool,
+    schema_prefix: &str,
+) -> String {
     format!(
         "{} AS {}",
-        build_datoms_union_subquery_opt(store_id_param, use_projection),
+        build_datoms_union_subquery_opt(store_id_param, use_projection, schema_prefix),
         alias
     )
+}
+
+/// The schema prefix (`mentat.`) of the narrow `datoms_<type>_new` /
+/// `current_<type>` tables a query on store `schema_prefix` reads. Every
+/// read of those tables -- a pattern's FROM and its as-of anti-join alike --
+/// takes the prefix from here, so they always read the same schema.
+// named-stores: every store's rows sit in mentat's tables today, keyed by
+// store_id; feat/pg-named-stores moves them into each store's schema. Return
+// `schema_prefix` here then (value_type_to_table_info takes it too).
+fn narrow_tables_prefix(_schema_prefix: &str) -> &str {
+    "mentat."
 }
 
 // ============================================================================
@@ -449,6 +469,7 @@ fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
 fn attr_lookup_table(
     value_type: &str,
     temporal: &TemporalOption,
+    tables_prefix: &str,
     store_id_param: &str,
     builder: &mut SqlBuilder<'_>,
 ) -> String {
@@ -467,6 +488,7 @@ fn attr_lookup_table(
                     value_column: "v",
                     ..info
                 }),
+                tables_prefix,
                 store_id_param,
                 builder,
             );
@@ -474,7 +496,7 @@ fn attr_lookup_table(
             format!("{from} AS g WHERE true{live}")
         }
         None => format!(
-            "(SELECT * FROM mentat.{} WHERE added) AS g WHERE true",
+            "(SELECT * FROM {tables_prefix}{} WHERE added) AS g WHERE true",
             typed_table_for_value_type(value_type)
         ),
     }
@@ -2278,12 +2300,14 @@ fn reads_projection(temporal: &TemporalOption, history: bool) -> bool {
 ///
 /// `typed` is the pattern's typed table info (its log table, and the alias
 /// column its `v` lands in), or `None` for the nine-way UNION (attribute or
-/// type unknown).
+/// type unknown). `tables_prefix` is the schema the pattern reads
+/// ([`narrow_tables_prefix`]); the anti-join reads the same one.
 fn temporal_conditions(
     temporal: &TemporalOption,
     history: bool,
     alias: &str,
     typed: Option<&TypedTableInfo>,
+    tables_prefix: &str,
     store_id_param: &str,
     builder: &mut SqlBuilder<'_>,
 ) -> Vec<String> {
@@ -2311,8 +2335,18 @@ fn temporal_conditions(
         return out;
     }
     let retractions = match typed {
-        Some(t) => format!("{} AS r WHERE r.store_id = {store_id_param} AND", t.table),
-        None => format!("{} AS r WHERE", build_datoms_union_subquery(store_id_param)),
+        Some(t) => {
+            debug_assert!(
+                t.table.starts_with(tables_prefix),
+                "{} read under {tables_prefix}",
+                t.table
+            );
+            format!("{} AS r WHERE r.store_id = {store_id_param} AND", t.table)
+        }
+        None => format!(
+            "{} AS r WHERE",
+            build_datoms_union_subquery(store_id_param, tables_prefix)
+        ),
     };
     // A typed table has one `v` column; the UNION carries one per type.
     let same_v = match typed {
@@ -6214,6 +6248,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             history,
             &alias,
             typed_info.as_ref(),
+            narrow_tables_prefix(schema_prefix),
             store_id_param,
             builder,
         ));
@@ -6283,6 +6318,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                 &alias,
                 store_id_param,
                 use_projection,
+                narrow_tables_prefix(schema_prefix),
             ));
             crate::monitoring::record_union_all_fallback();
         }
@@ -6349,6 +6385,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                             value_column: "v",
                             ..t
                         }),
+                        narrow_tables_prefix(schema_prefix),
                         store_id_param,
                         builder,
                     );
@@ -6421,7 +6458,13 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             } else {
                 continue;
             };
-            let table = attr_lookup_table(&info.value_type, temporal, store_id_param, builder);
+            let table = attr_lookup_table(
+                &info.value_type,
+                temporal,
+                narrow_tables_prefix(schema_prefix),
+                store_id_param,
+                builder,
+            );
 
             let not_exists = format!(
                 "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
@@ -6598,8 +6641,13 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
 
                 if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
                     if let Some((alias, col)) = var_to_alias.get(entity_var.as_str()) {
-                        let table =
-                            attr_lookup_table(&info.value_type, temporal, store_id_param, builder);
+                        let table = attr_lookup_table(
+                            &info.value_type,
+                            temporal,
+                            narrow_tables_prefix(schema_prefix),
+                            store_id_param,
+                            builder,
+                        );
                         let entity_expr = format!("{}.{}", alias, col);
                         let not_exists = format!(
                             "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
@@ -7355,6 +7403,7 @@ fn build_not_exists_subquery(
                     temporal.history,
                     &alias,
                     typed_info.as_ref(),
+                    narrow_tables_prefix(schema_prefix),
                     store_id_param,
                     builder,
                 ));
@@ -7394,6 +7443,7 @@ fn build_not_exists_subquery(
                         &alias,
                         store_id_param,
                         reads_projection(temporal, temporal.history),
+                        narrow_tables_prefix(schema_prefix),
                     ));
                 }
 
@@ -8253,6 +8303,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                     temporal.history,
                     &alias,
                     typed_info.as_ref(),
+                    narrow_tables_prefix(schema_prefix),
                     store_id_param,
                     builder,
                 ));
@@ -8292,6 +8343,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                         &alias,
                         store_id_param,
                         reads_projection(temporal, temporal.history),
+                        narrow_tables_prefix(schema_prefix),
                     ));
                 }
             }
@@ -8476,4 +8528,39 @@ fn pattern_binds_var(pattern: &edn::query::Pattern, var_name: &str) -> bool {
     }
 
     false
+}
+
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+mod tests {
+    use super::*;
+
+    /// temporal_conditions' as-of anti-join and the UNION fallback read the
+    /// tables under the prefix they're given, so a pattern and its anti-join
+    /// can't read different schemas (the named-stores merge passes the
+    /// store's schema).
+    #[pg_test]
+    fn test_temporal_tables_use_the_given_schema() {
+        let prefix = "\"mentat_s\".";
+        let as_of = TemporalOption {
+            as_of: Some(5),
+            since: Some(3),
+            history: false,
+        };
+        let mut b = SqlBuilder::new();
+        let sql = temporal_conditions(&as_of, false, "d0", None, prefix, "$1", &mut b).join(" ");
+        assert!(sql.contains("\"mentat_s\".datoms_long_new"), "{sql}");
+        assert!(!sql.contains("mentat.datoms"), "{sql}");
+        for projection in [false, true] {
+            let from = build_datoms_from_fragment("d0", "$1", projection, prefix);
+            assert!(!from.contains("mentat."), "{from}");
+            assert_eq!(from.matches("FROM \"mentat_s\".").count(), 9, "{from}");
+        }
+        let missing = attr_lookup_table("nonesuch", &as_of, prefix, "$1", &mut b);
+        assert!(
+            missing.starts_with("(SELECT * FROM \"mentat_s\"."),
+            "{missing}"
+        );
+        assert_eq!(narrow_tables_prefix("\"mentat_s\"."), "mentat.");
+    }
 }
