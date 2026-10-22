@@ -8,14 +8,16 @@ use serde_json::json;
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-/// Maximum length for a store name.
-const MAX_STORE_NAME_LEN: usize = 63;
+/// Maximum length for a store name: its schema, `mentat_<name>`, must fit
+/// PostgreSQL's 63-byte identifier limit, or PostgreSQL truncates it and the
+/// name in mentat.stores no longer matches the schema.
+const MAX_STORE_NAME_LEN: usize = 63 - "mentat_".len();
 
 /// Validate a store name.
 ///
 /// Rules:
 /// - Must not be empty
-/// - Must be <= 63 characters (PostgreSQL identifier limit)
+/// - Must be <= 56 characters (`mentat_<name>` fits the 63-character identifier limit)
 /// - Must start with a letter or underscore
 /// - Must contain only letters, digits, and underscores
 /// - Must not be a reserved name (default, pg_*, information_schema)
@@ -375,8 +377,10 @@ mod tests {
 
     #[test]
     fn test_validate_store_name_too_long() {
-        let long_name = "a".repeat(64);
-        assert!(validate_store_name(&long_name).is_err());
+        assert!(validate_store_name(&"a".repeat(56)).is_ok());
+        assert_eq!(get_schema_for_store(&"a".repeat(56)).len(), 63);
+        assert!(validate_store_name(&"a".repeat(57)).is_err());
+        assert!(validate_store_name(&"a".repeat(64)).is_err());
     }
 
     #[test]
