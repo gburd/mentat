@@ -86,6 +86,72 @@ mod tests {
         );
     }
 
+    // #286: an alteration the existing data violates is rejected, as on the embedded engine.
+    #[pg_test]
+    fn alteration_checks_existing_data() {
+        setup();
+        tx("[{:db/ident :mv/tags :db/valueType :db.type/string :db/cardinality :db.cardinality/many}
+             {:db/ident :mv/code :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]");
+        let a = tx(r#"[{:db/id "a" :mv/tags ["x" "y"]}]"#)["tempids"]["a"]
+            .as_i64()
+            .unwrap();
+        tx(r#"[{:mv/code "same"} {:mv/code "same"}]"#);
+        let row = |ident: &str| {
+            Spi::get_one::<String>(&format!(
+                "SELECT cardinality::text || ' ' || coalesce(unique_constraint::text, 'none') \
+                 FROM mentat.schema WHERE ident = '{ident}'"
+            ))
+            .expect("schema row")
+            .expect("non-NULL")
+        };
+
+        let e = transact("[[:db/add :mv/tags :db/cardinality :db.cardinality/one]]");
+        assert!(
+            e.contains("Cannot alter schema attribute :mv/tags to be :db.cardinality/one"),
+            "{e}"
+        );
+        assert_eq!(row(":mv/tags"), "many none");
+        let e = transact(
+            "[[:db/add :mv/code :db/unique :db.unique/identity] [:db/add :mv/code :db/index true]]",
+        );
+        assert!(
+            e.contains("Cannot alter schema attribute :mv/code to be :db.unique/identity"),
+            "{e}"
+        );
+        let e = transact(
+            "[[:db/add :mv/code :db/unique :db.unique/value] [:db/add :mv/code :db/index true]]",
+        );
+        assert!(
+            e.contains("Cannot alter schema attribute :mv/code to be :db.unique/value"),
+            "{e}"
+        );
+        assert_eq!(row(":mv/code"), "one none");
+
+        // Without the violation, both alterations go through.
+        assert_eq!(transact(&format!("[[:db/retract {a} :mv/tags \"x\"]]")), "");
+        assert_eq!(
+            transact("[[:db/add :mv/tags :db/cardinality :db.cardinality/one]]"),
+            ""
+        );
+        assert_eq!(row(":mv/tags"), "one none");
+        tx(r#"[{:mv/code "other"}]"#);
+        let dup = Spi::get_one::<i64>(
+            "SELECT min(e) FROM mentat.current_text t JOIN mentat.idents i ON i.entid = t.a \
+             WHERE i.ident = ':mv/code' AND t.v = 'same'",
+        )
+        .expect("dup")
+        .expect("non-NULL");
+        assert_eq!(
+            transact(&format!("[[:db/retract {dup} :mv/code \"same\"]]")),
+            ""
+        );
+        assert_eq!(
+            transact("[[:db/add :mv/code :db/unique :db.unique/identity] [:db/add :mv/code :db/index true]]"),
+            ""
+        );
+        assert_eq!(row(":mv/code"), "one identity");
+    }
+
     fn tx(edn: &str) -> serde_json::Value {
         let raw = Spi::get_one::<String>(&format!(
             "SELECT edn_t('{}'::TEXT)::TEXT",

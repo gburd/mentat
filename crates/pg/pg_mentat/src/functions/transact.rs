@@ -1725,6 +1725,7 @@ fn install_schema_attributes(
     builders: &BTreeMap<i64, SchemaBuilder>,
     schema: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // named-stores: per-store cache
     let cache = crate::cache::get_cache();
     for (&entid, builder) in builders {
         // An entity is an ATTRIBUTE definition if it asserts any attribute
@@ -1838,6 +1839,43 @@ fn install_schema_attributes(
             .no_history
             .or(old.map(|a| a.no_history))
             .unwrap_or(false);
+
+        // As on the embedded engine (update_metadata): an alteration the existing data
+        // violates is rejected, so a cardinality-one attribute never holds two values and a
+        // unique one never holds a value twice.
+        if let Some(a) = old {
+            // value_type is a schema enum label; "string" values live in current_text.
+            let table = match value_type.as_str() {
+                "string" => "current_text".to_string(),
+                vt => format!("current_{vt}"),
+            };
+            let store_id = get_store_id_from_schema(schema)?;
+            // Does some (e) or (v) group of this attribute's live datoms hold two rows?
+            let violated = |group_by: &str| {
+                let sql = format!(
+                    "SELECT EXISTS(SELECT 1 FROM mentat.{table} WHERE store_id = $1 AND a = $2 \
+                     GROUP BY {group_by} HAVING count(*) > 1)"
+                );
+                let args = [DatumWithOid::from(store_id), DatumWithOid::from(entid)];
+                Spi::get_one_with_args::<bool>(&sql, &args).map(|b| b.unwrap_or(false))
+            };
+            let cannot = |what: &str| -> Box<dyn std::error::Error + Send + Sync> {
+                MentatError::InvalidTransaction {
+                    message: format!("Cannot alter schema attribute {ident} to be {what}"),
+                }
+                .into()
+            };
+            if a.cardinality == "many" && cardinality == "one" && violated("e")? {
+                return Err(cannot(":db.cardinality/one"));
+            }
+            if a.unique_constraint.is_none() {
+                if let Some(u) = &unique {
+                    if violated("v")? {
+                        return Err(cannot(&format!(":db.unique/{u}")));
+                    }
+                }
+            }
+        }
 
         // Insert into idents (keyword -> entid mapping)
         Spi::run_with_args(
