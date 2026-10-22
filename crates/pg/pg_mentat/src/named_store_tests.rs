@@ -961,6 +961,29 @@ mod tests {
         Spi::run("SELECT drop_store('sbr_b')").expect("drop");
     }
 
+    // Two stores could both subscribe under one name. The channel
+    // (mentat_<name>) and the hash setting carry no store, so a listener for
+    // one store's "names" got the other store's results. A name is now one
+    // per database.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_names_are_shared_by_all_stores() {
+        setup();
+        Spi::run("SELECT create_store('sn_a'), create_store('sn_b')").expect("create");
+        let query = "[:find ?e :where [?e :db/ident _]]";
+        Spi::run(&format!("SELECT subscribe('sn_a', 'sn_names', '{query}')")).expect("first");
+        let err = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT subscribe('sn_b', 'sn_names', '{query}')$q$)"
+        ));
+        assert!(
+            err.contains("already used by store 'sn_a'"),
+            "the second store must be refused: {err:?}"
+        );
+        Spi::run("SELECT unsubscribe('sn_a', 'sn_names')").expect("unsubscribe");
+        Spi::run(&format!("SELECT subscribe('sn_b', 'sn_names', '{query}')")).expect("free again");
+        Spi::run("SELECT drop_store('sn_a'), drop_store('sn_b')").expect("drop");
+    }
+
     // An on_write materialized view's trigger baked in the store's schema,
     // and its body the store's name: after rename_store every t() on the
     // store failed with `schema "mentat_mv_a" does not exist`.
