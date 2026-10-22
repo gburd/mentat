@@ -652,7 +652,6 @@ mod tests {
             Spi::get_one(&format!(
                 "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
                   WHERE c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}') \
-                    AND c.relname LIKE 'idx\\_%\\_trgm\\_%' \
                     AND i.indclass[0] = (SELECT o.oid FROM pg_opclass o \
                           WHERE o.opcname = 'gin_trgm_ops' AND o.opcnamespace = 'ns_ext'::regnamespace)"
             ))
@@ -1113,5 +1112,54 @@ mod tests {
         assert_eq!(row["n"], serde_json::json!("only-here"), "{row}");
         assert_eq!(row["a"], serde_json::json!("3"), "{row}");
         Spi::run("SELECT drop_store('mvc_s')").expect("drop");
+    }
+
+    // The trigram indexes were named idx_<store>_trgm_text / _keyword. From
+    // 53 characters both names truncated to the same 63, so the keyword
+    // index was skipped ("already exists"); and each rename_store added two
+    // more under the new name.
+    #[pg_test]
+    fn trigram_indexes_long_names_and_renames() {
+        setup();
+        if !pg_trgm_in_schema("ns_trgm7") {
+            return;
+        }
+        let per_table = |schema: &str| -> Vec<String> {
+            let v = json(&format!(
+                "SELECT coalesce(jsonb_agg(t.relname || ':' || c.relname ORDER BY t.relname, c.relname), '[]') \
+                   FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+                   JOIN pg_class t ON t.oid = i.indrelid \
+                   JOIN pg_opclass o ON o.oid = i.indclass[0] \
+                  WHERE o.opcname = 'gin_trgm_ops' AND t.relnamespace = \
+                    (SELECT oid FROM pg_namespace WHERE nspname = '{schema}')"
+            ));
+            sorted(v)
+        };
+        let expected = vec![
+            "datoms_keyword_new:idx_datoms_keyword_new_trgm".to_string(),
+            "datoms_text_new:idx_datoms_text_new_trgm".to_string(),
+        ];
+        let long = "k".repeat(56);
+        Spi::run(&format!("SELECT create_store('{long}')")).expect("create");
+        assert_eq!(per_table(&format!("mentat_{long}")), expected);
+        Spi::run("SELECT create_store('tg_rn1')").expect("create");
+        Spi::run("SELECT rename_store('tg_rn1', 'tg_rn2')").expect("rename");
+        Spi::run("SELECT rename_store('tg_rn2', 'tg_rn3')").expect("rename");
+        assert_eq!(per_table("mentat_tg_rn3"), expected);
+        // A trigram index the store already has, under any name, is kept and
+        // not doubled.
+        Spi::run(
+            "DROP INDEX mentat_tg_rn3.idx_datoms_text_new_trgm; \
+             CREATE INDEX mine ON mentat_tg_rn3.datoms_text_new USING GIN (v ns_trgm7.gin_trgm_ops)",
+        )
+        .expect("own index");
+        Spi::run("SELECT rename_store('tg_rn3', 'tg_rn4')").expect("rename");
+        assert_eq!(
+            per_table("mentat_tg_rn4"),
+            vec![
+                "datoms_keyword_new:idx_datoms_keyword_new_trgm".to_string(),
+                "datoms_text_new:mine".to_string()
+            ]
+        );
     }
 }
