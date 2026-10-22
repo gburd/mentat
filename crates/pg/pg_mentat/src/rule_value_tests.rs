@@ -369,6 +369,44 @@ mod tests {
             .0
     }
 
+    /// The error a query raises, or "" if it runs.
+    fn query_error(query: &str) -> String {
+        crate::functions::query::mentat_query(query, pgrx::JsonB(serde_json::json!({})))
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+    }
+
+    /// A rule head takes variables only (as in Datomic): a constant there is
+    /// an error. It matched nothing, so `(isa ?e :rv/dev)` returned [].
+    #[pg_test]
+    fn test_rule_head_constant_is_an_error() {
+        let [_a, b, c, _d] = setup_chain();
+        for (rules, call) in [
+            (
+                "[[(isa ?e :rv/dev) [?e :rv/role :rv/dev]]]",
+                "(isa ?e :rv/dev)",
+            ),
+            ("[[(isa ?e \"bob\") [?e :rv/name \"bob\"]]]", "(isa ?e ?n)"),
+            (
+                "[[(aged ?e ?n) [?e :rv/age ?n]] [(aged ?e 5) [?e :rv/age 5]]]",
+                "(aged ?e 5)",
+            ),
+        ] {
+            let q = format!("[:find ?e :rules {rules} :where {call}]");
+            let err = query_error(&q);
+            assert!(
+                err.contains(":db.error/invalid-rule") && err.contains("variables only"),
+                "{q}: {err}"
+            );
+        }
+        // The supported form: a variable in the head, the constant at the call.
+        assert_eq!(
+            rows("[:find ?e :rules [[(isa ?e ?r) [?e :rv/role ?r]]] :where (isa ?e :rv/dev)]"),
+            sorted(vec![format!("[{b}]"), format!("[{c}]")])
+        );
+    }
+
     /// A recursive rule doing arithmetic on a value its recursive call
     /// binds keeps it a long: the hop count was stored as a double from the
     /// second hop on, so (depth ?e 2) matched nothing and (max ?n) was 3.0.

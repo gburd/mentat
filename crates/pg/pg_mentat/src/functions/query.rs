@@ -8348,6 +8348,31 @@ fn build_rule_ctes(
             )
             .into());
         };
+        // A rule head takes variables only, as in Datomic; the embedded engine
+        // rejects a constant there too. (A constant read as a head column
+        // matched nothing.)
+        for clause in &rule.clauses {
+            if let Some(arg) = clause
+                .head
+                .args
+                .iter()
+                .find(|a| !matches!(a, FnArg::Variable(_)))
+            {
+                let arg = match arg {
+                    FnArg::Constant(NonIntegerConstant::Text(s)) => format!("{:?}", s.as_str()),
+                    FnArg::Constant(NonIntegerConstant::Boolean(b)) => b.to_string(),
+                    FnArg::Constant(NonIntegerConstant::Float(f)) => f.to_string(),
+                    a => a.to_string(),
+                };
+                return Err(format!(
+                    ":db.error/invalid-rule The head of rule '{rule_name}' has the argument \
+                     {arg}; a rule head takes variables only. To match a constant, bind a \
+                     variable in the body, [({rule_name} ?e ?x) [?e :attr ?x]], and invoke \
+                     ({rule_name} ?e {arg})."
+                )
+                .into());
+            }
+        }
         let col_types = rule_col_types(rule, schema_prefix);
         let cte_col_list = (0..arity)
             .flat_map(|n| {
