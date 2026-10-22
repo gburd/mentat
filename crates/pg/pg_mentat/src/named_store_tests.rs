@@ -572,4 +572,68 @@ mod tests {
             "billing.invoices"
         );
     }
+
+    // mentat_ + name must fit PostgreSQL's 63-character identifiers. 1.17
+    // took up to 63; PostgreSQL cut the schema name short, and with this
+    // branch's catalog lookups (nspname = text) create_store failed for
+    // 57-63. The limit is 56 now.
+    #[pg_test]
+    fn store_name_length_limit() {
+        setup();
+        let max = "n".repeat(56);
+        Spi::run(&format!("SELECT create_store('{max}')")).expect("56 characters");
+        tx(&max, SCHEMA_TX);
+        tx(&max, "[{:p/name \"long\"}]");
+        assert_eq!(sorted(names(&max)), vec!["long"]);
+        Spi::run(&format!("SELECT drop_store('{max}')")).expect("drop");
+        let err = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT create_store('{}')$q$)",
+            "n".repeat(57)
+        ));
+        assert!(err.contains("56"), "{err}");
+    }
+
+    // 1.17 stores with long names: 56 characters (its _pre118 name used to
+    // truncate back to the store's own schema, so the upgrade aborted) and 60
+    // (schema name truncated by PostgreSQL; the store was silently skipped).
+    #[pg_test]
+    fn upgrade_handles_long_store_names() {
+        setup();
+        let n56 = "l".repeat(56);
+        let n60 = "m".repeat(60);
+        let wide = "(e BIGINT NOT NULL, a BIGINT NOT NULL, value_type_tag SMALLINT NOT NULL, \
+                    v_ref BIGINT, v_long BIGINT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL)";
+        for n in [&n56, &n60] {
+            // What 1.17's create_store left: the row keeps the full name, the
+            // schema is whatever CREATE SCHEMA made of it.
+            Spi::run(&format!(
+                "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('{n}', 'mentat_{n}'); \
+                 CREATE SCHEMA \"mentat_{n}\"; CREATE TABLE \"mentat_{n}\".datoms {wide}"
+            ))
+            .expect("1.17 store");
+        }
+        Spi::run(&upgrade_do_block()).expect("the upgrade must not abort");
+        // 56: rebuilt, old schema kept under a 63-character name.
+        let pre = format!("{}_pre118", &format!("mentat_{n56}")[..56]);
+        assert_eq!(pre.len(), 63);
+        let kept: i64 = Spi::get_one(&format!(
+            "SELECT count(*) FROM pg_class WHERE relname = 'datoms' AND relnamespace = \
+               (SELECT oid FROM pg_namespace WHERE nspname = '{pre}')"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(kept, 1);
+        tx(&n56, SCHEMA_TX);
+        tx(&n56, "[{:p/name \"rebuilt\"}]");
+        assert_eq!(sorted(names(&n56)), vec!["rebuilt"]);
+        // 60: skipped, schema untouched.
+        let truncated = &format!("mentat_{n60}")[..63];
+        let left_alone: i64 = Spi::get_one(&format!(
+            "SELECT count(*) FROM pg_class WHERE relname = 'datoms' AND relkind = 'r' AND relnamespace = \
+               (SELECT oid FROM pg_namespace WHERE nspname = '{truncated}')"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(left_alone, 1);
+    }
 }

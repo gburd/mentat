@@ -125,7 +125,10 @@ Drop `mentat_<name>_pre118` once you have checked the result.
 
 **A store the upgrade skipped.** The upgrade never aborts over a named
 store; it leaves one alone, with a WARNING saying why, when its schema does
-not hold the old layout or `mentat_<name>_pre118` already exists. It also
+not hold the old layout, `mentat_<name>_pre118` already exists, or its name
+is longer than 56 characters (the limit since 1.18.0: `mentat_` plus the
+name must fit PostgreSQL's 63-character identifiers; 1.17 accepted 63 and
+PostgreSQL cut the schema name short). It also
 leaves alone any `mentat.stores` row that `create_store` would not have
 made (its schema is not `mentat_<store_name>`). To rebuild a skipped store
 after the upgrade, set its schema aside and create the store again, then
@@ -136,6 +139,10 @@ ALTER SCHEMA mentat_acme RENAME TO mentat_acme_old;
 DELETE FROM mentat.stores WHERE store_name = 'acme';
 SELECT create_store('acme');
 ```
+
+For a name over 56 characters, create the store under a shorter name and
+look up its truncated schema with
+`SELECT nspname FROM pg_namespace WHERE nspname LIKE 'mentat\_<first letters>%'`.
 
 ## Row-Level Security over `store_id` (shared `mentat` tables)
 
