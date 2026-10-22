@@ -645,18 +645,9 @@ mod tests {
     #[pg_test]
     fn pg_trgm_in_its_own_schema() {
         setup();
-        let available: i64 =
-            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_trgm'")
-                .unwrap()
-                .unwrap();
-        if available == 0 {
+        if !pg_trgm_in_schema("ns_ext") {
             return;
         }
-        Spi::run(
-            "DROP EXTENSION IF EXISTS pg_trgm CASCADE; \
-             CREATE SCHEMA ns_ext; CREATE EXTENSION pg_trgm SCHEMA ns_ext",
-        )
-        .expect("pg_trgm in schema ns_ext");
         let trgm_indexes = |schema: &str| -> i64 {
             Spi::get_one(&format!(
                 "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
@@ -689,6 +680,74 @@ mod tests {
         tx("trgm_old", SCHEMA_TX);
         tx("trgm_old", "[{:p/name \"rebuilt\"}]");
         assert_eq!(sorted(names("trgm_old")), vec!["rebuilt"]);
+    }
+
+    /// Install pg_trgm in a schema of its own, off the search path. False if
+    /// this server doesn't ship it.
+    fn pg_trgm_in_schema(schema: &str) -> bool {
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_trgm'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return false;
+        }
+        Spi::run(&format!(
+            "DROP EXTENSION IF EXISTS pg_trgm CASCADE; \
+             CREATE SCHEMA {schema}; CREATE EXTENSION pg_trgm SCHEMA {schema}"
+        ))
+        .expect("pg_trgm");
+        true
+    }
+
+    // create_virtual_tables rewrote every "mentat.datoms_" in its SQL to the
+    // store's schema, and the trigram index SQL already named the store's
+    // schema: for a schema ending in "mentat" the rewrite matched inside it
+    // (mentat_app_mentat_app_mentat.datoms_text_new). With pg_trgm installed,
+    // create_store('app_mentat') and rename_store(x, 'x_mentat') failed, and
+    // one such 1.17 store aborted ALTER EXTENSION UPDATE for the database.
+    #[pg_test]
+    fn store_names_ending_in_mentat() {
+        setup();
+        if !pg_trgm_in_schema("ns_trgm") {
+            return;
+        }
+        let err = text("SELECT pg_temp.capture($q$SELECT create_store('x.mentat')$q$)");
+        assert!(err.contains("letters, digits, and underscores"), "{err}");
+        let check = |store: &str| {
+            tx(store, SCHEMA_TX);
+            tx(store, &format!("[{{:p/name \"in-{store}\"}}]"));
+            assert_eq!(sorted(names(store)), vec![format!("in-{store}")]);
+            let n: i64 = Spi::get_one(&format!(
+                "SELECT count(*) FROM {}.facts WHERE attribute = ':p/name'",
+                crate::functions::store_management::quote_ident(&format!("mentat_{store}"))
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(n, 1, "{store}");
+        };
+        for store in ["app_mentat", "mentat", "mentat_x"] {
+            Spi::run(&format!("SELECT create_store('{store}')")).expect(store);
+            check(store);
+        }
+        Spi::run("SELECT create_store('rn_src')").expect("create");
+        Spi::run("SELECT rename_store('rn_src', 'x_mentat')").expect("rename to x_mentat");
+        check("x_mentat");
+
+        // The 1.17 -> 1.18 rebuild of such stores.
+        for store in ["old_mentat", "mentat_old"] {
+            Spi::run(&format!(
+                "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('{store}', 'mentat_{store}'); \
+                 CREATE SCHEMA mentat_{store}; \
+                 CREATE TABLE mentat_{store}.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+                   value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL)"
+            ))
+            .expect("1.17 store");
+        }
+        Spi::run(&upgrade_do_block()).expect("the upgrade must not abort");
+        for store in ["old_mentat", "mentat_old"] {
+            check(store);
+        }
     }
 
     // vector-near / turbovec-near / geom-* read mentat.attr_<entid>_* tables
