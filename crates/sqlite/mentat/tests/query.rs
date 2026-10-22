@@ -2311,6 +2311,17 @@ fn test_tx_report_counts() {
         assert_eq!(counts(&r), want, "{tx}");
         assert_eq!(r.is_empty(), want == (0, 0), "{tx}");
     }
+    // A :db/noHistory replacement retracts the old value like any other (pg_mentat agrees).
+    store
+        .transact(
+            "[{:db/ident :c/h :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+               :db/noHistory true}]",
+        )
+        .expect("noHistory");
+    let r = store.transact(r#"[{:db/id "b" :c/h 1}]"#).expect("b");
+    let b = *r.tempids.get("b").unwrap();
+    let r = store.transact(&format!("[[:db/add {b} :c/h 2]]")).unwrap();
+    assert_eq!(counts(&r), (1, 1));
 }
 
 // #123: a non-namespaced keyword value reads back (it transacted, then failed to read).

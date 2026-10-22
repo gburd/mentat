@@ -316,6 +316,37 @@ mod tests {
         ] {
             assert_eq!(counts(&tx(&t)), want, "{t}");
         }
+
+        // tx-data lists what the counts count, as in Datomic: the retraction a
+        // replacement implies, and no no-op re-assertion. A :db/noHistory replacement
+        // retracts the old value too, though its history is not kept; the embedded
+        // engine counts it the same way.
+        tx(
+            "[{:db/ident :mc/h :db/valueType :db.type/long :db/cardinality :db.cardinality/one
+               :db/noHistory true}]",
+        );
+        let b = tx(r#"[{:db/id "b" :mc/n 1 :mc/h 1}]"#)["tempids"]["b"]
+            .as_i64()
+            .unwrap();
+        let data = |r: &serde_json::Value| -> Vec<(i64, bool)> {
+            let mut d: Vec<_> = r["tx-data"].as_array().unwrap()[1..]
+                .iter()
+                .map(|d| (d[2].as_i64().unwrap(), d[4].as_bool().unwrap()))
+                .collect();
+            d.sort();
+            d
+        };
+        for t in [
+            format!("[[:db/add {b} :mc/n 2]]"),
+            format!("[[:db/add {b} :mc/h 2]]"),
+        ] {
+            let r = tx(&t);
+            assert_eq!(counts(&r), (1, 1), "{t}");
+            assert_eq!(data(&r), [(1, false), (2, true)], "{t}");
+        }
+        let r = tx(&format!("[[:db/add {b} :mc/n 2] [:db/add {b} :mc/h 3]]"));
+        assert_eq!(counts(&r), (1, 1));
+        assert_eq!(data(&r), [(2, false), (3, true)]);
     }
 
     // #362: in one transaction, a retraction of a live value of each type is applied and one

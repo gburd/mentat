@@ -1378,7 +1378,9 @@ fn execute_transaction_inner(
     let datom_result = insert_datoms(&pending_datoms, tx_id, &qs);
 
     match datom_result {
-        Ok((datoms_asserted, datoms_retracted)) => {
+        Ok(changed) => {
+            let datoms_asserted = changed.iter().filter(|d| d.4).count();
+            let datoms_retracted = changed.len() - datoms_asserted;
             // All datoms inserted successfully. PostgreSQL's transaction
             // management will commit schema + datoms atomically.
 
@@ -1396,8 +1398,9 @@ fn execute_transaction_inner(
 
             // Build tx-data: array of [e, a, v, tx, added] for each datom in the transaction.
             // Include the implicit :db/txInstant datom first (matches Datomic ordering),
-            // then all user-supplied datoms.
-            let mut tx_data_entries: Vec<String> = Vec::with_capacity(pending_datoms.len() + 1);
+            // then the datoms the transaction changed, as in Datomic: with the retraction
+            // a cardinality-one replacement implies, without no-op re-assertions.
+            let mut tx_data_entries: Vec<String> = Vec::with_capacity(changed.len() + 1);
 
             // The :db/txInstant datom
             let tx_instant_tv = TypedValue::Instant(tx_instant_micros);
@@ -1410,15 +1413,14 @@ fn execute_transaction_inner(
                 true
             ));
 
-            // All user datoms (including implicit retractions from cardinality-one handling)
-            for datom in &pending_datoms {
+            for (e, a, v, tx, added) in &changed {
                 tx_data_entries.push(format!(
                     "[{},{},{},{},{}]",
-                    datom.e,
-                    datom.a,
-                    format_typed_value_for_json(&datom.v),
-                    tx_id,
-                    datom.added
+                    e,
+                    a,
+                    format_typed_value_for_json(v),
+                    tx,
+                    added
                 ));
             }
 
@@ -1467,13 +1469,15 @@ enum CardinalityOneResult {
 /// semantics. Returns the number of datoms processed.
 ///
 /// The `schema` parameter is the quoted PostgreSQL schema name.
-/// Returns how many datoms were asserted and retracted (#281): the rows written to the log,
-/// not counting skipped no-ops. The `:db/txInstant` datom is written elsewhere.
+/// Returns the datoms the transaction asserted and retracted, `(e, a, v, tx, added)`, for
+/// the report's counts (#281) and tx-data: the rows written to the log, without skipped
+/// no-ops, plus the value a :db/noHistory replacement retracts (which is not logged). The
+/// `:db/txInstant` datom is written elsewhere.
 fn insert_datoms(
     pending_datoms: &[PendingDatom],
     tx_id: i64,
     schema: &str,
-) -> Result<(usize, usize), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<(i64, i64, TypedValue, i64, bool)>, Box<dyn std::error::Error + Send + Sync>> {
     let datom_count = pending_datoms.len();
 
     // Collect all rows that need to be written to the type-specific tables.
@@ -1481,6 +1485,7 @@ fn insert_datoms(
     // reducing ~463 per-datom INSERTs to at most 9 (one per type table).
     let mut rows_to_insert: Vec<(i64, i64, TypedValue, i64, bool)> =
         Vec::with_capacity(datom_count);
+    let mut unlogged_retractions: Vec<(i64, i64, TypedValue, i64, bool)> = Vec::new();
     let mut fulltext_values: Vec<String> = Vec::new();
 
     for datom in pending_datoms {
@@ -1504,10 +1509,15 @@ fn insert_datoms(
                         "one" => {
                             // Idempotent: if the current value already equals
                             // the new one, skip entirely.
-                            if let CardinalityOneResult::Skip = retract_existing_cardinality_one(
+                            match retract_existing_cardinality_one(
                                 datom.e, datom.a, &datom.v, schema,
                             )? {
-                                continue;
+                                CardinalityOneResult::Skip => continue,
+                                CardinalityOneResult::Insert => {}
+                                // Not logged, but the transaction did retract it: the
+                                // report and tx-data say so, as for any replacement.
+                                CardinalityOneResult::Replace(old_v) => unlogged_retractions
+                                    .push((datom.e, datom.a, old_v, tx_id, false)),
                             }
                             // Prune ALL prior log rows for this (e,a): noHistory
                             // keeps no trail, so the old assertion/retraction
@@ -1627,8 +1637,8 @@ fn insert_datoms(
         )?;
     }
 
-    let asserted = rows_to_insert.iter().filter(|r| r.4).count();
-    Ok((asserted, rows_to_insert.len() - asserted))
+    rows_to_insert.extend(unlogged_retractions);
+    Ok(rows_to_insert)
 }
 
 /// Collect schema-defining assertions for an entity.
