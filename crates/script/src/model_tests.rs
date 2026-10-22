@@ -844,20 +844,51 @@ pub fn as_of_sees_a_value_reasserted_after_retraction(it: &mut Interpreter) {
 }
 
 /// `missing?` and `get-else` read the db's basis like any pattern: as of t1
-/// :t364/s is "a"; it was retracted at t2.
+/// :t364/s is "a"; it was retracted at t2. Since S they see only the current
+/// datoms transacted after S, so a value asserted at or before S is missing.
 pub fn missing_and_get_else_read_the_basis(it: &mut Interpreter) {
     let (x, t1, t2, _) = seed_t364(it);
     let missing = "[:find [?e ...] :where [?e :t364/n _] [(missing? $ ?e :t364/s)]]";
     let get_else = "[:find [?s ...] :where [?e :t364/n _] [(get-else $ ?e :t364/s \"none\") ?s]]";
+    let ex = format!("[{x}]");
     assert_eq!(q_sorted(it, &db_on(Some(t1), None), missing), "[]");
-    assert_eq!(
-        q_sorted(it, &db_on(Some(t2), None), missing),
-        format!("[{x}]")
-    );
+    assert_eq!(q_sorted(it, &db_on(Some(t2), None), missing), ex);
     assert_eq!(q_sorted(it, &db_on(Some(t1), None), get_else), "[\"a\"]");
     assert_eq!(q_sorted(it, &db_on(Some(t2), None), get_else), "[\"none\"]");
-    // since t1: :t364/n's live value (3) is from t3, :t364/s none.
-    assert_eq!(q_sorted(it, &db_on(None, Some(t1)), get_else), "[\"none\"]");
+
+    // t4: :t364/s "b"; t5: :t364/n 4. Now s is live, so since t4 (s asserted
+    // at t4, n at t5) differs from current state.
+    let basis = |it: &mut Interpreter| -> i64 {
+        it.eval_to_string("(:mentat.store/basis-tx (mentat.store/db c))")
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/s \"b\"]])"
+    ))
+    .unwrap();
+    let t4 = basis(it);
+    it.eval_to_string(&format!(
+        "(mentat.store/transact c [[:db/add {x} :t364/n 4]])"
+    ))
+    .unwrap();
+    let t5 = basis(it);
+    assert_eq!(q_sorted(it, &db_on(None, None), get_else), "[\"b\"]");
+    assert_eq!(q_sorted(it, &db_on(None, None), missing), "[]");
+    assert_eq!(q_sorted(it, &db_on(None, Some(t4)), get_else), "[\"none\"]");
+    assert_eq!(q_sorted(it, &db_on(None, Some(t4)), missing), ex);
+    assert_eq!(
+        q_sorted(it, &db_on(None, Some(t4 - 1)), get_else),
+        "[\"b\"]"
+    );
+    assert_eq!(q_sorted(it, &db_on(None, Some(t4 - 1)), missing), "[]");
+    // Both bounds: as of t5, since t4.
+    assert_eq!(
+        q_sorted(it, &db_on(Some(t5), Some(t4)), get_else),
+        "[\"none\"]"
+    );
+    assert_eq!(q_sorted(it, &db_on(Some(t5), Some(t4)), missing), ex);
 }
 
 /// Datomic's `since S` (issue #364): the current datoms whose tx is after S,
