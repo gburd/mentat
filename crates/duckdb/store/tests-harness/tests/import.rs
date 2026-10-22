@@ -672,3 +672,63 @@ fn the_source_is_read_only() {
     assert_eq!(std::fs::read(&path).unwrap(), before, "the source changed");
     assert_eq!(files(), ["old.mentat"]);
 }
+
+/// An untrusted file: a VIEW named like one of mentat's tables is refused
+/// before anything reads it. (The scanner's SQLite runs a view's SQL; an
+/// unbounded recursive one used to run forever holding the store's write
+/// lock.) And a WAL-mode file in a read-only directory is refused with what
+/// to do about it.
+#[test]
+fn views_and_unreadable_wal_files_are_refused_up_front() {
+    if !sqlite_ext() {
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let c = Connection::open_in_memory().unwrap();
+    let dc = DuckConn::new(&c);
+    let conn = &dc as &dyn SqlConn;
+
+    // A real store, then `datoms` replaced by an endless view.
+    let view = dir.path().join("view.mentat");
+    let mut st = mentat::Store::open(view.to_str().unwrap()).unwrap();
+    st.transact(TXS[0]).unwrap();
+    st.sqlite_mut()
+        .execute_batch(
+            "DROP TABLE datoms; \
+             CREATE VIEW datoms AS WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) \
+             SELECT n AS e, 1 AS a, 1 AS v, 1 AS tx, 0 AS value_type_tag, 0 AS index_avet, \
+             0 AS index_vaet, 0 AS index_fulltext, 0 AS unique_value FROM r",
+        )
+        .unwrap();
+    drop(st);
+    let t0 = std::time::Instant::now();
+    let e = DuckStore::new(conn, "view")
+        .import_sqlite(view.to_str().unwrap())
+        .unwrap_err();
+    assert!(e.to_string().contains("not a mentat store"), "{e}");
+    assert!(t0.elapsed().as_secs() < 10, "took {:?}", t0.elapsed());
+
+    // WAL mode (mentat's default) in a directory we can't write: SQLite
+    // can't create the -shm. Skipped as root, which can write anyway.
+    let ro = dir.path().join("ro");
+    std::fs::create_dir(&ro).unwrap();
+    let wal = ro.join("old.mentat");
+    let mut st = mentat::Store::open(wal.to_str().unwrap()).unwrap();
+    st.transact(TXS[0]).unwrap();
+    drop(st);
+    for f in ["old.mentat-wal", "old.mentat-shm"] {
+        let _ = std::fs::remove_file(ro.join(f));
+    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(ro.join("probe"), b"").is_err() {
+        let e = DuckStore::new(conn, "wal")
+            .import_sqlite(wal.to_str().unwrap())
+            .unwrap_err();
+        assert!(
+            e.to_string().contains("WAL-mode") && e.to_string().contains("writable"),
+            "{e}"
+        );
+    }
+    std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+}

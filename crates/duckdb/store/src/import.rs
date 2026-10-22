@@ -220,7 +220,8 @@ fn copy_table(
 impl DuckStore<'_> {
     /// Import the SQLite mentat store at `path` into this store, which must
     /// not exist yet or must hold nothing but its bootstrap transaction. One
-    /// DuckDB transaction: on any error the store is left as it was. Needs
+    /// DuckDB transaction (so not inside one already open on the connection;
+    /// see `with_speculative`): on any error the store is left as it was. Needs
     /// DuckDB's `sqlite` extension (autoloaded where DuckDB may install
     /// extensions; otherwise `INSTALL sqlite; LOAD sqlite;` first).
     pub fn import_sqlite(&self, path: &str) -> Result<Imported> {
@@ -272,7 +273,21 @@ impl DuckStore<'_> {
         // The attach opens the file lazily: a missing or non-SQLite file
         // fails here.
         let version: i64 = one("PRAGMA user_version")
-            .map_err(|e| err(format!("mentat_import: can't open {path} as SQLite: {e}")))?
+            .map_err(|e| {
+                let m = e.to_string();
+                // A WAL-mode file (what mentat writes) needs its -shm beside
+                // it, and SQLite creates that even to read.
+                if m.contains("readonly database") {
+                    err(format!(
+                        "mentat_import: can't read {path}: it is a WAL-mode SQLite file \
+                         and SQLite needs to create {path}-shm beside it, but the \
+                         directory isn't writable. Copy the file to a writable \
+                         directory and import the copy. SQLite said: {m}"
+                    ))
+                } else {
+                    err(format!("mentat_import: can't open {path} as SQLite: {m}"))
+                }
+            })?
             .parse()
             .unwrap_or(0);
         // known_parts.idx (the partition high-water marks) came with version
@@ -283,9 +298,14 @@ impl DuckStore<'_> {
                  mentat 1.10 or later (the CLI or the SQLite extension) to upgrade it"
             )));
         }
+        // Tables, not views: the scanner's SQLite runs a view's SQL (an
+        // untrusted file's, while this store's write lock is held). The one
+        // other table read, fulltext_values, is read by rowid, so a view of
+        // that name fails to prepare.
         let tables = one(
             "SELECT group_concat(name) FROM (SELECT name FROM sqlite_master \
-             WHERE name IN ('datoms', 'timelined_transactions', 'idents', 'schema', 'known_parts') \
+             WHERE type = 'table' \
+             AND name IN ('datoms', 'timelined_transactions', 'idents', 'schema', 'known_parts') \
              ORDER BY name)",
         )
         .unwrap_or_default();

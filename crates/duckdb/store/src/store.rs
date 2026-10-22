@@ -432,7 +432,9 @@ impl<'c> DuckStore<'c> {
         Ok(OnDrop::new(self.conn, "ROLLBACK"))
     }
 
-    /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction.
+    /// Transact `edn` (a vector of tx data). Atomic: one DuckDB transaction,
+    /// so not inside one already open on the connection (see
+    /// `with_speculative`).
     pub fn transact(&self, edn: &str) -> Result<TxReport> {
         let entities = edn::parse::entities(edn)?;
         let (gen, opened) = self.open_gen()?;
@@ -446,9 +448,16 @@ impl<'c> DuckStore<'c> {
     /// connection that is always rolled back: no other connection sees them,
     /// and nothing is left behind, on success or error (partition counters
     /// and the schema generation included). Holds the store's write lock, as
-    /// `transact` does. DuckDB has no savepoints, so this can't nest inside
-    /// a transaction already open on the connection; the extension's
-    /// connections never have one.
+    /// `transact` does.
+    ///
+    /// DuckDB has no savepoints, so this (like `transact`) can't nest inside
+    /// a transaction already open on the connection: its BEGIN fails with
+    /// "cannot start a transaction within a transaction", and DuckDB then
+    /// aborts the caller's transaction too, losing its uncommitted writes
+    /// (its COMMIT fails). Not guarded: detecting an open transaction takes
+    /// two extra statements per write, and the extension's connections never
+    /// have one. A direct Rust caller must not call this inside its own
+    /// transaction.
     pub fn with_speculative(&self, edns: &[&str]) -> Result<TxReport> {
         let txs = edns
             .iter()

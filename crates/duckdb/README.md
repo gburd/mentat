@@ -189,7 +189,10 @@ SELECT * FROM edn_q('people', '[:find ?n :where [_ :person/name ?n]]', '{}');
 
 The target store must be new (or hold only its bootstrap transaction). The
 import is one DuckDB transaction: on any error the store is left as it was.
-The source file is attached read-only and detached afterwards. Doubles are
+The source file is attached read-only and detached afterwards. mentat writes
+its SQLite files in WAL mode, and SQLite creates a `-shm` file beside one even
+to read it, so the file's directory must be writable; if it isn't, the call
+says so: copy the file somewhere writable and import the copy. Doubles are
 copied bit for bit, except that `-0.0` comes back as `0.0`. Fulltext values
 become plain strings, which is how DuckDB stores hold them. A version-1 file
 (mentat before 1.10) is refused with a message: open it once with the 1.10+
