@@ -1214,7 +1214,7 @@ extension_sql_file!(
 
 // Per-schema layout for named stores (#337): mentat._create_store_layout
 // copies the default store's tables into mentat_<name>; create_store() and
-// the 1.17.1 -> 1.18.0 upgrade call it. Needs every store table to exist.
+// the 1.17.2 -> 1.18.0 upgrade call it. Needs every store table to exist.
 extension_sql_file!(
     "../sql/30_store_layout.sql",
     name = "store_layout",
