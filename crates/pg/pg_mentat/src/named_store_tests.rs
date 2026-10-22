@@ -1162,4 +1162,31 @@ mod tests {
             ]
         );
     }
+
+    // The attribute-not-found hint on a named store listed, and suggested,
+    // the default store's attributes.
+    #[pg_test]
+    fn attribute_not_found_hint_lists_the_stores_attributes() {
+        setup();
+        tx(
+            "default",
+            "[{:db/ident :dflt/secret_attr :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        );
+        Spi::run("SELECT create_store('hint_s')").expect("create");
+        tx(
+            "hint_s",
+            "[{:db/ident :hint/own_attr :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        );
+        for edn in ["[{:dflt/secret_atr \"x\"}]", "[{:hint/own_atr \"x\"}]"] {
+            let err = text(&format!(
+                "SELECT pg_temp.capture($q$SELECT t('hint_s', '{edn}')$q$)"
+            ));
+            assert!(err.contains("attribute-not-found"), "{err}");
+            assert!(!err.contains(":dflt/secret_attr"), "{err}");
+        }
+        let err =
+            text("SELECT pg_temp.capture($q$SELECT t('hint_s', '[{:hint/own_atr \"x\"}]')$q$)");
+        assert!(err.contains("Did you mean ':hint/own_attr'?"), "{err}");
+        Spi::run("SELECT drop_store('hint_s')").expect("drop");
+    }
 }
