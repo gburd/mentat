@@ -525,6 +525,68 @@ BEGIN
 END
 $migrate$;
 
+-- ---------------------------------------------------------------------------
+-- Subscription names are one per database, ignoring case: the channel
+-- (mentat_<name>) and the hash setting carry no store, and LISTEN, setting
+-- names and the trigger names fold case. 1.17 checked nothing, so two
+-- stores (or 'Foo' and 'foo' on one store) could share a name, and the
+-- listeners of one got the other's results. The unique index on
+-- lower(name) that a fresh install has makes subscribe() race-free.
+--
+-- Rows that already collide are not deleted: each group is named in a
+-- WARNING with the unsubscribe() calls to run, and the index is left out
+-- (subscribe() still refuses a name in use, but two calls at once can both
+-- take it). The SHARE lock is the one CREATE INDEX takes: no subscribe()
+-- can add a duplicate between the check and the build.
+-- ---------------------------------------------------------------------------
+DO $subnames$
+DECLARE
+    rec RECORD;
+    dups BOOLEAN := false;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    LOCK TABLE mentat.subscriptions IN SHARE MODE;
+    FOR rec IN
+        SELECT g.lname,
+               pg_catalog.string_agg(pg_catalog.format('%L on store %L', g.name, g.store_name), ', '
+                                     ORDER BY g.id) AS holders,
+               pg_catalog.string_agg(pg_catalog.format('unsubscribe(%L, %L)', g.store_name, g.name), '; '
+                                     ORDER BY g.id) FILTER (WHERE g.id <> g.keep_id) AS drops,
+               pg_catalog.min(g.store_name) FILTER (WHERE g.id = g.keep_id) AS keep_store,
+               pg_catalog.min(g.name) FILTER (WHERE g.id = g.keep_id) AS keep_name,
+               pg_catalog.count(*) FILTER (WHERE g.store_name = g.keep_store) > 1 AS shares_trigger
+          FROM (SELECT s.id, s.store_name, s.name, pg_catalog.lower(s.name) AS lname,
+                       pg_catalog.first_value(s.id) OVER w AS keep_id,
+                       pg_catalog.first_value(s.store_name) OVER w AS keep_store
+                  FROM mentat.subscriptions s
+                WINDOW w AS (PARTITION BY pg_catalog.lower(s.name) ORDER BY s.id)) g
+         GROUP BY g.lname
+        HAVING pg_catalog.count(*) > 1
+         ORDER BY g.lname
+    LOOP
+        dups := true;
+        RAISE WARNING 'pg_mentat upgrade: subscriptions % have the same name ignoring case, so their '
+                      'listeners can get each other''s results. Keep one: run %.%',
+                      rec.holders, rec.drops,
+                      CASE WHEN rec.shares_trigger THEN pg_catalog.format(
+                          ' Then run unsubscribe(%L, %L) and subscribe it again: on one store they '
+                          'share one trigger.', rec.keep_store, rec.keep_name) ELSE '' END;
+    END LOOP;
+    IF dups THEN
+        RAISE WARNING 'pg_mentat upgrade: index mentat.idx_subscriptions_lower_name not created, because of '
+                      'the subscriptions above. subscribe() still refuses a name in use, ignoring case, but '
+                      'two subscribe() calls of one name at once can both succeed. Once only one of each '
+                      'is left, the owner of mentat.subscriptions (a superuser) can create it: CREATE UNIQUE '
+                      'INDEX idx_subscriptions_lower_name ON mentat.subscriptions (pg_catalog.lower(name));';
+    ELSE
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_lower_name
+            ON mentat.subscriptions (pg_catalog.lower(name));
+    END IF;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$subnames$;
+
 -- ===========================================================================
 -- End of the named stores (#337) section.
 -- ===========================================================================
