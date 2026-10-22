@@ -50,7 +50,9 @@ store's own tables; `mentat.create_fts_index` indexes the default store's
 table only. `subscribe('acme', ...)` re-runs its query against `acme`, and
 a `(pull ?e [...])` in a `q('acme', ...)` find pulls from `acme`.
 Subscriptions and materialized views move with `rename_store` and go away
-with `drop_store`.
+with `drop_store`. A subscription name is shared by all stores, because its
+channel (`mentat_<name>`) is: `subscribe` refuses a name another store
+already uses.
 
 **Permissions.** The role that calls `create_store` owns the new schema and
 everything in it. Every role with a privilege on the default store's

@@ -244,6 +244,30 @@ pub fn subscribe(
         }));
     }
 
+    // The channel (mentat_<name>) and the hash setting carry no store, so a
+    // name is one per database: a second store reusing it would NOTIFY the
+    // first store's listeners with its results.
+    let other_store: Option<String> = Spi::get_one_with_args(
+        "SELECT (SELECT store_name FROM mentat.subscriptions \
+                  WHERE name = $1 AND store_name <> $2 LIMIT 1)",
+        &[
+            DatumWithOid::from(subscription_name),
+            DatumWithOid::from(store_name),
+        ],
+    )?;
+    if let Some(other) = other_store {
+        return Err(Box::new(MentatError::InvalidQuery {
+            message: format!(
+                "Subscription name '{}' is already used by store '{}'. Subscription names are \
+                 shared by all stores (the channel is {}).",
+                subscription_name,
+                other,
+                channel_name(subscription_name)
+            ),
+            suggestion: Some("Choose another subscription name.".to_string()),
+        }));
+    }
+
     // Check if subscription already exists
     if subscription_exists(store_name, subscription_name)? {
         return Err(Box::new(MentatError::InvalidQuery {
