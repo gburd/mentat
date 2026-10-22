@@ -1402,8 +1402,7 @@ fn execute_transaction_inner(
             .iter()
             .find(|d| !d.added && asserted.contains(&key(d)))
         {
-            // named-stores: per-store cache
-            let attr = crate::cache::get_cache()
+            let attr = store_cache()
                 .get_ident(d.a)
                 .unwrap_or_else(|| d.a.to_string());
             return Err(MentatError::InvalidTransaction {
@@ -1807,8 +1806,7 @@ fn install_schema_attributes(
     builders: &BTreeMap<i64, SchemaBuilder>,
     schema: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // named-stores: per-store cache
-    let cache = crate::cache::get_cache();
+    let cache = store_cache();
     for (&entid, builder) in builders {
         // An entity is an ATTRIBUTE definition if it asserts any attribute
         // property. A bare :db/ident is just naming an entity (e.g. an enum
@@ -1935,7 +1933,7 @@ fn install_schema_attributes(
             // Does some (e) or (v) group of this attribute's live datoms hold two rows?
             let violated = |group_by: &str| {
                 let sql = format!(
-                    "SELECT EXISTS(SELECT 1 FROM mentat.{table} WHERE store_id = $1 AND a = $2 \
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.{table} WHERE store_id = $1 AND a = $2 \
                      GROUP BY {group_by} HAVING count(*) > 1)"
                 );
                 let args = [DatumWithOid::from(store_id), DatumWithOid::from(entid)];
@@ -2258,8 +2256,7 @@ fn exploded_values(a: i64, value: &edn::Value) -> Vec<&edn::Value> {
     fn is_identity_lookup_ref(v: &edn::Value) -> bool {
         match v {
             edn::Value::Vector(pair) if pair.len() == 2 => match &pair[0] {
-                // named-stores: per-store cache
-                edn::Value::Keyword(kw) => crate::cache::get_cache()
+                edn::Value::Keyword(kw) => store_cache()
                     .get_attribute_by_ident(&format!("{kw}"))
                     .is_some_and(|attr| attr.unique_constraint.as_deref() == Some("identity")),
                 _ => false,
@@ -2754,7 +2751,7 @@ fn dead_retractions(
         };
         let sql = format!(
             "SELECT array_agg(t.i) FROM unnest($2::bigint[], $3::bigint[], $4::bigint[], $5::text[]) \
-             AS t(i, e, a, v) WHERE NOT EXISTS (SELECT 1 FROM mentat.{table} AS c \
+             AS t(i, e, a, v) WHERE NOT EXISTS (SELECT 1 FROM {schema}.{table} AS c \
              WHERE c.store_id = $1 AND c.e = t.e AND c.a = t.a AND c.v = {v})"
         );
         let args = [
