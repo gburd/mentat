@@ -2676,6 +2676,8 @@ fn build_sql_from_datalog_enriched(
     // Handle where-functions: fulltext, arithmetic, ground, get-else, missing?.
     let mut fts_joins: Vec<FtsJoin> = Vec::new();
     let mut extra_var_bindings: HashMap<String, String> = HashMap::new();
+    // The value type of each binding function's result (query_fn_type).
+    let mut fn_types: HashMap<String, &'static str> = HashMap::new();
     let mut ground_bindings: HashMap<String, serde_json::Value> = HashMap::new();
     // Collection / tuple / relation ground forms turn into enriched
     // InputBinding entries so they can reuse the same JOIN/IN/VALUES plumbing
@@ -3069,7 +3071,9 @@ fn build_sql_from_datalog_enriched(
             // Arithmetic binding functions: [(* ?age 2) ?double-age]
             if let Some((var_name, expr)) = build_where_fn_binding(wf, builder)? {
                 let bound = var_bound_by(&var_name, &pattern_clauses, &rule_invocations);
-                extra_var_bindings.insert(fn_result_var(var_name, bound, &mut fn_eqs), expr);
+                let var = fn_result_var(var_name, bound, &mut fn_eqs);
+                fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
+                extra_var_bindings.insert(var, expr);
             } else {
                 return Err(format!(
                     ":db.error/unsupported-where-fn Where-function '{}' is not supported. \
@@ -3172,6 +3176,7 @@ fn build_sql_from_datalog_enriched(
             &predicates,
             &fts_joins,
             &extra_var_bindings,
+            &fn_types,
             find_vars,
             &parsed.find_spec,
             builder,
@@ -3300,6 +3305,7 @@ fn build_sql_from_datalog_enriched(
             // Process where-functions for this branch
             let mut arm_fts_joins = fts_joins.clone();
             let mut arm_extra_var_bindings = extra_var_bindings.clone();
+            let mut arm_fn_types = fn_types.clone();
             let mut arm_builder = SqlBuilder::new();
 
             // Each OR arm has its own builder so bind store_id for it
@@ -3435,6 +3441,7 @@ fn build_sql_from_datalog_enriched(
                         let bound =
                             var_bound_by(&var_name, &combined_patterns, &combined_rule_invocations);
                         let var = fn_result_var(var_name, bound, &mut arm_fn_eqs);
+                        arm_fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
                         arm_extra_var_bindings.insert(var, expr);
                     }
                 } else {
@@ -3460,6 +3467,7 @@ fn build_sql_from_datalog_enriched(
                 &combined_predicates,
                 &arm_fts_joins,
                 &arm_extra_var_bindings,
+                &arm_fn_types,
                 find_vars,
                 &parsed.find_spec,
                 &mut arm_builder,
@@ -6170,6 +6178,7 @@ fn build_extended_pattern_query(
     predicates: &[&Predicate],
     fts_joins: &[FtsJoin],
     extra_var_bindings: &HashMap<String, String>,
+    fn_types: &HashMap<String, &'static str>,
     find_vars: &[String],
     find_spec: &FindSpec,
     builder: &mut SqlBuilder<'_>,
@@ -6194,7 +6203,12 @@ fn build_extended_pattern_query(
     let mut var_to_alias: HashMap<String, (String, &'static str)> = HashMap::new();
     // Track the resolved value type for each variable (used by predicate compilation
     // to select the correct typed column instead of a blanket NUMERIC COALESCE).
-    let mut var_to_type: HashMap<String, Option<String>> = HashMap::new();
+    // A binding function's result (no pattern binds it) has the type of its
+    // value, so a comparison reads it as a number (untyped_comparison_sql).
+    let mut var_to_type: HashMap<String, Option<String>> = fn_types
+        .iter()
+        .map(|(v, t)| (v.clone(), Some(t.to_string())))
+        .collect();
     let mut joins = Vec::new();
     let mut where_clauses = Vec::new();
     // Mutable copy of extra_var_bindings so get-else can update result expressions
@@ -8089,6 +8103,10 @@ fn untyped_comparison_sql(
             FnArg::Variable(v) => {
                 let name = format!("{v}");
                 let input = input_bindings.get(&name);
+                if let Some((_, "e" | "a" | "tx")) = var_to_alias.get(&name) {
+                    // An entity: a ref value, a number for an ordering.
+                    return Some(if ordering { "num" } else { "ref" });
+                }
                 match var_to_type.get(&name).cloned().flatten().as_deref() {
                     // An entity is equal to a ref value; ordered as #179 orders it.
                     Some("ref") if !ordering => Some("ref"),
@@ -8334,6 +8352,13 @@ fn rule_fn_type(
         }
         _ => "double",
     })
+}
+
+/// The value type of a binding function's result in the query's :where:
+/// rule_fn_type over its top-level patterns (a variable no pattern there
+/// binds makes `+`, `-`, `*` a double).
+fn query_fn_type(wf: &WhereFn, parsed: &ParsedQuery, schema_prefix: &str) -> &'static str {
+    rule_fn_type(wf, &parsed.where_clauses, schema_prefix, &|_| Some(None)).unwrap_or("double")
 }
 
 /// The value type of each column of `rule`: the type every clause binds it

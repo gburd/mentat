@@ -448,15 +448,19 @@ mod tests {
         // ages ann 30, bob 12, cy 5, dee 40; scores ann 2.5, bob 7.5, cy 5.0.
         let num = "[[(num ?e ?v) [?e :rv/age ?v]] [(num ?e ?v) [?e :rv/score ?v]]]";
         let q = |body: &str| format!("[:find ?e ?v :rules {num} :where (num ?e ?v) {body}]");
-        assert_eq!(
-            rows(&q("[(> ?v 6)]")),
-            sorted(vec![
-                format!("[{a},30]"),
-                format!("[{b},12]"),
-                format!("[{b},7.5]"),
-                format!("[{d},40]"),
-            ])
-        );
+        // A function result is a number too (it compared as text: b 7.5 only).
+        for body in ["[(> ?v 6)]", "[(* 2 3) ?x] [(> ?v ?x)]"] {
+            assert_eq!(
+                rows(&q(body)),
+                sorted(vec![
+                    format!("[{a},30]"),
+                    format!("[{b},12]"),
+                    format!("[{b},7.5]"),
+                    format!("[{d},40]"),
+                ]),
+                "{body}"
+            );
+        }
         // 5 (cy's age) and 5.0 (cy's score) are both 5, as on the embedded engine.
         assert_eq!(
             rows(&q("[(= ?v 5)]")),
@@ -569,6 +573,69 @@ mod tests {
         // A result no pattern binds is unchanged: a new value.
         let q = "[:find ?x ?d :where [?x :rv/age 5] [(* 5 2) ?d]]";
         assert_eq!(rows(q), [format!("[{c},10]")]);
+    }
+
+    /// One value of a different type on each entity, and :mf/id.
+    fn setup_mixed() {
+        setup();
+        tx(
+            "[{:db/ident :mf/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             {:db/ident :mf/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+             {:db/ident :mf/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+             {:db/ident :mf/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}
+             {:db/ident :mf/r :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+             {:db/ident :mf/b :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}]",
+        );
+        tx(
+            "[{:db/id \"s5\" :mf/id \"s5\" :mf/s \"5\"} {:db/id \"s1\" :mf/id \"s1\" :mf/s \"1\"}
+             {:db/id \"n1\" :mf/id \"n1\" :mf/n 1} {:db/id \"n5\" :mf/id \"n5\" :mf/n 5}
+             {:db/id \"n6\" :mf/id \"n6\" :mf/n 6} {:db/id \"d5\" :mf/id \"d5\" :mf/d 5.0}
+             {:db/id \"d25\" :mf/id \"d25\" :mf/d 2.5} {:db/id \"r\" :mf/id \"r\" :mf/r \"n5\"}
+             {:db/id \"bt\" :mf/id \"bt\" :mf/b true}]",
+        );
+    }
+
+    /// A function result compared with a value of unknown type is a number,
+    /// as the same constant is; an entity is a ref for = and != and a number
+    /// for an ordering. Both compared as text: [(+ 50 0) ?x] [(< ?v ?x)]
+    /// missed 6 ('6' > '50') and matched strings, [(+ 3 0) ?x] [(> ?v ?x)]
+    /// matched every entity, and [(+ 5 0) ?k] [?e ?a ?k] matched "5".
+    #[pg_test]
+    fn test_fn_result_compares_as_a_number() {
+        setup_mixed();
+        let ids = |body: &str| -> Vec<String> {
+            let q = format!("[:find [?id ...] :where [?e :mf/id ?id] {body}]");
+            let mut v: Vec<String> = query_with(&q, serde_json::json!({}))["result"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{q}"))
+                .iter()
+                .map(|x| x.as_str().expect("id").to_string())
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        let numbers = ["d25", "d5", "n1", "n5", "n6"];
+        for body in [
+            "[?e ?a ?v] [(< ?v 50)]",
+            "[?e ?a ?v] [(+ 50 0) ?x] [(< ?v ?x)]",
+        ] {
+            assert_eq!(ids(body), numbers, "{body}");
+        }
+        for body in [
+            "[?e ?a ?v] [(> ?v 3)]",
+            "[?e ?a ?v] [(+ 3 0) ?x] [(> ?v ?x)]",
+            "[?e ?a ?v] [(* 1.5 2) ?x] [(> ?v ?x)]",
+        ] {
+            assert_eq!(ids(body), ["d5", "n5", "n6"], "{body}");
+        }
+        for body in ["[?e ?a ?v] [(= ?v 5)]", "[(+ 5 0) ?k] [?e ?a ?k]"] {
+            assert_eq!(ids(body), ["d5", "n5"], "{body}");
+        }
+        let n5 = "[?f :mf/id \"n5\"]";
+        assert_eq!(ids(&format!("[?e ?a ?v] {n5} [(= ?v ?f)]")), ["r"]);
+        assert!(ids(&format!("[?e ?a ?v] {n5} [(!= ?v ?f)]")).is_empty());
+        assert_eq!(ids(&format!("[?e ?a ?v] {n5} [(< ?v ?f)]")), numbers);
     }
 
     /// The error a query raises, or "" if it runs.
