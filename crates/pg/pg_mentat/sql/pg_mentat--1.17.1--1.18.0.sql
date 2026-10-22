@@ -25,7 +25,7 @@
 --   * the store's views and helper functions are recreated and its objects
 --     are taken out of the extension (an upgrade script's objects would
 --     otherwise become extension members, which drop_store could not drop);
---   * a message names each store rebuilt, and each store skipped and why.
+--   * a WARNING names each store rebuilt, and each store skipped and why.
 --
 -- A store already on the new layout (it has current_instant) is left alone.
 -- ===========================================================================
@@ -412,10 +412,12 @@ BEGIN
 
         PERFORM mentat._store_grants(st.schema_name);
 
-        RAISE NOTICE 'pg_mentat upgrade: rebuilt named store "%" in a new, empty schema %. Its old tables '
-                     'are in schema % and were not copied: see "Upgrading from 1.17" in '
-                     'docs/src/multi-tenancy.md. DROP SCHEMA % CASCADE once you no longer need them.',
-                     st.store_name, st.schema_name, old_schema, quote_ident(old_schema);
+        -- WARNING, not NOTICE: PostgreSQL runs an extension script with
+        -- client_min_messages at WARNING or above, so a NOTICE is never shown.
+        RAISE WARNING 'pg_mentat upgrade: rebuilt named store "%" in a new, empty schema %. Its old tables '
+                      'are in schema % and were not copied: see "Upgrading from 1.17" in '
+                      'docs/src/multi-tenancy.md. DROP SCHEMA % CASCADE once you no longer need them.',
+                      st.store_name, st.schema_name, old_schema, quote_ident(old_schema);
     END LOOP;
 END
 $migrate$;
