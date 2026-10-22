@@ -224,7 +224,8 @@ picked up on the next call.
 
 The extension opens a pool of connections to the database when it is loaded
 (`MENTAT_DUCKDB_POOL`, read at `LOAD`; default one per core, at most 8). Each
-call borrows one, so that many mentat calls from concurrent clients run in
+database it is loaded into gets its own pool. Each call borrows a connection
+from its database's pool, so that many mentat calls from concurrent clients run in
 parallel; past that, calls wait for a free connection. Writes to one store take
 turns: `edn_t` holds a per-store lock for its whole transaction, because two
 DuckDB transactions that both update the store's partition counters conflict.
@@ -454,7 +455,8 @@ keep them.
   configure` makes one), e.g. `make test_debug`, or
   `python -m duckdb_sqllogictest --test-dir test/sql --external-extension build/debug/mentat.duckdb_extension`.
 - `test/cross-version.sh` — the footer check plus all of the above (and
-  `test/concurrency.py`) under DuckDB v1.5.6 and v2.0, on one binary:
+  `test/concurrency.py` and `test/databases.py`, the extension loaded into
+  two databases in one process) under DuckDB v1.5.6 and v2.0, on one binary:
   `scripts/duckdb-clis.sh ~/duckdb-cli`, then
   `EXT=build/release/mentat.duckdb_extension CLIS=~/duckdb-cli bash test/cross-version.sh`.
 - `store/tests-harness` — the storage backend outside the extension, on a
@@ -478,3 +480,14 @@ keep them.
 - Stores live in the database the extension was loaded into, not in another
   `ATTACH`ed database.
 - Mentat calls run one at a time (one connection).
+- **A closed database stays open in the process**
+  ([#363](https://codeberg.org/gregburd/mentat/issues/363)). Since 1.18.0
+  each database the extension is loaded into has its own connection pool, so
+  mentat calls read and write the database they are made in (1.11 through
+  1.17.2 sent every database's calls to the first one's). Still open,
+  [#378](https://codeberg.org/gregburd/mentat/issues/378): the pool's
+  connections keep a database open after its client closes it. Opening the
+  same file again in the same process then hangs (Python's
+  `duckdb.connect` spins at 100% CPU), and each closed database's memory and
+  threads stay in use until the process exits. Open the file again in a new
+  process instead.
