@@ -541,6 +541,10 @@ Differences from SQLite:
 - `searchid:x` matches nothing, and a column filter right before a quote or
   parenthesis (`text:"a b"`) is ignored.
 - Parentheses nest at most 100 deep (SQLite: 1000).
+- U+FFFE and U+FFFF count as letters (SQLite reads them as a separator).
+- A phrase word followed by a prefix word (`"a* b"`) is matched with a
+  regex, so such a word longer than about 1 MB is an error ("pattern too
+  large") instead of no match.
 
 ## Known gaps
 
@@ -549,6 +553,13 @@ Differences from SQLite:
 - A store in an attached database must be named with its prefix
   (`'db.name'`) on every call; `USE` does not change where unprefixed names
   go.
+- A store made before 1.18.0 in a database attached read-only under the
+  store's own schema name (`ATTACH 'mentat.duckdb' (READ_ONLY)` attaches as
+  `mentat`, the default store's schema) can't answer history queries
+  (`[?e ?a ?v ?tx ?added]`): its old `transactions` view names that schema,
+  which DuckDB then calls ambiguous ("Ambiguous reference to catalog or
+  schema"). Attach it under another name, or writable once, which updates
+  the view.
 - **A closed database stays open in the process**
   ([#363](https://codeberg.org/gregburd/mentat/issues/363)). Since 1.18.0
   each database the extension is loaded into has its own connection pool, so

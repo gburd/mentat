@@ -38,9 +38,14 @@
 //!   column), and a column filter right before a quote or parenthesis
 //!   (`text:"a b"`) is dropped (SQLite then skips the rest of that level);
 //! - a text is read whole; SQLite's tokenizer stops at a NUL;
+//! - U+FFFE and U+FFFF are token characters here; SQLite reads them as
+//!   U+FFFD, a separator (`a\u{FFFE}b` is one token here, two on SQLite);
 //! - parentheses nest at most 100 deep (SQLite: 1000), and a too-deep query
 //!   fails with "malformed MATCH expression" (SQLite: "FTS expression tree is
-//!   too large").
+//!   too large");
+//! - a word followed by a prefix word in a phrase (`"a* b"`) is matched with
+//!   a regex, so such a word longer than about 1 MB fails ("pattern too
+//!   large"; SQLite: no match).
 
 use core_traits::TypedValue;
 use sql_traits::errors::{BuildQueryResult, SQLError};
