@@ -636,4 +636,161 @@ mod tests {
         .unwrap();
         assert_eq!(left_alone, 1);
     }
+
+    // vector-near / turbovec-near / geom-* read mentat.attr_<entid>_* tables
+    // that the mentat.attach_* helpers make for the default store only. On a
+    // named store they joined the default store's rows by another store's
+    // entids. They now refuse.
+    #[pg_test]
+    fn per_attribute_where_fns_refuse_named_stores() {
+        setup();
+        Spi::run("SELECT create_store('pa_s')").expect("create");
+        tx("pa_s", SCHEMA_TX);
+        for clause in [
+            r#"[(vector-near $ :p/name "[1,0]" 3) [[?e ?d]]]"#,
+            r#"[(turbovec-near $ :p/name "[1,0]" 3) [[?e ?d]]]"#,
+            r#"[(geom-near $ :p/name "POINT(0 0)" 3) [[?e ?d]]]"#,
+            r#"[(geom-within $ :p/name "POINT(0 0)" 1.0) [[?e ?d]]]"#,
+            r#"[(geom-contains $ :p/name "POINT(0 0)") [[?e]]]"#,
+            r#"[(geom-intersects $ :p/name "POINT(0 0)") [[?e]]]"#,
+        ] {
+            let query = format!("[:find ?e :where {clause}]");
+            let err = text(&format!(
+                "SELECT pg_temp.capture($q$SELECT q('pa_s', '{query}', '{{}}'::jsonb)$q$)"
+            ));
+            assert!(
+                err.contains("not supported for named stores"),
+                "{clause}: {err}"
+            );
+            // The default store is not refused (it fails later, if at all,
+            // for a missing extension or table).
+            let err = text(&format!(
+                "SELECT pg_temp.capture($q$SELECT edn_q('{query}', '{{}}'::jsonb)$q$)"
+            ));
+            assert!(
+                !err.contains("not supported for named stores"),
+                "{clause}: {err}"
+            );
+        }
+        Spi::run("SELECT drop_store('pa_s')").expect("drop");
+    }
+
+    // bm25-match took the attribute's entid from mentat.schema (the default
+    // store) but read the named store's rows: it matched whatever attribute
+    // had that entid in the named store.
+    #[pg_test]
+    fn bm25_match_uses_the_stores_attribute() {
+        setup();
+        let body = "[{:db/ident :bm/body :db/valueType :db.type/string \
+                     :db/cardinality :db.cardinality/one}]";
+        // Different entids for :bm/body in the two stores.
+        tx("default", SCHEMA_TX);
+        tx(
+            "default",
+            "[{:db/ident :bm/filler :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        tx("default", body);
+        Spi::run("SELECT create_store('bm_s')").expect("create");
+        tx("bm_s", body);
+        let named: i64 =
+            Spi::get_one("SELECT entid FROM mentat_bm_s.schema WHERE ident = ':bm/body'")
+                .unwrap()
+                .unwrap();
+        let dflt: i64 = Spi::get_one("SELECT entid FROM mentat.schema WHERE ident = ':bm/body'")
+            .unwrap()
+            .unwrap();
+        assert_ne!(named, dflt);
+        let sql = json(
+            r#"SELECT mentat_query_sql_store('bm_s',
+                 '[:find ?e :where [(bm25-match $ :bm/body "fox" 5) [[?e ?s]]]]', '{}'::jsonb)"#,
+        )["sql"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(sql.contains(&format!("t.a = {named} ")), "{sql}");
+        assert!(sql.contains("mentat_bm_s.datoms_text_new"), "{sql}");
+        Spi::run("SELECT drop_store('bm_s')").expect("drop");
+    }
+
+    // The [fts:lang=...] tag in an attribute's :db/doc was looked up with
+    // store_id = 0, so a named store's (store_id N) was never found and its
+    // fulltext search stemmed as English.
+    #[pg_test]
+    fn fts_language_tag_on_a_named_store() {
+        setup();
+        let attr = "[{:db/ident :ft/body :db/valueType :db.type/string \
+                     :db/cardinality :db.cardinality/one :db/fulltext true \
+                     :db/doc \"Body [fts:lang=german]\"}]";
+        Spi::run("SELECT create_store('ft_s')").expect("create");
+        tx("ft_s", attr);
+        tx("default", attr);
+        let query = "[:find ?e :where [(fulltext $ :ft/body \"haus\") [[?e ?v]]]]";
+        for store in ["default", "ft_s"] {
+            let sql = json(&format!(
+                "SELECT mentat_query_sql_store('{store}', '{query}', '{{}}'::jsonb)"
+            ))["sql"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(sql.contains("'german'"), "{store}: {sql}");
+            assert!(!sql.contains("'english'"), "{store}: {sql}");
+        }
+        Spi::run("SELECT drop_store('ft_s')").expect("drop");
+    }
+
+    // log(store, ...) rendered attribute idents from the default store's
+    // cache: a named store's attribute showed as a number, or as another
+    // store's ident with the same entid.
+    #[pg_test]
+    fn log_renders_the_stores_idents() {
+        setup();
+        Spi::run("SELECT create_store('lg_s')").expect("create");
+        let r = tx(
+            "lg_s",
+            "[{:db/ident :lg/only :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        let t0 = r["db-after"]["basis-t"].as_i64().unwrap();
+        let r = tx("lg_s", "[{:lg/only 42}]");
+        let t1 = r["db-after"]["basis-t"].as_i64().unwrap();
+        let log = json(&format!("SELECT log('lg_s', {t0}, {t1})"));
+        let rows = log.as_array().cloned().unwrap_or_default();
+        assert!(
+            rows.iter().any(|d| d["a"] == ":lg/only" && d["v"] == 42),
+            "{log}"
+        );
+        Spi::run("SELECT drop_store('lg_s')").expect("drop");
+    }
+
+    // subscribe(store, ...) put its trigger on the store's datoms view but
+    // ran edn_q, so a t() on the named store NOTIFYed the default store's
+    // result. The trigger keeps the hash of what it sent in a session
+    // setting: it must be the hash of the named store's result.
+    // (CREATE OR REPLACE TRIGGER, which subscribe uses, needs PostgreSQL 14.)
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscribe_on_a_named_store_queries_that_store() {
+        setup();
+        Spi::run("SELECT create_store('sb_s')").expect("create");
+        tx("sb_s", SCHEMA_TX);
+        tx("default", SCHEMA_TX);
+        tx("default", "[{:p/name \"in-default\"}]");
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        Spi::run(&format!("SELECT subscribe('sb_s', 'sb_names', '{query}')")).expect("subscribe");
+        tx("sb_s", "[{:p/name \"in-named\"}]");
+        // The trigger fires on the txInstant row, which t() writes first: it
+        // sees the store as of the previous transaction. A second one that
+        // leaves the result alone makes "what it sent" well defined.
+        tx("sb_s", "[{:p/age 1}]");
+        let sent = text("SELECT current_setting('mentat.sub_hash_sb_names', true)");
+        let named = text(&format!(
+            "SELECT md5(q('sb_s', '{query}', '{{}}'::jsonb)::text)"
+        ));
+        let dflt = text(&format!(
+            "SELECT md5(edn_q('{query}', '{{}}'::jsonb)::text)"
+        ));
+        assert_ne!(named, dflt);
+        assert_eq!(sent, named, "the trigger evaluated another store");
+        Spi::run("SELECT unsubscribe('sb_s', 'sb_names')").expect("unsubscribe");
+        Spi::run("SELECT drop_store('sb_s')").expect("drop");
+    }
 }

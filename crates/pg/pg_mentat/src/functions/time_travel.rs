@@ -381,7 +381,7 @@ pub fn log(
 
             // Resolve attribute entid to ident if possible.
             let a_display: serde_json::Value =
-                if let Some(ident) = crate::cache::get_cache().get_ident(a) {
+                if let Some(ident) = crate::cache::get_cache_for_store(store_name).get_ident(a) {
                     json!(ident)
                 } else {
                     json!(a)
