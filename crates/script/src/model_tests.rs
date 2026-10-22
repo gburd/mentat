@@ -939,3 +939,23 @@ pub fn as_of_and_since_together(it: &mut Interpreter) {
         .unwrap();
     assert_eq!(entity, "2");
 }
+
+/// A pull pattern naming an attribute the schema doesn't have pulls nothing
+/// for it, on every backend (Datomic does the same). Before 1.18.0 the
+/// embedded backend's script `pull` raised "unknown attribute".
+pub fn pull_of_an_unknown_attribute_is_empty(it: &mut Interpreter) {
+    seed(it);
+    let eid = eid_of(it, "Alice");
+    let pulled = it
+        .eval_to_string(&format!(
+            "(dissoc (mentat.store/pull (mentat.store/db c) {eid} '[:no/such :person/name]) :db/id)"
+        ))
+        .unwrap();
+    assert_eq!(pulled, "{:person/name \"Alice\"}");
+    let none = it
+        .eval_to_string(&format!(
+            "(dissoc (mentat.store/pull (mentat.store/db c) {eid} '[:no/such]) :db/id)"
+        ))
+        .unwrap();
+    assert_eq!(none, "{}");
+}

@@ -203,8 +203,10 @@ SELECT mentat.pull('[
 ### `edn_pull(pattern, eid, options)`
 
 Pull on a historical basis (since 1.18.0). `options` takes `edn_q`'s temporal
-keys: `{"asOf": T}` (the state after transaction T) or `{"since": T}` (only the
-current datoms transacted after T). `'{}'` is the current state.
+keys: `{"asOf": T}` (the state after transaction T), `{"since": S}` (only the
+current datoms transacted after S), or both (the assertions with S < tx <= T
+not retracted by T). `'{}'` is the current state. Any other key is an error;
+`"history"` does not apply to pull.
 
 ```sql
 SELECT edn_pull('[:person/name :person/age]', 10001, '{"asOf": 1000}');
