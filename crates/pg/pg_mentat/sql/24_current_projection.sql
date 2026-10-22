@@ -121,11 +121,11 @@ CREATE INDEX IF NOT EXISTS idx_current_boolean_avet ON mentat.current_boolean (s
 -- These tables take in-place upserts; keep autovacuum aggressive so the
 -- HOT-pruning + dead-tuple reclaim keeps pace with churn.
 DO $$
-DECLARE t TEXT;
+DECLARE
+    t TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');  -- see sql/10_narrow_storage.sql
 BEGIN
-    -- Script-time code runs as the bootstrap superuser: resolve calls in
-    -- pg_catalog only (see sql/10_narrow_storage.sql).
-    SET LOCAL search_path = pg_catalog, pg_temp;
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
     FOREACH t IN ARRAY ARRAY[
         'current_ref', 'current_long', 'current_text', 'current_double',
         'current_instant', 'current_keyword', 'current_uuid', 'current_bytes',
@@ -140,6 +140,7 @@ BEGIN
             t
         );
     END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
 END $$;
 
 -- ---------------------------------------------------------------------------

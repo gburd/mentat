@@ -11,8 +11,12 @@ runs at script time is the body of a DO block, and top-level SELECT / PERFORM
 statements; CREATE FUNCTION bodies run later, as the caller, and are not
 checked here.
 
-Each such call must be schema-qualified (pg_catalog.format, mentat.x), or the
-DO block must start with SET LOCAL search_path = pg_catalog, pg_temp. Plain
+Each such call must be schema-qualified (pg_catalog.format, mentat.x). DO
+blocks also pin the path (pg_catalog.set_config('search_path', ..., true),
+restored before the block ends) as a second layer for operators, which can't
+be qualified this way; this check doesn't rely on that. SET [LOCAL]
+search_path is refused: it lasts until the end of the script's transaction, so
+every later unqualified CREATE in the script would land in pg_catalog. Plain
 SQL keywords and constructs that look like calls (VALUES (, IN (, CHECK (,
 ARRAY[...], CASE, ...) are not function calls and are ignored.
 
@@ -47,7 +51,7 @@ NOT_CALLS = {
     "coalesce", "nullif", "greatest", "least", "extract", "position",
     "substring", "overlay", "trim", "treat", "xmlelement", "grouping",
 }
-PINNED = re.compile(r"SET\s+LOCAL\s+search_path\s*(=|TO)\s*'?pg_catalog", re.I)
+SET_LOCAL = re.compile(r"\bSET\s+(LOCAL\s+)?search_path\b", re.I)
 # A call: an identifier not preceded by '.', '"' or a word char, followed by '('.
 CALL = re.compile(r"(?<![.\w\"])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
@@ -73,8 +77,8 @@ def check(path):
     problems = []
     for m in re.finditer(r"\bDO\s+(\$[A-Za-z_]*\$)([\s\S]*?)\1", sql, re.I):
         body = m.group(2)
-        if PINNED.search(body):
-            continue
+        if SET_LOCAL.search(body):
+            problems.append(("DO block", "SET [LOCAL] search_path (leaks past the block)"))
         for c in CALL.finditer(body):
             if c.group(1).lower() not in NOT_CALLS:
                 problems.append(("DO block", c.group(1)))
@@ -96,9 +100,11 @@ def main(argv):
     bad = 0
     for f in files:
         for where, name in check(f):
-            print(f"{f}: {where} calls {name}() through the search path; "
-                  f"write pg_catalog.{name}() or start the DO block with "
-                  f"SET LOCAL search_path = pg_catalog, pg_temp")
+            if "(" in name:
+                print(f"{f}: {where}: {name}")
+            else:
+                print(f"{f}: {where} calls {name}() through the search path; "
+                      f"write pg_catalog.{name}()")
             bad += 1
     if bad:
         sys.exit(1)

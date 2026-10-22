@@ -33,7 +33,12 @@ DECLARE
         'cache_generation', $f$WHERE store_name <> 'default'$f$
     );
     r record;
+    -- Runs as the bootstrap superuser: pin the search path so no operator or
+    -- function below resolves to an object a database owner created in public
+    -- (see sql/10_narrow_storage.sql); restored at the end.
+    old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
     FOR r IN
         SELECT c.oid, c.relname, c.relkind
           FROM pg_depend d
@@ -49,8 +54,9 @@ BEGIN
     LOOP
         PERFORM pg_catalog.pg_extension_config_dump(
             r.oid::regclass,
-            COALESCE(seed_filter ->> r.relname, ''));
+            COALESCE(seed_filter ->> r.relname::text, ''));
     END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
 $dump$;
 
