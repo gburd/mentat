@@ -19,13 +19,13 @@ features = ["limits", "bundled"]
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.17.1"
+version = "=1.17.2"
 
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.17.1"
+version = "=1.17.2"

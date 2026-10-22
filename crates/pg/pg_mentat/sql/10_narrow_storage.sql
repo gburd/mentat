@@ -202,13 +202,20 @@ CREATE INDEX IF NOT EXISTS idx_datoms_boolean_new_tx
 DO $$
 DECLARE
     t TEXT;
+    -- Script-time code runs as the bootstrap superuser (trusted extension):
+    -- nothing it calls may resolve through the search path, which a database
+    -- owner can populate before CREATE EXTENSION. Pin the path for this block
+    -- and restore it after (set_config(..., true) lasts until the end of the
+    -- whole script's transaction, so it must be put back).
+    old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
     FOREACH t IN ARRAY ARRAY[
         'datoms_ref_new', 'datoms_boolean_new', 'datoms_long_new',
         'datoms_double_new', 'datoms_instant_new', 'datoms_text_new',
         'datoms_keyword_new', 'datoms_uuid_new', 'datoms_bytes_new'
     ] LOOP
-        EXECUTE format(
+        EXECUTE pg_catalog.format(
             'ALTER TABLE mentat.%I SET ('
             || 'autovacuum_vacuum_scale_factor = 0, '
             || 'autovacuum_vacuum_threshold = 50000, '
@@ -217,6 +224,7 @@ BEGIN
             t
         );
     END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
 END $$;
 
 -- The transaction log grows monotonically and is queried by PK; a
@@ -431,12 +439,14 @@ DECLARE
         ARRAY['datoms_bytes_new',   'store_isolation_bytes'],
         ARRAY['datoms_boolean_new', 'store_isolation_boolean']
     ];
+    old_path TEXT := pg_catalog.current_setting('search_path');  -- see the autovacuum DO block above
 BEGIN
-    FOR i IN 1 .. array_length(tables_policies, 1) LOOP
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOR i IN 1 .. pg_catalog.array_length(tables_policies, 1) LOOP
         t := tables_policies[i][1];
         p := tables_policies[i][2];
-        EXECUTE format('DROP POLICY IF EXISTS %I ON mentat.%I', p, t);
-        EXECUTE format(
+        EXECUTE pg_catalog.format('DROP POLICY IF EXISTS %I ON mentat.%I', p, t);
+        EXECUTE pg_catalog.format(
             'CREATE POLICY %I ON mentat.%I '
             'USING (store_id = mentat.current_store_id()) '
             'WITH CHECK (store_id = mentat.current_store_id())',
@@ -445,8 +455,9 @@ BEGIN
         -- Belt-and-braces: leave RLS DISABLED at install time. The
         -- mentat.enable_multi_tenant_rls(boolean) wrapper below is the
         -- only supported way to flip it on.
-        EXECUTE format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', t);
+        EXECUTE pg_catalog.format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', t);
     END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
 END;
 $rls$ LANGUAGE plpgsql;
 

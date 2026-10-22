@@ -12,5 +12,5 @@ name = "mentat-scale"
 path = "src/main.rs"
 
 [dependencies]
-mentat = { package = "mentatdb", path = "../../../crates/sqlite/mentat", version = "=1.17.1" }
+mentat = { package = "mentatdb", path = "../../../crates/sqlite/mentat", version = "=1.17.2" }
 serde_json = "1"

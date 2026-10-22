@@ -20,7 +20,7 @@ crate-type = ["cdylib"]
 # for the store file. The host SQLite is reached only through the raw
 # `sqlite3_api_routines` pointer in src/lib.rs -- deliberately NOT via rusqlite's
 # `loadable_extension` feature (see README "Two SQLites").
-mentat = { package = "mentatdb", path = "../mentat", features = ["mino"], version = "=1.17.1" }
+mentat = { package = "mentatdb", path = "../mentat", features = ["mino"], version = "=1.17.2" }
 serde_json = "1"
 
 [dev-dependencies]

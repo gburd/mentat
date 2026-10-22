@@ -8,6 +8,38 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.17.2] — security: pg_mentat install script
+
+### Security
+
+- **pg_mentat: a database owner could become superuser by installing the
+  extension.** pg_mentat has been a trusted extension since 1.17.0, so a role
+  with `CREATE` on the database can run `CREATE EXTENSION pg_mentat`, and the
+  install script then runs as the bootstrap superuser. Three blocks in that
+  script called `format()`, `array_length()` and `jsonb_build_object()`
+  without a schema. A function of the same name and argument types created in
+  `public` beforehand was chosen over the built-in, and ran as superuser. The
+  script now calls `pg_catalog.format()` and the others, and pins
+  `search_path` to `pg_catalog, pg_temp` inside each block. A CI check
+  (`scripts/pg/check-script-search-path.py`) fails on any call the script
+  makes through the search path. 1.17.0 and 1.17.1 are
+  affected; earlier versions weren't trusted, so only a superuser could
+  install them.
+- **Upgrading doesn't undo an install that already happened.** If a role that
+  isn't a superuser installed 1.17.0 or 1.17.1 in a database where it could
+  create functions in `public`, check for functions named `format`,
+  `array_length` or `jsonb_build_object` outside `pg_catalog`, and check
+  which roles have `rolsuper`:
+  ```sql
+  SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE p.proname IN ('format', 'array_length', 'jsonb_build_object')
+     AND n.nspname <> 'pg_catalog';
+  SELECT rolname FROM pg_roles WHERE rolsuper;
+  ```
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.17.2'` is a no-op step from 1.17.1.
+
 ## [1.17.1] — the DuckDB extension loads into DuckDB 2.0
 
 ### Changed
