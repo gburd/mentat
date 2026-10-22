@@ -71,12 +71,20 @@
 //!
 //! # Panics
 //!
-//! No panic unwinds into the caller. Every entry point runs inside `catch_panic`: a panic is
+//! No panic unwinds into the caller. Most entry points run inside `catch_panic`: a panic is
 //! reported in the `ExternError` out parameter when the function has one (the message starts
 //! with `mentat panicked: `), and the function returns a null pointer, 0, 0.0 or nothing.
-//! `typed_value_value_type` is the one exception: its return type has no spare value, so a
-//! panic there aborts the process. After a caught panic, a handle the call consumed is gone,
-//! and a handle it borrowed may be in an inconsistent state: destroy it.
+//! After a caught panic, a handle the call consumed is gone, and a handle it borrowed may be in
+//! an inconsistent state: destroy it.
+//!
+//! The functions that return a plain number, and have no `ExternError`, abort the process on a
+//! panic instead, as they did before 1.18.0: 0 is a valid long, boolean, double, timestamp and
+//! entid, so returning it would hide the failure (a misspelled attribute name would quietly
+//! become entid 0). They are `typed_value_into_{long,entid,boolean,double,timestamp}`,
+//! `value_at_index_into_{long,entid,boolean,double,timestamp}`, `store_entid_for_attribute`
+//! (an attribute not in the schema), `tx_report_get_entid`, `tx_report_get_tx_instant`,
+//! `changelist_entry_at` and `typed_value_value_type` (whose return type has no spare value).
+//! Each documents what makes it panic; check the value type or the attribute first.
 //!
 //! # Threads
 //!
@@ -1477,22 +1485,18 @@ pub unsafe extern "C" fn store_transact(
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn tx_report_get_entid(tx_report: *mut TxReport) -> c_longlong {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(tx_report);
-        let tx_report = &*tx_report;
-        tx_report.tx_id as c_longlong
-    })
+    assert_not_null!(tx_report);
+    let tx_report = &*tx_report;
+    tx_report.tx_id as c_longlong
 }
 
 /// Fetches the `tx_instant` for the given [TxReport](mentat::TxReport).
 /// # Safety
 #[no_mangle]
 pub unsafe extern "C" fn tx_report_get_tx_instant(tx_report: *mut TxReport) -> c_longlong {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(tx_report);
-        let tx_report = &*tx_report;
-        tx_report.tx_instant.timestamp() as c_longlong
-    })
+    assert_not_null!(tx_report);
+    let tx_report = &*tx_report;
+    tx_report.tx_instant.timestamp() as c_longlong
 }
 
 /// Fetches the [Entid](mentat::Entid) assigned to the `tempid` during the transaction represented
@@ -1876,11 +1880,9 @@ fn unwrap_conversion<T>(value: Option<T>, expected_type: ValueType) -> T {
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_long(typed_value: *mut Binding) -> c_longlong {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(typed_value);
-        let typed_value = Box::from_raw(typed_value);
-        unwrap_conversion(typed_value.into_long(), ValueType::Long)
-    })
+    assert_not_null!(typed_value);
+    let typed_value = Box::from_raw(typed_value);
+    unwrap_conversion(typed_value.into_long(), ValueType::Long)
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as an [Entid](mentat::Entid).
@@ -1894,12 +1896,10 @@ pub unsafe extern "C" fn typed_value_into_long(typed_value: *mut Binding) -> c_l
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_entid(typed_value: *mut Binding) -> Entid {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(typed_value);
-        let typed_value = Box::from_raw(typed_value);
-        println!("typed value as entid {:?}", typed_value);
-        unwrap_conversion(typed_value.into_entid(), ValueType::Ref)
-    })
+    assert_not_null!(typed_value);
+    let typed_value = Box::from_raw(typed_value);
+    println!("typed value as entid {:?}", typed_value);
+    unwrap_conversion(typed_value.into_entid(), ValueType::Ref)
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as an keyword C `String`.
@@ -1929,15 +1929,13 @@ pub unsafe extern "C" fn typed_value_into_kw(typed_value: *mut Binding) -> *mut 
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_boolean(typed_value: *mut Binding) -> i32 {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(typed_value);
-        let typed_value = Box::from_raw(typed_value);
-        if unwrap_conversion(typed_value.into_boolean(), ValueType::Boolean) {
-            1
-        } else {
-            0
-        }
-    })
+    assert_not_null!(typed_value);
+    let typed_value = Box::from_raw(typed_value);
+    if unwrap_conversion(typed_value.into_boolean(), ValueType::Boolean) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as a `f64`.
@@ -1949,11 +1947,9 @@ pub unsafe extern "C" fn typed_value_into_boolean(typed_value: *mut Binding) -> 
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_double(typed_value: *mut Binding) -> f64 {
-    catch_panic(std::ptr::null_mut(), 0.0, || {
-        assert_not_null!(typed_value);
-        let typed_value = Box::from_raw(typed_value);
-        unwrap_conversion(typed_value.into_double(), ValueType::Double)
-    })
+    assert_not_null!(typed_value);
+    let typed_value = Box::from_raw(typed_value);
+    unwrap_conversion(typed_value.into_double(), ValueType::Double)
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as a microsecond timestamp.
@@ -1965,11 +1961,9 @@ pub unsafe extern "C" fn typed_value_into_double(typed_value: *mut Binding) -> f
 // TODO Generalise with macro https://github.com/mozilla/mentat/issues/703
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_into_timestamp(typed_value: *mut Binding) -> c_longlong {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(typed_value);
-        let typed_value = Box::from_raw(typed_value);
-        unwrap_conversion(typed_value.into_timestamp(), ValueType::Instant)
-    })
+    assert_not_null!(typed_value);
+    let typed_value = Box::from_raw(typed_value);
+    unwrap_conversion(typed_value.into_timestamp(), ValueType::Instant)
 }
 
 /// Consumes a [Binding](mentat::Binding) and returns the value as a C `String`.
@@ -2015,8 +2009,9 @@ pub unsafe extern "C" fn typed_value_into_uuid(typed_value: *mut Binding) -> *mu
 /// # Panics
 ///
 /// If the binding is not a scalar (a pull map or a vector). `ValueType` has no spare value to
-/// signal that, so this one entry point is not wrapped in `catch_panic`: the panic aborts the
-/// process (an `extern "C"` function cannot unwind) rather than unwinding into C.
+/// signal that, so this entry point is not wrapped in `catch_panic`: the panic aborts the
+/// process (an `extern "C"` function cannot unwind) rather than unwinding into C. The other
+/// scalar getters do the same; see the crate docs.
 #[no_mangle]
 pub unsafe extern "C" fn typed_value_value_type(typed_value: *mut Binding) -> ValueType {
     assert_not_null!(typed_value);
@@ -2161,12 +2156,10 @@ pub unsafe extern "C" fn value_at_index_into_long(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> c_longlong {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(values);
-        let result = &*values;
-        let value = result.get(index as usize).expect("No value at index");
-        unwrap_conversion(value.clone().into_long(), ValueType::Long)
-    })
+    assert_not_null!(values);
+    let result = &*values;
+    let value = result.get(index as usize).expect("No value at index");
+    unwrap_conversion(value.clone().into_long(), ValueType::Long)
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as an [Entid](mentat::Entid).
@@ -2182,12 +2175,10 @@ pub unsafe extern "C" fn value_at_index_into_entid(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> Entid {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(values);
-        let result = &*values;
-        let value = result.get(index as usize).expect("No value at index");
-        unwrap_conversion(value.clone().into_entid(), ValueType::Ref)
-    })
+    assert_not_null!(values);
+    let result = &*values;
+    let value = result.get(index as usize).expect("No value at index");
+    unwrap_conversion(value.clone().into_entid(), ValueType::Ref)
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as a keyword C `String`.
@@ -2226,16 +2217,14 @@ pub unsafe extern "C" fn value_at_index_into_boolean(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> i32 {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(values);
-        let result = &*values;
-        let value = result.get(index as usize).expect("No value at index");
-        if unwrap_conversion(value.clone().into_boolean(), ValueType::Boolean) {
-            1
-        } else {
-            0
-        }
-    })
+    assert_not_null!(values);
+    let result = &*values;
+    let value = result.get(index as usize).expect("No value at index");
+    if unwrap_conversion(value.clone().into_boolean(), ValueType::Boolean) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as an `f64`.
@@ -2251,12 +2240,10 @@ pub unsafe extern "C" fn value_at_index_into_double(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> f64 {
-    catch_panic(std::ptr::null_mut(), 0.0, || {
-        assert_not_null!(values);
-        let result = &*values;
-        let value = result.get(index as usize).expect("No value at index");
-        unwrap_conversion(value.clone().into_double(), ValueType::Double)
-    })
+    assert_not_null!(values);
+    let result = &*values;
+    let value = result.get(index as usize).expect("No value at index");
+    unwrap_conversion(value.clone().into_double(), ValueType::Double)
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as a microsecond timestamp.
@@ -2272,12 +2259,10 @@ pub unsafe extern "C" fn value_at_index_into_timestamp(
     values: *mut Vec<Binding>,
     index: c_int,
 ) -> c_longlong {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(values);
-        let result = &*values;
-        let value = result.get(index as usize).expect("No value at index");
-        unwrap_conversion(value.clone().into_timestamp(), ValueType::Instant)
-    })
+    assert_not_null!(values);
+    let result = &*values;
+    let value = result.get(index as usize).expect("No value at index");
+    unwrap_conversion(value.clone().into_timestamp(), ValueType::Instant)
 }
 
 /// Returns the value of the [Binding](mentat::Binding) at `index` as a C `String`.
@@ -2431,18 +2416,16 @@ pub unsafe extern "C" fn store_entid_for_attribute(
     store: *mut Store,
     attr: *const c_char,
 ) -> Entid {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(store);
-        let store = &mut *store;
-        let keyword_string = c_char_to_string(attr);
-        let kw = kw_from_string(keyword_string);
-        let conn = store.conn();
-        let current_schema = conn.current_schema();
-        current_schema
-            .get_entid(&kw)
-            .expect("Unable to find entid for invalid attribute")
-            .into()
-    })
+    assert_not_null!(store);
+    let store = &mut *store;
+    let keyword_string = c_char_to_string(attr);
+    let kw = kw_from_string(keyword_string);
+    let conn = store.conn();
+    let current_schema = conn.current_schema();
+    current_schema
+        .get_entid(&kw)
+        .expect("Unable to find entid for invalid attribute")
+        .into()
 }
 
 /// Returns the value at the provided `index` as a [TransactionChange](TransactionChange) .
@@ -2474,12 +2457,10 @@ pub unsafe extern "C" fn changelist_entry_at(
     tx_report: *mut TransactionChange,
     index: c_int,
 ) -> Entid {
-    catch_panic(std::ptr::null_mut(), 0, || {
-        assert_not_null!(tx_report);
-        let tx_report = &*tx_report;
-        assert!(0 <= index && (index as usize) < (tx_report.changes_len as usize));
-        std::ptr::read(tx_report.changes.offset(index as isize))
-    })
+    assert_not_null!(tx_report);
+    let tx_report = &*tx_report;
+    assert!(0 <= index && (index as usize) < (tx_report.changes_len as usize));
+    std::ptr::read(tx_report.changes.offset(index as isize))
 }
 
 #[no_mangle]
@@ -2600,10 +2581,6 @@ mod tests {
             assert!(!report.is_null());
             tx_report_destroy(report);
 
-            // No error out-param: the panic gives the zero value.
-            let s: Binding = TypedValue::typed_string("not a long").into();
-            assert_eq!(typed_value_into_long(Box::into_raw(Box::new(s))), 0);
-
             // A builder transact that panics returns an error in the result struct.
             let result = in_progress_builder_transact(std::ptr::null_mut());
             assert!(result.in_progress.is_null() && result.tx_report.is_null());
@@ -2611,6 +2588,46 @@ mod tests {
             rust_c_string_destroy(result.err.message);
 
             store_destroy(store);
+        }
+    }
+
+    // #266: a scalar getter with no error out-param aborts on a panic rather than returning
+    // 0, which is a valid value. Each case runs in a child process (this test binary,
+    // filtered to `abort_child`, with MENTAT_FFI_ABORT_CASE set).
+    #[test]
+    fn test_scalar_getter_aborts_on_panic() {
+        for case in ["entid_for_unknown_attribute", "string_as_long"] {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::abort_child", "--nocapture"])
+                .env("MENTAT_FFI_ABORT_CASE", case)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(!out.status.success(), "{case}: {stdout}");
+            assert!(!stdout.contains("returned"), "{case}: {stdout}");
+        }
+    }
+
+    #[test]
+    fn abort_child() {
+        let Ok(case) = std::env::var("MENTAT_FFI_ABORT_CASE") else {
+            return;
+        };
+        unsafe {
+            let got = match case.as_str() {
+                "entid_for_unknown_attribute" => {
+                    let mut err = ExternError::default();
+                    let uri = CString::new("").unwrap();
+                    let store = store_open(uri.as_ptr(), &mut err);
+                    let attr = CString::new(":no/such").unwrap();
+                    store_entid_for_attribute(store, attr.as_ptr())
+                }
+                _ => {
+                    let s: Binding = TypedValue::typed_string("not a long").into();
+                    typed_value_into_long(Box::into_raw(Box::new(s)))
+                }
+            };
+            println!("returned {got}");
         }
     }
 }

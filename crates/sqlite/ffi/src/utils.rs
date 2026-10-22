@@ -56,7 +56,8 @@ pub mod log {
 
     #[cfg(all(target_os = "android", not(test)))]
     pub fn d(message: &str) {
-        let message = CString::new(message).unwrap();
+        // Strip NULs first: a panic here, inside catch_panic's handler, would abort.
+        let message = CString::new(message.replace('\0', "")).unwrap_or_default();
         let message = message.as_ptr();
         let tag = CString::new("Mentat").unwrap();
         let tag = tag.as_ptr();

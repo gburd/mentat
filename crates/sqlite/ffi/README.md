@@ -23,11 +23,21 @@ TODO, contribute via [issue #732](https://github.com/mozilla/mentat/issues/732).
 
 ## Panics and threads
 
-No panic unwinds into C. Each `extern "C"` function catches panics. A panic
+No panic unwinds into C. Most `extern "C"` functions catch panics: a panic
 is reported through the `ExternError` out parameter where the function has
-one (the message starts with `mentat panicked: `); the function then returns
-a null pointer, 0, 0.0 or nothing. `typed_value_value_type` is the exception:
-it aborts the process, because `ValueType` has no spare value to return.
+one (the message starts with `mentat panicked: `), and the function returns
+a null pointer, 0, 0.0 or nothing.
+
+The getters that return a plain number and have no `ExternError` abort the
+process on a panic, as before: 0 is a valid long, boolean, double, timestamp
+and entid, so returning it would hide the error (a misspelled attribute name
+would quietly become entid 0). They are
+`typed_value_into_{long,entid,boolean,double,timestamp}`,
+`value_at_index_into_{long,entid,boolean,double,timestamp}`,
+`store_entid_for_attribute` (panics on an attribute not in the schema),
+`tx_report_get_entid`, `tx_report_get_tx_instant`, `changelist_entry_at` and
+`typed_value_value_type`. Check the value type, the index or the attribute
+before calling them.
 
 A `Store` handle, and every handle made from it (`InProgress`, the builders,
 `QueryBuilder`, result sets, iterators), must not be used from two threads at
