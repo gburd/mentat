@@ -851,6 +851,8 @@ mod regression_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod retraction_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod rule_value_tests;
+#[cfg(any(test, feature = "pg_test"))]
 pub mod rum_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod schema_attribute_tests;

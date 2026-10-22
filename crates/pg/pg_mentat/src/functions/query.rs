@@ -11,6 +11,7 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::spi::OwnedPreparedStatement;
 use pgrx::JsonB;
+use pgrx::PgMemoryContexts;
 use serde_json::json;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -381,7 +382,7 @@ struct TypedTableInfo {
     /// `added=true` filter or latest-tx-wins resolution over the log.
     current_table: &'static str,
     /// The SQL type of the native `v` column (e.g., "TEXT", "BIGINT").
-    _sql_type: &'static str,
+    sql_type: &'static str,
     /// The type tag constant for this value type.
     type_tag: i16,
     /// The virtual column name in the UNION ALL projection that this type populates
@@ -398,63 +399,63 @@ fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
         "ref" => Some(TypedTableInfo {
             table: "mentat.datoms_ref_new",
             current_table: "mentat.current_ref",
-            _sql_type: "BIGINT",
+            sql_type: "BIGINT",
             type_tag: type_tag::REF,
             value_column: "v_ref",
         }),
         "boolean" => Some(TypedTableInfo {
             table: "mentat.datoms_boolean_new",
             current_table: "mentat.current_boolean",
-            _sql_type: "BOOLEAN",
+            sql_type: "BOOLEAN",
             type_tag: type_tag::BOOLEAN,
             value_column: "v_bool",
         }),
         "long" => Some(TypedTableInfo {
             table: "mentat.datoms_long_new",
             current_table: "mentat.current_long",
-            _sql_type: "BIGINT",
+            sql_type: "BIGINT",
             type_tag: type_tag::LONG,
             value_column: "v_long",
         }),
         "double" => Some(TypedTableInfo {
             table: "mentat.datoms_double_new",
             current_table: "mentat.current_double",
-            _sql_type: "DOUBLE PRECISION",
+            sql_type: "DOUBLE PRECISION",
             type_tag: type_tag::DOUBLE,
             value_column: "v_double",
         }),
         "instant" => Some(TypedTableInfo {
             table: "mentat.datoms_instant_new",
             current_table: "mentat.current_instant",
-            _sql_type: "TIMESTAMPTZ",
+            sql_type: "TIMESTAMPTZ",
             type_tag: type_tag::INSTANT,
             value_column: "v_instant",
         }),
         "string" => Some(TypedTableInfo {
             table: "mentat.datoms_text_new",
             current_table: "mentat.current_text",
-            _sql_type: "TEXT",
+            sql_type: "TEXT",
             type_tag: type_tag::STRING,
             value_column: "v_text",
         }),
         "keyword" => Some(TypedTableInfo {
             table: "mentat.datoms_keyword_new",
             current_table: "mentat.current_keyword",
-            _sql_type: "TEXT",
+            sql_type: "TEXT",
             type_tag: type_tag::KEYWORD,
             value_column: "v_keyword",
         }),
         "uuid" => Some(TypedTableInfo {
             table: "mentat.datoms_uuid_new",
             current_table: "mentat.current_uuid",
-            _sql_type: "UUID",
+            sql_type: "UUID",
             type_tag: type_tag::UUID,
             value_column: "v_uuid",
         }),
         "bytes" => Some(TypedTableInfo {
             table: "mentat.datoms_bytes_new",
             current_table: "mentat.current_bytes",
-            _sql_type: "BYTEA",
+            sql_type: "BYTEA",
             type_tag: type_tag::BYTES,
             value_column: "v_bytes",
         }),
@@ -1200,6 +1201,31 @@ fn is_ref_var(var_to_type: &HashMap<String, Option<String>>, var: &str) -> bool 
     matches!(var_to_type.get(var), Some(Some(t)) if t == "ref")
 }
 
+/// The WHERE constraint binding a scalar `:in` value to the column a variable
+/// was bound to (`v`, `e`, `a`, `tx` or `added`), if the value fits it.
+fn scalar_input_constraint(
+    alias: &str,
+    col: &str,
+    value: &serde_json::Value,
+    is_ref: bool,
+    builder: &mut SqlBuilder<'_>,
+    schema_prefix: &str,
+) -> Option<String> {
+    match col {
+        "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix),
+        "e" => bind_input_entity(alias, value, builder, schema_prefix),
+        "a" | "tx" => value.as_i64().map(|i| {
+            let param = builder.bind_bigint(i);
+            format!("{alias}.{col} = {param}")
+        }),
+        "added" => value.as_bool().map(|b| {
+            let param = builder.bind_bool(b);
+            format!("{alias}.added = {param}")
+        }),
+        _ => None,
+    }
+}
+
 /// Bind an :in clause variable to a WHERE constraint on an entity column.
 ///
 /// For entity-position variables, the bound value must be an integer entity ID
@@ -1565,55 +1591,125 @@ pub(crate) fn mentat_query_internal(
     Ok(JsonB(response))
 }
 
-/// Execute a Datalog query and stream the result rows: one JSON array per
-/// row, in :find order, fetched from a cursor in batches of 1000 so the
-/// result is never materialized as one value (edn_q builds a single JSONB,
-/// which PostgreSQL caps at 1 GB).
+/// Execute a Datalog query and return the result rows: one JSON array per
+/// row, in :find order (edn_q builds a single JSONB, which PostgreSQL caps
+/// at 1 GB).
+///
+/// A materialize-mode set-returning function: rows are fetched from a cursor
+/// in batches of 1000 and appended to a tuplestore, which PostgreSQL keeps in
+/// memory up to work_mem and spills to a temp file past it. Each batch's SPI
+/// result and decoded values are freed before the next, so backend memory
+/// does not grow with the result size.
 ///
 /// Honours mentat.max_result_rows exactly like edn_q (a query that would
 /// return more rows fails rather than silently truncating), so the two
-/// never disagree; set it to 0 to stream an unbounded result. The inputs
+/// never disagree; set it to 0 for an unbounded result. The inputs
 /// (:in bindings, asOf / since / history, limit / offset) are edn_q's.
 ///
 /// ```sql
 /// SELECT r->>0 AS name FROM edn_q_rows('[:find ?n :where [_ :person/name ?n]]') r;
 /// ```
-#[pg_extern(name = "edn_q_rows")]
-pub fn mentat_query_rows(
+// The SQL is spelled out because the Rust signature (fcinfo, no return
+// value) is not the SQL one; it is the definition pgrx generated up to 1.17.
+#[pg_extern(sql = r#"
+CREATE FUNCTION "edn_q_rows"("query" TEXT, "inputs" jsonb DEFAULT '{}')
+RETURNS SETOF jsonb STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+"#)]
+// Not `pub`: only PostgreSQL calls it, with its own fcinfo.
+fn mentat_query_rows(
     query: &str,
-    inputs: default!(JsonB, "'{}'"),
-) -> Result<SetOfIterator<'static, JsonB>, Box<dyn std::error::Error + Send + Sync>> {
+    inputs: JsonB,
+    fcinfo: pg_sys::FunctionCallInfo,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use pg_sys::SetFunctionReturnMode::{SFRM_Materialize, SFRM_Materialize_Random};
+
+    // SAFETY: fcinfo is this call's; resultinfo is checked before use.
+    let rsinfo = unsafe {
+        let ri = (*fcinfo).resultinfo.cast::<pg_sys::ReturnSetInfo>();
+        if !pgrx::is_a(ri.cast(), pg_sys::NodeTag::T_ReturnSetInfo)
+            || (*ri).allowedModes & SFRM_Materialize as i32 == 0
+            || (*ri).expectedDesc.is_null()
+        {
+            return Err("edn_q_rows: set-valued function called in a context that \
+                        cannot accept a set"
+                .into());
+        }
+        &mut *ri
+    };
+
     let mut timer = crate::monitoring::QueryTimer::start(query);
     let pq = prepare_query(query, &inputs.0, "mentat.")?;
     timer.set_sql(&pq.sql);
 
-    // ponytail: the SPI connection lives for one call, so batches are
-    // fetched eagerly here and handed to the SRF as a Vec per batch; true
-    // row-at-a-time streaming across calls needs a detached cursor.
-    let rows = with_limit_hints(|| {
+    // The tuplestore and its descriptor live for the query. Sized by the
+    // caller's work_mem (read before the optimizer hints may raise it).
+    // SAFETY: econtext and expectedDesc are valid for a materialize-mode call.
+    let (store, desc) = unsafe {
+        let random = rsinfo.allowedModes & SFRM_Materialize_Random as i32 != 0;
+        PgMemoryContexts::For((*rsinfo.econtext).ecxt_per_query_memory).switch_to(|_| {
+            (
+                pg_sys::tuplestore_begin_heap(random, false, pg_sys::work_mem),
+                pg_sys::CreateTupleDescCopy(rsinfo.expectedDesc),
+            )
+        })
+    };
+
+    with_limit_hints(|| {
         Spi::connect(|client| {
             apply_optimizer_hints(client, &pq.complexity);
             let mut cursor = client
                 .try_open_cursor(pq.sql.as_str(), &pq.params)
                 .map_err(spi_exec_error)?;
-            let mut out: Vec<JsonB> = Vec::new();
+            // Decoded text and JSONB values of one batch; reset per batch.
+            let mut scratch = PgMemoryContexts::new("edn_q_rows batch");
+            let mut n = 0usize;
             loop {
                 let batch = cursor.fetch(1000).map_err(spi_exec_error)?;
                 if batch.is_empty() {
                     break;
                 }
-                for row in batch {
-                    if pq.max_rows.is_some_and(|m| out.len() >= m as usize) {
-                        return Err(pq.result_limit_error(pq.max_rows.unwrap_or(0)));
-                    }
-                    out.push(JsonB(pq.decode_row(&row)));
+                // SAFETY: SPI_tuptable is the batch just fetched (decoding
+                // runs no SPI); it is freed only after the batch is consumed.
+                let tuptable = unsafe { pg_sys::SPI_tuptable };
+                let res = unsafe {
+                    scratch.switch_to(|_| {
+                        for row in batch {
+                            if pq.max_rows.is_some_and(|m| n >= m as usize) {
+                                return Err(pq.result_limit_error(pq.max_rows.unwrap_or(0)));
+                            }
+                            let datum = JsonB(pq.decode_row(&row)).into_datum();
+                            let mut value = datum.unwrap_or(pg_sys::Datum::null());
+                            let mut isnull = datum.is_none();
+                            // Copies the row into the tuplestore's own context.
+                            // `as _`: the arrays are *mut on PG13-16, *const after.
+                            pg_sys::tuplestore_putvalues(
+                                store,
+                                desc,
+                                std::ptr::addr_of_mut!(value) as _,
+                                std::ptr::addr_of_mut!(isnull) as _,
+                            );
+                            n += 1;
+                        }
+                        Ok(())
+                    })
+                };
+                res?;
+                // SAFETY: nothing borrows the batch or the scratch values now.
+                unsafe {
+                    scratch.reset();
+                    pg_sys::SPI_freetuptable(tuptable);
                 }
             }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(out)
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         })
     })?;
+
+    rsinfo.returnMode = SFRM_Materialize;
+    rsinfo.setResult = store;
+    rsinfo.setDesc = desc;
     let _elapsed_ms = timer.finish();
-    Ok(SetOfIterator::new(rows))
+    Ok(())
 }
 
 /// Execute a Datalog query and return results as JSON (default store)
@@ -2052,13 +2148,14 @@ fn mentat_query_view_internal(
 
         let mut result_rows: Vec<QueryViewRow> = Vec::new();
 
-        let mut row_num: i64 = 1;
-        for row in execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
-            Box::new(MentatError::InvalidQuery {
-                message: format!("SPI execution error: {}", e),
-                suggestion: None,
-            }) as Box<dyn std::error::Error + Send + Sync>
-        })? {
+        for (row_num, row) in (1i64..).zip(
+            execute_cached_query(client, &sql_query, &params, &complexity).map_err(|e| {
+                Box::new(MentatError::InvalidQuery {
+                    message: format!("SPI execution error: {}", e),
+                    suggestion: None,
+                }) as Box<dyn std::error::Error + Send + Sync>
+            })?,
+        ) {
             let mut cols: [Option<String>; 8] = Default::default();
             for idx in 0..num_cols {
                 let col_idx = (idx + 1) as usize;
@@ -2072,7 +2169,6 @@ fn mentat_query_view_internal(
             }
             let [c1, c2, c3, c4, c5, c6, c7, c8] = cols;
             result_rows.push((row_num, c1, c2, c3, c4, c5, c6, c7, c8));
-            row_num += 1;
         }
 
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(result_rows)
@@ -2273,9 +2369,8 @@ fn element_to_var_name(elem: &Element) -> Option<String> {
 }
 
 /// Whether a pattern reads history (assertions and retractions): the query
-/// asked for it, or the pattern has a 5th (`added`) place.
-// ponytail: main pattern path only; a 5-place pattern inside not/rule bodies
-// still reads current state (those paths bind no `added` var yet).
+/// asked for it, or the pattern has a 5th (`added`) place. Used by the main
+/// pattern path, `not` / `not-join` subqueries and rule bodies alike.
 fn reads_history(temporal: &TemporalOption, pattern: &edn::query::Pattern) -> bool {
     temporal.history || pattern.added != PatternNonValuePlace::Placeholder
 }
@@ -2373,6 +2468,18 @@ fn temporal_conditions(
          AND {same_v} AND NOT r.added AND r.tx > {alias}.tx{r_upper})"
     ));
     out
+}
+
+/// The column to compare an `e` / `a` / `tx` / `added` place against when the
+/// variable was bound to `bound` elsewhere: a value-place binding (a pattern
+/// value or a rule argument) compares its `v_ref` (an entity id) or `v_bool`
+/// (added) column.
+fn value_col_for<'c>(col: &str, bound: &'c str) -> &'c str {
+    match (col, bound) {
+        ("added", "v") => "v_bool",
+        (_, "v") => "v_ref",
+        _ => bound,
+    }
 }
 
 /// Extract a variable name string from a PatternNonValuePlace, if it is a variable.
@@ -2541,6 +2648,9 @@ fn build_sql_from_datalog_enriched(
     let store_id = resolve_store_id(schema_prefix)?;
     let store_id_param = builder.bind_bigint(store_id as i64);
 
+    // Equalities between a binding function's result and a variable bound
+    // elsewhere (fn_result_var); declared first, as `predicates` borrows it.
+    let mut fn_eqs: Vec<Predicate> = Vec::new();
     // Separate clause types
     let mut pattern_clauses = Vec::new();
     let mut or_joins = Vec::new();
@@ -2566,6 +2676,8 @@ fn build_sql_from_datalog_enriched(
     // Handle where-functions: fulltext, arithmetic, ground, get-else, missing?.
     let mut fts_joins: Vec<FtsJoin> = Vec::new();
     let mut extra_var_bindings: HashMap<String, String> = HashMap::new();
+    // The value type of each binding function's result (query_fn_type).
+    let mut fn_types: HashMap<String, &'static str> = HashMap::new();
     let mut ground_bindings: HashMap<String, serde_json::Value> = HashMap::new();
     // Collection / tuple / relation ground forms turn into enriched
     // InputBinding entries so they can reuse the same JOIN/IN/VALUES plumbing
@@ -2958,7 +3070,10 @@ fn build_sql_from_datalog_enriched(
         } else {
             // Arithmetic binding functions: [(* ?age 2) ?double-age]
             if let Some((var_name, expr)) = build_where_fn_binding(wf, builder)? {
-                extra_var_bindings.insert(var_name, expr);
+                let bound = var_bound_by(&var_name, &pattern_clauses, &rule_invocations);
+                let var = fn_result_var(var_name, bound, &extra_var_bindings, &mut fn_eqs);
+                fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
+                extra_var_bindings.insert(var, expr);
             } else {
                 return Err(format!(
                     ":db.error/unsupported-where-fn Where-function '{}' is not supported. \
@@ -2969,6 +3084,8 @@ fn build_sql_from_datalog_enriched(
             }
         }
     }
+
+    predicates.extend(fn_eqs.iter());
 
     // Merge ground bindings into a combined input_bindings map so that
     // pattern compilation constrains ground variables at build time.
@@ -3022,8 +3139,10 @@ fn build_sql_from_datalog_enriched(
 
     let mut cte_prefix = String::new();
     let mut rule_cte_info: Option<RuleCteInfo> = None;
-    if !all_rule_invocations.is_empty() && !parsed.rules.is_empty() {
-        let (cte_sql, _cte_info) = build_rule_ctes(
+    // An invocation of an undefined rule is an error (rule-not-found), not
+    // ignored, also when the query defines no rules at all.
+    if !all_rule_invocations.is_empty() {
+        let cte_sql = build_rule_ctes(
             &parsed.rules,
             &all_rule_invocations,
             builder,
@@ -3035,38 +3154,43 @@ fn build_sql_from_datalog_enriched(
         // The base scope (the query's main FROM list) sees only top-level
         // invocations. Each OR arm computes its own scope below.
         if !rule_invocations.is_empty() {
-            rule_cte_info = Some(make_per_arm_rule_cte_info(&rule_invocations));
+            rule_cte_info = Some(make_per_arm_rule_cte_info(
+                &rule_invocations,
+                &parsed.rules,
+                schema_prefix,
+            ));
         }
     }
 
     let with_vars: Vec<String> = parsed.with.iter().map(|v| format!("{}", v)).collect();
 
-    // Build the base query (skip if we only have OR clauses)
-    let (base_sql, base_var_to_alias, base_var_to_type) =
-        if pattern_clauses.is_empty() && !or_joins.is_empty() {
-            // No base patterns, only OR clauses - will be handled below
-            (String::new(), HashMap::new(), HashMap::new())
-        } else {
-            build_extended_pattern_query(
-                &pattern_clauses,
-                &not_joins,
-                &predicates,
-                &fts_joins,
-                &extra_var_bindings,
-                find_vars,
-                &parsed.find_spec,
-                builder,
-                temporal,
-                &rule_cte_info,
-                &effective_bindings,
-                &enriched_bindings,
-                schema_prefix,
-                &store_id_param,
-                &get_else_clauses,
-                &missing_clauses,
-                &with_vars,
-            )?
-        };
+    // Build the base query. With an OR, each arm below is compiled with the
+    // base patterns instead, so the base query is not built (it would reject
+    // a :find variable bound only inside the OR).
+    let (base_sql, base_var_to_alias, base_var_to_type) = if !or_joins.is_empty() {
+        (String::new(), HashMap::new(), HashMap::new())
+    } else {
+        build_extended_pattern_query(
+            &pattern_clauses,
+            &not_joins,
+            &predicates,
+            &fts_joins,
+            &extra_var_bindings,
+            &fn_types,
+            find_vars,
+            &parsed.find_spec,
+            builder,
+            temporal,
+            &rule_cte_info,
+            &effective_bindings,
+            &enriched_bindings,
+            schema_prefix,
+            &store_id_param,
+            &get_else_clauses,
+            &missing_clauses,
+            &with_vars,
+        )?
+    };
 
     // Handle OR-joins using Datalog union semantics.
     //
@@ -3131,7 +3255,11 @@ fn build_sql_from_datalog_enriched(
             let arm_rule_cte_info: Option<RuleCteInfo> = if combined_rule_invocations.is_empty() {
                 None
             } else {
-                Some(make_per_arm_rule_cte_info(&combined_rule_invocations))
+                Some(make_per_arm_rule_cte_info(
+                    &combined_rule_invocations,
+                    &parsed.rules,
+                    schema_prefix,
+                ))
             };
 
             // Check groundedness: all variables in predicates must be
@@ -3169,6 +3297,7 @@ fn build_sql_from_datalog_enriched(
             let mut combined_patterns: Vec<&edn::query::Pattern> = pattern_clauses.clone();
             combined_patterns.extend(arm_patterns);
 
+            let mut arm_fn_eqs: Vec<Predicate> = Vec::new();
             // Combine predicates from base query and this OR branch
             let mut combined_predicates = predicates.clone();
             combined_predicates.extend(arm_predicates);
@@ -3176,6 +3305,7 @@ fn build_sql_from_datalog_enriched(
             // Process where-functions for this branch
             let mut arm_fts_joins = fts_joins.clone();
             let mut arm_extra_var_bindings = extra_var_bindings.clone();
+            let mut arm_fn_types = fn_types.clone();
             let mut arm_builder = SqlBuilder::new();
 
             // Each OR arm has its own builder so bind store_id for it
@@ -3308,7 +3438,16 @@ fn build_sql_from_datalog_enriched(
                     // list (each arm has its own SqlBuilder so $N indices
                     // don't collide).
                     if let Some((var_name, expr)) = build_where_fn_binding(wf, &mut arm_builder)? {
-                        arm_extra_var_bindings.insert(var_name, expr);
+                        let bound =
+                            var_bound_by(&var_name, &combined_patterns, &combined_rule_invocations);
+                        let var = fn_result_var(
+                            var_name,
+                            bound,
+                            &arm_extra_var_bindings,
+                            &mut arm_fn_eqs,
+                        );
+                        arm_fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
+                        arm_extra_var_bindings.insert(var, expr);
                     }
                 } else {
                     return Err(format!(
@@ -3319,6 +3458,8 @@ fn build_sql_from_datalog_enriched(
                     ).into());
                 }
             }
+
+            combined_predicates.extend(arm_fn_eqs.iter());
 
             // Combine top-level NOT joins with the ones found in this OR arm so
             // build_extended_pattern_query emits NOT EXISTS subqueries for both.
@@ -3331,6 +3472,7 @@ fn build_sql_from_datalog_enriched(
                 &combined_predicates,
                 &arm_fts_joins,
                 &arm_extra_var_bindings,
+                &arm_fn_types,
                 find_vars,
                 &parsed.find_spec,
                 &mut arm_builder,
@@ -5758,6 +5900,8 @@ fn append_order_by(
                                 return match ty.as_str() {
                                     "long" | "ref" => Some("BIGINT"),
                                     "instant" => Some("TIMESTAMPTZ"),
+                                    // Longs and doubles: decoded_number_sql.
+                                    "number" => Some("NUMBER"),
                                     _ => None,
                                 };
                             }
@@ -5781,7 +5925,10 @@ fn append_order_by(
                     Direction::Descending => "DESC",
                 };
                 if has_numeric_order {
-                    if let Some(cast_ty) = numeric_cast_for(&var_name) {
+                    if let Some("NUMBER") = numeric_cast_for(&var_name) {
+                        let c = format!("_c{}", col_pos + 1);
+                        order_parts.push(format!("{} {dir}", decoded_number_sql(&c)));
+                    } else if let Some(cast_ty) = numeric_cast_for(&var_name) {
                         order_parts.push(format!("_c{}::{} {}", col_pos + 1, cast_ty, dir));
                     } else {
                         order_parts.push(format!("_c{} {}", col_pos + 1, dir));
@@ -6036,6 +6183,7 @@ fn build_extended_pattern_query(
     predicates: &[&Predicate],
     fts_joins: &[FtsJoin],
     extra_var_bindings: &HashMap<String, String>,
+    fn_types: &HashMap<String, &'static str>,
     find_vars: &[String],
     find_spec: &FindSpec,
     builder: &mut SqlBuilder<'_>,
@@ -6060,7 +6208,12 @@ fn build_extended_pattern_query(
     let mut var_to_alias: HashMap<String, (String, &'static str)> = HashMap::new();
     // Track the resolved value type for each variable (used by predicate compilation
     // to select the correct typed column instead of a blanket NUMERIC COALESCE).
-    let mut var_to_type: HashMap<String, Option<String>> = HashMap::new();
+    // A binding function's result (no pattern binds it) has the type of its
+    // value, so a comparison reads it as a number (untyped_comparison_sql).
+    let mut var_to_type: HashMap<String, Option<String>> = fn_types
+        .iter()
+        .map(|(v, t)| (v.clone(), Some(t.to_string())))
+        .collect();
     let mut joins = Vec::new();
     let mut where_clauses = Vec::new();
     // Mutable copy of extra_var_bindings so get-else can update result expressions
@@ -6075,6 +6228,17 @@ fn build_extended_pattern_query(
         }
         for (var_name, (alias, col)) in &cte_info.var_to_col {
             var_to_alias.insert(var_name.clone(), (alias.clone(), col));
+        }
+        var_to_type.extend(cte_info.var_to_type.clone());
+        where_clauses.extend(cte_info.where_parts.iter().cloned());
+        for (view, arg, ty) in &cte_info.constants {
+            where_clauses.push(rule_constant_filter(
+                view,
+                arg,
+                ty.as_deref(),
+                builder,
+                schema_prefix,
+            )?);
         }
     }
 
@@ -6159,7 +6323,8 @@ fn build_extended_pattern_query(
                 if let Some((existing_alias, col)) = var_to_alias.get(&var_name) {
                     where_clauses.push(format!(
                         "{alias}.a = {existing}.{col}",
-                        existing = existing_alias
+                        existing = existing_alias,
+                        col = value_col_for("a", col)
                     ));
                 } else {
                     var_to_alias.insert(var_name, (alias.clone(), "a"));
@@ -6178,18 +6343,10 @@ fn build_extended_pattern_query(
                 let var_name = format!("{}", v);
                 if let Some((existing_alias, col)) = var_to_alias.get(&var_name) {
                     if *col == "v" {
-                        where_clauses.push(format!(
-                            "{alias}.value_type_tag = {existing}.value_type_tag \
-AND {alias}.v_ref IS NOT DISTINCT FROM {existing}.v_ref \
-AND {alias}.v_bool IS NOT DISTINCT FROM {existing}.v_bool \
-AND {alias}.v_long IS NOT DISTINCT FROM {existing}.v_long \
-AND {alias}.v_double IS NOT DISTINCT FROM {existing}.v_double \
-AND {alias}.v_text IS NOT DISTINCT FROM {existing}.v_text \
-AND {alias}.v_keyword IS NOT DISTINCT FROM {existing}.v_keyword \
-AND {alias}.v_instant IS NOT DISTINCT FROM {existing}.v_instant \
-AND {alias}.v_uuid IS NOT DISTINCT FROM {existing}.v_uuid \
-AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
-                            existing = existing_alias
+                        where_clauses.push(value_join(
+                            &alias,
+                            existing_alias,
+                            pattern_value_type.as_deref(),
                         ));
                     } else {
                         // Variable was bound to a non-value column (e, a, tx)
@@ -6222,7 +6379,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             if let Some((existing_alias, col)) = var_to_alias.get(&tx_var) {
                 where_clauses.push(format!(
                     "{alias}.tx = {existing}.{col}",
-                    existing = existing_alias
+                    existing = existing_alias,
+                    col = value_col_for("tx", col)
                 ));
             } else {
                 var_to_alias.insert(tx_var, (alias.clone(), "tx"));
@@ -6261,7 +6419,8 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             if let Some((existing_alias, col)) = var_to_alias.get(&added_var) {
                 where_clauses.push(format!(
                     "{alias}.added = {existing}.{col}",
-                    existing = existing_alias
+                    existing = existing_alias,
+                    col = value_col_for("added", col)
                 ));
             } else {
                 var_to_alias.insert(added_var, (alias.clone(), "added"));
@@ -6457,7 +6616,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
 
         if let (Some(entid), Some(info)) = (attr_entid, attr_info) {
             let entity_expr = if let Some((alias, col)) = var_to_alias.get(mc.entity_var.as_str()) {
-                format!("{}.{}", alias, col)
+                format!("{}.{}", alias, value_col_for("e", col))
             } else {
                 continue;
             };
@@ -6483,40 +6642,10 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
     // Apply :in clause input bindings as WHERE constraints (scalar from HashMap)
     for (var_name, value) in input_bindings {
         if let Some((alias, col)) = var_to_alias.get(var_name.as_str()) {
-            let constraint = match *col {
-                "v" => bind_input_value(
-                    alias,
-                    value,
-                    is_ref_var(&var_to_type, var_name),
-                    builder,
-                    schema_prefix,
-                ),
-                "e" => bind_input_entity(alias, value, builder, schema_prefix),
-                "a" => {
-                    // Attribute column: bind as bigint
-                    if let Some(i) = value.as_i64() {
-                        let param = builder.bind_bigint(i);
-                        Some(format!("{alias}.a = {param}"))
-                    } else {
-                        None
-                    }
-                }
-                "tx" => {
-                    // Transaction column: bind as bigint
-                    if let Some(i) = value.as_i64() {
-                        let param = builder.bind_bigint(i);
-                        Some(format!("{alias}.tx = {param}"))
-                    } else {
-                        None
-                    }
-                }
-                "added" => value.as_bool().map(|b| {
-                    let param = builder.bind_bool(b);
-                    format!("{alias}.added = {param}")
-                }),
-                _ => None,
-            };
-            if let Some(c) = constraint {
+            let is_ref = is_ref_var(&var_to_type, var_name);
+            if let Some(c) =
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+            {
                 where_clauses.push(c);
             }
         }
@@ -6552,26 +6681,15 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                     }
                     if let Some(val) = values.get(i) {
                         if let Some((alias, col)) = var_to_alias.get(var.as_str()) {
-                            let constraint = match *col {
-                                "v" => bind_input_value(
-                                    alias,
-                                    val,
-                                    is_ref_var(&var_to_type, var),
-                                    builder,
-                                    schema_prefix,
-                                ),
-                                "e" => bind_input_entity(alias, val, builder, schema_prefix),
-                                "a" => val.as_i64().map(|i| {
-                                    let param = builder.bind_bigint(i);
-                                    format!("{alias}.a = {param}")
-                                }),
-                                "tx" => val.as_i64().map(|i| {
-                                    let param = builder.bind_bigint(i);
-                                    format!("{alias}.tx = {param}")
-                                }),
-                                _ => None,
-                            };
-                            if let Some(c) = constraint {
+                            let is_ref = is_ref_var(&var_to_type, var);
+                            if let Some(c) = scalar_input_constraint(
+                                alias,
+                                col,
+                                val,
+                                is_ref,
+                                builder,
+                                schema_prefix,
+                            ) {
                                 where_clauses.push(c);
                             }
                         }
@@ -6601,6 +6719,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
             not_join,
             &var_to_alias,
             &var_to_type,
+            input_bindings,
             builder,
             temporal,
             schema_prefix,
@@ -6651,7 +6770,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes",
                             store_id_param,
                             builder,
                         );
-                        let entity_expr = format!("{}.{}", alias, col);
+                        let entity_expr = format!("{}.{}", alias, value_col_for("e", col));
                         let not_exists = format!(
                             "NOT EXISTS (SELECT 1 FROM {table} AND g.store_id = {sid} AND g.e = {entity} AND g.a = {attr})",
                             table = table,
@@ -6980,6 +7099,8 @@ enum ArgKind {
     Int,
     Double,
     Text,
+    /// Longs and doubles (a rule column of both), in their decoded TEXT form.
+    Number,
 }
 
 /// SQL for a variable's value within the join, in its native typed column
@@ -6993,8 +7114,7 @@ fn var_value_sql(
 ) -> Option<(String, ArgKind)> {
     if let Some((alias, col)) = var_to_alias.get(var) {
         if *col != "v" {
-            // e/a/tx are BIGINT; `added` and rule-CTE columns (col0..,
-            // possibly computed) carry no type guarantee: aggregate as-is.
+            // e/a/tx are BIGINT; `added` is a boolean: aggregate as-is.
             let kind = if matches!(*col, "e" | "a" | "tx") {
                 ArgKind::Int
             } else {
@@ -7006,6 +7126,8 @@ fn var_value_sql(
             Some("long") => (format!("{alias}.v_long"), ArgKind::Int),
             Some("ref") => (format!("{alias}.v_ref"), ArgKind::Int),
             Some("double") => (format!("{alias}.v_double"), ArgKind::Double),
+            // Decoded text, so 5 and 5.0 stay distinct in the aggregated set.
+            Some("number") => (build_value_decode_expr(alias), ArgKind::Number),
             _ => (build_value_decode_expr(alias), ArgKind::Text),
         });
     }
@@ -7040,6 +7162,24 @@ fn aggregate_arg_sql(
 /// Render a double so `decode_text_result` reads it back exactly.
 fn double_text(expr: &str) -> String {
     format!("'d:' || ('x' || encode(float8send({expr}), 'hex'))::bit(64)::bigint::TEXT")
+}
+
+/// The decoded text `c` of a long, or of a double (`double_text`: 'd:' and its
+/// IEEE-754 bits), as DOUBLE PRECISION: how a column of longs and doubles
+/// orders and aggregates. Exact: sign * (1 + mantissa / 2^52) * 2^(exp - 1023),
+/// subnormals with exponent 1 and no implicit 1.
+fn decoded_number_sql(c: &str) -> String {
+    let b = format!("substr({c}, 3)::BIGINT");
+    let e = format!("(({b} >> 52) & 2047)");
+    let m = format!("({b} & 4503599627370495)");
+    format!(
+        "(CASE WHEN {c} NOT LIKE 'd:%' THEN {c}::DOUBLE PRECISION \
+         WHEN {e} = 2047 THEN (CASE WHEN {m} <> 0 THEN 'NaN' WHEN {b} < 0 THEN '-Infinity' \
+         ELSE 'Infinity' END)::DOUBLE PRECISION \
+         ELSE (CASE WHEN {b} < 0 THEN -1 ELSE 1 END) \
+         * ((CASE WHEN {e} = 0 THEN 0 ELSE 1 END) + {m} / 4503599627370496.0::DOUBLE PRECISION) \
+         * 2::DOUBLE PRECISION ^ (GREATEST({e}, 1) - 1023) END)"
+    )
 }
 
 /// The aggregate call over `arg`, rendered as TEXT. `count_rows`: every row
@@ -7078,6 +7218,8 @@ fn aggregate_call_sql(
         ("count", _) => format!("COUNT({arg})::TEXT"),
         ("count-distinct", _) => format!("COUNT(DISTINCT {arg})::TEXT"),
         (_, ArgKind::Double) => double_text(&format!("{sql_func}({arg})")),
+        // As on the embedded engine, a long-and-double aggregate is a double.
+        (_, ArgKind::Number) => double_text(&format!("{sql_func}({})", decoded_number_sql(arg))),
         ("sum" | "avg", ArgKind::Text) => format!("{sql_func}(({arg})::NUMERIC)::TEXT"),
         _ => format!("{sql_func}({arg})::TEXT"),
     })
@@ -7093,6 +7235,7 @@ fn aggregate_call_sql(
 ///   * its entity is known and its attribute is cardinality-one, or
 ///   * its value is known and its attribute is :db/unique, or
 ///   * its entity, attribute and value are all known (the table's PK).
+///
 /// The tuple is a key iff every pattern's row is determined. The caller
 /// only asks for current-state queries (the projection holds one row per
 /// live (e, a, v)) with no joins that can repeat rows (fulltext / rules /
@@ -7235,6 +7378,7 @@ fn build_not_exists_subquery(
     not_join: &edn::query::NotJoin,
     outer_var_to_alias: &HashMap<String, (String, &'static str)>,
     outer_var_to_type: &HashMap<String, Option<String>>,
+    input_bindings: &HashMap<String, serde_json::Value>,
     builder: &mut SqlBuilder<'_>,
     temporal: &TemporalOption,
     schema_prefix: &str,
@@ -7261,10 +7405,12 @@ fn build_not_exists_subquery(
                     all_not_vars.push(name.clone());
                     locally_bound_vars.insert(name);
                 }
-                if let PatternNonValuePlace::Variable(v) = &p.tx {
-                    let name = format!("{}", v);
-                    all_not_vars.push(name.clone());
-                    locally_bound_vars.insert(name);
+                for place in [&p.tx, &p.added] {
+                    if let PatternNonValuePlace::Variable(v) = place {
+                        let name = format!("{}", v);
+                        all_not_vars.push(name.clone());
+                        locally_bound_vars.insert(name);
+                    }
                 }
             }
             WhereClause::Pred(pred) => {
@@ -7281,7 +7427,9 @@ fn build_not_exists_subquery(
     let unbound: Vec<&String> = all_not_vars
         .iter()
         .filter(|v| {
-            !outer_var_to_alias.contains_key(v.as_str()) && !locally_bound_vars.contains(v.as_str())
+            !outer_var_to_alias.contains_key(v.as_str())
+                && !locally_bound_vars.contains(v.as_str())
+                && !input_bindings.contains_key(v.as_str())
         })
         .collect();
 
@@ -7323,9 +7471,15 @@ fn build_not_exists_subquery(
                 match &p.entity {
                     PatternNonValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
-                        // Correlate with outer query
-                        if let Some((outer_alias, outer_col)) = outer_var_to_alias.get(&var_name) {
-                            sub_where.push(format!("{alias}.e = {outer_alias}.{outer_col}"));
+                        // Correlate with the outer query or an earlier NOT pattern.
+                        match not_var_to_alias.get(&var_name) {
+                            Some((outer_alias, "v")) => {
+                                sub_where.push(format!("{alias}.e = {outer_alias}.v_ref"))
+                            }
+                            Some((outer_alias, outer_col)) => {
+                                sub_where.push(format!("{alias}.e = {outer_alias}.{outer_col}"))
+                            }
+                            None => {}
                         }
                     }
                     PatternNonValuePlace::Entid(id) => {
@@ -7357,7 +7511,8 @@ fn build_not_exists_subquery(
                     }
                     PatternNonValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
-                        if let Some((outer_alias, outer_col)) = outer_var_to_alias.get(&var_name) {
+                        if let Some((outer_alias, outer_col)) = not_var_to_alias.get(&var_name) {
+                            let outer_col = value_col_for("a", outer_col);
                             sub_where.push(format!("{alias}.a = {outer_alias}.{outer_col}"));
                         }
                     }
@@ -7371,7 +7526,7 @@ fn build_not_exists_subquery(
                 match &p.value {
                     PatternValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
-                        if let Some((outer_alias, outer_col)) = outer_var_to_alias.get(&var_name) {
+                        if let Some((outer_alias, outer_col)) = not_var_to_alias.get(&var_name) {
                             if *outer_col == "v" {
                                 sub_where.push(format!(
                                     "{alias}.value_type_tag = {outer_alias}.value_type_tag \
@@ -7409,10 +7564,29 @@ fn build_not_exists_subquery(
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
+                // tx / added places: correlate, or bind locally (below).
+                for (place, col) in [(&p.tx, "tx"), (&p.added, "added")] {
+                    match place {
+                        PatternNonValuePlace::Variable(v) => {
+                            if let Some((a2, c2)) = not_var_to_alias.get(&format!("{}", v)) {
+                                let c2 = value_col_for(col, c2);
+                                sub_where.push(format!("{alias}.{col} = {a2}.{c2}"));
+                            }
+                        }
+                        PatternNonValuePlace::Entid(id) if col == "tx" => {
+                            let param = builder.bind_bigint(*id);
+                            sub_where.push(format!("{alias}.tx = {param}"));
+                        }
+                        _ => {}
+                    }
+                }
+
+                // A 5-place pattern reads the log, as in the main path.
+                let history = reads_history(temporal, p);
                 // Temporal filtering in subquery too.
                 sub_where.extend(temporal_conditions(
                     temporal,
-                    temporal.history,
+                    history,
                     &alias,
                     typed_info.as_ref(),
                     narrow_tables_prefix(schema_prefix),
@@ -7422,7 +7596,7 @@ fn build_not_exists_subquery(
 
                 // Build pushdown conditions for NOT-clause subquery
                 let not_pushdown = {
-                    let added_true = !temporal.history;
+                    let added_true = !history;
                     let attribute_entid = match &p.attribute {
                         PatternNonValuePlace::Entid(id) => Some(format!("{}", id)),
                         PatternNonValuePlace::Ident(kw) => {
@@ -7448,38 +7622,36 @@ fn build_not_exists_subquery(
                         store_id_param,
                         info,
                         Some(&not_pushdown),
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                     ));
                 } else {
                     sub_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                         narrow_tables_prefix(schema_prefix),
                     ));
                 }
 
-                // Track locally-bound variables for predicates within this NOT clause.
-                // Entity-position variables are mapped to (alias, "e").
-                if let PatternNonValuePlace::Variable(v) = &p.entity {
-                    let var_name = format!("{}", v);
-                    if !outer_var_to_alias.contains_key(&var_name) {
-                        not_var_to_alias.insert(var_name, (alias.clone(), "e"));
+                // Track locally-bound variables (first binding wins) for
+                // later patterns and predicates within this NOT clause.
+                for (place, col) in [
+                    (&p.entity, "e"),
+                    (&p.attribute, "a"),
+                    (&p.tx, "tx"),
+                    (&p.added, "added"),
+                ] {
+                    if let PatternNonValuePlace::Variable(v) = place {
+                        not_var_to_alias
+                            .entry(format!("{}", v))
+                            .or_insert_with(|| (alias.clone(), col));
                     }
                 }
-                // Value-position variables are mapped to (alias, "v").
                 if let PatternValuePlace::Variable(v) = &p.value {
                     let var_name = format!("{}", v);
-                    if !outer_var_to_alias.contains_key(&var_name) {
+                    if !not_var_to_alias.contains_key(&var_name) {
                         not_var_to_alias.insert(var_name.clone(), (alias.clone(), "v"));
                         not_var_to_type.insert(var_name, not_pattern_value_type.clone());
-                    }
-                }
-                // Tx-position variables are mapped to (alias, "tx").
-                if let PatternNonValuePlace::Variable(v) = &p.tx {
-                    let var_name = format!("{}", v);
-                    if !outer_var_to_alias.contains_key(&var_name) {
-                        not_var_to_alias.insert(var_name, (alias, "tx"));
                     }
                 }
             }
@@ -7488,17 +7660,13 @@ fn build_not_exists_subquery(
                 // Variables referenced by the predicate must be bound either by
                 // patterns within this NOT clause or by the outer query.
                 // NOT-clause predicates resolve their vars from the NOT-local
-                // and outer pattern bindings. :in scalar inputs used only
-                // inside a NOT predicate are not threaded here (rare; an empty
-                // map preserves the prior behavior — such a var surfaces the
-                // usual unbound-var error).
-                let no_inputs: HashMap<String, serde_json::Value> = HashMap::new();
+                // and outer pattern bindings, then from scalar :in inputs.
                 let pred_sql = build_predicate_clause(
                     pred,
                     &not_var_to_alias,
                     &not_var_to_type,
                     &HashMap::new(),
-                    &no_inputs,
+                    input_bindings,
                     builder,
                 )?;
                 sub_where.push(pred_sql);
@@ -7510,6 +7678,22 @@ fn build_not_exists_subquery(
                             and rule invocations inside NOT are not yet supported."
                         .into(),
                 );
+            }
+        }
+    }
+
+    // A scalar :in value for a variable bound only inside the NOT constrains
+    // it here (the outer query applies inputs to its own bindings).
+    for (var_name, value) in input_bindings {
+        if outer_var_to_alias.contains_key(var_name) {
+            continue;
+        }
+        if let Some((alias, col)) = not_var_to_alias.get(var_name) {
+            let is_ref = is_ref_var(&not_var_to_type, var_name);
+            if let Some(c) =
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+            {
+                sub_where.push(c);
             }
         }
     }
@@ -7647,72 +7831,16 @@ fn build_predicate_clause(
         }
     }
 
-    // #179: an ordering comparison on a value of unknown type ([_ ?a ?v]) against a number
-    // or an instant applies to comparable values only, as on the embedded engine: numbers
-    // against a number, instants against an instant. Other values compare as NULL, so they
-    // don't match. Against anything else (a string) the text comparison below is kept.
-    let kinds: Vec<Option<&str>> = pred
-        .args
-        .iter()
-        .map(|a| match a {
-            FnArg::EntidOrInteger(_) | FnArg::Constant(NonIntegerConstant::Float(_)) => Some("num"),
-            FnArg::Constant(NonIntegerConstant::Instant(_)) => Some("instant"),
-            FnArg::Variable(v) if untyped_value_alias(v, var_to_alias, var_to_type).is_some() => {
-                None
-            }
-            FnArg::Variable(v) => {
-                let name = format!("{v}");
-                match var_to_type.get(name.as_str()) {
-                    Some(Some(t)) if matches!(t.as_str(), "long" | "double" | "ref") => Some("num"),
-                    Some(Some(t)) if t == "instant" => Some("instant"),
-                    _ if input_bindings
-                        .get(name.as_str())
-                        .is_some_and(|j| j.is_number()) =>
-                    {
-                        Some("num")
-                    }
-                    _ => Some("other"),
-                }
-            }
-            _ => Some("other"),
-        })
-        .collect();
-    let known: Vec<&str> = kinds.iter().flatten().copied().collect();
-    let comparable = kinds.contains(&None)
-        && (known.iter().all(|k| *k == "num") || known.iter().all(|k| *k == "instant"));
-    if matches!(op, "<" | ">" | "<=" | ">=") && comparable {
-        let instant = known.contains(&"instant");
-        let mut sides = Vec::with_capacity(2);
-        for arg in &pred.args {
-            sides.push(match arg {
-                FnArg::Constant(NonIntegerConstant::Instant(dt)) => {
-                    sql_instant_from_micros(&builder.bind_bigint(dt.timestamp_micros()))
-                }
-                FnArg::Variable(v) => match untyped_value_alias(v, var_to_alias, var_to_type) {
-                    Some(alias) if instant => format!("{alias}.v_instant"),
-                    Some(alias) => {
-                        format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)")
-                    }
-                    None => pred_arg_to_sql(
-                        arg,
-                        var_to_alias,
-                        var_to_type,
-                        computed,
-                        input_bindings,
-                        builder,
-                    )?,
-                },
-                _ => pred_arg_to_sql(
-                    arg,
-                    var_to_alias,
-                    var_to_type,
-                    computed,
-                    input_bindings,
-                    builder,
-                )?,
-            });
-        }
-        return Ok(format!("({} {} {})", sides[0], sql_op, sides[1]));
+    if let Some(sql) = untyped_comparison_sql(
+        pred,
+        sql_op,
+        var_to_alias,
+        var_to_type,
+        computed,
+        input_bindings,
+        builder,
+    )? {
+        return Ok(sql);
     }
 
     let left = pred_arg_to_sql(
@@ -7817,7 +7945,7 @@ fn check_predicate_type_mismatch(
         return Some(true);
     }
     // Numeric variables compared against string literals → mismatch
-    if matches!(vt, "long" | "double" | "ref") && literal_is_string {
+    if matches!(vt, "long" | "double" | "ref" | "number") && literal_is_string {
         return Some(true);
     }
     Some(false)
@@ -7881,6 +8009,8 @@ fn pred_arg_to_sql(
                             ))
                         }
                     }
+                } else if *col == "added" {
+                    Ok(format!("CASE WHEN {alias}.added THEN 1 ELSE 0 END"))
                 } else {
                     Ok(format!("{}.{}", alias, col))
                 }
@@ -7935,6 +8065,118 @@ fn pred_arg_to_sql(
     }
 }
 
+/// A comparison with a value of unknown type (`[_ ?a ?v]`, or a rule column
+/// bound to values of several types, \"number\" for longs and doubles) against a number, an instant or a
+/// boolean: it applies to values of that kind only, compared in their own
+/// column (numbers as DOUBLE PRECISION); other values compare as NULL and
+/// don't match. Against anything else the text comparison of every column
+/// (pred_arg_to_sql) is kept, with the other side cast to text, so a string
+/// still compares as text. None when the predicate has no untyped value.
+///
+/// This is #179's rule for ordering comparisons, extended to = and != and to
+/// booleans, so no comparison of an untyped value raises "operator does not
+/// exist: text > bigint". An instant constant is exact (#375).
+fn untyped_comparison_sql(
+    pred: &Predicate,
+    sql_op: &str,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
+    input_bindings: &HashMap<String, serde_json::Value>,
+    builder: &mut SqlBuilder<'_>,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let untyped = |a: &FnArg| -> Option<&str> {
+        let FnArg::Variable(v) = a else { return None };
+        let name = format!("{v}");
+        let ty = var_to_type.get(&name).cloned().flatten();
+        match (var_to_alias.get(&name), ty.as_deref()) {
+            // "number": a rule column of longs and doubles.
+            (Some((alias, "v")), None | Some("number")) => Some(alias.as_str()),
+            _ => None,
+        }
+    };
+    let ordering = matches!(sql_op, "<" | ">" | "<=" | ">=");
+    // The kind of each argument; None for an untyped value.
+    let kinds: Vec<Option<&str>> = pred
+        .args
+        .iter()
+        .map(|a| match a {
+            _ if untyped(a).is_some() => None,
+            FnArg::EntidOrInteger(_) | FnArg::Constant(NonIntegerConstant::Float(_)) => Some("num"),
+            FnArg::Constant(NonIntegerConstant::Instant(_)) => Some("instant"),
+            FnArg::Constant(NonIntegerConstant::Boolean(_)) => Some("bool"),
+            FnArg::Variable(v) => {
+                let name = format!("{v}");
+                let input = input_bindings.get(&name);
+                if let Some((_, "e" | "a" | "tx")) = var_to_alias.get(&name) {
+                    // An entity: a ref value, a number for an ordering.
+                    return Some(if ordering { "num" } else { "ref" });
+                }
+                match var_to_type.get(&name).cloned().flatten().as_deref() {
+                    // An entity is equal to a ref value; ordered as #179 orders it.
+                    Some("ref") if !ordering => Some("ref"),
+                    Some("long" | "double" | "ref") => Some("num"),
+                    Some("instant") => Some("instant"),
+                    Some("boolean") => Some("bool"),
+                    _ if input.is_some_and(|j| j.is_number()) => Some("num"),
+                    _ if input.is_some_and(|j| j.is_boolean()) => Some("bool"),
+                    _ => Some("other"),
+                }
+            }
+            _ => Some("other"),
+        })
+        .collect();
+    if !kinds.contains(&None) {
+        return Ok(None);
+    }
+    // One untyped side: the other side's kind. Both untyped: numbers for an
+    // ordering (as #179) or two long-and-double rule columns, else text.
+    let all_numbers = pred.args.iter().all(|a| {
+        matches!(a, FnArg::Variable(v)
+            if var_to_type.get(&format!("{v}")).cloned().flatten().as_deref() == Some("number"))
+    });
+    let kind = match kinds.iter().flatten().next() {
+        Some(k) => *k,
+        None if all_numbers || ordering => "num",
+        None => "other",
+    };
+    let mut sides = Vec::with_capacity(2);
+    for arg in &pred.args {
+        sides.push(match (untyped(arg), arg) {
+            (Some(alias), _) if kind != "other" => match kind {
+                "instant" => format!("{alias}.v_instant"),
+                "ref" => format!("{alias}.v_ref"),
+                "bool" => format!(
+                    "CASE WHEN {alias}.v_bool IS NULL THEN NULL \
+                     WHEN {alias}.v_bool THEN 1 ELSE 0 END"
+                ),
+                _ => format!("COALESCE({alias}.v_long::DOUBLE PRECISION, {alias}.v_double)"),
+            },
+            (None, FnArg::Constant(NonIntegerConstant::Instant(dt))) => {
+                sql_instant_from_micros(&builder.bind_bigint(dt.timestamp_micros()))
+            }
+            (untyped_side, _) => {
+                let sql = pred_arg_to_sql(
+                    arg,
+                    var_to_alias,
+                    var_to_type,
+                    computed,
+                    input_bindings,
+                    builder,
+                )?;
+                // Against text, the other side compares as text too, so its
+                // SQL type (a number, a function result) is never an error.
+                if kind == "other" && untyped_side.is_none() {
+                    format!("({sql})::TEXT")
+                } else {
+                    sql
+                }
+            }
+        });
+    }
+    Ok(Some(format!("({} {sql_op} {})", sides[0], sides[1])))
+}
+
 // ============================================================================
 // Rule CTE builder
 // ============================================================================
@@ -7952,13 +8194,269 @@ struct RuleCteInfo {
     from_fragments: Vec<String>,
     /// Map of variable name to (alias, column_name) for var_to_alias.
     var_to_col: HashMap<String, (String, &'static str)>,
+    /// Value types of the rule-bound variables, for var_to_type.
+    var_to_type: HashMap<String, Option<String>>,
+    /// Joins between invocations (or argument positions) sharing a variable.
+    where_parts: Vec<String>,
+    /// Constant invocation arguments: (argument view, constant, column
+    /// type), filtered by `rule_constant_filter` with the consumer's builder.
+    constants: Vec<(String, FnArg, Option<String>)>,
 }
 
-/// Build WITH RECURSIVE CTE(s) from rule definitions and invocations.
+/// The value columns of a datoms alias, which each rule CTE column `colN`
+/// carries as the group `colN_<c>`: a rule head variable can be bound to a
+/// value of any type, so the CTE keeps the type tag and the typed column.
+const RULE_VALUE_COLS: [(&str, &str); 10] = [
+    ("value_type_tag", "SMALLINT"),
+    ("v_ref", "BIGINT"),
+    ("v_bool", "BOOLEAN"),
+    ("v_long", "BIGINT"),
+    ("v_double", "DOUBLE PRECISION"),
+    ("v_text", "TEXT"),
+    ("v_keyword", "TEXT"),
+    ("v_instant", "TIMESTAMPTZ"),
+    ("v_uuid", "UUID"),
+    ("v_bytes", "BYTEA"),
+];
+
+/// What a rule head argument is bound to in one clause body.
+enum RuleArg {
+    /// A datom value (or another rule argument): copy its value columns.
+    Value(String),
+    /// An expression of a known value type: an entity id (`ref`), an
+    /// `added` flag (`boolean`) or a function result.
+    Typed(String, String),
+    Null,
+}
+
+/// The SELECT expressions filling one CTE column group (see
+/// `rule_col_group`). An entity id is stored as a ref value, as Datalog
+/// treats them. `col_type`: the column's value type, when every clause
+/// binds it to one type.
+fn rule_value_cols(arg: &RuleArg, col_type: Option<&str>) -> Vec<String> {
+    if let Some(info) = col_type.and_then(value_type_to_table_info) {
+        let (vc, sql_type) = (info.value_column, info.sql_type);
+        return vec![match arg {
+            RuleArg::Value(a) => format!("{a}.{vc}"),
+            RuleArg::Typed(x, _) => format!("({x})::{sql_type}"),
+            RuleArg::Null => format!("NULL::{sql_type}"),
+        }];
+    }
+    let typed = match arg {
+        RuleArg::Typed(x, ty) => value_type_to_table_info(ty).map(|info| (x, info)),
+        _ => None,
+    };
+    RULE_VALUE_COLS
+        .iter()
+        .map(|(c, ty)| match (arg, &typed) {
+            (RuleArg::Value(a), _) => format!("{a}.{c}"),
+            (_, Some((_, info))) if *c == "value_type_tag" => {
+                format!("{}::SMALLINT", info.type_tag)
+            }
+            (_, Some((x, info))) if *c == info.value_column => {
+                format!("({x})::{}", info.sql_type)
+            }
+            _ => format!("NULL::{ty}"),
+        })
+        .collect()
+}
+
+/// The columns a rule CTE stores for column group `colN`: with the value
+/// type known, only that type's value column (the tag is a constant, the
+/// other columns NULL), so a typed rule row is as narrow as a plain one;
+/// else the type tag and every value column.
+fn rule_col_group(col_type: Option<&str>) -> Vec<&'static str> {
+    match col_type.and_then(value_type_to_table_info) {
+        Some(info) => vec![info.value_column],
+        None => RULE_VALUE_COLS.iter().map(|(c, _)| *c).collect(),
+    }
+}
+
+/// A LATERAL view of column group `colN` of the rule CTE `cte` under the
+/// column names of a datoms alias, so a variable bound to it binds as a
+/// pattern value does. A typed group's tag and other columns are constants.
+fn rule_arg_lateral(cte: &str, n: usize, alias: &str, col_type: Option<&str>) -> String {
+    let info = col_type.and_then(value_type_to_table_info);
+    let cols: Vec<String> = RULE_VALUE_COLS
+        .iter()
+        .map(|(c, ty)| match &info {
+            Some(i) if *c == "value_type_tag" => format!("{}::SMALLINT AS {c}", i.type_tag),
+            Some(i) if *c != i.value_column => format!("NULL::{ty} AS {c}"),
+            _ => format!("{cte}.col{n}_{c} AS {c}"),
+        })
+        .collect();
+    format!("LATERAL (SELECT {}) AS {alias}", cols.join(", "))
+}
+
+/// The value type of a rule body variable, from the first place that binds
+/// it: an entity id (e / a / tx) is a ref, `added` a boolean, a value has
+/// its attribute's type. None when no pattern binds it.
+fn rule_body_var_type(body: &[WhereClause], var: &str, schema_prefix: &str) -> Option<String> {
+    let is = |place: &PatternNonValuePlace| non_value_var_name(place).as_deref() == Some(var);
+    body.iter().find_map(|wc| {
+        let WhereClause::Pattern(p) = wc else {
+            return None;
+        };
+        if is(&p.entity) || is(&p.attribute) || is(&p.tx) {
+            Some("ref".to_string())
+        } else if is(&p.added) {
+            Some("boolean".to_string())
+        } else if matches!(&p.value, PatternValuePlace::Variable(v) if v.as_str() == var) {
+            resolve_pattern_value_type(&p.attribute, schema_prefix)
+        } else {
+            None
+        }
+    })
+}
+
+/// The position of `var` among the arguments of the rule's own recursive
+/// call in a clause body, if that call binds it.
+fn self_call_position(body: &[WhereClause], rule_name: &str, var: &str) -> Option<usize> {
+    body.iter().find_map(|wc| match wc {
+        WhereClause::RuleExpr(ri) if ri.name.0 == rule_name => ri
+            .args
+            .iter()
+            .position(|a| matches!(a, FnArg::Variable(x) if x.as_str() == var)),
+        _ => None,
+    })
+}
+
+/// The value type of a rule body function result `[(f ...) ?x]`: text for
+/// the phonetic functions; a long for integer arithmetic (every argument an
+/// integer constant or a long/ref variable), else a double, so a value is
+/// never truncated. `rec` types a variable no pattern binds: the column type
+/// of the recursive call that binds it, or None while the clause fixpoint
+/// has not decided it -- and then so is the result.
+fn rule_fn_type(
+    wf: &WhereFn,
+    body: &[WhereClause],
+    schema_prefix: &str,
+    rec: &dyn Fn(&str) -> Option<Option<String>>,
+) -> Option<&'static str> {
+    // Some(true): an integer; None: not decided yet.
+    let int_arg = |a: &FnArg| match a {
+        FnArg::EntidOrInteger(_) => Some(true),
+        FnArg::Variable(v) => rule_body_var_type(body, v.as_str(), schema_prefix)
+            .map(Some)
+            .or_else(|| rec(v.as_str()))
+            .map(|t| matches!(t.as_deref(), Some("long" | "ref"))),
+        _ => Some(false),
+    };
+    Some(match wf.operator.0.as_str() {
+        "soundex" | "metaphone" | "daitch-mokotoff" => "string",
+        "levenshtein" | "infer-implies" => "long",
+        "*" | "+" | "-" => {
+            let ints: Vec<Option<bool>> = wf.args.iter().map(int_arg).collect();
+            if ints.contains(&Some(false)) {
+                "double"
+            } else if ints.contains(&None) {
+                return None;
+            } else {
+                "long"
+            }
+        }
+        _ => "double",
+    })
+}
+
+/// The value type of a binding function's result in the query's :where:
+/// rule_fn_type over its top-level patterns (a variable no pattern there
+/// binds makes `+`, `-`, `*` a double).
+fn query_fn_type(wf: &WhereFn, parsed: &ParsedQuery, schema_prefix: &str) -> &'static str {
+    rule_fn_type(wf, &parsed.where_clauses, schema_prefix, &|_| Some(None)).unwrap_or("double")
+}
+
+/// The value type of each column of `rule`: the type every clause binds it
+/// to, or None when clauses disagree or one binds it to a value of unknown
+/// type (the column then holds values of several types and is read through
+/// the generic decode, as a variable-attribute value is). A head variable
+/// bound only by the rule's own recursive call takes the type of that
+/// call's column, so the types are a fixpoint over the clauses.
+fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
+    let arity = rule.clauses.first().map_or(0, |c| c.head.args.len());
+    // None: no clause decided yet; Some(None): several or unknown types.
+    let mut cols: Vec<Option<Option<String>>> = vec![None; arity];
+    loop {
+        let mut changed = false;
+        for clause in &rule.clauses {
+            for (n, arg) in clause.head.args.iter().enumerate().take(arity) {
+                let t: Option<Option<String>> = match arg {
+                    FnArg::Variable(v) => {
+                        let var = v.as_str();
+                        // A variable bound by the recursive call has that
+                        // column's type so far; any other is of unknown type.
+                        let rec = |x: &str| match self_call_position(&clause.body, &rule.name.0, x)
+                        {
+                            Some(m) => cols.get(m).cloned().flatten(),
+                            None => Some(None),
+                        };
+                        let bound_by_fn = clause.body.iter().find_map(|wc| match wc {
+                            WhereClause::WhereFn(wf)
+                                if matches!(&wf.binding,
+                                    Binding::BindScalar(b) if b.as_str() == var) =>
+                            {
+                                Some(wf)
+                            }
+                            _ => None,
+                        });
+                        if let Some(t) = rule_body_var_type(&clause.body, var, schema_prefix) {
+                            Some(Some(t))
+                        } else if let Some(wf) = bound_by_fn {
+                            rule_fn_type(wf, &clause.body, schema_prefix, &rec)
+                                .map(|t| Some(t.to_string()))
+                        } else {
+                            rec(var)
+                        }
+                    }
+                    _ => Some(None),
+                };
+                let numeric = |t: &str| matches!(t, "long" | "double" | "number");
+                let merged = match (&cols[n], t) {
+                    (cur, None) => cur.clone(),
+                    (None, Some(t)) => Some(t),
+                    (Some(Some(x)), Some(Some(y))) if *x == y => Some(Some(y)),
+                    // Longs and doubles: a "number" column, compared and
+                    // aggregated numerically.
+                    (Some(Some(x)), Some(Some(y))) if numeric(x) && numeric(&y) => {
+                        Some(Some("number".to_string()))
+                    }
+                    (Some(_), Some(_)) => Some(None),
+                };
+                if merged != cols[n] {
+                    cols[n] = merged;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return cols.into_iter().map(Option::flatten).collect();
+        }
+    }
+}
+
+/// The join condition for a value place of `alias` bound to the value of
+/// `existing` (a datoms alias or a rule argument). With the place's value
+/// type known it is one equality on that type's column -- set only for
+/// values of that type, and hash-joinable -- else every value column.
+fn value_join(alias: &str, existing: &str, value_type: Option<&str>) -> String {
+    if let Some(info) = value_type.and_then(value_type_to_table_info) {
+        let c = info.value_column;
+        return format!("{alias}.{c} = {existing}.{c}");
+    }
+    RULE_VALUE_COLS
+        .iter()
+        .map(|(c, _)| match *c {
+            "value_type_tag" => format!("{alias}.{c} = {existing}.{c}"),
+            _ => format!("{alias}.{c} IS NOT DISTINCT FROM {existing}.{c}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+/// Build the WITH [RECURSIVE] prefix defining one CTE per rule invoked.
 ///
-/// Returns:
-/// - The CTE prefix string (e.g., "WITH RECURSIVE rule_name(col1, col2) AS (...)")
-/// - A RuleCteInfo for joining the CTE into the main query
+/// A rule of arity N is a CTE with N column groups (`colK_<c>` for each
+/// RULE_VALUE_COLS entry), so a head variable carries any value type.
 fn build_rule_ctes(
     rules: &[Rule],
     invocations: &[&RuleInvocation],
@@ -7966,13 +8464,10 @@ fn build_rule_ctes(
     temporal: &TemporalOption,
     schema_prefix: &str,
     store_id_param: &str,
-) -> Result<(String, RuleCteInfo), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut cte_parts = Vec::new();
-    let mut var_to_col: HashMap<String, (String, &'static str)> = HashMap::new();
-    // Track every rule whose CTE we emit; the same rule invoked multiple
-    // times produces only one CTE definition and one FROM-list entry.
+    // The same rule invoked multiple times produces only one CTE definition.
     let mut emitted_rule_names: HashSet<String> = HashSet::new();
-    let mut from_fragments: Vec<String> = Vec::new();
     // RECURSIVE on any one CTE in a WITH list applies to all of them in
     // PostgreSQL, so a single global flag drives whether the WITH prefix is
     // `WITH RECURSIVE` or just `WITH`.
@@ -7980,28 +8475,34 @@ fn build_rule_ctes(
 
     for invocation in invocations {
         let rule_name = invocation.name.0.as_str();
-
-        // Bind invocation arguments to CTE columns BEFORE the CTE-emit
-        // dedupe gate; same-rule-different-args is legal and we still need
-        // to map the new args.
-        static CTE_COLS: [&str; 8] = [
-            "col0", "col1", "col2", "col3", "col4", "col5", "col6", "col7",
-        ];
-        for (i, arg) in invocation.args.iter().enumerate() {
-            if let FnArg::Variable(v) = arg {
-                if i < CTE_COLS.len() {
-                    let var_name = format!("{}", v);
-                    var_to_col.insert(var_name, (rule_name.to_string(), CTE_COLS[i]));
-                }
+        // Every invocation (not only the first of each rule) takes the
+        // rule's arity; a wrong count was a SQL error on a missing column
+        // or silently ignored an argument.
+        if let Some(head) = rules
+            .iter()
+            .find(|r| r.name.0.as_str() == rule_name)
+            .and_then(|r| r.clauses.first())
+        {
+            let (got, want) = (invocation.args.len(), head.head.args.len());
+            if got != want {
+                return Err(format!(
+                    ":db.error/rule-arity Rule '{rule_name}' takes {want} argument{}, but is \
+                     invoked with {got}: ({rule_name} {}).",
+                    if want == 1 { "" } else { "s" },
+                    invocation
+                        .args
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+                .into());
             }
         }
-
-        // CTE definition + FROM-list entry: emit at most once per rule name.
         if !emitted_rule_names.insert(rule_name.to_string()) {
             continue;
         }
 
-        // Find the matching rule definition
         let rule = rules
             .iter()
             .find(|r| r.name.0.as_str() == rule_name)
@@ -8026,20 +8527,59 @@ fn build_rule_ctes(
             )
             .into());
         };
-
-        // Generate column names for the CTE: col0, col1, ...
-        let cte_cols: Vec<String> = (0..arity).map(|i| format!("col{}", i)).collect();
-        let cte_col_list = cte_cols.join(", ");
+        // A rule head takes variables only, as in Datomic; the embedded engine
+        // rejects a constant there too. (A constant read as a head column
+        // matched nothing.)
+        for clause in &rule.clauses {
+            if let Some(arg) = clause
+                .head
+                .args
+                .iter()
+                .find(|a| !matches!(a, FnArg::Variable(_)))
+            {
+                let arg = match arg {
+                    FnArg::Constant(NonIntegerConstant::Text(s)) => format!("{:?}", s.as_str()),
+                    FnArg::Constant(NonIntegerConstant::Boolean(b)) => b.to_string(),
+                    FnArg::Constant(NonIntegerConstant::Float(f)) => f.to_string(),
+                    a => a.to_string(),
+                };
+                return Err(format!(
+                    ":db.error/invalid-rule The head of rule '{rule_name}' has the argument \
+                     {arg}; a rule head takes variables only. To match a constant, bind a \
+                     variable in the body, [({rule_name} ?e ?x) [?e :attr ?x]], and invoke \
+                     ({rule_name} ?e {arg})."
+                )
+                .into());
+            }
+        }
+        let col_types = rule_col_types(rule, schema_prefix);
+        let cte_col_list = (0..arity)
+            .flat_map(|n| {
+                rule_col_group(col_types.get(n).cloned().flatten().as_deref())
+                    .into_iter()
+                    .map(move |c| format!("col{n}_{c}"))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
 
         // Build UNION of each rule clause body.
         // Use UNION (not UNION ALL) to eliminate duplicate rows across rule
         // clauses, matching Datalog set-semantics. Multiple rule clauses may
         // produce the same binding tuple, and the result should be a set.
+        // PostgreSQL takes `non-recursive UNION recursive`: list the clauses
+        // that call the rule itself last, whatever order the query has.
+        let self_call = |c: &&edn::query::RuleClause| {
+            c.body
+                .iter()
+                .any(|wc| matches!(wc, WhereClause::RuleExpr(ri) if ri.name == rule.name))
+        };
+        let mut clauses: Vec<&edn::query::RuleClause> = rule.clauses.iter().collect();
+        clauses.sort_by_key(self_call);
         let mut union_parts = Vec::new();
-        for clause in &rule.clauses {
+        for clause in clauses {
             let clause_sql = build_rule_clause_sql(
                 clause,
-                &cte_cols,
+                &col_types,
                 builder,
                 temporal,
                 rule_name,
@@ -8057,33 +8597,32 @@ fn build_rule_ctes(
             )
         });
 
-        // Each cte_part is just the inner CTE definition
-        // (no WITH prefix); a single WITH is added at the end.
-        // RECURSIVE on any one CTE in a WITH list applies to all of them in
-        // PostgreSQL, so a single global flag is correct.
-        cte_parts.push(format!("{rule_name}({cte_col_list}) AS ({cte_body})"));
+        // A non-recursive rule is inlined at each invocation, so the planner
+        // pushes the query's filters into it; referenced twice, PostgreSQL
+        // would otherwise materialize the whole rule relation (33x slower on
+        // a 200k-entity rule). PG12+; a recursive CTE is always materialized.
+        let materialized = if is_recursive {
+            ""
+        } else {
+            "NOT MATERIALIZED "
+        };
+        cte_parts.push(format!(
+            "{}({cte_col_list}) AS {materialized}({cte_body})",
+            quote_ident(rule_name)
+        ));
         if is_recursive {
             any_recursive = true;
         }
-
-        from_fragments.push(rule_name.to_string());
     }
 
     // Combine into a single `WITH [RECURSIVE] cte1 AS (...), cte2 AS (...)`
     // prefix.  Multiple `WITH ..., WITH ...` is not legal Postgres SQL.
-    let cte_sql = if cte_parts.is_empty() {
+    Ok(if cte_parts.is_empty() {
         String::new()
     } else {
         let recursive_kw = if any_recursive { "RECURSIVE " } else { "" };
         format!("WITH {recursive_kw}{}", cte_parts.join(", "))
-    };
-
-    let cte_info = RuleCteInfo {
-        from_fragments,
-        var_to_col,
-    };
-
-    Ok((cte_sql, cte_info))
+    })
 }
 
 /// Build a per-scope `RuleCteInfo` from a slice of rule invocations.
@@ -8095,34 +8634,88 @@ fn build_rule_ctes(
 /// individual OR-arm) needs in order to JOIN the right rule tables and
 /// bind the right variables.
 ///
-/// `from_fragments` includes each unique rule name referenced by
-/// `invocations`. `var_to_col` maps each invocation argument variable to
-/// the corresponding `rule_name.colN` reference.
-fn make_per_arm_rule_cte_info(invocations: &[&RuleInvocation]) -> RuleCteInfo {
-    static CTE_COLS: [&str; 8] = [
-        "col0", "col1", "col2", "col3", "col4", "col5", "col6", "col7",
-    ];
-    let mut from_fragments: Vec<String> = Vec::new();
-    let mut seen_names: HashSet<String> = HashSet::new();
-    let mut var_to_col: HashMap<String, (String, &'static str)> = HashMap::new();
-    for invocation in invocations {
-        let rule_name = invocation.name.0.as_str().to_string();
-        if seen_names.insert(rule_name.clone()) {
-            from_fragments.push(rule_name.clone());
-        }
+/// Each invocation is its own FROM item over the rule's CTE, with a LATERAL
+/// view per argument (`rule_arg_lateral`): `(boss ?x ?y) (boss ?y ?z)` is
+/// two rows of `boss`, joined on ?y. A variable bound by an earlier
+/// invocation joins it; a constant argument filters its view.
+fn make_per_arm_rule_cte_info(
+    invocations: &[&RuleInvocation],
+    rules: &[Rule],
+    schema_prefix: &str,
+) -> RuleCteInfo {
+    let mut info = RuleCteInfo {
+        from_fragments: Vec::new(),
+        var_to_col: HashMap::new(),
+        var_to_type: HashMap::new(),
+        where_parts: Vec::new(),
+        constants: Vec::new(),
+    };
+    for (k, invocation) in invocations.iter().enumerate() {
+        let name = invocation.name.0.as_str();
+        let item = quote_ident(&format!("{name} {k}"));
+        info.from_fragments
+            .push(format!("{} AS {item}", quote_ident(name)));
+        let col_types = rules
+            .iter()
+            .find(|r| r.name == invocation.name)
+            .map(|r| rule_col_types(r, schema_prefix))
+            .unwrap_or_default();
         for (i, arg) in invocation.args.iter().enumerate() {
-            if let FnArg::Variable(v) = arg {
-                if i < CTE_COLS.len() {
+            let view = quote_ident(&format!("{name} {k} v{i}"));
+            let ty = col_types.get(i).cloned().flatten();
+            info.from_fragments
+                .push(rule_arg_lateral(&item, i, &view, ty.as_deref()));
+            match arg {
+                FnArg::Variable(v) => {
                     let var_name = format!("{}", v);
-                    var_to_col.insert(var_name, (rule_name.clone(), CTE_COLS[i]));
+                    if let Some((existing, _)) = info.var_to_col.get(&var_name) {
+                        let known = info.var_to_type.get(&var_name).cloned().flatten();
+                        info.where_parts
+                            .push(value_join(&view, existing, known.or(ty).as_deref()));
+                    } else {
+                        info.var_to_type.insert(var_name.clone(), ty);
+                        info.var_to_col.insert(var_name, (view, "v"));
+                    }
                 }
+                _ => info.constants.push((view, arg.clone(), ty)),
             }
         }
     }
-    RuleCteInfo {
-        from_fragments,
-        var_to_col,
-    }
+    info
+}
+
+/// The filter a constant rule argument puts on its argument view. A
+/// keyword in a ref column is an ident (an entity), else a keyword value.
+fn rule_constant_filter(
+    view: &str,
+    arg: &FnArg,
+    ty: Option<&str>,
+    builder: &mut SqlBuilder<'_>,
+    schema_prefix: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let place = match arg {
+        FnArg::IdentOrKeyword(kw) if ty == Some("ref") => {
+            let param = builder.bind_text(keyword_to_ident(kw));
+            return Ok(format!(
+                "{view}.v_ref = (SELECT entid FROM {schema_prefix}idents WHERE ident = {param})"
+            ));
+        }
+        FnArg::IdentOrKeyword(kw) => {
+            PatternValuePlace::IdentOrKeyword(edn::ValueRc::new(kw.clone()))
+        }
+        FnArg::EntidOrInteger(i) => PatternValuePlace::EntidOrInteger(*i),
+        FnArg::Constant(c) => PatternValuePlace::Constant(c.clone()),
+        _ => {
+            return Err(
+                ":db.error/unsupported-rule-arg A rule invocation argument must be a variable \
+                 (?x) or a constant: a number, string, keyword (an ident, for an entity), \
+                 boolean, instant or uuid. A lookup ref [:attr value] is not supported: bind \
+                 the entity in the query and pass the variable, [?x :attr value] (rule ?e ?x)."
+                    .into(),
+            )
+        }
+    };
+    Ok(bind_constant_value(view, &place, builder, ty)?.unwrap_or_else(|| "TRUE".to_string()))
 }
 
 /// Build a SQL WHERE condition from a Datalog predicate in a rule body.
@@ -8160,6 +8753,18 @@ fn build_predicate_clause_for_rule(
         ).into());
     }
 
+    let (computed, inputs) = (HashMap::new(), HashMap::new());
+    if let Some(sql) = untyped_comparison_sql(
+        pred,
+        sql_op,
+        var_to_alias,
+        var_to_type,
+        &computed,
+        &inputs,
+        builder,
+    )? {
+        return Ok(sql);
+    }
     let left = pred_arg_to_sql_for_rule(&pred.args[0], var_to_alias, var_to_type, builder)?;
     let right = pred_arg_to_sql_for_rule(&pred.args[1], var_to_alias, var_to_type, builder)?;
 
@@ -8209,10 +8814,6 @@ fn resolve_var_refs_for_rule(
                     format!(
                         "COALESCE({alias}.v_long::NUMERIC, {alias}.v_double::NUMERIC, {alias}.v_ref::NUMERIC, 0)"
                     )
-                } else if *col == "computed" && alias.starts_with("rec_") {
-                    // Recursive variable - need to determine the right column
-                    // For now, assume col0
-                    format!("{alias}.col0::NUMERIC")
                 } else {
                     format!("{alias}.{col}::NUMERIC")
                 }
@@ -8220,8 +8821,6 @@ fn resolve_var_refs_for_rule(
                 // Text/regular context
                 if *col == "v" {
                     build_value_decode_expr(alias)
-                } else if *col == "computed" && alias.starts_with("rec_") {
-                    format!("{alias}.col0")
                 } else {
                     format!("{alias}.{col}")
                 }
@@ -8288,9 +8887,8 @@ fn pred_arg_to_sql_for_rule(
                             ))
                         }
                     }
-                } else if *col == "computed" {
-                    // This is from a recursive rule invocation
-                    Ok(format!("{}.col0", alias))
+                } else if *col == "added" {
+                    Ok(format!("CASE WHEN {alias}.added THEN 1 ELSE 0 END"))
                 } else {
                     Ok(format!("{}.{}", alias, col))
                 }
@@ -8325,28 +8923,19 @@ fn pred_arg_to_sql_for_rule(
 /// recursive rule invocations).
 fn build_rule_clause_sql(
     clause: &edn::query::RuleClause,
-    _cte_cols: &[String],
+    col_types: &[Option<String>],
     builder: &mut SqlBuilder<'_>,
     temporal: &TemporalOption,
     rule_name: &str,
     schema_prefix: &str,
     store_id_param: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    // Map head argument variables to CTE column positions
-    let mut head_var_to_col: HashMap<String, usize> = HashMap::new();
-    for (i, arg) in clause.head.args.iter().enumerate() {
-        if let FnArg::Variable(v) = arg {
-            head_var_to_col.insert(format!("{}", v), i);
-        }
-    }
-
     // Process body patterns
     let mut pattern_joins = Vec::new();
     let mut where_parts = Vec::new();
     let mut body_var_to_alias: HashMap<String, (String, &'static str)> = HashMap::new();
     let mut body_var_to_type: HashMap<String, Option<String>> = HashMap::new();
-    let mut recursive_join: Option<String> = None;
-    let mut recursive_alias = String::new();
+    let mut recursive_join: Vec<String> = Vec::new();
 
     let mut pattern_idx = 0;
     for wc in &clause.body {
@@ -8360,6 +8949,7 @@ fn build_rule_clause_sql(
                     PatternNonValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
                         if let Some((existing, col)) = body_var_to_alias.get(&var_name) {
+                            let col = value_col_for("e", col);
                             where_parts.push(format!("{alias}.e = {existing}.{col}"));
                         } else {
                             body_var_to_alias.insert(var_name, (alias.clone(), "e"));
@@ -8395,6 +8985,7 @@ fn build_rule_clause_sql(
                     PatternNonValuePlace::Variable(v) => {
                         let var_name = format!("{}", v);
                         if let Some((existing, col)) = body_var_to_alias.get(&var_name) {
+                            let col = value_col_for("a", col);
                             where_parts.push(format!("{alias}.a = {existing}.{col}"));
                         } else {
                             body_var_to_alias.insert(var_name, (alias.clone(), "a"));
@@ -8413,17 +9004,10 @@ fn build_rule_clause_sql(
                         let var_name = format!("{}", v);
                         if let Some((existing, col)) = body_var_to_alias.get(&var_name) {
                             if *col == "v" {
-                                where_parts.push(format!(
-                                    "{alias}.value_type_tag = {existing}.value_type_tag \
-AND {alias}.v_ref IS NOT DISTINCT FROM {existing}.v_ref \
-AND {alias}.v_bool IS NOT DISTINCT FROM {existing}.v_bool \
-AND {alias}.v_long IS NOT DISTINCT FROM {existing}.v_long \
-AND {alias}.v_double IS NOT DISTINCT FROM {existing}.v_double \
-AND {alias}.v_text IS NOT DISTINCT FROM {existing}.v_text \
-AND {alias}.v_keyword IS NOT DISTINCT FROM {existing}.v_keyword \
-AND {alias}.v_instant IS NOT DISTINCT FROM {existing}.v_instant \
-AND {alias}.v_uuid IS NOT DISTINCT FROM {existing}.v_uuid \
-AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
+                                where_parts.push(value_join(
+                                    &alias,
+                                    existing,
+                                    rule_pattern_value_type.as_deref(),
                                 ));
                             } else {
                                 // Non-value column used in value position = ref lookup
@@ -8446,15 +9030,37 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                     }
                 }
 
+                // tx / added places (a 5-place pattern binds both).
+                for (place, col) in [(&p.tx, "tx"), (&p.added, "added")] {
+                    match place {
+                        PatternNonValuePlace::Variable(v) => {
+                            let var_name = format!("{}", v);
+                            if let Some((existing, ecol)) = body_var_to_alias.get(&var_name) {
+                                let ecol = value_col_for(col, ecol);
+                                where_parts.push(format!("{alias}.{col} = {existing}.{ecol}"));
+                            } else {
+                                body_var_to_alias.insert(var_name, (alias.clone(), col));
+                            }
+                        }
+                        PatternNonValuePlace::Entid(id) if col == "tx" => {
+                            let param = builder.bind_bigint(*id);
+                            where_parts.push(format!("{alias}.tx = {param}"));
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Schema-aware: reuse resolved type for FROM optimization
                 let typed_info = rule_pattern_value_type
                     .as_ref()
                     .and_then(|vt| value_type_to_table_info(vt));
 
+                // A 5-place pattern reads the log, as in the main path.
+                let history = reads_history(temporal, p);
                 // Temporal filtering.
                 where_parts.extend(temporal_conditions(
                     temporal,
-                    temporal.history,
+                    history,
                     &alias,
                     typed_info.as_ref(),
                     narrow_tables_prefix(schema_prefix),
@@ -8464,7 +9070,7 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
 
                 // Build pushdown conditions for rule-body subquery
                 let rule_pushdown = {
-                    let added_true = !temporal.history;
+                    let added_true = !history;
                     let attribute_entid = match &p.attribute {
                         PatternNonValuePlace::Entid(id) => Some(format!("{}", id)),
                         PatternNonValuePlace::Ident(kw) => {
@@ -8490,39 +9096,54 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
                         store_id_param,
                         info,
                         Some(&rule_pushdown),
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                     ));
                 } else {
                     pattern_joins.push(build_datoms_from_fragment(
                         &alias,
                         store_id_param,
-                        reads_projection(temporal, temporal.history),
+                        reads_projection(temporal, history),
                         narrow_tables_prefix(schema_prefix),
                     ));
                 }
             }
             WhereClause::RuleExpr(ri) if ri.name.0.as_str() == rule_name => {
-                // Recursive self-reference: JOIN against the CTE itself
-                recursive_alias = format!("rec_{}", rule_name);
-                recursive_join = Some(format!("{rule_name} {recursive_alias}"));
-
-                // Bind recursive arguments to body variables
+                // Recursive self-reference: join the CTE itself, each
+                // argument through a LATERAL view of its column group.
+                let cte = quote_ident(rule_name);
+                let rec = quote_ident(&format!("rec_{rule_name}"));
+                recursive_join.push(format!("{cte} {rec}"));
                 for (i, arg) in ri.args.iter().enumerate() {
-                    if let FnArg::Variable(v) = arg {
-                        let var_name = format!("{}", v);
-                        let col_ref = format!("{}.col{}", recursive_alias, i);
-                        // Link the recursive CTE column to the body variable
-                        if let Some((alias, col)) = body_var_to_alias.get(&var_name) {
-                            if *col == "v" {
-                                // Value column: use v_ref for ref-type recursive joins
-                                where_parts.push(format!("{col_ref}::BIGINT = {alias}.v_ref"));
-                            } else {
-                                where_parts.push(format!("{col_ref}::BIGINT = {alias}.{col}",));
-                            }
-                        } else {
-                            // New variable - bind to recursive column
-                            body_var_to_alias
-                                .insert(var_name, (recursive_alias.clone(), "computed"));
+                    let view = quote_ident(&format!("rec_{rule_name} v{i}"));
+                    let col_type = col_types.get(i).cloned().flatten();
+                    recursive_join.push(rule_arg_lateral(&rec, i, &view, col_type.as_deref()));
+                    let FnArg::Variable(v) = arg else {
+                        where_parts.push(rule_constant_filter(
+                            &view,
+                            arg,
+                            col_type.as_deref(),
+                            builder,
+                            schema_prefix,
+                        )?);
+                        continue;
+                    };
+                    let var_name = format!("{}", v);
+                    match body_var_to_alias.get(&var_name) {
+                        Some((existing, "v")) => {
+                            let ty = body_var_to_type.get(&var_name).cloned().flatten();
+                            where_parts.push(value_join(
+                                &view,
+                                existing,
+                                ty.or(col_type).as_deref(),
+                            ));
+                        }
+                        Some((existing, col)) => {
+                            let vc = value_col_for(col, "v");
+                            where_parts.push(format!("{view}.{vc} = {existing}.{col}"));
+                        }
+                        None => {
+                            body_var_to_alias.insert(var_name.clone(), (view, "v"));
+                            body_var_to_type.insert(var_name, col_type);
                         }
                     }
                 }
@@ -8539,10 +9160,27 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
             }
             WhereClause::WhereFn(wf) => {
                 // Handle arithmetic function bindings in rule bodies
-                if let Some((result_var, _computed_expr)) = build_where_fn_binding(wf, builder)? {
-                    // Store the computed expression for later use in SELECT
-                    body_var_to_alias.insert(result_var, ("COMPUTED".to_string(), "expr"));
-                    // We'll handle this in the SELECT clause
+                if let Some((result_var, computed_expr)) = build_where_fn_binding(wf, builder)? {
+                    match body_var_to_alias.get(&result_var) {
+                        // Bound already (a pattern, the recursive call): the
+                        // result constrains it, as fn_result_var does.
+                        Some((alias, col)) if *col != "expr" => {
+                            let expr =
+                                resolve_var_refs_for_rule(&computed_expr, &body_var_to_alias);
+                            let bound = if *col == "v" {
+                                format!(
+                                    "COALESCE({alias}.v_long::NUMERIC, {alias}.v_double::NUMERIC)"
+                                )
+                            } else {
+                                format!("{alias}.{col}::NUMERIC")
+                            };
+                            where_parts.push(format!("({bound} = ({expr})::NUMERIC)"));
+                        }
+                        // Store the computed expression for later use in SELECT
+                        _ => {
+                            body_var_to_alias.insert(result_var, ("COMPUTED".to_string(), "expr"));
+                        }
+                    }
                 } else {
                     return Err(format!(
                         ":db.error/unsupported-rule-fn Unsupported function '{}' in rule body. \
@@ -8563,54 +9201,57 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
         }
     }
 
-    // Build SELECT expressions: map head variables to body columns
-    let mut select_parts = Vec::new();
-    let mut computed_expressions: HashMap<String, String> = HashMap::new();
-
-    // First pass: collect computed expressions from WhereFn clauses
+    // Build SELECT expressions: each head argument fills its column group.
+    let mut computed_expressions: HashMap<String, (String, &'static str)> = HashMap::new();
     for wc in &clause.body {
         if let WhereClause::WhereFn(wf) = wc {
             if let Some((result_var, computed_expr)) = build_where_fn_binding(wf, builder)? {
-                // Resolve variable references in the computed expression
+                if !matches!(body_var_to_alias.get(&result_var), Some((_, "expr"))) {
+                    continue; // a constraint on a bound variable (above)
+                }
                 let resolved_expr = resolve_var_refs_for_rule(&computed_expr, &body_var_to_alias);
-                computed_expressions.insert(result_var, resolved_expr);
+                let rec = |x: &str| {
+                    Some(
+                        self_call_position(&clause.body, rule_name, x)
+                            .and_then(|m| col_types.get(m).cloned().flatten()),
+                    )
+                };
+                let ty = rule_fn_type(wf, &clause.body, schema_prefix, &rec).unwrap_or("double");
+                computed_expressions.insert(result_var, (resolved_expr, ty));
             }
         }
     }
 
-    for (i, arg) in clause.head.args.iter().enumerate() {
-        if let FnArg::Variable(v) = arg {
-            let var_name = format!("{}", v);
-
-            // Check if this is a computed expression first
-            if let Some(expr) = computed_expressions.get(&var_name) {
-                select_parts.push(format!("({})", expr));
-            } else if let Some((alias, col)) = body_var_to_alias.get(var_name.as_str()) {
-                if alias == &recursive_alias && *col == "computed" {
-                    // Recursive variable mapped directly
-                    select_parts.push(format!("{}.col{}::BIGINT", recursive_alias, i));
-                } else if alias == "COMPUTED" && *col == "expr" {
-                    // This shouldn't happen as we handle computed expressions above
-                    select_parts.push("NULL::BIGINT".to_string());
-                } else if *col == "v" {
-                    // Value column: for ref-type, use v_ref directly
-                    select_parts.push(format!("{alias}.v_ref"));
+    let mut select_parts = Vec::new();
+    for (n, arg) in clause.head.args.iter().enumerate() {
+        let rule_arg = match arg {
+            FnArg::Variable(v) => {
+                let var_name = format!("{}", v);
+                if let Some((expr, ty)) = computed_expressions.get(&var_name) {
+                    RuleArg::Typed(expr.clone(), ty.to_string())
                 } else {
-                    select_parts.push(format!("{alias}.{col}"));
+                    match body_var_to_alias.get(var_name.as_str()) {
+                        Some((alias, "v")) => RuleArg::Value(alias.clone()),
+                        Some((alias, "added")) => {
+                            RuleArg::Typed(format!("{alias}.added"), "boolean".to_string())
+                        }
+                        // An entity id (e / a / tx) is a ref value.
+                        Some((alias, col)) if *col != "expr" => {
+                            RuleArg::Typed(format!("{alias}.{col}"), "ref".to_string())
+                        }
+                        _ => RuleArg::Null,
+                    }
                 }
-            } else {
-                select_parts.push("NULL::BIGINT".to_string());
             }
-        } else {
-            select_parts.push("NULL::BIGINT".to_string());
-        }
+            _ => RuleArg::Null,
+        };
+        let col_type = col_types.get(n).cloned().flatten();
+        select_parts.extend(rule_value_cols(&rule_arg, col_type.as_deref()));
     }
 
     // Combine FROM
     let mut from_parts: Vec<String> = pattern_joins;
-    if let Some(ref rj) = recursive_join {
-        from_parts.push(rj.clone());
-    }
+    from_parts.extend(recursive_join);
 
     if from_parts.is_empty() {
         return Err(
@@ -8641,6 +9282,54 @@ AND {alias}.v_bytes IS NOT DISTINCT FROM {existing}.v_bytes"
 // ============================================================================
 // Helper functions for OR-clause predicate support
 // ============================================================================
+
+/// Whether a pattern or a rule invocation binds `var`.
+fn var_bound_by(
+    var: &str,
+    patterns: &[&edn::query::Pattern],
+    rule_invocations: &[&RuleInvocation],
+) -> bool {
+    patterns.iter().any(|p| pattern_binds_var(p, var))
+        || rule_invocations.iter().any(|ri| {
+            ri.args
+                .iter()
+                .any(|a| matches!(a, FnArg::Variable(v) if v.as_str() == var))
+        })
+}
+
+/// The variable a binding function's result binds. When a pattern or rule
+/// also binds `var` (`bound`), the result is a constraint on it, not a second
+/// binding: [(+ 12 0) ?k] [?x :p/age ?k] is the ?x aged 12 (the function was
+/// ignored, so every ?x matched). Then the result binds a fresh variable and
+/// `eqs` gets [(= var fresh)].
+/// shortcut: a top-level function whose variable only an `or` arm binds is
+/// still ignored there; check each arm's patterns too if that comes up.
+/// The fresh name has a '#', which the EDN reader never puts in a variable,
+/// so no user variable has it; `taken` (the scope's computed variables, an
+/// or arm's including the query's) keeps it apart from the other fresh ones.
+fn fn_result_var(
+    var: String,
+    bound: bool,
+    taken: &HashMap<String, String>,
+    eqs: &mut Vec<Predicate>,
+) -> String {
+    if !bound {
+        return var;
+    }
+    let name = var.trim_start_matches('?');
+    let fresh = (0..)
+        .map(|n| format!("?#fn{n}_{name}"))
+        .find(|f| !taken.contains_key(f))
+        .expect("an unused name");
+    eqs.push(Predicate {
+        operator: edn::query::PlainSymbol::plain("="),
+        args: vec![
+            FnArg::Variable(edn::query::Variable::from_valid_name(&var)),
+            FnArg::Variable(edn::query::Variable::from_valid_name(&fresh)),
+        ],
+    });
+    fresh
+}
 
 /// Check if a pattern binds a specific variable.
 fn pattern_binds_var(pattern: &edn::query::Pattern, var_name: &str) -> bool {

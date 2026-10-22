@@ -820,6 +820,31 @@ mod tests {
         assert_eq!(e, "");
     }
 
+    // #179 + #375: an instant constant compared with a value of unknown type is exact in
+    // every year. Built with to_timestamp(double), it was 1 us off far from 1970, so `=` and
+    // `<=` missed the stored value.
+    #[pg_test]
+    fn untyped_instant_comparison_is_exact() {
+        setup();
+        tx(
+            r#"[{:db/ident :mw/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+               {:db/ident :mw/t :db/valueType :db.type/instant :db/cardinality :db.cardinality/one}]"#,
+        );
+        tx(r#"[{:db/id "y" :mw/id "y1k" :mw/t #inst "1000-01-01T00:00:00.000001Z"}]"#);
+        let found = |op: &str| {
+            coll(&format!(
+                r#"[:find [?id ...] :where [?e :mw/id ?id] [?e ?a ?v]
+                    [({op} ?v #inst "1000-01-01T00:00:00.000001Z")]]"#
+            ))
+        };
+        for op in ["<=", "=", ">="] {
+            assert_eq!(found(op), vec!["y1k"], "{op}");
+        }
+        for op in ["<", ">", "!="] {
+            assert!(found(op).is_empty(), "{op}");
+        }
+    }
+
     // #12: renaming a unique identity value and retracting the old value in the same
     // transaction logs one retraction of the old value, and the report counts one.
     #[pg_test]

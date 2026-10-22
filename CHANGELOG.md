@@ -119,6 +119,14 @@ and the project follows [Semantic Versioning](https://semver.org/).
   once (#248).
 - **The CLI's command parser uses peg instead of combine (#264).**
   `.timer off` parses now; everything else parses as before.
+- **pg_mentat: non-recursive rules are inlined (`NOT MATERIALIZED`)**, so the
+  query's filters reach them: a 200k-entity rule invoked twice went from
+  157 ms to about 15 ms (1.25x a plain pattern).
+- **pg_mentat: a rule column of one known type is one CTE column.** A
+  transitive closure uses the same temp disk as 1.17.2 again; a 7000-node
+  chain fits under the default 1 GB `mentat.temp_file_limit`.
+- **pg_mentat: `edn_q_rows` streams through a tuplestore**: on 5M rows peak
+  memory went from 1.2 GB to 38 MB.
 
 ### Fixed
 
@@ -178,6 +186,42 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - Tests: datom index flags follow the attribute (#119); QueryBuilder keeps
   its `query` field (#225); crates/sqlite/fixtures is documented and the
   fixtures still load or are refused untouched (#272).
+- **pg_mentat rules:**
+  - head variables bound to non-ref values (strings, numbers, booleans,
+    keywords, instants, uuids, bytes) return their values; they came back
+    NULL.
+  - invocations that share a variable join on it, a constant argument
+    filters the rule, a rule invoked twice gives two rows of the rule, and
+    an undefined rule is `:db.error/rule-not-found` even without `:rules`.
+  - a recursive rule's clauses can come in any order, and arithmetic on a
+    value its recursive call binds stays a long, so `(depth ?e 2)` matches.
+  - a constant in a rule head is `:db.error/invalid-rule` and a wrong
+    argument count is `:db.error/rule-arity`, as in Datomic.
+  - rule names with `-`, `?` or capitals work (they were spliced into the
+    SQL unquoted).
+  - a rule column holding longs in one clause and doubles in another
+    compares, orders and aggregates as numbers (max/min/sum come back as a
+    double). Before, comparisons failed with "operator does not exist: text >
+    bigint" and max, min, sum and `:order` were wrong.
+- **pg_mentat: an `or` that binds a `:find` variable next to a base pattern**
+  no longer fails with `:db.error/unbound-variable`; an `:in` value for a
+  variable bound only by a rule invocation constrains it.
+- **5-place history patterns (`[?e ?a ?v ?tx ?added]`) inside `not`, `or` and
+  rule bodies read the log** and bind `?tx` and `?added`, on pg_mentat and
+  the embedded engine.
+- **pg_mentat: comparisons with a value of unknown type** (`[_ ?a ?v]`, or a
+  rule column of mixed types) never raise a SQL type error. Against a number,
+  instant, boolean or entity they match only values of that kind; against a
+  string they compare as text. An instant comparison is exact to the
+  microsecond (#375), and a function result (`[(+ 50 0) ?x] [(< ?v ?x)]`)
+  compares as a number, as the same constant does. Note that `!=` against an
+  entity matches only other entities, so it is not the complement of `=`
+  across types.
+- **pg_mentat: a function result for a variable that a pattern also binds
+  constrains it:** `[(+ 12 0) ?k] [?x :p/age ?k]` returns the `?x` aged 12;
+  it returned every `?x` (also in 1.17.2). The generated variable can't
+  collide with a query variable, and an `or` arm's function result no longer
+  replaces the query's.
 
 ### Known issues
 
@@ -187,6 +231,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
   cardinality-one attribute. As in 1.17.2.
 - **A tempid used only as a ref value creates an entity with no datoms
   (#384)**, on every backend; Datomic rejects it.
+- **pg_mentat: an 8-hop pattern chain spends about 340 ms planning (#386)**,
+  as on 1.17.2; rules no longer hide it. Expensive non-recursive rule bodies
+  run once per invocation (#387). Longs above 2^53 compare as doubles
+  against values of unknown type (#388).
 
 ## [1.17.2] — security: pg_mentat install script
 

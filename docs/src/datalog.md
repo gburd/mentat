@@ -317,6 +317,22 @@ Multiple rule definitions with the same name act as alternatives (logical OR):
  [(related ?a ?b) [?a :person/colleagues ?b]]]
 ```
 
+### Rule heads take variables only
+
+As in Datomic, every argument of a rule head is a variable. A constant in the
+head, such as `[(isa ?e :role/dev) [?e :person/role :role/dev]]`, is rejected
+with `:db.error/invalid-rule`. To match a constant, bind a variable in the head
+and pass the constant where the rule is invoked:
+
+```clojure
+[:find ?e
+ :rules [[(isa ?e ?r) [?e :person/role ?r]]]
+ :where (isa ?e :role/dev)]
+```
+
+A rule invocation takes variables and constants (numbers, strings, keywords,
+booleans, instants, uuids).
+
 ## Input Bindings
 
 The `:in` clause declares external parameters. The implicit first input is always `$` (the database).

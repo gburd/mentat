@@ -154,7 +154,7 @@ pub fn after_transact() {
         c.set(c.get() + 1);
         c.get()
     });
-    if count % n as u64 == 0 {
+    if count.is_multiple_of(n as u64) {
         tick(mode == AutoIndexMode::Adaptive);
     }
 }
