@@ -542,6 +542,63 @@ fn attached_store_queries_survive_import_churn() {
     );
 }
 
+/// Stores in two databases whose names differ only in punctuation ("my-db",
+/// "my_db") are different stores, imported under different locks, so each
+/// import's attached source needs its own name: one import must not DETACH
+/// or replace the other's. B runs while A's source is attached.
+#[test]
+fn imports_into_like_named_databases_keep_their_own_source() {
+    if !sqlite_ext() {
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let (la, lb) = (dir.path().join("a.mentat"), dir.path().join("b.mentat"));
+    for (path, tx) in [(&la, &TXS[..1]), (&lb, &TXS[..2])] {
+        let mut s = mentat::Store::open(path.to_str().unwrap()).unwrap();
+        for t in tx {
+            s.transact(*t).unwrap();
+        }
+    }
+    let a: &'static Connection = Box::leak(Box::new(Connection::open_in_memory().unwrap()));
+    a.execute_batch("ATTACH ':memory:' AS \"my-db\"; ATTACH ':memory:' AS my_db")
+        .unwrap();
+    let b = a.try_clone().unwrap();
+    let lb2 = lb.to_str().unwrap().to_string();
+    let out = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let out2 = out.clone();
+    failpoints::run_at("import", move || {
+        // Another thread, as the extension's pool would run it.
+        let r = std::thread::spawn(move || {
+            let dc = DuckConn::new(&b);
+            DuckStore::new(&dc as &dyn SqlConn, "my_db.y")
+                .unwrap()
+                .import_sqlite(&lb2)
+                .map(|i| i.transactions)
+                .map_err(|e| e.to_string())
+        })
+        .join()
+        .unwrap();
+        let sources: i64 = a
+            .query_row(
+                "SELECT count(*) FROM duckdb_databases() WHERE database_name LIKE '%import_src'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        *out2.borrow_mut() = Some((r, sources));
+    });
+    let dc = DuckConn::new(a);
+    let ra = DuckStore::new(&dc as &dyn SqlConn, "my-db.y")
+        .unwrap()
+        .import_sqlite(la.to_str().unwrap())
+        .map(|i| i.transactions)
+        .map_err(|e| e.to_string());
+    let (rb, sources) = out.borrow_mut().take().expect("the hook didn't run");
+    // a.mentat has the bootstrap + 1 transaction, b.mentat one more; after
+    // B, A's source is still attached (B detached only its own).
+    assert_eq!((ra, rb, sources), (Ok(2), Ok(3), 1));
+}
+
 /// A crafted file whose partition counter is below its partition's start
 /// (Partition::new asserts against it) fails with an error, not a panic; a
 /// panic mid-import (injected) unwinds cleanly. Either way nothing stays
@@ -717,10 +774,16 @@ fn the_source_is_read_only() {
     // From another connection (attaches are database-wide), while the
     // import holds its attach.
     let other: &'static Connection = Box::leak(Box::new(c.try_clone().unwrap()));
-    let src = format!("{}_{}_import_src", s.schema_name(), s.catalog_name());
     let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
     let seen2 = seen.clone();
     failpoints::run_at("import", move || {
+        let src: String = other
+            .query_row(
+                "SELECT database_name FROM duckdb_databases() WHERE database_name LIKE '%import_src'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         let w = other
             .prepare(&format!(
                 "SELECT count(*) FROM sqlite_query('{src}', 'DELETE FROM known_parts RETURNING part')"

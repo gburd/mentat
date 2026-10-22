@@ -41,7 +41,7 @@ use mentat_sql::{SqlConn, SqlConnExt};
 use public_traits::errors::{MentatError, Result};
 
 use crate::schema::{typed_values, VALUE_TYPE};
-use crate::store::{write_lock, OnDrop};
+use crate::store::{fnv1a, write_lock, OnDrop};
 use crate::DuckStore;
 
 /// An import error that displays as just `msg` (`BadQueryOptions` would
@@ -233,13 +233,14 @@ impl DuckStore<'_> {
         let conn = self.conn();
         // Attached databases are shared by every connection to the database,
         // so the name is per store (catalog and schema); the store's write
-        // lock serializes it.
-        let catalog: String = self
-            .catalog_name()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        let src = format!("{}_{catalog}_import_src", self.schema_name());
+        // lock serializes it. The catalog goes in as a hash of its exact
+        // name: two catalogs that differ only in punctuation ("my-db",
+        // "my_db") are two stores, under two locks.
+        let src = format!(
+            "{}_{:08x}_import_src",
+            self.schema_name(),
+            fnv1a(self.catalog_name())
+        );
         conn.execute_batch(&format!("DETACH DATABASE IF EXISTS {src}"))?;
         conn.execute_batch(&format!(
             "ATTACH {} AS {src} (TYPE sqlite, READ_ONLY)",

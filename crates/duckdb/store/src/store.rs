@@ -128,14 +128,18 @@ pub fn schema_for(name: &str) -> String {
         })
         .collect();
     let clean = clean.trim_matches('_');
-    // FNV-1a: stable across builds (unlike DefaultHasher).
+    let clean: String = clean.chars().take(40).collect();
+    format!("mentat_{clean}_{:08x}", fnv1a(name))
+}
+
+/// FNV-1a of `s`: stable across builds (unlike DefaultHasher).
+pub(crate) fn fnv1a(s: &str) -> u32 {
     let mut h: u32 = 0x811c9dc5;
-    for b in name.as_bytes() {
+    for b in s.as_bytes() {
         h ^= u32::from(*b);
         h = h.wrapping_mul(0x01000193);
     }
-    let clean: String = clean.chars().take(40).collect();
-    format!("mentat_{clean}_{h:08x}")
+    h
 }
 
 fn decode(v: SqlValue, tag: i64) -> std::result::Result<TypedValue, mentat_sql::SqlError> {
