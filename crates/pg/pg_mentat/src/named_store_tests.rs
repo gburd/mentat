@@ -488,13 +488,19 @@ mod tests {
 
     /// The upgrade's DO block, with @extschema@ resolved as PostgreSQL would.
     fn upgrade_do_block() -> String {
+        upgrade_block("migrate")
+    }
+
+    /// The upgrade's `DO $tag$ ... $tag$;` block, @extschema@ resolved.
+    fn upgrade_block(tag: &str) -> String {
         let script = include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql");
-        let start = script.find("DO $migrate$").expect("DO block");
-        let end = script[start..].find("$migrate$;").expect("DO block end") + start;
+        let (open, close) = (format!("DO ${tag}$"), format!("${tag}$;"));
+        let start = script.find(&open).expect("DO block");
+        let end = script[start..].find(&close).expect("DO block end") + start;
         let ext_schema = text(
             "SELECT extnamespace::regnamespace::text FROM pg_extension WHERE extname = 'pg_mentat'",
         );
-        script[start..end + "$migrate$;".len()].replace("@extschema@", &ext_schema)
+        script[start..end + close.len()].replace("@extschema@", &ext_schema)
     }
 
     // The 1.17.2 -> 1.18.0 DO block runs as the bootstrap superuser. It must
@@ -1037,6 +1043,240 @@ mod tests {
         Spi::run("SELECT unsubscribe('sn_a', 'sn_names')").expect("unsubscribe");
         Spi::run(&format!("SELECT subscribe('sn_b', 'sn_names', '{query}')")).expect("free again");
         Spi::run("SELECT drop_store('sn_a'), drop_store('sn_b')").expect("drop");
+    }
+
+    // The check above compared names case-sensitively, but LISTEN, the hash
+    // setting and the trigger names fold case: subscribe('ka', 'Names') and
+    // subscribe('kb', 'names') both passed, and `LISTEN mentat_Names` (as
+    // printed) got kb's results. On one store 'Foo' and 'foo' shared one
+    // trigger, so unsubscribe('Foo') dropped foo's.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_names_ignore_case() {
+        setup();
+        Spi::run("SELECT create_store('sc_a'), create_store('sc_b')").expect("create");
+        let query = "[:find ?e :where [?e :db/ident _]]";
+        let sub = |store: &str, name: &str| {
+            text(&format!(
+                "SELECT pg_temp.capture($q$SELECT subscribe('{store}', '{name}', '{query}')$q$)"
+            ))
+        };
+        assert_eq!(sub("sc_a", "Sc_Names"), "");
+        let err = sub("sc_b", "sc_names");
+        assert!(
+            err.contains("already used by store 'sc_a' as 'Sc_Names'"),
+            "another store, other case: {err:?}"
+        );
+        assert_eq!(sub("sc_a", "Sc_Foo"), "");
+        let err = sub("sc_a", "sc_foo");
+        assert!(
+            err.contains("already used by store 'sc_a' as 'Sc_Foo'"),
+            "same store, other case: {err:?}"
+        );
+        let err = sub("sc_a", "Sc_Foo");
+        assert!(err.contains("already exists for store 'sc_a'"), "{err:?}");
+        let rows: i64 = Spi::get_one(
+            "SELECT count(*) FROM mentat.subscriptions WHERE store_name IN ('sc_a', 'sc_b')",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rows, 2, "Names and Foo only");
+        Spi::run("SELECT unsubscribe('sc_a', 'Sc_Foo')").expect("unsubscribe");
+        assert_eq!(sub("sc_b", "sc_foo"), "", "free again");
+        Spi::run("SELECT drop_store('sc_a'), drop_store('sc_b')").expect("drop");
+    }
+
+    // The unique index behind subscribe()'s check: it holds for rows written
+    // any way, and CREATE OR REPLACE TRIGGER (PostgreSQL 14) is not needed.
+    #[pg_test]
+    fn subscription_names_unique_index() {
+        setup();
+        let def = text(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'mentat' \
+              AND indexname = 'idx_subscriptions_lower_name'",
+        );
+        assert!(def.starts_with("CREATE UNIQUE INDEX"), "{def:?}");
+        Spi::run(
+            "INSERT INTO mentat.subscriptions (store_name, name, query) VALUES ('ui_a', 'Ui_Dup', 'q')",
+        )
+        .expect("first");
+        let err = text(
+            "SELECT pg_temp.capture($q$INSERT INTO mentat.subscriptions (store_name, name, query) \
+               VALUES ('ui_b', 'uI_dUP', 'q')$q$)",
+        );
+        assert!(err.contains("idx_subscriptions_lower_name"), "{err:?}");
+    }
+
+    // Two subscribe() calls of one name on two stores, at once: the check
+    // can't see the other's uncommitted row, so both succeeded and one
+    // channel carried both stores' results. Two dblink sessions; everything
+    // they do is committed, so the stores are dropped again at the end.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn concurrent_subscribes_of_one_name() {
+        crate::ensure_extension_loaded();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run(
+            "CREATE EXTENSION IF NOT EXISTS dblink; \
+             CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        let drop_stores = |c: &str| {
+            for st in ["cs_a", "cs_b"] {
+                on(
+                    c,
+                    &format!(
+                        "DO $d$ BEGIN PERFORM drop_store('{st}'); \
+                         EXCEPTION WHEN OTHERS THEN NULL; END $d$"
+                    ),
+                )
+            }
+        };
+        Spi::run(&format!(
+            "SELECT dblink_connect('ns_r1', '{conn}'), dblink_connect('ns_r2', '{conn}')"
+        ))
+        .expect("connect");
+        on("ns_r1", "SET search_path TO mentat, public");
+        on("ns_r2", "SET search_path TO mentat, public");
+        drop_stores("ns_r1");
+        on(
+            "ns_r1",
+            "DO $d$ BEGIN PERFORM create_store('cs_a'); PERFORM create_store('cs_b'); END $d$",
+        );
+        let query = "[:find ?e :where [?e :db/ident _]]";
+        on("ns_r1", "BEGIN");
+        on(
+            "ns_r1",
+            &format!("DO $d$ BEGIN PERFORM subscribe('cs_a', 'cs_name', '{query}'); END $d$"),
+        );
+        let pid2: i32 =
+            Spi::get_one("SELECT p FROM dblink('ns_r2', 'SELECT pg_backend_pid()') AS t(p int)")
+                .unwrap()
+                .unwrap();
+        Spi::run(&format!(
+            "SELECT dblink_send_query('ns_r2', $q$SELECT subscribe('cs_b', 'cs_name', '{query}')$q$)"
+        ))
+        .expect("send");
+        // Give the second session up to 10 s to reach the first's row.
+        let mut waited = false;
+        for _ in 0..200 {
+            let n: i64 = Spi::get_one(&format!(
+                "SELECT count(*) FROM pg_locks WHERE pid = {pid2} AND NOT granted"
+            ))
+            .unwrap()
+            .unwrap();
+            if n > 0 {
+                waited = true;
+                break;
+            }
+            Spi::run("SELECT pg_sleep(0.05)").unwrap();
+        }
+        on("ns_r1", "COMMIT");
+        let second = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('ns_r2') AS t(r text)$q$)",
+        );
+        let held: Vec<String> = Spi::get_one::<Vec<String>>(
+            "SELECT s FROM dblink('ns_r1', \
+               'SELECT array_agg(store_name ORDER BY store_name) FROM mentat.subscriptions \
+                 WHERE lower(name) = ''cs_name''') AS t(s text[])",
+        )
+        .unwrap()
+        .unwrap_or_default();
+        drop_stores("ns_r1");
+        Spi::run("SELECT dblink_disconnect('ns_r1'), dblink_disconnect('ns_r2')").expect("close");
+        assert_eq!(held, vec!["cs_a"], "one store holds the name");
+        assert!(
+            second.contains("already used by store 'cs_a'"),
+            "the second subscribe must be refused: {second:?}"
+        );
+        assert!(waited, "the second subscribe waited for the first");
+    }
+
+    // A 1.17 database can hold subscription names that collide ignoring
+    // case. The upgrade deletes none of them: it names each group and what
+    // to unsubscribe, and leaves the unique index out until they are gone.
+    // (A WARNING can't be caught, so each is raised as an error here.)
+    #[pg_test]
+    fn upgrade_reports_colliding_subscription_names() {
+        setup();
+        Spi::run(
+            "DROP INDEX mentat.idx_subscriptions_lower_name; \
+             INSERT INTO mentat.subscriptions (store_name, name, query) VALUES \
+               ('du_a', 'Du_Dup', 'q1'), ('du_b', 'du_dup', 'q2'), ('du_b', 'DU_DUP', 'q3'), \
+               ('du_c', 'Du_Foo', 'q4'), ('du_c', 'du_foo', 'q5'), ('du_a', 'du_solo', 'q6')",
+        )
+        .expect("1.17 rows");
+        let raised = |what: &str| -> String {
+            let block = upgrade_block("subnames").replace(
+                &format!("RAISE WARNING 'pg_mentat upgrade: {what}"),
+                &format!("RAISE EXCEPTION 'pg_mentat upgrade: {what}"),
+            );
+            text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"))
+        };
+        let index = || -> i64 {
+            Spi::get_one(
+                "SELECT count(*) FROM pg_indexes WHERE schemaname = 'mentat' \
+                  AND indexname = 'idx_subscriptions_lower_name'",
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let dup = raised("subscriptions");
+        assert!(
+            dup.contains(
+                "'Du_Dup' on store 'du_a', 'du_dup' on store 'du_b', 'DU_DUP' on store 'du_b'"
+            ) && dup.contains("run unsubscribe('du_b', 'du_dup'); unsubscribe('du_b', 'DU_DUP').")
+                && !dup.contains("subscribe it again"),
+            "{dup:?}"
+        );
+        let skipped = raised("index");
+        assert!(
+            skipped.contains("not created") && skipped.contains("subscribe() still refuses"),
+            "{skipped:?}"
+        );
+        // As WARNINGs they don't stop the upgrade, and nothing is deleted.
+        Spi::run(&upgrade_block("subnames")).expect("upgrade");
+        assert_eq!(index(), 0);
+        let rows: i64 =
+            Spi::get_one("SELECT count(*) FROM mentat.subscriptions WHERE query ~ '^q'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(rows, 6, "no row deleted");
+
+        // Two on one store share a trigger: unsubscribing one drops the
+        // other's, so the keeper must be subscribed again.
+        Spi::run("DELETE FROM mentat.subscriptions WHERE store_name = 'du_b'").unwrap();
+        let foo = raised("subscriptions");
+        assert!(
+            foo.contains("run unsubscribe('du_c', 'du_foo').")
+                && foo.contains("Then run unsubscribe('du_c', 'Du_Foo') and subscribe it again"),
+            "{foo:?}"
+        );
+
+        // Once each name is held once, the upgrade builds the index.
+        Spi::run("DELETE FROM mentat.subscriptions WHERE store_name = 'du_c' AND name = 'du_foo'")
+            .unwrap();
+        Spi::run(&upgrade_block("subnames")).expect("upgrade");
+        assert_eq!(index(), 1);
     }
 
     // An on_write materialized view's trigger baked in the store's schema,

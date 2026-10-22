@@ -92,6 +92,57 @@ fn subscription_exists(
     })
 }
 
+/// The error for a subscription name already in use (ignoring case) by this
+/// store or another, or None if it is free.
+fn name_taken(
+    store_name: &str,
+    subscription_name: &str,
+) -> Result<Option<Box<dyn std::error::Error + Send + Sync>>, pgrx::spi::SpiError> {
+    // One row always (LEFT JOIN): NULLs when the name is free. The exact
+    // (store, name) row first, for the "already exists" message.
+    let (store, name): (Option<String>, Option<String>) = Spi::get_two_with_args(
+        "SELECT s.store_name, s.name FROM (SELECT 1) one LEFT JOIN LATERAL \
+           (SELECT store_name, name FROM mentat.subscriptions \
+             WHERE lower(name) = lower($1) \
+             ORDER BY (store_name = $2 AND name = $1) DESC, id LIMIT 1) s ON true",
+        &[
+            DatumWithOid::from(subscription_name),
+            DatumWithOid::from(store_name),
+        ],
+    )?;
+    let (Some(store), Some(name)) = (store, name) else {
+        return Ok(None);
+    };
+    if store == store_name && name == subscription_name {
+        return Ok(Some(Box::new(MentatError::InvalidQuery {
+            message: format!(
+                "Subscription '{}' already exists for store '{}'.",
+                subscription_name, store_name
+            ),
+            suggestion: Some(format!(
+                "Use mentat_unsubscribe('{}', '{}') first to remove the existing subscription.",
+                store_name, subscription_name
+            )),
+        })));
+    }
+    let as_name = if name == subscription_name {
+        String::new()
+    } else {
+        format!(" as '{}'", name)
+    };
+    Ok(Some(Box::new(MentatError::InvalidQuery {
+        message: format!(
+            "Subscription name '{}' is already used by store '{}'{}. Subscription names are \
+             shared by all stores and ignore case (the channel is {}).",
+            subscription_name,
+            store,
+            as_name,
+            channel_name(subscription_name)
+        ),
+        suggestion: Some("Choose another subscription name.".to_string()),
+    })))
+}
+
 // ---------------------------------------------------------------------------
 // Trigger function SQL generators
 // ---------------------------------------------------------------------------
@@ -244,42 +295,39 @@ pub fn subscribe(
         }));
     }
 
-    // The channel (mentat_<name>) and the hash setting carry no store, so a
-    // name is one per database: a second store reusing it would NOTIFY the
+    // The channel (mentat_<name>) and the hash setting carry no store, and
+    // the trigger and function names fold to lower case, so a name is one per
+    // database, ignoring case: a second store reusing it would NOTIFY the
     // first store's listeners with its results.
-    let other_store: Option<String> = Spi::get_one_with_args(
-        "SELECT (SELECT store_name FROM mentat.subscriptions \
-                  WHERE name = $1 AND store_name <> $2 LIMIT 1)",
-        &[
-            DatumWithOid::from(subscription_name),
-            DatumWithOid::from(store_name),
-        ],
-    )?;
-    if let Some(other) = other_store {
-        return Err(Box::new(MentatError::InvalidQuery {
-            message: format!(
-                "Subscription name '{}' is already used by store '{}'. Subscription names are \
-                 shared by all stores (the channel is {}).",
-                subscription_name,
-                other,
-                channel_name(subscription_name)
-            ),
-            suggestion: Some("Choose another subscription name.".to_string()),
-        }));
+    if let Some(err) = name_taken(store_name, subscription_name)? {
+        return Err(err);
     }
-
-    // Check if subscription already exists
-    if subscription_exists(store_name, subscription_name)? {
-        return Err(Box::new(MentatError::InvalidQuery {
-            message: format!(
-                "Subscription '{}' already exists for store '{}'.",
-                subscription_name, store_name
-            ),
-            suggestion: Some(format!(
-                "Use mentat_unsubscribe('{}', '{}') first to remove the existing subscription.",
-                store_name, subscription_name
-            )),
-        }));
+    // Register first, before any DDL. The unique index on lower(name) makes a
+    // concurrent subscribe() of the same name wait for this one, then insert
+    // nothing; the check above could not see its uncommitted row.
+    let inserted: i64 = Spi::get_one_with_args(
+        "WITH ins AS (INSERT INTO mentat.subscriptions (store_name, name, query) \
+                      VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1) \
+         SELECT count(*) FROM ins",
+        &[
+            DatumWithOid::from(store_name),
+            DatumWithOid::from(subscription_name),
+            DatumWithOid::from(query),
+        ],
+    )?
+    .unwrap_or(0);
+    if inserted == 0 {
+        return Err(
+            name_taken(store_name, subscription_name)?.unwrap_or_else(|| {
+                Box::new(MentatError::InvalidQuery {
+                    message: format!(
+                        "Subscription name '{}' was just taken by a concurrent transaction.",
+                        subscription_name
+                    ),
+                    suggestion: Some("Choose another subscription name.".to_string()),
+                })
+            }),
+        );
     }
 
     let schema = get_schema_for_store(store_name);
@@ -296,16 +344,6 @@ pub fn subscribe(
     // triggers to partitions automatically when using AFTER ... FOR EACH STATEMENT.
     let trg_sql = trigger_sql(&quoted_schema, subscription_name);
     Spi::run(&trg_sql)?;
-
-    // Register in metadata table
-    Spi::run_with_args(
-        "INSERT INTO mentat.subscriptions (store_name, name, query) VALUES ($1, $2, $3)",
-        &[
-            DatumWithOid::from(store_name),
-            DatumWithOid::from(subscription_name),
-            DatumWithOid::from(query),
-        ],
-    )?;
 
     Ok(format!(
         "Subscription '{}' created. LISTEN {} to receive notifications.",
