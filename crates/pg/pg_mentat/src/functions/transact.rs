@@ -1665,7 +1665,15 @@ fn insert_datoms(
         )?;
     }
 
-    rows_to_insert.extend(unlogged_retractions);
+    // An explicit retraction (or :db/cas's) of the value a noHistory replacement retracts
+    // is already in the log rows: count it once.
+    rows_to_insert.extend(
+        unlogged_retractions
+            .into_iter()
+            .filter(|(e, a, v, tx, added)| {
+                seen.insert((*e, *a, typed_value_sql_literal(v), *tx, *added))
+            }),
+    );
     Ok(rows_to_insert)
 }
 

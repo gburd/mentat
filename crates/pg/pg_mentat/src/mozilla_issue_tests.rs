@@ -347,6 +347,24 @@ mod tests {
         let r = tx(&format!("[[:db/add {b} :mc/n 2] [:db/add {b} :mc/h 3]]"));
         assert_eq!(counts(&r), (1, 1));
         assert_eq!(data(&r), [(2, false), (3, true)]);
+        // The noHistory replacement's retraction, also written out (or by :db/cas), is
+        // one retraction, as on the embedded engine.
+        for (t, old, new) in [
+            (
+                format!("[[:db/retract {b} :mc/h 3] [:db/add {b} :mc/h 4]]"),
+                3,
+                4,
+            ),
+            (format!("[[:db/cas {b} :mc/h 4 5]]"), 4, 5),
+        ] {
+            let r = tx(&t);
+            assert_eq!(counts(&r), (1, 1), "{t}");
+            assert_eq!(data(&r), [(old, false), (new, true)], "{t}");
+        }
+        assert_eq!(
+            coll(&format!("[:find [?v ...] :where [{b} :mc/h ?v]]")),
+            vec!["5"]
+        );
     }
 
     // #362: in one transaction, a retraction of a live value of each type is applied and one
