@@ -1,4 +1,4 @@
--- pg_mentat 1.17.1 -> 1.18.0 upgrade.
+-- pg_mentat 1.17.2 -> 1.18.0 upgrade (1.17.1 reaches it through 1.17.1 -> 1.17.2).
 --
 -- Each section below belongs to one change.
 
