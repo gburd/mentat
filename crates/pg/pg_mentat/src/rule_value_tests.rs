@@ -518,6 +518,32 @@ mod tests {
         assert_eq!(query_error(&qv("[(> ?v ?e)]")), "");
     }
 
+    /// A rule invoked with the wrong number of arguments is
+    /// :db.error/rule-arity (more was a SQL error on a missing column, fewer
+    /// ignored the rule's other columns). A lookup-ref argument is
+    /// unsupported, and the message says what is.
+    #[pg_test]
+    fn test_rule_arity_and_argument_errors() {
+        setup_chain();
+        let boss = "[[(boss ?e ?b) [?e :rv/boss ?b]]]";
+        for call in ["(boss ?e ?b ?c)", "(boss ?e)", "(boss ?x ?y) (boss ?e)"] {
+            let q = format!("[:find ?e :rules {boss} :where {call}]");
+            let err = query_error(&q);
+            assert!(
+                err.contains(":db.error/rule-arity") && err.contains("takes 2 arguments"),
+                "{q}: {err}"
+            );
+        }
+        let q = format!("[:find ?e :rules {boss} :where (boss ?e [:rv/name \"ann\"])]");
+        let err = query_error(&q);
+        assert!(
+            err.contains(":db.error/unsupported-rule-arg")
+                && err.contains("lookup ref")
+                && err.contains("number, string, keyword"),
+            "{q}: {err}"
+        );
+    }
+
     /// The error a query raises, or "" if it runs.
     fn query_error(query: &str) -> String {
         crate::functions::query::mentat_query(query, pgrx::JsonB(serde_json::json!({})))

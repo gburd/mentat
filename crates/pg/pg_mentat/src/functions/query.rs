@@ -8436,6 +8436,30 @@ fn build_rule_ctes(
 
     for invocation in invocations {
         let rule_name = invocation.name.0.as_str();
+        // Every invocation (not only the first of each rule) takes the
+        // rule's arity; a wrong count was a SQL error on a missing column
+        // or silently ignored an argument.
+        if let Some(head) = rules
+            .iter()
+            .find(|r| r.name.0.as_str() == rule_name)
+            .and_then(|r| r.clauses.first())
+        {
+            let (got, want) = (invocation.args.len(), head.head.args.len());
+            if got != want {
+                return Err(format!(
+                    ":db.error/rule-arity Rule '{rule_name}' takes {want} argument{}, but is \
+                     invoked with {got}: ({rule_name} {}).",
+                    if want == 1 { "" } else { "s" },
+                    invocation
+                        .args
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+                .into());
+            }
+        }
         if !emitted_rule_names.insert(rule_name.to_string()) {
             continue;
         }
@@ -8644,8 +8668,10 @@ fn rule_constant_filter(
         FnArg::Constant(c) => PatternValuePlace::Constant(c.clone()),
         _ => {
             return Err(
-                ":db.error/unsupported-rule-arg A rule invocation argument must be a \
-                        variable or a constant (number, string, keyword, boolean, instant, uuid)."
+                ":db.error/unsupported-rule-arg A rule invocation argument must be a variable \
+                 (?x) or a constant: a number, string, keyword (an ident, for an entity), \
+                 boolean, instant or uuid. A lookup ref [:attr value] is not supported: bind \
+                 the entity in the query and pass the variable, [?x :attr value] (rule ?e ?x)."
                     .into(),
             )
         }
