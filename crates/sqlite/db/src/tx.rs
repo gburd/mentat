@@ -747,7 +747,9 @@ where
                                 });
                             }
 
-                            if let Some(ov) = old_val {
+                            // [:db/cas e a v v] is a no-op, as in Datomic (whose cas expands
+                            // to the assertion alone): retracting v would conflict with the add.
+                            if let Some(ov) = old_val.filter(|ov| *ov != new_val) {
                                 terms.push(Term::AddOrRetract(
                                     OpType::Retract,
                                     Either::Left(KnownEntid(e)),

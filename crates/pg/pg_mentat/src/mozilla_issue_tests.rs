@@ -451,7 +451,6 @@ mod tests {
             format!("[[:db/retract {a} :mk/m 1] [:db/add {a} :mk/m 1]]"),
             format!("[[:db/add {a} :mk/m 5] [:db/retract {a} :mk/m 5]]"),
             format!("[[:db/add {a} :mk/n 7] [:db/retract {a} :mk/n 7]]"),
-            format!("[[:db/cas {a} :mk/n 5 5]]"),
             format!("[[:db/retractEntity {a}] [:db/add {a} :mk/m 2]]"),
         ] {
             let e = transact(&t);
@@ -465,6 +464,44 @@ mod tests {
             coll(&format!("[:find [?v ...] :where [{a} :mk/n ?v]]")),
             vec!["5"]
         );
+    }
+
+    // [:db/cas e a v v] with v current is a no-op, as in Datomic (its cas expands to the
+    // assertion alone) and on the embedded engine. It was an AddRetractConflict, and before
+    // that deleted v. A mismatch still fails.
+    #[pg_test]
+    fn cas_to_the_same_value_is_a_no_op() {
+        setup();
+        tx(
+            "[{:db/ident :mq/m :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+             {:db/ident :mq/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        let a = tx(r#"[{:db/id "a" :mq/m 1 :mq/n 5}]"#)["tempids"]["a"]
+            .as_i64()
+            .unwrap();
+        for t in [
+            format!("[[:db/cas {a} :mq/n 5 5]]"),
+            format!("[[:db/cas {a} :mq/m 1 1]]"),
+        ] {
+            let r = tx(&t);
+            assert_eq!(
+                (
+                    r["datoms_asserted"].as_i64(),
+                    r["datoms_retracted"].as_i64()
+                ),
+                (Some(0), Some(0)),
+                "{t}: {r}"
+            );
+        }
+        assert_eq!(
+            coll(&format!("[:find [?v ...] :where [{a} :mq/n ?v]]")),
+            vec!["5"]
+        );
+        assert_eq!(
+            coll(&format!("[:find [?v ...] :where [{a} :mq/m ?v]]")),
+            vec!["1"]
+        );
+        assert!(transact(&format!("[[:db/cas {a} :mq/n 6 6]]")).contains("cas failed"));
     }
 
     // #152: `[a v]` lookup refs in entity, :db/id and value position, and a list of them

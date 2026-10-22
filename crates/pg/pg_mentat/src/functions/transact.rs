@@ -689,23 +689,23 @@ fn execute_cas_fn(
         .into());
     }
 
-    // CAS matched -- retract old value (if not nil) and assert new value
-    if !old_is_nil {
-        if let Some(old_val) = old_encoded {
-            pending_datoms.push(PendingDatom {
-                e,
-                a,
-                v: old_val,
-                added: false,
-            });
-        }
-    }
-
     let new_val = if is_ref {
         encode_ref_value(new_edn, tempid_map, qs)?
     } else {
         encode_value(new_edn)?
     };
+
+    // CAS matched -- retract old value (if not nil) and assert new value. [:db/cas e a v v]
+    // is a no-op, as in Datomic (whose cas expands to the assertion alone): retracting v
+    // would conflict with the add.
+    if let Some(old_val) = old_encoded.filter(|old_val| *old_val != new_val) {
+        pending_datoms.push(PendingDatom {
+            e,
+            a,
+            v: old_val,
+            added: false,
+        });
+    }
     pending_datoms.push(PendingDatom {
         e,
         a,

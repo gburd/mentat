@@ -148,6 +148,29 @@ fn test_cas_mismatch_aborts_whole_tx() {
     assert_eq!(name(&store, e), None);
 }
 
+// [:db/cas e a v v] with v current is a no-op, as in Datomic, on a cardinality-one and a
+// cardinality-many attribute; it was an AddRetractConflict. A mismatch still fails.
+#[test]
+fn test_cas_to_the_same_value_is_a_no_op() {
+    let mut store = setup();
+    let e = make_entity(
+        &mut store,
+        r#"[[:db/add "e" :t/val 10] [:db/add "e" :t/tags "a"]]"#,
+    );
+    for tx in [
+        format!("[[:db/cas {e} :t/val 10 10]]"),
+        format!("[[:db/cas {e} :t/tags \"a\" \"a\"]]"),
+    ] {
+        let r = store.transact(&tx).unwrap_or_else(|e| panic!("{tx}: {e}"));
+        assert_eq!((r.datoms_asserted, r.datoms_retracted), (0, 0), "{tx}");
+    }
+    assert_eq!(val(&store, e), Some(10));
+    assert_eq!(datom_count(&store, e), 2);
+    assert!(store
+        .transact(&format!("[[:db/cas {e} :t/val 11 11]]"))
+        .is_err());
+}
+
 #[test]
 fn test_cas_from_nil_asserts_when_absent() {
     let mut store = setup();
