@@ -461,6 +461,10 @@ mod tests {
             }
         }
         assert!(reads > 0);
+        // An extension script runs with client_min_messages >= WARNING: a
+        // NOTICE would never reach the user.
+        assert!(!block.contains("RAISE NOTICE"));
+        assert!(block.contains("RAISE WARNING 'pg_mentat upgrade: rebuilt named store"));
     }
 
     #[test]

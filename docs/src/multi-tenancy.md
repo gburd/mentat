@@ -68,7 +68,8 @@ since 1.5.0 could write to (the first `t()` failed with `relation
 holds only rows someone inserted by hand. `ALTER EXTENSION pg_mentat
 UPDATE TO '1.18.0'` rebuilds each such store: the old schema is renamed
 `mentat_<name>_pre118` and kept, and a new, empty `mentat_<name>` is built
-with the store's owner and grants. A message names each store rebuilt.
+with the store's owner and grants. A WARNING names each store rebuilt
+and where its old tables are.
 
 The upgrade copies nothing out of the old schema. It runs as a superuser,
 and the old schema belongs to the store's owner, who could have replaced
