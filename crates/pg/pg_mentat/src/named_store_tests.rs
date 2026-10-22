@@ -1121,6 +1121,50 @@ mod tests {
         Spi::run("SELECT drop_store('fp_s')").expect("drop");
     }
 
+    // A 1.17 subscription or materialized view on a named store stays with
+    // the old tables, under _pre118, and stops working. The upgrade said
+    // nothing about them; now it names each one. (A WARNING can't be caught,
+    // so each is raised as an error here.)
+    #[pg_test]
+    fn upgrade_names_old_subscriptions_and_views() {
+        setup();
+        Spi::run(
+            "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('up_sv', 'mentat_up_sv'); \
+             CREATE SCHEMA mentat_up_sv; \
+             CREATE TABLE mentat_up_sv.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+               value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL); \
+             INSERT INTO mentat.subscriptions (store_name, name, query) VALUES ('up_sv', 'oldsub', '[:find ?e]'); \
+             INSERT INTO mentat.materialized_views (store_name, view_name, datalog_query, refresh_policy) \
+               VALUES ('up_sv', 'oldmv', '[:find ?e]', 'on_write')",
+        )
+        .expect("1.17 store with a subscription and a view");
+        let raised = |what: &str| -> String {
+            let block = upgrade_do_block().replace(
+                &format!("RAISE WARNING 'pg_mentat upgrade: {what}"),
+                &format!("RAISE EXCEPTION 'pg_mentat upgrade: {what}"),
+            );
+            text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"))
+        };
+        let sub = raised("subscription");
+        assert!(
+            sub.contains("subscription \"oldsub\" on named store \"up_sv\"")
+                && sub.contains("unsubscribe('up_sv', 'oldsub')"),
+            "{sub:?}"
+        );
+        let mv = raised("materialized view");
+        assert!(
+            mv.contains("materialized view \"oldmv\" on named store \"up_sv\"")
+                && mv.contains("drop_matview('up_sv', 'oldmv')"),
+            "{mv:?}"
+        );
+        // As a WARNING it does not stop the upgrade.
+        Spi::run(&upgrade_do_block()).expect("upgrade");
+        assert_eq!(
+            text("SELECT nspname::text FROM pg_namespace WHERE nspname = 'mentat_up_sv_pre118'"),
+            "mentat_up_sv_pre118"
+        );
+    }
+
     // A hand-made mentat.stores row with a name validate_store_name reserves
     // passed the upgrade's name check; create_virtual_tables then refused it
     // and ALTER EXTENSION UPDATE aborted. Such rows are skipped now.
