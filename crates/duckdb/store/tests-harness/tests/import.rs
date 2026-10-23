@@ -543,9 +543,10 @@ fn attached_store_queries_survive_import_churn() {
 }
 
 /// Stores in two databases whose names differ only in punctuation ("my-db",
-/// "my_db") are different stores, imported under different locks, so each
-/// import's attached source needs its own name: one import must not DETACH
-/// or replace the other's. B runs while A's source is attached.
+/// "my_db"), or whose names have one 32-bit FNV-1a hash ("db527002",
+/// "db1120800"), are different stores, imported under different locks, so
+/// each import's attached source needs its own name: one import must not
+/// DETACH or replace the other's. B runs while A's source is attached.
 #[test]
 fn imports_into_like_named_databases_keep_their_own_source() {
     if !sqlite_ext() {
@@ -559,44 +560,48 @@ fn imports_into_like_named_databases_keep_their_own_source() {
             s.transact(*t).unwrap();
         }
     }
-    let a: &'static Connection = Box::leak(Box::new(Connection::open_in_memory().unwrap()));
-    a.execute_batch("ATTACH ':memory:' AS \"my-db\"; ATTACH ':memory:' AS my_db")
+    for (da, db) in [("my-db", "my_db"), ("db527002", "db1120800")] {
+        let a: &'static Connection = Box::leak(Box::new(Connection::open_in_memory().unwrap()));
+        a.execute_batch(&format!(
+            "ATTACH ':memory:' AS \"{da}\"; ATTACH ':memory:' AS {db}"
+        ))
         .unwrap();
-    let b = a.try_clone().unwrap();
-    let lb2 = lb.to_str().unwrap().to_string();
-    let out = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let out2 = out.clone();
-    failpoints::run_at("import", move || {
-        // Another thread, as the extension's pool would run it.
-        let r = std::thread::spawn(move || {
-            let dc = DuckConn::new(&b);
-            DuckStore::new(&dc as &dyn SqlConn, "my_db.y")
-                .unwrap()
-                .import_sqlite(&lb2)
-                .map(|i| i.transactions)
-                .map_err(|e| e.to_string())
-        })
-        .join()
-        .unwrap();
-        let sources: i64 = a
-            .query_row(
-                "SELECT count(*) FROM duckdb_databases() WHERE database_name LIKE '%import_src'",
-                [],
-                |r| r.get(0),
-            )
+        let b = a.try_clone().unwrap();
+        let lb2 = lb.to_str().unwrap().to_string();
+        let out = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let out2 = out.clone();
+        failpoints::run_at("import", move || {
+            // Another thread, as the extension's pool would run it.
+            let r = std::thread::spawn(move || {
+                let dc = DuckConn::new(&b);
+                DuckStore::new(&dc as &dyn SqlConn, &format!("{db}.y"))
+                    .unwrap()
+                    .import_sqlite(&lb2)
+                    .map(|i| i.transactions)
+                    .map_err(|e| e.to_string())
+            })
+            .join()
             .unwrap();
-        *out2.borrow_mut() = Some((r, sources));
-    });
-    let dc = DuckConn::new(a);
-    let ra = DuckStore::new(&dc as &dyn SqlConn, "my-db.y")
-        .unwrap()
-        .import_sqlite(la.to_str().unwrap())
-        .map(|i| i.transactions)
-        .map_err(|e| e.to_string());
-    let (rb, sources) = out.borrow_mut().take().expect("the hook didn't run");
-    // a.mentat has the bootstrap + 1 transaction, b.mentat one more; after
-    // B, A's source is still attached (B detached only its own).
-    assert_eq!((ra, rb, sources), (Ok(2), Ok(3), 1));
+            let sources: i64 = a
+                .query_row(
+                    "SELECT count(*) FROM duckdb_databases() WHERE database_name LIKE '%import_src'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            *out2.borrow_mut() = Some((r, sources));
+        });
+        let dc = DuckConn::new(a);
+        let ra = DuckStore::new(&dc as &dyn SqlConn, &format!("{da}.y"))
+            .unwrap()
+            .import_sqlite(la.to_str().unwrap())
+            .map(|i| i.transactions)
+            .map_err(|e| e.to_string());
+        let (rb, sources) = out.borrow_mut().take().expect("the hook didn't run");
+        // a.mentat has the bootstrap + 1 transaction, b.mentat one more; after
+        // B, A's source is still attached (B detached only its own).
+        assert_eq!((ra, rb, sources), (Ok(2), Ok(3), 1), "{da} {db}");
+    }
 }
 
 /// A crafted file whose partition counter is below its partition's start
