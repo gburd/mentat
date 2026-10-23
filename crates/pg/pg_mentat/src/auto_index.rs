@@ -109,6 +109,16 @@ pub fn record_range_use(store_id: i64, attr: i64, table: &'static str) {
     EVIDENCE.with(|e| *e.borrow_mut().entry((store_id, attr, table)).or_insert(0) += 1);
 }
 
+/// This backend's unflushed evidence, to put back with [`restore_evidence`]
+/// when a query is compiled a second time (an `or` whose arms are retyped).
+pub fn evidence_snapshot() -> HashMap<(i64, i64, &'static str), i64> {
+    EVIDENCE.with(|e| e.borrow().clone())
+}
+
+pub fn restore_evidence(snapshot: HashMap<(i64, i64, &'static str), i64>) {
+    EVIDENCE.with(|e| *e.borrow_mut() = snapshot);
+}
+
 /// Flush this backend's evidence (and optionally tune) through the
 /// exception-safe SQL entry point: a failure is LOGged, never raised.
 fn tick(tune: bool) {

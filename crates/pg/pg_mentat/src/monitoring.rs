@@ -174,6 +174,23 @@ pub fn record_union_all_fallback() {
     });
 }
 
+/// The schema-aware / UNION ALL fallback counters, to put back with
+/// [`restore_plan_counts`] when a query is compiled a second time.
+pub fn plan_counts() -> (u64, u64) {
+    QUERY_STATS.with(|stats| {
+        let s = stats.borrow();
+        (s.schema_aware_hits, s.union_all_fallbacks)
+    })
+}
+
+pub fn restore_plan_counts((hits, fallbacks): (u64, u64)) {
+    QUERY_STATS.with(|stats| {
+        let mut s = stats.borrow_mut();
+        s.schema_aware_hits = hits;
+        s.union_all_fallbacks = fallbacks;
+    });
+}
+
 /// Record a prepared statement cache hit.
 pub fn record_stmt_cache_hit() {
     QUERY_STATS.with(|stats| {

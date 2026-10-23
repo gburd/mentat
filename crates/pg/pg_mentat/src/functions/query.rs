@@ -3254,11 +3254,13 @@ fn build_sql_from_datalog_enriched(
         // column, typed as a rule column is (merged_value_type). The first
         // round over the arms finds each arm's types; only when they differ
         // does a second round compile the arms again with the merged types.
-        // shortcut: that second round counts the arms' auto-index evidence
-        // and schema-aware / union-fallback stats twice; type the arms
-        // without compiling them if those counts need to be exact.
+        // The second round starts from the first round's state: parameters,
+        // auto-index evidence and the plan counters are put back, so each
+        // arm counts once (evidence drives mentat_tune_indexes).
         let arms = or_join.clauses.len();
         let params_before = builder.params.len();
+        let evidence_before = crate::auto_index::evidence_snapshot();
+        let plan_counts_before = crate::monitoring::plan_counts();
         let mut arm_maps = Vec::with_capacity(arms);
         let mut arm_kinds: Vec<Vec<Option<ArgKind>>> = Vec::with_capacity(arms);
         let mut or_types: HashMap<String, Option<String>> = HashMap::new();
@@ -3283,6 +3285,8 @@ fn build_sql_from_datalog_enriched(
                 union_parts.clear();
                 arm_kinds.clear();
                 builder.params.truncate(params_before);
+                crate::auto_index::restore_evidence(evidence_before.clone());
+                crate::monitoring::restore_plan_counts(plan_counts_before);
             }
             // Extract patterns, predicates, where-functions, and NOT joins from each OR branch
             let mut arm_patterns: Vec<&edn::query::Pattern> = Vec::new();
