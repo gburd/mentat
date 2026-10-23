@@ -242,7 +242,8 @@ impl<'c> DuckStore<'c> {
 
     /// Whether this store's `table` exists with column `col`: a missing one
     /// fails to bind. Not inside a transaction: DuckDB 2.0 aborts one on any
-    /// error.
+    /// error. Read from DuckDB's error text, so the connection needs
+    /// `errors_as_json` off (the extension's pool sets it so).
     fn has(&self, table: &str, col: &str) -> Result<bool> {
         let sql = format!("SELECT {col} FROM {}.{table} LIMIT 0", self.qualified);
         match self.conn.query(&sql, &[], &mut |_| Ok(())) {

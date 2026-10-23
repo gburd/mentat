@@ -155,6 +155,31 @@ CHECKS = {
         assert counts["imports"] > 0 and counts["queries"] > 0, counts
         print(f"churn: {counts}")
     """,
+    # The store tells a missing store by DuckDB's error text; with
+    # errors_as_json on, DuckDB 1.5.6 handed the pool JSON errors, and no
+    # new store could be made nor a 'db.name' store used.
+    "errors_as_json on": """
+        def use(c, st):
+            c.execute("SELECT edn_t(?, ?)", [st, SCHEMA]).fetchall()
+            c.execute("SELECT edn_t(?, '[{:p/name \\"a\\"}]')", [st]).fetchall()
+            assert names(c, st) == ["a"], (st, names(c, st))
+        c = duckdb.connect(":memory:", config={"allow_unsigned_extensions": "true", "errors_as_json": "true"})
+        c.load_extension(EXT)
+        c.execute("ATTACH ':memory:' AS side")
+        for st in ["s", "side.y"]:
+            use(c, st)
+        # Only the extension's own connections changed it.
+        assert c.execute("SELECT current_setting('errors_as_json')").fetchone()[0] is True
+        # Turned on after LOAD, for stores that exist and new ones.
+        d = connect()
+        d.execute("ATTACH ':memory:' AS side")
+        use(d, "side.x")
+        d.execute("SET GLOBAL errors_as_json = true")
+        d.execute("SELECT edn_t('side.x', '[{:p/name \\"b\\"}]')").fetchall()
+        assert names(d, "side.x") == ["a", "b"], names(d, "side.x")
+        for st in ["t", "side.z"]:
+            use(d, st)
+    """,
 }
 
 

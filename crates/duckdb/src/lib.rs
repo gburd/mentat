@@ -594,6 +594,13 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     let mut free = Vec::new();
     for _ in 0..pool_size() {
         let c: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
+        // The store reads DuckDB's error text (a missing table is "Catalog
+        // Error: ..."; duckdb-rs gives no error type for a failed prepare), so
+        // keep it plain on these connections when the database has
+        // `errors_as_json` on (DuckDB 1.5.6 hands it to them). Per session:
+        // the caller's connection keeps its setting. Best effort: a DuckDB
+        // without the setting has no JSON errors.
+        let _ = c.execute_batch("SET SESSION errors_as_json = false");
         free.push(Conn(Box::leak(Box::new(duck_conn::DuckConn::new(c)))));
     }
     let pool = Arc::new(Pool {
