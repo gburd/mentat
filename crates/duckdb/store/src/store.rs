@@ -348,7 +348,10 @@ impl<'c> DuckStore<'c> {
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         // By name, not found with duckdb_indexes() (see `exists`; it also
         // fails while a mentat SQLite file is attached). Dropping a missing
-        // index writes nothing, so this works read-only too.
+        // index writes nothing, so a read-only database with none of them
+        // opens; one that still has one (a 1.11-1.14 store never opened
+        // writable since) fails here ("Cannot execute statement of type
+        // DROP ... read-only mode") until it is opened writable once.
         for i in schema::LEGACY_INDEXES {
             self.conn
                 .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.qualified))?;
