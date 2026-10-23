@@ -559,11 +559,12 @@ fn pre_1_18_store_opens_read_only() {
         .unwrap();
         s.transact(r#"[{:person/name "Alice" :person/bio "Hello darkness"}]"#)
             .unwrap();
-        // The 1.15-1.17 layout.
+        // The 1.15-1.17 layout: no legacy indexes, but no meta row saying
+        // so either (those releases never wrote it).
         c.execute_batch(
             "DROP VIEW mentat.fulltext_values; \
              CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
-             DELETE FROM mentat.meta WHERE key = 'views_1_18'; \
+             DELETE FROM mentat.meta WHERE key IN ('views_1_18', 'legacy_indexes_dropped'); \
              UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
         )
         .unwrap();
@@ -599,6 +600,90 @@ fn pre_1_18_store_opens_read_only() {
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
     let s = DuckStore::new(conn, "default").unwrap();
     assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
+}
+
+/// A 1.11-1.14 store (a legacy index, no `legacy_indexes_dropped` row) can't
+/// drop its indexes read-only, and must not be queried with them (#385):
+/// opened read-only -- the whole file, or ATTACHed READ_ONLY -- it fails
+/// with a message saying to open it writable once, every time (nothing is
+/// cached). One writable open drops them; read-only opens work after that.
+#[test]
+fn legacy_index_store_read_only_says_open_writable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.duckdb");
+    let names = "[:find ?n :where [_ :person/name ?n]]";
+    let want = vec![vec!["Alice".to_string()], vec!["Bob".to_string()]];
+    {
+        let c = Connection::open(&path).unwrap();
+        seeded(&c);
+        c.execute_batch(
+            "CREATE INDEX idx_datoms_ea ON mentat.datoms (e, a); \
+             DELETE FROM mentat.meta WHERE key = 'legacy_indexes_dropped'; \
+             UPDATE mentat.meta SET value = '1' WHERE key = 'generation'; \
+             CHECKPOINT;",
+        )
+        .unwrap();
+    }
+    let read_only = || {
+        Connection::open_with_flags(
+            &path,
+            duckdb::Config::default()
+                .access_mode(duckdb::AccessMode::ReadOnly)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let attached = || {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&format!("ATTACH '{}' AS old (READ_ONLY)", path.display()))
+            .unwrap();
+        c
+    };
+    // (connection, store name) -> the query's result.
+    let query = |c: &Connection, store: &str| {
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(c)));
+        DuckStore::new(conn, store)
+            .unwrap()
+            .q(names, None, None)
+            .map(|o| rows(o.results))
+            .map_err(|e| e.to_string())
+    };
+    for _ in 0..2 {
+        for (c, store) in [(read_only(), "default"), (attached(), "old.")] {
+            let e = query(&c, store).expect_err("a legacy index, read-only");
+            assert!(
+                e.contains("created by mentat 1.11-1.14")
+                    && e.contains("duckdb/duckdb#26828")
+                    && e.contains("writable")
+                    && !e.contains("Cannot execute statement"),
+                "{e}"
+            );
+        }
+    }
+    // Writable once, on this same thread: drops the index, records it.
+    {
+        let c = Connection::open(&path).unwrap();
+        assert_eq!(query(&c, "default").unwrap(), want);
+        let n: i64 = c
+            .query_row(
+                "SELECT (SELECT count(*) FROM duckdb_indexes() WHERE schema_name = 'mentat') * 10 \
+                 + (SELECT count(*) FROM mentat.meta WHERE key = 'legacy_indexes_dropped')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "no index left, the row recorded");
+    }
+    // Read-only works now: on this thread, and on a new one (no cached
+    // schema to skip the check).
+    assert_eq!(query(&read_only(), "default").unwrap(), want);
+    assert_eq!(query(&attached(), "old.").unwrap(), want);
+    std::thread::scope(|t| {
+        t.spawn(|| {
+            assert_eq!(query(&read_only(), "default").unwrap(), want);
+            assert_eq!(query(&attached(), "old.").unwrap(), want);
+        });
+    });
 }
 
 /// `'db.name'` addresses store `name` in an ATTACHed database: every row

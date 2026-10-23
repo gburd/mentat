@@ -285,6 +285,13 @@ checkpoints the WAL; from then on every `[?e :attr _]` returns nothing, and
 DELETEs fail FATAL. Since 1.15.0, opening a store drops those indexes, which
 also repairs a store that was already hit.
 
+A read-only database (`duckdb -readonly`, `ATTACH ... (READ_ONLY)`) can't
+drop them, so a 1.11.0-1.14.0 store that still has them fails every call
+there with "store ... was created by mentat 1.11-1.14 and still has indexes
+that DuckDB 1.4-1.5 can corrupt" rather than run on them. Open the
+database writable once (any mentat call) to remove them; read-only opens
+work after that. Stores from 1.15.0 on open read-only as they are.
+
 ### `edn_q` options (JSON, same shape pg_mentat accepts)
 
 `''`, `NULL`, `{}` or JSON `null` = no options. Otherwise a JSON object with:
@@ -548,6 +555,10 @@ Differences from SQLite:
 
 ## Known gaps
 
+- A store made by 1.11.0-1.14.0 must be opened writable once before it can
+  be opened read-only: until then it still has indexes that
+  duckdb/duckdb#26828 corrupts, and a read-only open refuses it (see
+  "Storage layout").
 - `(fulltext ...)` is not ranked (`?score` is `0.0`) and scans the
   attribute's values; DuckDB's `fts` extension (BM25) is not used.
 - A store in an attached database must be named with its prefix

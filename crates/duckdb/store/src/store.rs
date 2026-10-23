@@ -99,6 +99,8 @@ impl Drop for OnDrop<'_> {
 /// no state beyond the store's name, so the extension builds one per call.
 pub struct DuckStore<'c> {
     conn: &'c dyn SqlConn,
+    /// The store's name as the caller gave it (for messages).
+    name: String,
     /// The database (catalog) holding the store.
     catalog: String,
     /// The store's schema in it (`schema_for`).
@@ -184,13 +186,17 @@ impl<'c> DuckStore<'c> {
                 }
             }
         }
-        Ok(DuckStore::at(conn, target.0, target.1))
+        Ok(DuckStore {
+            name: store.to_string(),
+            ..DuckStore::at(conn, target.0, target.1)
+        })
     }
 
     fn at(conn: &'c dyn SqlConn, catalog: String, name: &str) -> Self {
         let schema = schema_for(name);
         DuckStore {
             conn,
+            name: name.to_string(),
             qualified: format!("{}.{}", quote(&catalog), quote(&schema)),
             catalog,
             schema,
@@ -327,9 +333,10 @@ impl<'c> DuckStore<'c> {
 
     /// Drop the secondary indexes that 1.11.0-1.14.0 created (see
     /// `schema::LEGACY_INDEXES`), once per store: `meta` then records it
-    /// (a store created since has the row from the start). Runs on a
-    /// schema-cache miss. This also repairs a store whose index #26828
-    /// already corrupted.
+    /// (a store created since 1.18 has the row from the start; 1.15-1.17
+    /// never wrote it, so a missing row alone doesn't mean an index is
+    /// there). Runs on a schema-cache miss. This also repairs a store whose
+    /// index #26828 already corrupted.
     fn drop_legacy_indexes(&self) -> Result<()> {
         let done = self.conn.query_opt(
             &format!("SELECT 1 FROM {}.meta WHERE key = ?", self.qualified),
@@ -344,12 +351,27 @@ impl<'c> DuckStore<'c> {
         // By name, not found with duckdb_indexes() (see `exists`; it also
         // fails while a mentat SQLite file is attached). Dropping a missing
         // index writes nothing, so a read-only database with none of them
-        // opens; one that still has one (a 1.11-1.14 store never opened
-        // writable since) fails here ("Cannot execute statement of type
-        // DROP ... read-only mode") until it is opened writable once.
+        // opens. One that still has one (a 1.11-1.14 store never opened
+        // writable since) can't drop it, and mustn't be queried with it
+        // (#26828): DuckDB refuses the DROP, and that is reported as such.
+        // Nothing is cached then, so a later writable open drops it.
         for i in schema::LEGACY_INDEXES {
-            self.conn
-                .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.qualified))?;
+            if let Err(e) = self
+                .conn
+                .execute_batch(&format!("DROP INDEX IF EXISTS {}.{i}", self.qualified))
+            {
+                return Err(if self.read_only()? {
+                    MentatError::IoError(std::io::Error::other(format!(
+                        "mentat: store '{}' in database '{}' was created by mentat \
+                         1.11-1.14 and still has indexes that DuckDB 1.4-1.5 can corrupt \
+                         (duckdb/duckdb#26828). Open the database writable once to remove \
+                         them; read-only opens work after that.",
+                        self.name, self.catalog
+                    )))
+                } else {
+                    e.into()
+                });
+            }
         }
         // Under the write lock, so it can't conflict with a transact. Best
         // effort: a read-only database can't record it, and then the check
@@ -381,12 +403,7 @@ impl<'c> DuckStore<'c> {
         if done.is_some() {
             return Ok(true);
         }
-        let read_only = self.conn.query_opt(
-            "SELECT readonly::INTEGER FROM duckdb_databases() WHERE database_name = ?",
-            &[SqlValue::Text(self.catalog.clone())],
-            |r| r.get_bool(0),
-        )?;
-        if read_only == Some(true) {
+        if self.read_only()? {
             return Ok(false);
         }
         let lock = write_lock(&self.qualified);
@@ -413,6 +430,17 @@ impl<'c> DuckStore<'c> {
             Ok(())
         })?;
         Ok(true)
+    }
+
+    /// Whether the store's database is attached read-only (`duckdb
+    /// -readonly`, `ATTACH ... (READ_ONLY)`). duckdb_databases() lists
+    /// catalogs without scanning them (see `new`).
+    fn read_only(&self) -> Result<bool> {
+        Ok(self.conn.query_opt(
+            "SELECT readonly::INTEGER FROM duckdb_databases() WHERE database_name = ?",
+            &[SqlValue::Text(self.catalog.clone())],
+            |r| r.get_bool(0),
+        )? == Some(true))
     }
 
     /// Under the write lock, in a transaction (see `open_gen`).

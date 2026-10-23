@@ -119,7 +119,7 @@ and the project follows [Semantic Versioning](https://semver.org/).
   bodies named the store's schema**, once, recorded in the store's `meta`.
   In a read-only database the store opens unchanged and every query works,
   `(fulltext ...)` included (a 1.11-1.14 store that still has its legacy
-  indexes is the exception, #385).
+  indexes must be opened writable once first, #385).
 - **since and as-of follow Datomic on every backend (#364).** since T is the
   current datoms transacted after T; as-of T is what was not retracted by
   T; both together are S < tx <= T. With `:x/n` 1, 2, 3 at t1, t2, t3,
@@ -229,6 +229,14 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **DuckDB: a store made by 1.11.0-1.14.0 opened read-only failed every call
+  with DuckDB's "Cannot execute statement of type DROP ... read-only mode"**
+  ([#385](https://codeberg.org/gregburd/mentat/issues/385)). Opening such a
+  store drops its old ART indexes, which DuckDB 1.4-1.5 can corrupt
+  (duckdb/duckdb#26828), and a read-only database (`duckdb -readonly`,
+  `ATTACH ... (READ_ONLY)`) can't. It now fails with a message that names the
+  store and says to open the database writable once; read-only opens work
+  after that. Stores from 1.15.0 on open read-only as before.
 - **DuckDB: creating or first opening a store while `mentat_import` ran on
   another connection could crash the process** (DuckDB 1.5.6's sqlite
   extension segfaults when a catalog function such as `duckdb_tables()`
