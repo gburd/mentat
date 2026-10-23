@@ -10,6 +10,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust API)
 
+- **`edn::query::PullAttributeSpec` has a new variant, `Nested`** (map specs
+  in pull patterns), and **`TemporalBound` (mentat_query_algebrizer, re-exported
+  by mentatdb) a new variant, `AsOfSince`** (#364). An exhaustive `match` on
+  either needs a new arm.
 - **`TxReport` is `#[non_exhaustive]` (#281).** Code outside mentat_core that
   builds one with a struct literal or matches it exhaustively stops compiling;
   build one with `TxReport::new`. Fields can now be added without another
@@ -30,6 +34,24 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Pull reads the query's basis on every backend (#364).** `pull`,
+  `entities` and a `(pull ?e [...])` in `:find` on an as-of or since db
+  return that basis's values; pg_mentat and DuckDB returned current values,
+  and the embedded engine refused. pg_mentat adds
+  `edn_pull(pattern, entity_id, options)` with edn_q's `{"asOf": T}` /
+  `{"since": S}`.
+- **Nested map specs in pull patterns on the embedded engine and DuckDB**
+  (`[{:person/friend [:person/name]}]`, forward and reverse), on the same
+  basis as the outer pull. Recursion limits (`{:attr 2}`, `...`) stay
+  pg_mentat only.
+- **DuckDB: `mentat_import(store, path)` imports a 1.10.x SQLite store**
+  (the format the DuckDB extension used through 1.10.x, and the embedded
+  engine, CLI and SQLite extension's files from schema version 2): every
+  entid, tx id, tx instant and partition high-water mark is kept, so as-of,
+  since and history answer as before. No SQLite is linked; it uses DuckDB's
+  sqlite extension.
+- **DuckDB: `mentat.store/with`** applies tx-data speculatively and always
+  rolls back; it returned "not supported".
 - **pg_mentat: named stores work (#337).** `create_store(name)` builds
   `mentat_<name>` from the default store's own table definitions (one DDL
   source, `mentat._create_store_layout` in sql/30_store_layout.sql), so a
@@ -74,6 +96,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **since and as-of follow Datomic on every backend (#364).** since T is the
+  current datoms transacted after T; as-of T is what was not retracted by
+  T; both together are S < tx <= T. With `:x/n` 1, 2, 3 at t1, t2, t3,
+  `[:find ?v :where [_ :x/n ?v]]` since t1 returned `[1 2 3]` on the
+  embedded engine and DuckDB and `[2 3]` on pg_mentat; all return `[3]`.
+  pg_mentat as-of showed a value retracted with no replacement. An `or`,
+  get-else and missing? read the basis too. History patterns still show the
+  log. On pg_mentat each `current_<type>` table gets a `(store_id, tx)`
+  index for since; the upgrade builds it with a plain CREATE INDEX (a
+  SHARE lock while it runs), so on a large store pre-build them
+  `CONCURRENTLY` under the same names and check `pg_index.indisvalid`.
+- **pg_mentat: `edn_q`, `edn_q_rows`, `mentat_query_sql`, `mentat_explain`,
+  `query_view` and `edn_pull` reject unknown option keys (#371)** and a
+  non-integer `asOf` / `since` or non-boolean `history` with
+  `:db.error/invalid-query`. `{"as_of": T}` (an old docs spelling) silently
+  returned current state.
 - **pg_mentat on a named store (#337):** `vector-near`, `turbovec-near` and
   the `geom-*` where-fns, user transaction functions (an ident with
   `:db/fn`) and `edn_eval`'s `(mentat.store/open "<name>")` are
@@ -167,6 +205,21 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Upserts and lookup refs resolve in O(pairs x log store)** on the
+  embedded engine, the SQLite extension and DuckDB. Bulk upserts were
+  quadratic: a 1M-row import against 1.17.1 did not finish in 15 minutes.
+  A store with fulltext values pays one `fulltext_values` scan per
+  statement, only when the batch names a `:db/fulltext` attribute.
+- **DuckDB: with the extension loaded into more than one database in a
+  process, every database's calls ran on the first one** (#363, 1.11.0
+  through 1.17.2): `edn_t` and `mentat_import` wrote to the first database
+  and `edn_q`, `edn_pull` and `edn_eval` read from it. Each database now has
+  its own connection pool.
+- **DuckDB: a panic inside a transaction, `with` or `mentat_import` rolls
+  back and detaches**; it left the pooled connection inside a transaction
+  and wedged writes to the store until restart.
+- **DuckDB: stores open while a SQLite mentat file is attached**; every
+  other call failed with "Parser Error: syntax error at or near "0"".
 - **pg_mentat: subscriptions and `on_write` materialized views ran one
   transaction behind** (#337 review): the statement trigger fired before the
   transaction's data was written, so the last write before a quiet period
@@ -266,6 +319,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Known issues
 
+- **DuckDB: every database that loads mentat stays open until the process
+  exits** (before 1.18.0 only the first did), so closing a file database
+  and opening it again in the same process hangs, and closed databases keep
+  their memory and threads (#378, #363).
 - **pg_mentat `:db/cas` and cardinality-one replacement are atomic only
   under SERIALIZABLE (#376).** Under READ COMMITTED two concurrent cas calls
   from the same old value can both commit and leave two live values on a
