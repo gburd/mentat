@@ -20,7 +20,8 @@ DB="default"
 OLD="$(mktemp -u /tmp/mentat_smoke_old.XXXXXX.mentat)"
 OTHER="$(mktemp /tmp/mentat_duck_other.XXXXXX)"
 ATT="$(mktemp -u /tmp/mentat_smoke_att.XXXXXX.duckdb)"
-trap 'rm -f "$DUCK" "$DUCK".wal "$OLD" "$OTHER" "$OTHER".sql "$ATT" "$ATT".wal' EXIT
+LEG="$(mktemp -u /tmp/mentat_smoke_leg.XXXXXX.duckdb)"
+trap 'rm -f "$DUCK" "$DUCK".wal "$OLD" "$OTHER" "$OTHER".sql "$ATT" "$ATT".wal "$LEG" "$LEG".wal' EXIT
 
 [ -f "$EXT" ] || { echo "FAIL: $EXT not found (run 'make debug' first)"; exit 1; }
 
@@ -178,6 +179,40 @@ grep -qx "att_again=Hello darkness,talk" <<<"$att2" || { echo "FAIL: attached st
 att3="$("$DUCKDB" -noheader -list "$ATT" -c "SELECT 'att_file=' || count(*) FROM duckdb_tables() WHERE schema_name LIKE 'mentat_notes_%' AND table_name = 'datoms';" 2>&1)"
 echo "$att3"
 grep -qx "att_file=1" <<<"$att3" || { echo "FAIL: attached store not in its file"; exit 1; }
+
+# Read-only databases (`-readonly`, ATTACH ... READ_ONLY) and old stores (#385).
+# A 1.15-1.17 store has no legacy index and no `legacy_indexes_dropped` row
+# (those releases never wrote it): it answers read-only as it is. A 1.11-1.14
+# store still has an ART index that duckdb/duckdb#26828 corrupts: read-only,
+# it fails with a message saying to open it writable once (not DuckDB's
+# "Cannot execute statement of type DROP"); after one writable open,
+# read-only works.
+leg_q="[:find ?e :where [?e :db/ident :p/name]]"
+leg_ro() { "$DUCKDB" -unsigned -noheader -list -readonly "$LEG" -c "LOAD '$EXT';" -c "SELECT 'ro=' || count(*) FROM edn_q('default', '$leg_q', '{}');" 2>&1 || true; }
+leg_att() { "$DUCKDB" -unsigned -noheader -list -c "ATTACH '$LEG' AS leg (READ_ONLY);" -c "LOAD '$EXT';" -c "SELECT 'ro=' || count(*) FROM edn_q('leg.', '$leg_q', '{}');" 2>&1 || true; }
+leg_expect() {
+  local what="$1" pat="$2" o
+  for f in leg_ro leg_att; do
+    o="$($f)"
+    grep -q -- "$pat" <<<"$o" && ! grep -q "Cannot execute statement" <<<"$o" \
+      || { echo "FAIL: $what ($f): expected '$pat':"; echo "$o"; exit 1; }
+  done
+  echo "ok: $what"
+}
+"$DUCKDB" -unsigned -noheader -list "$LEG" -c "LOAD '$EXT';" -c "SELECT edn_t('default', '[{:db/ident :p/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%';
+DELETE FROM mentat.meta WHERE key = 'legacy_indexes_dropped';
+UPDATE mentat.meta SET value = '1' WHERE key = 'generation';
+CHECKPOINT;" >/dev/null
+leg_expect "a 1.15-1.17 store opens read-only" "^ro=1$"
+# The #385 repro: what 1.11-1.14 left behind.
+"$DUCKDB" -unsigned "$LEG" -c "LOAD '$EXT';" -c "CREATE INDEX idx_datoms_ea ON mentat.datoms (e, a);
+CHECKPOINT;" >/dev/null
+leg_expect "a 1.11-1.14 store read-only says to open it writable" "created by mentat 1.11-1.14.*writable once"
+"$DUCKDB" -unsigned -noheader -list "$LEG" -c "LOAD '$EXT';" -c "SELECT 'rw=' || count(*) FROM edn_q('default', '$leg_q', '{}');" | grep -qx "rw=1" \
+  || { echo "FAIL: a 1.11-1.14 store opened writable"; exit 1; }
+leg_expect "a 1.11-1.14 store opens read-only after one writable open" "^ro=1$"
+idx="$("$DUCKDB" -noheader -list -readonly "$LEG" -c "SELECT 'idx=' || count(*) FROM duckdb_indexes() WHERE schema_name = 'mentat';" 2>&1)"
+grep -qx "idx=0" <<<"$idx" || { echo "FAIL: legacy index not dropped: $idx"; exit 1; }
 
 # Error paths: each must fail with a recognisable message.
 expect_err() {
