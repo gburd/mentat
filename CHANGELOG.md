@@ -10,6 +10,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Breaking (Rust API)
 
+- **`mentat_sql_traits::SQLError` has a new variant, `MalformedMatch`**
+  (DuckDB fulltext), and is now `#[non_exhaustive]`: a `match` needs a `_`
+  arm.
 - **`edn::query::PullAttributeSpec` has a new variant, `Nested`** (map specs
   in pull patterns), and **`TemporalBound` (mentat_query_algebrizer, re-exported
   by mentatdb) a new variant, `AsOfSince`** (#364). An exhaustive `match` on
@@ -34,6 +37,21 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **DuckDB: `(fulltext $ :attr "query")` on `:db/fulltext` attributes**,
+  with SQLite FTS4 query syntax read the way SQLite reads it (words, `AND`,
+  `OR`, `NOT`, `NEAR`, parentheses, `"phrases"`, `prefix*`, `^first`,
+  `text:`) and whole-token, case-insensitive matching with the token
+  characters of SQLite's unicode61 tokenizer. `?score` is 0.0, as on SQLite.
+  Each text is checked for the query's words before it is tokenized, so over
+  100k texts a one-word query takes about 80 ms and SQLite's longest query
+  (4,095 words) about 0.5 s. A malformed or too deeply nested query fails
+  with "malformed MATCH expression". Known differences from SQLite (README):
+  `NEAR` is `AND`, DuckDB's `lower()` folds about 400 characters SQLite
+  doesn't (`İ`), `searchid:` matches nothing, parentheses nest 100 deep
+  (SQLite 1000), U+FFFE/U+FFFF are letters.
+- **DuckDB: a store can live in an `ATTACH`ed database**, named `'db.name'`
+  (`'db.'` is that database's default store). It keeps working when the file
+  is attached under another name or opened on its own.
 - **Pull reads the query's basis on every backend (#364).** `pull`,
   `entities` and a `(pull ?e [...])` in `:find` on an as-of or since db
   return that basis's values; pg_mentat and DuckDB returned current values,
@@ -96,6 +114,12 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **DuckDB: the first writable open of a store from before 1.18 replaces its
+  empty `fulltext_values` table with a view and rewrites three views whose
+  bodies named the store's schema**, once, recorded in the store's `meta`.
+  In a read-only database the store opens unchanged and every query works,
+  `(fulltext ...)` included (a 1.11-1.14 store that still has its legacy
+  indexes is the exception, #385).
 - **since and as-of follow Datomic on every backend (#364).** since T is the
   current datoms transacted after T; as-of T is what was not retracted by
   T; both together are S < tx <= T. With `:x/n` 1, 2, 3 at t1, t2, t3,
@@ -205,6 +229,17 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **DuckDB: creating or first opening a store while `mentat_import` ran on
+  another connection could crash the process** (DuckDB 1.5.6's sqlite
+  extension segfaults when a catalog function such as `duckdb_tables()`
+  runs during a SQLite DETACH). mentat no longer reads DuckDB's catalog
+  functions when it opens a store.
+- **DuckDB: with `errors_as_json` on** (`SET GLOBAL errors_as_json = true`,
+  Python's `connect(config={"errors_as_json": "true"})`, or the 2.0 CLI's
+  `-agent` mode), new stores and `'db.name'` stores work; on 1.5.6 they
+  failed.
+- **DuckDB: two `mentat_import`s into same-named stores in two attached
+  databases** can no longer detach each other's source file.
 - **Upserts and lookup refs resolve in O(pairs x log store)** on the
   embedded engine, the SQLite extension and DuckDB. Bulk upserts were
   quadratic: a 1M-row import against 1.17.1 did not finish in 15 minutes.

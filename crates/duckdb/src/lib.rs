@@ -11,6 +11,7 @@
 //! loaded into: a DuckDB schema holding its tables (`mentat` for `'default'`,
 //! `mentat_<name>_<hash>` otherwise; see `mentat_duckdb_store`). Until 1.11 the
 //! argument was a SQLite file path; such a value still works, as a name.
+//! `'db.name'` is store `name` in the ATTACHed database `db`.
 //! See docs/duckdb-native-storage-plan.md.
 //!
 //! SQL runs on a pool of connections cloned from the one DuckDB hands the
@@ -107,7 +108,7 @@ impl Pool {
     /// A store on a leased connection, plus the lease.
     fn store(&self, name: &str) -> Result<(DuckStore<'static>, Lease<'_>), BoxErr> {
         let (c, lease) = self.conn()?;
-        Ok((DuckStore::new(c, name), lease))
+        Ok((DuckStore::new(c, name)?, lease))
     }
 }
 
@@ -593,6 +594,13 @@ pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>
     let mut free = Vec::new();
     for _ in 0..pool_size() {
         let c: &'static duckdb::Connection = Box::leak(Box::new(con.try_clone()?));
+        // The store reads DuckDB's error text (a missing table is "Catalog
+        // Error: ..."; duckdb-rs gives no error type for a failed prepare), so
+        // keep it plain on these connections when the database has
+        // `errors_as_json` on (DuckDB 1.5.6 hands it to them). Per session:
+        // the caller's connection keeps its setting. Best effort: a DuckDB
+        // without the setting has no JSON errors.
+        let _ = c.execute_batch("SET SESSION errors_as_json = false");
         free.push(Conn(Box::leak(Box::new(duck_conn::DuckConn::new(c)))));
     }
     let pool = Arc::new(Pool {

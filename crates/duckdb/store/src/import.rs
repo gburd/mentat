@@ -143,6 +143,26 @@ fn scan(src: &str, sql: &str) -> String {
     format!("sqlite_query({}, {})", lit(src), lit(sql))
 }
 
+/// The name an import attaches its source as. Attached databases are shared
+/// by every connection to the database, so it is one per store (schema and
+/// catalog), and the store's write lock serializes it. The catalog goes in
+/// exactly, not squashed: "my-db" and "my_db" are two stores under two
+/// locks. A plain identifier of at most 84 characters.
+fn source_name(schema: &str, catalog: &str) -> String {
+    let c = catalog.as_bytes();
+    // Hex when short, else 64-bit FNV-1a: at most 14 digits vs exactly 16,
+    // so the two forms can't collide.
+    let c: String = if c.len() <= 7 {
+        c.iter().map(|b| format!("{b:02x}")).collect()
+    } else {
+        let h = c.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        format!("{h:016x}")
+    };
+    format!("{schema}_{c}_import_src")
+}
+
 /// SQLite SQL: one table's rows with `v` split by storage class. `cols` are
 /// the other columns (as text). `v` of a fulltext datom is a rowid into
 /// `fulltext_values`; `ft` is the SQL for "this row is fulltext".
@@ -228,12 +248,10 @@ impl DuckStore<'_> {
         // No Rust-side file check: it would see past DuckDB's file access
         // settings. A missing file fails at the first read, from SQLite.
         self.open()?;
-        let lock = write_lock(self.schema_name());
+        let lock = write_lock(self.qualified_name());
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
         let conn = self.conn();
-        // Attached databases are shared by every connection to the database,
-        // so the name is per store; the store's write lock serializes it.
-        let src = format!("{}_import_src", self.schema_name());
+        let src = source_name(self.schema_name(), self.catalog_name());
         conn.execute_batch(&format!("DETACH DATABASE IF EXISTS {src}"))?;
         conn.execute_batch(&format!(
             "ATTACH {} AS {src} (TYPE sqlite, READ_ONLY)",
@@ -319,7 +337,7 @@ impl DuckStore<'_> {
                  tables {tables:?})"
             )));
         }
-        let s = self.schema_name();
+        let s = self.qualified_name();
         let user: i64 = conn
             .query_opt(
                 &format!(
@@ -461,5 +479,36 @@ mod tests {
     #[test]
     fn lit_quotes() {
         assert_eq!(lit("a'b"), "'a''b'");
+    }
+
+    #[test]
+    fn source_names_keep_catalogs_apart() {
+        let s = crate::store::schema_for(&"y".repeat(300));
+        let n = |c: &str| source_name(&s, c);
+        // The first pair squashes to one [A-Za-z0-9_] name; the second has
+        // one 32-bit FNV-1a hash (the two forms the alias had before).
+        for (a, b) in [("my-db", "my_db"), ("db527002", "db1120800")] {
+            assert_ne!(n(a), n(b), "{a} {b}");
+        }
+        assert_eq!(n("my-db"), format!("{s}_6d792d6462_import_src"));
+        assert_eq!(
+            n("db527002"),
+            format!("{s}_{:016x}_import_src", 0x40bf_b753_0509_a96d_u64)
+        );
+        for c in [
+            "",
+            "x",
+            "1234567",
+            "12345678",
+            "\"; DROP",
+            &"é".repeat(1000),
+        ] {
+            let name = n(c);
+            assert!(name.len() <= 84, "{name}");
+            assert!(
+                name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "{name}"
+            );
+        }
     }
 }

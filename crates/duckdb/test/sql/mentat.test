@@ -176,3 +176,59 @@ query I
 SELECT count(*) > 0 FROM duckdb_tables() WHERE schema_name LIKE 'mentat_test_%' AND table_name = 'timelined_transactions';
 ----
 true
+
+# (fulltext ...): FTS4 query syntax over a :db/fulltext attribute; the score is 0.0 (rendered 0), as on SQLite.
+statement ok
+SELECT edn_t(getvariable('db'), '[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]');
+
+statement ok
+SELECT edn_t(getvariable('db'), '[{:person/name "Fay" :person/bio "Hello darkness, my old friend"} {:person/name "Gus" :person/bio "I''ve come to talk with you again"}]');
+
+query II
+SELECT n, s FROM edn_q(getvariable('db'), '[:find ?n ?s :where [(fulltext $ :person/bio "DARK*") [[?e _ _ ?s]]] [?e :person/name ?n]]', '{}') AS t(n, s);
+----
+Fay	0
+
+query I
+SELECT n FROM edn_q(getvariable('db'), '[:find ?n :where [(fulltext $ :person/bio "friend OR talk") [[?e]]] [?e :person/name ?n]]', '{}') AS t(n) ORDER BY n;
+----
+Fay
+Gus
+
+query I
+SELECT count(*) FROM edn_q(getvariable('db'), '[:find ?e :where [(fulltext $ :person/bio "\"darkness hello\"") [[?e]]]]', '{}');
+----
+0
+
+statement error
+SELECT * FROM edn_q(getvariable('db'), '[:find ?e :where [(fulltext $ :person/bio "hello OR") [[?e]]]]', '{}');
+----
+malformed MATCH expression
+
+# A store in an ATTACHed database: 'db.name'. Its tables are in that catalog.
+statement ok
+ATTACH ':memory:' AS side;
+
+query I
+SELECT edn_t('side.' || getvariable('db'), '[{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]') LIKE '%tx_id%';
+----
+true
+
+statement ok
+SELECT edn_t('side.' || getvariable('db'), '[{:note/text "in side"}]');
+
+query I
+SELECT t FROM edn_q('side.' || getvariable('db'), '[:find ?t :where [_ :note/text ?t]]', '{}') AS q(t);
+----
+in side
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'side' AND schema_name LIKE 'mentat_test_%' AND table_name = 'datoms';
+----
+1
+
+# The same name without the prefix is a different store, in this database.
+query I
+SELECT count(*) FROM edn_q(getvariable('db'), '[:find ?t :where [_ :note/text ?t]]', '{}');
+----
+0

@@ -25,13 +25,16 @@ use mentat_core::SQLTypeAffinity;
 use edn::query::{Direction, Limit, Variable};
 
 use mentat_query_algebrizer::{
-    Column, DatomsColumn, OrderBy, QualifiedAlias, QueryValue, SourceAlias, StringMatchOp,
-    TableAlias, TransactionsColumn, VariableColumn,
+    Column, DatomsColumn, DatomsTable, FulltextColumn, OrderBy, QualifiedAlias, QueryValue,
+    SourceAlias, StringMatchOp, TableAlias, TransactionsColumn, VariableColumn,
 };
 
 use sql_traits::errors::{BuildQueryResult, SQLError};
 
 use mentat_sql::{Dialect, QueryBuilder, QueryFragment, SQLQuery, SQLiteQueryBuilder};
+
+mod fts;
+mod fts_unicode61;
 
 //---------------------------------------------------------
 // A Mentat-focused representation of a SQL query.
@@ -395,6 +398,9 @@ impl QueryFragment for Constraint {
                 // instead -- NULL for a non-integer value, so no match, as on
                 // SQLite.
                 let duck = out.dialect() == Dialect::DuckDb;
+                if duck && op.0 == "MATCH" {
+                    return fts::push_duckdb_match(out, left, right);
+                }
                 let numeric = duck && matches!(op.0, "<" | "<=" | ">" | ">=");
                 let int_join = duck
                     && matches!(op.0, "=" | "<>")
@@ -418,8 +424,14 @@ impl QueryFragment for Constraint {
                 } else {
                     None
                 };
+                // A fulltext value joins its text (DuckDB's `fulltext_values`
+                // view keys each text by itself).
+                let fts_join =
+                    duck && op.0 == "=" && (is_fulltext_rowid(left) || is_fulltext_rowid(right));
                 let mode = if numeric {
                     Comparand::Numeric
+                } else if fts_join {
+                    Comparand::Member("v_s")
                 } else if int_join {
                     Comparand::Member("v_i")
                 } else if let Some(m) = eq_member {
@@ -431,7 +443,22 @@ impl QueryFragment for Constraint {
                 out.push_sql(" ");
                 op.push_sql(out)?;
                 out.push_sql(" ");
-                push_comparand(out, right, mode)
+                push_comparand(out, right, mode)?;
+                if fts_join {
+                    // And the same attribute, so DuckDB reads only its texts.
+                    if let (
+                        ColumnOrExpression::Column(QualifiedAlias(l, _)),
+                        ColumnOrExpression::Column(QualifiedAlias(r, _)),
+                    ) = (left, right)
+                    {
+                        out.push_sql(" AND ");
+                        out.push_identifier(l.as_str())?;
+                        out.push_sql(".a = ");
+                        out.push_identifier(r.as_str())?;
+                        out.push_sql(".a");
+                    }
+                }
+                Ok(())
             }
 
             IsNull { ref value } => {
@@ -647,6 +674,13 @@ fn is_value_column(c: &ColumnOrExpression) -> bool {
     }
 }
 
+fn is_fulltext_rowid(c: &ColumnOrExpression) -> bool {
+    matches!(
+        c,
+        ColumnOrExpression::Column(QualifiedAlias(_, Column::Fulltext(FulltextColumn::Rowid)))
+    )
+}
+
 /// True if `c` is one of the BIGINT columns: entity, attribute or tx.
 fn is_integer_column(c: &ColumnOrExpression) -> bool {
     match c {
@@ -731,6 +765,17 @@ fn qualified_alias_push_sql(out: &mut dyn QueryBuilder, qa: &QualifiedAlias) -> 
 // We don't own SourceAlias or QueryFragment, so we can't implement the trait.
 fn source_alias_push_sql(out: &mut dyn QueryBuilder, sa: &SourceAlias) -> BuildQueryResult {
     let SourceAlias(table, alias) = sa;
+    if out.dialect() == Dialect::DuckDb && *table == DatomsTable::FulltextValues {
+        // A DuckDB store keeps fulltext values as plain strings in `datoms`:
+        // each distinct text is keyed by itself. Read from `datoms` here, not
+        // the store's `fulltext_values` view, so a store from before 1.18
+        // (an empty table of that name) matches too, even read-only.
+        out.push_sql(
+            "(SELECT DISTINCT a, v_s AS rowid, v_s AS text FROM datoms WHERE index_fulltext)",
+        );
+        out.push_sql(" AS ");
+        return out.push_identifier(alias.as_str());
+    }
     out.push_identifier(table.name())?;
     out.push_sql(" AS ");
     out.push_identifier(alias.as_str())
@@ -963,8 +1008,6 @@ impl SelectQuery {
 mod tests {
     use super::*;
     use std::rc::Rc;
-
-    use mentat_query_algebrizer::{Column, DatomsColumn, DatomsTable, FulltextColumn};
 
     fn build_query(c: &dyn QueryFragment) -> SQLQuery {
         let mut builder = SQLiteQueryBuilder::new();

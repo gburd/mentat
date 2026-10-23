@@ -46,7 +46,7 @@ const SCHEMA: &str = r#"[
 
 fn seeded(c: &Connection) -> DuckStore<'_> {
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     s.transact(SCHEMA).expect("schema");
     s.transact(
         r#"[{:db/id "a" :person/name "Alice" :person/age 30 :person/score 9.5 :person/tag [:t/x :t/y]}
@@ -273,7 +273,7 @@ fn pull_and_named_stores() {
 
     // A second, path-named store is a separate DuckDB schema.
     let conn2: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let other = DuckStore::new(conn2, "/tmp/demo.mentat");
+    let other = DuckStore::new(conn2, "/tmp/demo.mentat").unwrap();
     other.transact(SCHEMA).unwrap();
     other.transact(r#"[{:person/name "Zed"}]"#).unwrap();
     assert_eq!(
@@ -305,7 +305,7 @@ fn persists_in_a_duckdb_file() {
         .unwrap();
     assert!(n > 0);
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     assert_eq!(
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
         vec![vec!["2".to_string()]]
@@ -331,7 +331,7 @@ fn reopens_from_wal_without_checkpoint() {
     );
     let c = Connection::open(&path).expect("WAL replays");
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     assert_eq!(
         q(&s, "[:find (count ?e) . :where [?e :person/name _]]"),
         vec![vec!["2".to_string()]]
@@ -367,7 +367,7 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
     .unwrap();
     assert_eq!(index_count(&c), 3);
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let s = DuckStore::new(conn, "default");
+    let s = DuckStore::new(conn, "default").unwrap();
     let names = q(&s, "[:find ?n :where [_ :person/name ?n]]");
     assert_eq!(names.len(), 2, "the store still answers: {names:?}");
     assert_eq!(index_count(&c), 0, "legacy indexes dropped on open");
@@ -390,7 +390,10 @@ fn legacy_secondary_indexes_are_dropped_on_open() {
 fn repeated_queries_see_new_datoms() {
     let c = Connection::open_in_memory().unwrap();
     let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
-    let (one, two) = (DuckStore::new(conn, "one"), DuckStore::new(conn, "two"));
+    let (one, two) = (
+        DuckStore::new(conn, "one").unwrap(),
+        DuckStore::new(conn, "two").unwrap(),
+    );
     let count = "[:find (count ?e) . :where [?e :person/age _]]";
     let pull = "[:find (pull ?e [:person/age]) . :where [?e :person/name \"P\"]]";
     for s in [&one, &two] {
@@ -477,6 +480,7 @@ fn a_panic_mid_write_leaves_no_transaction_open() {
     s.transact(r#"[{:person/name "Real"}]"#).unwrap();
     let odc = DuckConn::new(&other);
     DuckStore::new(&odc as &dyn SqlConn, "default")
+        .unwrap()
         .transact(r#"[{:person/name "Other"}]"#)
         .unwrap();
     let mut names: Vec<String> = q(&s, "[:find ?n :where [_ :person/name ?n]]")
@@ -485,4 +489,298 @@ fn a_panic_mid_write_leaves_no_transaction_open() {
         .collect();
     names.sort();
     assert_eq!(names, ["Alice", "Bob", "Other", "Real"]);
+}
+
+/// A store from before 1.18 has an (empty, unused) `fulltext_values` table;
+/// opening it replaces the table with the view `(fulltext ...)` joins, and
+/// fulltext values transacted before then match.
+#[test]
+fn pre_1_18_fulltext_table_is_upgraded_on_open() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    s.transact(
+        "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+    )
+    .unwrap();
+    s.transact(r#"[{:person/name "Alice" :person/bio "Hello darkness"}]"#)
+        .unwrap();
+    c.execute_batch(
+        "DROP VIEW mentat.fulltext_values; \
+         CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
+         DELETE FROM mentat.meta WHERE key = 'views_1_18'; \
+         UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
+    )
+    .unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "default").unwrap();
+    assert_eq!(
+        q(
+            &s,
+            "[:find ?n :where [(fulltext $ :person/bio \"DARKNESS\") [[?e]]] [?e :person/name ?n]]"
+        ),
+        vec![vec!["Alice".to_string()]]
+    );
+    let views: i64 = c
+        .query_row(
+            "SELECT count(*) FROM duckdb_views() WHERE schema_name = 'mentat' AND view_name = 'fulltext_values'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(views, 1);
+    // Recorded, so later opens don't look again.
+    let recorded: i64 = c
+        .query_row(
+            "SELECT count(*) FROM mentat.meta WHERE key = 'views_1_18'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 1);
+}
+
+/// A 1.15-1.17 store (an old, empty `fulltext_values` table) opened
+/// read-only -- the whole file, or ATTACHed READ_ONLY -- answers queries,
+/// `(fulltext ...)` included: `open` doesn't try to upgrade it, and fulltext
+/// reads the texts from `datoms`.
+#[test]
+fn pre_1_18_store_opens_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.duckdb");
+    let names = "[:find ?n :where [_ :person/name ?n]]";
+    let fts =
+        "[:find ?n :where [(fulltext $ :person/bio \"darkness\") [[?e]]] [?e :person/name ?n]]";
+    {
+        let c = Connection::open(&path).unwrap();
+        let s = seeded(&c);
+        s.transact(
+            "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+        )
+        .unwrap();
+        s.transact(r#"[{:person/name "Alice" :person/bio "Hello darkness"}]"#)
+            .unwrap();
+        // The 1.15-1.17 layout.
+        c.execute_batch(
+            "DROP VIEW mentat.fulltext_values; \
+             CREATE TABLE mentat.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
+             DELETE FROM mentat.meta WHERE key = 'views_1_18'; \
+             UPDATE mentat.meta SET value = '1' WHERE key = 'generation';",
+        )
+        .unwrap();
+    }
+    let want = vec![vec!["Alice".to_string()], vec!["Bob".to_string()]];
+    {
+        let c = Connection::open_with_flags(
+            &path,
+            duckdb::Config::default()
+                .access_mode(duckdb::AccessMode::ReadOnly)
+                .unwrap(),
+        )
+        .unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "default").unwrap();
+        assert_eq!(q(&s, names), want);
+        assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
+    }
+    {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&format!("ATTACH '{}' AS old (READ_ONLY)", path.display()))
+            .unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "old.").unwrap();
+        assert_eq!(q(&s, names), want);
+        assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
+    }
+    // Writable once: upgraded, and fulltext finds the old text. (A new
+    // generation, so this thread's cached schema doesn't skip the upgrade.)
+    let c = Connection::open(&path).unwrap();
+    c.execute_batch("UPDATE mentat.meta SET value = '2' WHERE key = 'generation'")
+        .unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "default").unwrap();
+    assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]]);
+}
+
+/// `'db.name'` addresses store `name` in an ATTACHed database: every row
+/// lands in that file, not in the main one; the store reopens from the file
+/// (also from an un-checkpointed WAL), under another ATTACH name, and when the
+/// file is opened directly.
+#[test]
+fn stores_in_an_attached_database() {
+    let dir = std::env::temp_dir().join(format!("mentat-duck-attach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (main, other) = (dir.join("home.duckdb"), dir.join("other.duckdb"));
+    let count = "[:find (count ?e) . :where [?e :person/name _]]";
+    let fts = "[:find ?n :where [(fulltext $ :person/bio \"dark*\") [[?e]]] [?e :person/name ?n]]";
+    let attach = |c: &Connection, alias: &str| {
+        c.execute_batch(&format!("ATTACH '{}' AS {alias}", other.display()))
+            .unwrap();
+    };
+    {
+        let c = Connection::open(&main).unwrap();
+        attach(&c, "otherdb");
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "otherdb.people").unwrap();
+        assert_eq!(s.catalog_name(), "otherdb");
+        s.transact(SCHEMA).unwrap();
+        s.transact(
+            "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+        )
+        .unwrap();
+        s.transact(r#"[{:person/name "Ann" :person/bio "Hello darkness"} {:person/name "Ben"}]"#)
+            .unwrap();
+        assert_eq!(q(&s, count), vec![vec!["2".to_string()]]);
+        assert_eq!(q(&s, fts), vec![vec!["Ann".to_string()]]);
+        // `'otherdb.'` is otherdb's default store; the main database's
+        // stores are separate, and the main file holds no store at all.
+        let d = DuckStore::new(conn, "otherdb.").unwrap();
+        assert_eq!((d.catalog_name(), d.schema_name()), ("otherdb", "mentat"));
+        d.transact(SCHEMA).unwrap();
+        let m = DuckStore::new(conn, "people").unwrap();
+        assert_eq!(m.catalog_name(), "home");
+        m.transact(SCHEMA).unwrap();
+        assert_eq!(q(&m, count), vec![vec!["0".to_string()]]);
+        let where_: Vec<(String, String)> = c
+            .prepare(
+                "SELECT database_name, schema_name FROM duckdb_tables() \
+                 WHERE table_name = 'datoms' ORDER BY ALL",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            where_,
+            vec![
+                ("home".to_string(), m.schema_name().to_string()),
+                ("otherdb".to_string(), "mentat".to_string()),
+                ("otherdb".to_string(), s.schema_name().to_string()),
+            ]
+        );
+        // Close without a checkpoint: the attached file reopens from its WAL.
+        c.execute_batch("PRAGMA disable_checkpoint_on_shutdown")
+            .unwrap();
+        s.transact(r#"[{:person/name "Cy"}]"#).unwrap();
+    }
+    {
+        // Attached under another name.
+        let c = Connection::open(&main).unwrap();
+        attach(&c, "Again");
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "again.people").unwrap();
+        assert_eq!(s.catalog_name(), "Again");
+        assert_eq!(q(&s, count), vec![vec!["3".to_string()]]);
+        assert_eq!(q(&s, fts), vec![vec!["Ann".to_string()]]);
+        s.transact(r#"[{:person/name "Di"}]"#).unwrap();
+    }
+    // The file on its own, as the main database: the same store, by name.
+    let c = Connection::open(&other).unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "people").unwrap();
+    assert_eq!(q(&s, count), vec![vec!["4".to_string()]]);
+    assert_eq!(q(&s, fts), vec![vec!["Ann".to_string()]]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A name whose prefix is not an attached database is a store in the home
+/// database, as before; so is a dotted name already in use there.
+#[test]
+fn dotted_names_without_an_attached_database() {
+    let c = Connection::open_in_memory().unwrap();
+    let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+    let s = DuckStore::new(conn, "nodb.people").unwrap();
+    assert_eq!(s.catalog_name(), "memory");
+    assert!(s.schema_name().starts_with("mentat_nodb_people_"));
+    s.transact(SCHEMA).unwrap();
+    c.execute_batch("ATTACH ':memory:' AS nodb").unwrap();
+    let again = DuckStore::new(conn, "nodb.people").unwrap();
+    assert_eq!(
+        again.catalog_name(),
+        "memory",
+        "an existing store keeps its name"
+    );
+    let fresh = DuckStore::new(conn, "nodb.fresh").unwrap();
+    assert_eq!(fresh.catalog_name(), "nodb");
+}
+
+/// A store made before 1.18 named its own schema in its view bodies
+/// (`FROM mentat_x.datoms`). Attached under another name they resolve, even
+/// read-only. Attached under the schema's own name DuckDB calls that name
+/// ambiguous; `open` rewrites them unqualified (writable databases only), so
+/// queries, history and fulltext work, and keep working read-only after.
+#[test]
+fn pre_1_18_views_work_attached() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.duckdb");
+    let names = "[:find ?n :where [_ :person/name ?n]]";
+    let fts =
+        "[:find ?n :where [(fulltext $ :person/bio \"darkness\") [[?e]]] [?e :person/name ?n]]";
+    // History reads the `transactions` view.
+    let hist = "[:find ?added :where [_ :person/name \"Bob\" ?tx ?added]]";
+    {
+        let c = Connection::open(&path).unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, "x").unwrap();
+        s.transact(SCHEMA).unwrap();
+        s.transact(
+            "[{:db/ident :person/bio :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]",
+        )
+        .unwrap();
+        let bob = s
+            .transact(
+                r#"[{:person/name "Alice" :person/bio "Hello darkness"} {:db/id "b" :person/name "Bob"}]"#,
+            )
+            .unwrap()
+            .tempids["b"];
+        s.transact(&format!(r#"[[:db/retract {bob} :person/name "Bob"]]"#))
+            .unwrap();
+        // The 1.17 view bodies, schema-qualified, and its fulltext table.
+        let x = s.schema_name().to_string();
+        c.execute_batch(&format!(
+            "DROP VIEW {x}.transactions; DROP VIEW {x}.fulltext_datoms; DROP VIEW {x}.all_datoms; \
+             DROP VIEW {x}.fulltext_values; \
+             CREATE VIEW {x}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
+               v_i, v_d, v_s FROM {x}.timelined_transactions WHERE timeline = 0; \
+             CREATE TABLE {x}.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT); \
+             CREATE VIEW {x}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+               index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {x}.datoms WHERE index_fulltext; \
+             CREATE VIEW {x}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+               index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {x}.datoms; \
+             DELETE FROM {x}.meta WHERE key = 'views_1_18'; \
+             UPDATE {x}.meta SET value = '1' WHERE key = 'generation';"
+        ))
+        .unwrap();
+    }
+    // Also under the store schema's own name, where DuckDB calls an
+    // unqualified `mentat_x_...` ambiguous (catalog or schema).
+    let x = {
+        let c = Connection::open_in_memory().unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        DuckStore::new(conn, "x").unwrap().schema_name().to_string()
+    };
+    for (alias, mode) in [
+        ("side", " (READ_ONLY)"),
+        ("side", ""),
+        (x.as_str(), ""),
+        (x.as_str(), " (READ_ONLY)"),
+    ] {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(&format!("ATTACH '{}' AS {alias}{mode}", path.display()))
+            .unwrap();
+        let conn: &dyn SqlConn = Box::leak(Box::new(DuckConn::new(&c)));
+        let s = DuckStore::new(conn, &format!("{alias}.x")).unwrap();
+        assert_eq!(
+            q(&s, names),
+            vec![vec!["Alice".to_string()]],
+            "{alias}{mode}"
+        );
+        assert_eq!(q(&s, fts), vec![vec!["Alice".to_string()]], "{alias}{mode}");
+        assert_eq!(
+            q(&s, hist),
+            vec![vec!["false".to_string()], vec!["true".to_string()]],
+            "{alias}{mode}"
+        );
+        s.last_tx().unwrap();
+    }
 }

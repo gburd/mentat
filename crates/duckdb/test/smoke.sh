@@ -19,7 +19,8 @@ DUCK="$(mktemp -u /tmp/mentat_smoke.XXXXXX.duckdb)"
 DB="default"
 OLD="$(mktemp -u /tmp/mentat_smoke_old.XXXXXX.mentat)"
 OTHER="$(mktemp /tmp/mentat_duck_other.XXXXXX)"
-trap 'rm -f "$DUCK" "$DUCK".wal "$OLD" "$OTHER" "$OTHER".sql' EXIT
+ATT="$(mktemp -u /tmp/mentat_smoke_att.XXXXXX.duckdb)"
+trap 'rm -f "$DUCK" "$DUCK".wal "$OLD" "$OTHER" "$OTHER".sql "$ATT" "$ATT".wal' EXIT
 
 [ -f "$EXT" ] || { echo "FAIL: $EXT not found (run 'make debug' first)"; exit 1; }
 
@@ -157,6 +158,26 @@ oe="$(sed -n 's/^other_e=//p' <<<"$other")"; me="$(sed -n 's/^mine_e=//p' <<<"$a
 plain="$("$DUCKDB" -noheader -list "$DUCK" -c "SELECT 'plain=' || count(DISTINCT e) FROM mentat.datoms WHERE a = (SELECT e FROM mentat.idents WHERE union_extract(v, 's') = ':person/name');" 2>&1)"
 echo "$plain"
 grep -qx "plain=5" <<<"$plain" || { echo "FAIL: plain SQL read"; exit 1; }
+
+# A store in an ATTACHed database ('db.name'): its rows land in that file,
+# not in $DUCK, and persist there (read back under another ATTACH name, and
+# with plain SQL on the file alone).
+att="$(run "ATTACH '$ATT' AS side;
+SELECT 'att_t=' || (edn_t('side.notes', '[{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one :db/fulltext true :db/index true}]') LIKE '%tx_id%');
+SELECT 'att_data=' || (edn_t('side.notes', '[{:note/text \"Hello darkness\"} {:note/text \"talk\"}]') LIKE '%tx_id%');
+SELECT 'att_fts=' || count(*) FROM edn_q('side.notes', '[:find ?e :where [(fulltext \$ :note/text \"DARK*\") [[?e]]]]', '{}');
+SELECT 'att_main=' || count(*) FROM duckdb_tables() WHERE database_name = current_database() AND schema_name LIKE 'mentat_notes_%';")"
+echo "$att"
+for want in att_t=true att_data=true att_fts=1 att_main=0; do
+  grep -qx "$want" <<<"$att" || { echo "FAIL: attached store: expected $want"; exit 1; }
+done
+att2="$(run "ATTACH '$ATT' AS again;
+SELECT 'att_again=' || string_agg(t, ',' ORDER BY t) FROM edn_q('again.notes', '[:find ?t :where [_ :note/text ?t]]', '{}') AS q(t);")"
+echo "$att2"
+grep -qx "att_again=Hello darkness,talk" <<<"$att2" || { echo "FAIL: attached store after reopen"; exit 1; }
+att3="$("$DUCKDB" -noheader -list "$ATT" -c "SELECT 'att_file=' || count(*) FROM duckdb_tables() WHERE schema_name LIKE 'mentat_notes_%' AND table_name = 'datoms';" 2>&1)"
+echo "$att3"
+grep -qx "att_file=1" <<<"$att3" || { echo "FAIL: attached store not in its file"; exit 1; }
 
 # Error paths: each must fail with a recognisable message.
 expect_err() {

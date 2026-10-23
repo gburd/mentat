@@ -50,7 +50,7 @@ impl DuckBackend {
         let name = map
             .get(&conn)
             .ok_or_else(|| format!("no open store for handle {conn}"))?;
-        Ok(DuckStore::new(self.conn, name))
+        DuckStore::new(self.conn, name).map_err(|e| e.to_string())
     }
 
     fn query(
@@ -77,7 +77,7 @@ impl ScriptBackend for DuckBackend {
     fn open(&mut self, path: Option<&str>) -> Result<i64, String> {
         let name = path.unwrap_or(&self.default_store).to_string();
         DuckStore::new(self.conn, &name)
-            .open()
+            .and_then(|s| s.open())
             .map_err(|e| e.to_string())?;
         let id = self.next_id.get();
         self.next_id.set(id + 1);
@@ -233,7 +233,7 @@ pub fn transact(
     store: &str,
     edn: &str,
 ) -> public_traits::errors::Result<mentat_core::TxReport> {
-    let s = DuckStore::new(conn, store);
+    let s = DuckStore::new(conn, store)?;
     let (define, expanded) = expand_tx_fns(conn, &s, store, edn)?;
     if define {
         s.transact(DB_FN_ATTRIBUTE)?;
@@ -250,7 +250,7 @@ pub fn with(
     store: &str,
     edn: &str,
 ) -> public_traits::errors::Result<mentat_core::TxReport> {
-    let s = DuckStore::new(conn, store);
+    let s = DuckStore::new(conn, store)?;
     let (define, expanded) = expand_tx_fns(conn, &s, store, edn)?;
     let edns: Vec<&str> = define
         .then_some(DB_FN_ATTRIBUTE)

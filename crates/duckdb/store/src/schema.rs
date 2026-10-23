@@ -28,10 +28,14 @@
 //!   rows and DELETEs fail FATAL. `LEGACY_INDEXES` lists them so `open` can
 //!   drop them.
 //! - `known_parts."end"`: `end` is reserved in DuckDB.
-//! - Fulltext (`:db/fulltext`): `fulltext_values` / `fulltext_datoms` exist so
-//!   the engine's SQL resolves, and a fulltext value is stored as a plain
-//!   string in `datoms`, not tokenized. `(fulltext ...)` queries are rejected
-//!   (see `storing.rs`).
+//! - Fulltext (`:db/fulltext`): a fulltext value is stored as a plain string
+//!   in `datoms` (SQLite stores a rowid into its FTS4 table), and
+//!   `(fulltext ...)` tokenizes at query time (`mentat_query_sql`'s `fts`
+//!   module). The engine's DuckDB SQL reads `fulltext_values` as a subquery
+//!   over `datoms` that keys each distinct text by itself; the
+//!   `fulltext_values` view is the same, for SQL users. Stores from before
+//!   1.18 had an unused, empty `fulltext_values` table, and view bodies that
+//!   named their schema; `open` replaces them when the database is writable.
 
 /// The store's schema version (kept in `<schema>.meta`).
 pub const VERSION: i64 = 1;
@@ -42,6 +46,11 @@ pub const LEGACY_INDEXES: [&str; 3] = ["idx_datoms_ea", "idx_datoms_a", "idx_tt_
 /// The `meta` key recording that a store has none of `LEGACY_INDEXES`
 /// (written at creation, or once `open` has dropped them).
 pub const LEGACY_INDEXES_DROPPED: &str = "legacy_indexes_dropped";
+
+/// The `meta` key recording that a store has the 1.18 views: `fulltext_values`
+/// a view, and view bodies that don't name the schema (written at creation,
+/// or once `open` has replaced the pre-1.18 ones).
+pub const VIEWS_1_18: &str = "views_1_18";
 
 /// The type of every `v` column.
 pub const VALUE_TYPE: &str = "UNION(i BIGINT, d DOUBLE, s VARCHAR, b BLOB)";
@@ -59,9 +68,12 @@ pub fn typed_values(x: &str) -> String {
     format!("union_extract({x}, 'i'), union_extract({x}, 'd'), union_extract({x}, 's')")
 }
 
-/// DDL for a new store in DuckDB schema `s`.
+/// DDL for a new store in DuckDB schema `s` (`"catalog"."schema"`). View
+/// bodies name their tables unqualified: DuckDB binds them in the view's own
+/// catalog and schema, so the store keeps working when its file is attached
+/// under another name or opened directly.
 pub fn create_statements(s: &str) -> Vec<String> {
-    vec![
+    [
         format!("CREATE SCHEMA IF NOT EXISTS {s}"),
         // A numeric view of a value, for comparisons that SQLite makes across
         // INTEGER and REAL (5 = 5.0, 9.5 < 10). NULL for non-numbers.
@@ -86,23 +98,12 @@ pub fn create_statements(s: &str) -> Vec<String> {
              value_type_tag SMALLINT NOT NULL, timeline SMALLINT NOT NULL DEFAULT 0, \
              {TYPED_COLUMNS})"
         ),
-        format!(
-            "CREATE VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
-             v_i, v_d, v_s FROM {s}.timelined_transactions WHERE timeline = 0"
-        ),
-        // Fulltext: not tokenized on DuckDB (see module docs). The views keep
-        // the engine's `all_datoms` / `fulltext_datoms` references valid.
-        format!(
-            "CREATE TABLE {s}.fulltext_values (rowid_ BIGINT, text VARCHAR NOT NULL, searchid BIGINT)"
-        ),
-        format!(
-            "CREATE VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms WHERE index_fulltext"
-        ),
-        format!(
-            "CREATE VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
-             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM {s}.datoms"
-        ),
+        // Fulltext (see module docs).
+        fulltext_values_view(s),
+    ]
+    .into_iter()
+    .chain(views(s, "CREATE"))
+    .chain([
         format!(
             "CREATE TABLE {s}.idents (e BIGINT NOT NULL, a BIGINT NOT NULL, \
              v {VALUE_TYPE} NOT NULL, value_type_tag SMALLINT NOT NULL)"
@@ -119,7 +120,40 @@ pub fn create_statements(s: &str) -> Vec<String> {
             "INSERT INTO {s}.meta VALUES ('version', '{VERSION}')"
         ),
         format!("INSERT INTO {s}.meta VALUES ('{LEGACY_INDEXES_DROPPED}', '1')"),
+        format!("INSERT INTO {s}.meta VALUES ('{VIEWS_1_18}', '1')"),
+    ])
+    .collect()
+}
+
+/// The views over `datoms` and `timelined_transactions`, as `verb` (`CREATE`
+/// or `CREATE OR REPLACE`) statements. Their bodies name tables unqualified;
+/// before 1.18 they named the store's schema (`FROM mentat_x.datoms`), which
+/// DuckDB can't resolve when the file is attached under that same name
+/// ("ambiguous reference"), so `open` replaces them.
+pub fn views(s: &str, verb: &str) -> Vec<String> {
+    vec![
+        format!(
+            "{verb} VIEW {s}.transactions AS SELECT e, a, v, value_type_tag, tx, added, \
+             v_i, v_d, v_s FROM timelined_transactions WHERE timeline = 0"
+        ),
+        format!(
+            "{verb} VIEW {s}.fulltext_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms WHERE index_fulltext"
+        ),
+        format!(
+            "{verb} VIEW {s}.all_datoms AS SELECT e, a, v, tx, value_type_tag, index_avet, \
+             index_vaet, index_fulltext, unique_value, v_i, v_d, v_s FROM datoms"
+        ),
     ]
+}
+
+/// Every distinct fulltext text, keyed by itself (see module docs; the
+/// engine inlines the same query, `mentat_query_sql::source_alias_push_sql`).
+pub fn fulltext_values_view(s: &str) -> String {
+    format!(
+        "CREATE VIEW {s}.fulltext_values AS SELECT DISTINCT v_s AS rowid, v_s AS text \
+         FROM datoms WHERE index_fulltext"
+    )
 }
 
 /// The per-transaction scratch tables (SQLite's `temp.*_searches` /

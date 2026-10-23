@@ -94,9 +94,13 @@ pg_mentat's typed-column layout (`v_long`, `v_text`, …), at the cost of more
 SQL rewriting. Decided in M2 by the query-engine tests.
 
 Fulltext (`:db/fulltext`): SQLite FTS4 has no DuckDB equivalent in core.
-**Not in this release**: transacting a fulltext attribute stores the value as a
-plain string, and `(fulltext …)` in a query returns an error naming the gap.
-DuckDB's `fts` extension can back it later.
+A fulltext value is stored as a plain string. Since 1.18, `(fulltext …)`
+compiles FTS4's query syntax to DuckDB regex SQL over the tokens of the
+text (`mentat_query_sql`'s `fts` module), against a `fulltext_values` view
+that keys each text by itself. DuckDB's `fts` extension was not used: it
+has to be installed (a download, which may be offline) and loaded from
+inside the extension, and its index is a snapshot that must be rebuilt
+after every write.
 
 ### 2. Engine: reuse the SQLite engine through a SQL-dialect seam, not a port
 
@@ -185,8 +189,11 @@ deliberately left as they are, per instruction.
 
 **Which database**: the one the extension was loaded into (its default catalog
 when the entrypoint ran). A persistent database (`duckdb my.db`) gets persistent
-datoms; `:memory:` gets in-memory ones. Writing to a different attached database
-is a follow-up (an explicit `ATTACH` name in the store argument).
+datoms; `:memory:` gets in-memory ones. Since 1.18 a store argument `'db.name'`
+puts store `name` in the attached database `db` (README, "Stores in an
+`ATTACH`ed database"): the store's SQL is catalog-qualified, its search path is
+`"db"."schema"`, and its view bodies name tables unqualified so they bind in
+their own catalog under any ATTACH alias.
 
 **Transactions**: `edn_t` commits its own transaction. Calling it inside a
 caller's `BEGIN … ROLLBACK` doesn't roll it back (spike finding 2). This matches

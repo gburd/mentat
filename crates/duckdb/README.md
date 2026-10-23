@@ -75,9 +75,9 @@ section again.
 
 This crate is **extension-only**. The `loadable-extension` feature replaces the
 DuckDB C API functions; opening a normal DuckDB `Connection` from this crate
-panics with "API not initialized". The extension's one connection is cloned
+panics with "API not initialized". The extension's connections are cloned
 from the entrypoint's (the database handle DuckDB passes the entrypoint is
-valid only during that call), and every mentat call runs on it, one at a time.
+valid only during that call); see "Transactions and connections" for the pool.
 
 ## Workspace wiring
 
@@ -161,12 +161,38 @@ SELECT count(*) FROM mentat.datoms;
 | `mentat_import(store VARCHAR, path VARCHAR)` | scalar, volatile | VARCHAR (JSON: datoms, transactions, last_tx) | `DuckStore::import_sqlite` |
 
 Any NULL argument to a scalar yields NULL. `store` names a mentat store in the
-current DuckDB database; it is created (schema, tables, bootstrap transaction)
-on first use. `'default'` (or `''`) is the schema `mentat`. Any other name maps
-to `mentat_<name>_<hash>`: letters, digits and `_` are kept, the rest become `_`,
-and a hash of the full name keeps distinct names apart, so a path-like name
-such as `'/tmp/demo.mentat'` (the pre-1.11 file argument) is just a name and
-writes no file.
+DuckDB database the extension was loaded into; it is created (schema, tables,
+bootstrap transaction) on first use. `'default'` (or `''`) is the schema
+`mentat`. Any other name maps to `mentat_<name>_<hash>`: letters, digits and
+`_` are kept, the rest become `_`, and a hash of the full name keeps distinct
+names apart, so a path-like name such as `'/tmp/demo.mentat'` (the pre-1.11
+file argument) is just a name and writes no file.
+
+### Stores in an `ATTACH`ed database
+
+`'db.name'` is store `name` in the attached database `db` (matched without
+regard to case); `'db.'` or `'db.default'` is `db`'s default store. The store's
+tables, rows and WAL are in `db`'s file, and the store works the same when the
+file is attached under another name or opened on its own (then it is store
+`name`):
+
+```sql
+ATTACH 'notes.duckdb' AS side;
+SELECT edn_t('side.notes', '[{:db/ident :note/text :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]');
+SELECT * FROM edn_q('side.notes', '[:find ?t :where [_ :note/text ?t]]', '{}');
+```
+
+This is store-name syntax, not an `edn_q` option, so the options JSON stays the
+same as on the other backends. A name whose part before the first `.` is not
+an attached database is a store in the main database, as before (so
+`'/tmp/demo.mentat'` and `'v1.2'` are unchanged). So is a dotted name that
+already names a store in the main database, even after a database of that
+name is attached. `USE otherdb` does not move stores: unprefixed names always
+mean the database the extension was loaded into. Each `edn_t` commits one
+DuckDB transaction in the store's database. The stores have no secondary
+indexes in any database, so duckdb/duckdb#26828 (see "Storage layout") does
+not apply to attached files either; the harness test reopens an attached
+store from an un-checkpointed WAL.
 
 ### Importing a 1.10.x store (`mentat_import`)
 
@@ -211,6 +237,12 @@ Error: syntax error at or near "0"`. The sqlite extension hands DuckDB
 SQLite's partial-index definitions (`WHERE index_avet IS NOT 0`), which
 DuckDB can't parse. mentat's own calls don't use those catalog functions,
 so they keep working; other tools and queries that read them won't.
+
+On DuckDB 1.5.6, `duckdb_tables()`, `duckdb_views()`, `duckdb_indexes()`
+and `duckdb_schemas()` can also crash the process (a segfault in the sqlite
+extension) when one connection runs them while another ATTACHes or DETACHes
+a SQLite file, which `mentat_import` does on every call. mentat's calls
+don't run them; avoid running them yourself while imports are under way.
 
 ### Transactions and connections
 
@@ -461,9 +493,10 @@ keep them.
   `EXT=build/release/mentat.duckdb_extension CLIS=~/duckdb-cli bash test/cross-version.sh`.
 - `store/tests-harness` — the storage backend outside the extension, on a
   bundled DuckDB (a separate workspace): a differential test running the same
-  transactions and 60 queries (now, as-of and since every transaction) on the
-  SQLite engine and on DuckDB, the shared scripting model suite, persistence and
-  WAL-replay tests, and `mentat_import` of a SQLite store (needs DuckDB's
+  transactions and 60 queries (now, as-of and since every transaction) plus 31
+  fulltext queries on the SQLite engine and on DuckDB, the shared scripting
+  model suite, persistence, WAL-replay and attached-database tests, and
+  `mentat_import` of a SQLite store (needs DuckDB's
   `sqlite` extension, autoinstalled from extensions.duckdb.org on first run;
   where it can't load, the import tests skip with a message, or fail with
   `MENTAT_REQUIRE_SQLITE_EXT=1`, which CI sets).
@@ -473,13 +506,60 @@ keep them.
   both answer the differential queries now, as of and since every transaction.
   `python3 test/import-1.10.py <1.10.x mentat.duckdb_extension> build/release/mentat.duckdb_extension <v1.5.6 duckdb CLI>`.
 
+### Fulltext
+
+`(fulltext $ :attr "query") [[?e ?v ?tx ?score]]` works on any
+`:db/fulltext true` attribute, with SQLite FTS4's query syntax: words (all
+must appear), `AND`, `OR`, `NOT`, `NEAR`, parentheses, `"exact phrases"`,
+`prefix*`, `^first` and `text:` column filters, read the way SQLite reads
+them (so `hello-world` is `hello AND world`, and `"a b"*` is the phrase
+`a b`). Matching is case-insensitive on whole tokens, split with the token
+characters of SQLite's `unicode61` tokenizer (`remove_diacritics=0`), taken
+from SQLite's own table (`dark` doesn't match `darkness`; `cafe` doesn't
+match `café`). A malformed query is an error ("malformed MATCH
+expression"), as on SQLite, and so is one nested past SQLite's limits. The
+`differential` harness test checks 60 fulltext queries against SQLite's
+results.
+
+The value is stored as a plain string in `datoms` and tokenized at query
+time with DuckDB's built-in string and regex functions, so there is no index
+to keep up to date and no extension to load. The price is a scan of the
+attribute's values on every query: each text is lower-cased and checked for
+the query's words as substrings, and only a text that has them is tokenized
+for the exact match. Over 100k texts a one-word query takes about 80 ms (a
+word in every text: about 0.4 s), and SQLite's longest query (4095 words)
+about 0.5 s. `?score` is always `0.0`, as on SQLite, and a search term bound
+from another pattern matches when the text contains all of its tokens.
+Differences from SQLite:
+
+- `NEAR` and `NEAR/n` are `AND`: the distance isn't checked.
+- Case folding is DuckDB's `lower()` plus the 12 folds SQLite makes that it
+  doesn't (final `ς` matches `σ`). `lower()` also folds about 400 characters
+  SQLite doesn't: `İstanbul` matches `istanbul` here, not on SQLite; so do
+  Cherokee and Georgian Mtavruli capitals, and capitals added to Unicode
+  after 6.1.
+- `searchid:x` matches nothing, and a column filter right before a quote or
+  parenthesis (`text:"a b"`) is ignored.
+- Parentheses nest at most 100 deep (SQLite: 1000).
+- U+FFFE and U+FFFF count as letters (SQLite reads them as a separator).
+- A phrase word followed by a prefix word (`"a* b"`) is matched with a
+  regex, so such a word longer than about 1 MB is an error ("pattern too
+  large") instead of no match.
+
 ## Known gaps
 
-- `:db/fulltext` values are stored as plain strings, not tokenized;
-  `(fulltext ...)` queries aren't supported.
-- Stores live in the database the extension was loaded into, not in another
-  `ATTACH`ed database.
-- Mentat calls run one at a time (one connection).
+- `(fulltext ...)` is not ranked (`?score` is `0.0`) and scans the
+  attribute's values; DuckDB's `fts` extension (BM25) is not used.
+- A store in an attached database must be named with its prefix
+  (`'db.name'`) on every call; `USE` does not change where unprefixed names
+  go.
+- A store made before 1.18.0 in a database attached read-only under the
+  store's own schema name (`ATTACH 'mentat.duckdb' (READ_ONLY)` attaches as
+  `mentat`, the default store's schema) can't answer history queries
+  (`[?e ?a ?v ?tx ?added]`): its old `transactions` view names that schema,
+  which DuckDB then calls ambiguous ("Ambiguous reference to catalog or
+  schema"). Attach it under another name, or writable once, which updates
+  the view.
 - **A closed database stays open in the process**
   ([#363](https://codeberg.org/gregburd/mentat/issues/363)). Since 1.18.0
   each database the extension is loaded into has its own connection pool, so

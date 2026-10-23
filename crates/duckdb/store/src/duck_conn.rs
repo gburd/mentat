@@ -120,15 +120,24 @@ fn each_row(
 pub struct DuckConn<'c> {
     conn: &'c duckdb::Connection,
     schema: RefCell<String>,
+    /// `SqlConn::home_catalog`, or why it couldn't be read.
+    home: Result<String, String>,
 }
 
 impl<'c> DuckConn<'c> {
     pub fn new(conn: &'c duckdb::Connection) -> Self {
         // A few fixed statements per store.
         conn.set_prepared_statement_cache_capacity(32);
+        // The connection's own default database: undo any search path
+        // another wrapper of this connection set, then ask.
+        let home = conn
+            .execute_batch("RESET search_path")
+            .and_then(|_| conn.query_row("SELECT current_database()", [], |r| r.get(0)))
+            .map_err(|e| e.to_string());
         DuckConn {
             conn,
             schema: RefCell::new(String::new()),
+            home,
         }
     }
 
@@ -222,9 +231,16 @@ impl SqlConn for DuckConn<'_> {
         // Always set: another `DuckConn` on the same connection may have
         // moved it.
         self.conn
-            .execute_batch(&format!("SET search_path = '{schema}'"))
+            .execute_batch(&format!(
+                "SET search_path = '{}'",
+                schema.replace('\'', "''")
+            ))
             .map_err(err)?;
         *self.schema.borrow_mut() = schema.to_string();
         Ok(())
+    }
+
+    fn home_catalog(&self) -> Result<String, SqlError> {
+        self.home.clone().map_err(SqlError::new)
     }
 }

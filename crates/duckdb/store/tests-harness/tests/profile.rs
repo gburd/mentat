@@ -71,6 +71,9 @@ impl SqlConn for Trace<'_> {
             self.inner.use_schema(schema)
         })
     }
+    fn home_catalog(&self) -> Result<String, SqlError> {
+        self.inner.home_catalog()
+    }
 }
 
 fn profile(name: &str, n: usize, tr: &Trace, f: &dyn Fn()) {
@@ -114,7 +117,7 @@ fn call_breakdown() {
         inner: DuckConn::new(&c),
         log: RefCell::new(vec![]),
     };
-    let s = DuckStore::new(&tr as &dyn SqlConn, &store);
+    let s = DuckStore::new(&tr as &dyn SqlConn, &store).unwrap();
     let q1 = "[:find ?e ?name :in $ ?email :where [?e :user/email ?email] [?e :user/name ?name]]";
     let opts = serde_json::json!({"inputs": ["user7@example.com"]});
     let n = 200;
@@ -164,6 +167,7 @@ fn statement_costs() {
     let store = std::env::var("MENTAT_PROFILE_STORE").expect("MENTAT_PROFILE_STORE");
     let c = Connection::open(db).unwrap();
     let s = mentat_duckdb_store::DuckStore::new(&DuckConn::new(&c) as &dyn SqlConn, &store)
+        .unwrap()
         .schema_name()
         .to_string();
     let n = 500;
