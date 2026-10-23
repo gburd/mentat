@@ -462,3 +462,46 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   mentat-1.17.1). The fork build is green on 4 platforms, and its
   linux_amd64 artifact is C_STRUCT and loads in duckdb 2.0.
 - EC2 (kiwi 505435643998): all mentat-* resources deleted.
+
+## v1.17.2 RELEASED (2026-10-22): tag 926de18c (commit dc9022346), security fix
+- pg_mentat 1.17.0/1.17.1 (trusted) let a database owner become superuser by
+  planting public.format / array_length / jsonb_build_object before CREATE
+  EXTENSION. 1.17.2 qualifies every script-time call and pins search_path per
+  DO block with pg_catalog.set_config (never SET LOCAL). CI check:
+  scripts/pg/check-script-search-path.py. Edge 1.17.1--1.17.2 is a no-op.
+- Shipped: GitHub Release (8 assets), PGXN, crates.io 20 crates 1.17.2
+  (published from the clean v1.17.2 worktree; publish.sh now refuses a dirty
+  DIR or a version mismatch). DuckDB extension unchanged, so no registry PR.
+- master d20ac8653 pushed with it: duckdb-migrate, pull-asof-nested (#364),
+  duckdb-pool-per-db (#363 part; watcher held back as #378). 1.18.0 edges start
+  from 1.17.2.
+
+## v1.18.0 TAGGED + PUSHED (2026-10-23 19:17 UTC): tag c36976ed on edd11b46c
+- Merged for 1.18.0 (each worker -> reviewer -> fix rounds -> verifier):
+  duckdb-migrate, pull-asof-nested (#364/#371), duckdb-pool-per-db (#363
+  part; watcher held as #378), mozilla-issues (#12 #119 #123 #145 #152 #179
+  #225 #237 #244 #249 #253 #264 #266 #267 #272 #281 #286 #362 #368 #369
+  #375), pg-history-in-not-rules (rules, untyped comparisons), named stores
+  (#337 option b), duckdb-fulltext-attach, #385 (option B), or-aggregate
+  (#390). CHANGELOG [1.18.0] has Breaking (Rust API).
+- Release gate on EC2 (kiwi) was cut short by the account expiring at
+  19:33 UTC: pgrx +script pg13/14/15/16 green on the release commit
+  (2050/2057/2057/2057, 0 failed). NOT run on the release commit: pg17-19
+  pgrx, pg15-19 packages + glibc floor, upgrade==fresh from the released
+  1.17.1/1.17.2 tarballs, trusted install + hijack, DuckDB xv/harness. Each
+  merged branch passed pg13+pg17 and the DuckDB gates on its own; master
+  after each merge passed pg13+pg17. CI (GitHub, release.yml) builds the
+  pg15-19 packages with the glibc-floor check.
+  => Re-run ~/.cache/mentat/sec/relgate118.sh (+ -b.sh) on a new box when one
+  exists, and fix forward in 1.18.1 if anything fails.
+- EC2: i-06cf4157edb2987e2 terminated, key mentat-dev-20261021-130040-key and
+  sg-0ba6602da16c28ce5 deleted (19:18 UTC). Logs copied to
+  ~/.cache/mentat/ec2-final/ (2.3 GB). kiwi account expires 19:33 UTC.
+- Post-tag on master: ctutils 0.4.5 (RUSTSEC-2026-0385), tokio 1.53.3
+  (RUSTSEC-2026-0386), both mentatd-only, Cargo.lock only.
+- crates.io: ~/.cache/mentat/rel1180.sh waits for the release run and
+  publishes from /scratch/mentat/rel-1.18.0 (log ~/.cache/mentat/logs/rel1180.log).
+- DuckDB registry PR for 1.18.0: not opened yet (PAT unset; by hand).
+- DuckDB use-after-free report: sent privately to Jelte Fennema-Nio by the
+  user; files in ~/.cache/mentat/duckup/send/. Keep private.
+- Open follow-ups filed: #376 #378 #379 #381-#384 #386-#389 #391.
