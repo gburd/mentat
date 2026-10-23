@@ -94,7 +94,8 @@ enum Node {
 /// SQLite's limits: the tree must rebalance within
 /// `SQLITE_FTS3_MAX_EXPR_DEPTH` (12) levels, and parentheses nest at most
 /// `SQLITE_MAX_EXPR_DEPTH` (1000) deep; past either the query is malformed.
-/// Checked while parsing, so a hostile query can't overflow the stack.
+/// Parentheses are counted while lexing, so a hostile query can't overflow
+/// the parser's stack.
 // shortcut: parentheses nest at most 100 deep here (1000 levels of this
 // recursive parser overflow a 2 MB thread stack in a debug build). Past 12
 // they can only wrap a single operand; make the parser iterative if that
@@ -246,12 +247,15 @@ fn keyword(rest: &str) -> Option<(Lexeme, usize)> {
 /// the first token in the rest of the query before any quote or parenthesis,
 /// so punctuation splits it: `hello-world` is `hello` then `world`, `a*b` is
 /// `a*` then `b`, and `--- NOT a` is the words `not` and `a`. Text with no
-/// token adds nothing, and `*` after a closing quote is skipped.
+/// token adds nothing, `*` after a closing quote is skipped, and so is a
+/// group with nothing in it (`()`, `(())`): SQLite parses it to no node, so
+/// `a AND ()` is `a AND`.
 fn lex(q: &str) -> Result<Vec<Lexeme>, SQLError> {
     // SQLite reads the query as a C string.
     let q = q.split('\0').next().unwrap_or_default();
     let mut out = Vec::new();
     let mut i = 0;
+    let mut depth = 0;
     loop {
         i = q[i..].find(|c| !is_space(c)).map_or(q.len(), |n| i + n);
         let rest = &q[i..];
@@ -274,12 +278,21 @@ fn lex(q: &str) -> Result<Vec<Lexeme>, SQLError> {
                 continue;
             }
             b'(' => {
+                depth += 1;
+                if depth > MAX_PARENS {
+                    return Err(malformed(q));
+                }
                 out.push(Lexeme::Open);
                 i += 1;
                 continue;
             }
             b')' => {
-                out.push(Lexeme::Close);
+                depth = depth.saturating_sub(1);
+                if out.last() == Some(&Lexeme::Open) {
+                    out.pop();
+                } else {
+                    out.push(Lexeme::Close);
+                }
                 i += 1;
                 continue;
             }
@@ -321,8 +334,6 @@ struct Parser<'q> {
     lexemes: Vec<Lexeme>,
     pos: usize,
     q: &'q str,
-    /// Open parentheses around the current position.
-    parens: usize,
 }
 
 impl Parser<'_> {
@@ -335,9 +346,6 @@ impl Parser<'_> {
         while self.peek() == Some(&Lexeme::Or) {
             self.pos += 1;
             let right = self.and()?;
-            if left == Node::Empty || right == Node::Empty {
-                return Err(malformed(self.q));
-            }
             left = chain(left, right, false);
         }
         Ok(left)
@@ -352,11 +360,7 @@ impl Parser<'_> {
                 _ => return Ok(left),
             }
             let right = self.not()?;
-            left = match (left, right) {
-                (Node::Empty, r) => r,
-                (l, Node::Empty) => l,
-                (l, r) => chain(l, r, true),
-            };
+            left = chain(left, right, true);
         }
     }
 
@@ -366,16 +370,11 @@ impl Parser<'_> {
         while self.peek() == Some(&Lexeme::Not) {
             self.pos += 1;
             let right = self.near()?;
-            if right == Node::Empty {
+            left = Node::Not(Box::new(left), Box::new(right));
+            // A NOT chain nests; stop while it is still shallow.
+            nots += 1;
+            if nots >= MAX_DEPTH {
                 return Err(malformed(self.q));
-            }
-            if left != Node::Empty {
-                left = Node::Not(Box::new(left), Box::new(right));
-                // A NOT chain nests; stop while it is still shallow.
-                nots += 1;
-                if nots >= MAX_DEPTH {
-                    return Err(malformed(self.q));
-                }
             }
         }
         Ok(left)
@@ -412,20 +411,11 @@ impl Parser<'_> {
             }
             Some(Lexeme::Open) => {
                 self.pos += 1;
-                if self.peek() == Some(&Lexeme::Close) {
-                    self.pos += 1;
-                    return Ok(Node::Empty);
-                }
-                self.parens += 1;
-                if self.parens > MAX_PARENS {
-                    return Err(malformed(self.q));
-                }
                 let inner = self.or()?;
                 if self.peek() != Some(&Lexeme::Close) {
                     return Err(malformed(self.q));
                 }
                 self.pos += 1;
-                self.parens -= 1;
                 Ok(inner)
             }
             _ => Err(malformed(self.q)),
@@ -438,7 +428,6 @@ fn parse(q: &str) -> Result<Node, SQLError> {
         lexemes: lex(q)?,
         pos: 0,
         q,
-        parens: 0,
     };
     if p.lexemes.is_empty() {
         return Ok(Node::Empty);
@@ -828,6 +817,50 @@ mod tests {
         ] {
             assert_eq!(p(bad), "ERR", "{bad}");
         }
+    }
+
+    /// SQLite 3.51.2 skips an empty group as if it weren't there: next to
+    /// an operator it leaves the operator without an operand. The verifier's
+    /// 29 shapes; which are malformed, and the rows of the rest, from SQLite.
+    #[test]
+    fn empty_groups_like_fts4() {
+        for (q, want) in [
+            ("()", "()"),
+            ("( )", "()"),
+            ("a ()", "a"),
+            ("a ( )", "a"),
+            ("() a", "a"),
+            ("( ) a", "a"),
+            ("a AND ()", "ERR"),
+            ("a AND ( )", "ERR"),
+            ("() AND a", "ERR"),
+            ("( ) AND a", "ERR"),
+            ("a OR ()", "ERR"),
+            ("() OR a", "ERR"),
+            ("() NOT a", "ERR"),
+            ("( ) NOT a", "ERR"),
+            ("a NOT ()", "ERR"),
+            ("a NOT ( )", "ERR"),
+            ("\"b a\" AND ( )", "ERR"),
+            ("()NOT\"a b\"c", "ERR"),
+            ("a\"b\" NOT ( ) not", "(& a (- b not))"),
+            ("(())", "()"),
+            ("(( ))", "()"),
+            ("a (())", "a"),
+            ("a ( ( ) )", "a"),
+            ("( a ( ) )", "a"),
+            ("(a ())", "a"),
+            ("(a ( ))", "a"),
+            ("( ) ( )", "()"),
+            ("a () b", "(& a b)"),
+            ("a ( ) b", "(& a b)"),
+        ] {
+            assert_eq!(p(q), want, "{q}");
+        }
+        // Empty groups still count toward the nesting limit.
+        let empty = |n: usize| format!("a {}{}", "(".repeat(n), ")".repeat(n));
+        assert_eq!(p(&empty(100)), "a");
+        assert_eq!(p(&empty(101)), "ERR");
     }
 
     /// SQLite's unicode61 tokens, from its own table: only 25 marks in
