@@ -179,6 +179,13 @@ CHECKS = {
         assert names(d, "side.x") == ["a", "b"], names(d, "side.x")
         for st in ["t", "side.z"]:
             use(d, st)
+        # lock_configuration too: the pool can't override the setting, so the
+        # store must read the JSON form of the error itself.
+        e = duckdb.connect(":memory:", config={"allow_unsigned_extensions": "true", "errors_as_json": "true", "lock_configuration": "true"})
+        e.load_extension(EXT)
+        e.execute("ATTACH ':memory:' AS side")
+        for st in ["u", "side.w"]:
+            use(e, st)
     """,
 }
 

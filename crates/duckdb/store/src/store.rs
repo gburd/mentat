@@ -242,19 +242,14 @@ impl<'c> DuckStore<'c> {
 
     /// Whether this store's `table` exists with column `col`: a missing one
     /// fails to bind. Not inside a transaction: DuckDB 2.0 aborts one on any
-    /// error. Read from DuckDB's error text, so the connection needs
-    /// `errors_as_json` off (the extension's pool sets it so).
+    /// error. Read from DuckDB's error text (duckdb-rs drops the error type),
+    /// in either form: plain, or JSON when `errors_as_json` is on and the
+    /// pool's per-session override couldn't be set (`lock_configuration`).
     fn has(&self, table: &str, col: &str) -> Result<bool> {
         let sql = format!("SELECT {col} FROM {}.{table} LIMIT 0", self.qualified);
         match self.conn.query(&sql, &[], &mut |_| Ok(())) {
             Ok(()) => Ok(true),
-            Err(e)
-                if ["Catalog Error", "Binder Error"]
-                    .iter()
-                    .any(|k| e.message.starts_with(k)) =>
-            {
-                Ok(false)
-            }
+            Err(e) if is_bind_miss(&e.message) => Ok(false),
             Err(e) => Err(e.into()),
         }
     }
@@ -708,5 +703,48 @@ impl<'c> DuckStore<'c> {
             })?
             .flatten()
             .unwrap_or(0))
+    }
+}
+
+/// A Catalog or Binder error: the table or column isn't there. DuckDB reports
+/// it as `Catalog Error: ...` / `Binder Error: ...`, or with `errors_as_json`
+/// as JSON, `{"exception_type":"Catalog",...}`, which can arrive wrapped
+/// (`Invalid Input Error: {...}`), so the JSON form is searched for.
+fn is_bind_miss(message: &str) -> bool {
+    ["Catalog Error", "Binder Error"]
+        .iter()
+        .any(|k| message.starts_with(k))
+        || [
+            "\"exception_type\":\"Catalog\"",
+            "\"exception_type\":\"Binder\"",
+        ]
+        .iter()
+        .any(|k| message.contains(k))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bind_miss;
+
+    #[test]
+    fn bind_miss_plain_and_json() {
+        assert!(is_bind_miss(
+            "Catalog Error: Table with name meta does not exist!"
+        ));
+        assert!(is_bind_miss(
+            "Binder Error: Referenced column \"key\" not found"
+        ));
+        // errors_as_json on, as DuckDB 1.5.6 reports it (also wrapped).
+        assert!(is_bind_miss(
+            r#"{"exception_type":"Catalog","exception_message":"Table with name \"nope.meta\" does not exist"}"#
+        ));
+        assert!(is_bind_miss(
+            r#"Invalid Input Error: {"exception_type":"Binder","exception_message":"Referenced column"}"#
+        ));
+        assert!(!is_bind_miss("IO Error: Could not set lock on file"));
+        assert!(!is_bind_miss(
+            r#"{"exception_type":"IO","exception_message":"x"}"#
+        ));
+        assert!(!is_bind_miss("Permission Error: read-only"));
     }
 }
