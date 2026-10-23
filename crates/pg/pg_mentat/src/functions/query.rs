@@ -3225,6 +3225,7 @@ fn build_sql_from_datalog_enriched(
             &get_else_clauses,
             &missing_clauses,
             &with_vars,
+            None,
         )?
     };
 
@@ -3235,8 +3236,8 @@ fn build_sql_from_datalog_enriched(
     // patterns.  The branches are combined with UNION (not UNION ALL) to
     // provide set-semantic deduplication: the same tuple may be produced by
     // multiple branches, and Datalog treats the result as a set.
-    let (query_sql, has_union) = if or_joins.is_empty() {
-        (base_sql, false)
+    let (query_sql, has_union, order_alias, order_types) = if or_joins.is_empty() {
+        (base_sql, false, base_var_to_alias, base_var_to_type)
     } else {
         if or_joins.len() > 1 {
             return Err(
@@ -3249,8 +3250,44 @@ fn build_sql_from_datalog_enriched(
 
         let or_join = or_joins[0];
         let mut union_parts = Vec::new();
+        // A variable the arms bind to values of different types is one
+        // column, typed as a rule column is (merged_value_type). The first
+        // round over the arms finds each arm's types; only when they differ
+        // does a second round compile the arms again with the merged types.
+        // The second round starts from the first round's state: parameters,
+        // auto-index evidence and the plan counters are put back, so each
+        // arm counts once (evidence drives mentat_tune_indexes).
+        let arms = or_join.clauses.len();
+        let params_before = builder.params.len();
+        let evidence_before = crate::auto_index::evidence_snapshot();
+        let plan_counts_before = crate::monitoring::plan_counts();
+        let mut arm_maps = Vec::with_capacity(arms);
+        let mut arm_kinds: Vec<Vec<Option<ArgKind>>> = Vec::with_capacity(arms);
+        let mut or_types: HashMap<String, Option<String>> = HashMap::new();
 
-        for or_clause in &or_join.clauses {
+        for (n, or_clause) in or_join.clauses.iter().cycle().take(2 * arms).enumerate() {
+            if n == arms {
+                or_types = or_merged_types(&arm_maps);
+                // Whether some arm binds `v` to a value of another type than `t`.
+                let differs = |v: &String, t: &Option<String>| {
+                    arm_maps.iter().any(|(alias, types)| {
+                        matches!(alias.get(v), Some((_, "v")))
+                            && types.get(v).cloned().flatten() != *t
+                    })
+                };
+                // An or-join's other variables are each arm's own.
+                if let edn::query::UnifyVars::Explicit(vars) = &or_join.unify_vars {
+                    or_types.retain(|v, t| vars.iter().any(|u| u.as_str() == v) || !differs(v, t));
+                }
+                if !or_types.iter().any(|(v, t)| differs(v, t)) {
+                    break;
+                }
+                union_parts.clear();
+                arm_kinds.clear();
+                builder.params.truncate(params_before);
+                crate::auto_index::restore_evidence(evidence_before.clone());
+                crate::monitoring::restore_plan_counts(plan_counts_before);
+            }
             // Extract patterns, predicates, where-functions, and NOT joins from each OR branch
             let mut arm_patterns: Vec<&edn::query::Pattern> = Vec::new();
             let mut arm_predicates: Vec<&Predicate> = Vec::new();
@@ -3484,7 +3521,14 @@ fn build_sql_from_datalog_enriched(
                             &arm_extra_var_bindings,
                             &mut arm_fn_eqs,
                         );
-                        arm_fn_types.insert(var.clone(), query_fn_type(wf, parsed, schema_prefix));
+                        // Typed from the arm's patterns and the query's, as a
+                        // rule clause's result is typed from its body.
+                        let body: Vec<WhereClause> = combined_patterns
+                            .iter()
+                            .map(|p| WhereClause::Pattern((*p).clone()))
+                            .collect();
+                        let ty = rule_fn_type(wf, &body, schema_prefix, &|_| Some(None));
+                        arm_fn_types.insert(var.clone(), ty.unwrap_or("double"));
                         arm_extra_var_bindings.insert(var, expr);
                     }
                 } else {
@@ -3504,7 +3548,11 @@ fn build_sql_from_datalog_enriched(
             let mut combined_not_joins: Vec<&edn::query::NotJoin> = not_joins.clone();
             combined_not_joins.extend(arm_not_joins);
 
-            let (arm_sql, _arm_var_to_alias, _arm_var_to_type) = build_extended_pattern_query(
+            let mut or_arm = OrArm {
+                types: &or_types,
+                kinds: Vec::new(),
+            };
+            let (arm_sql, arm_var_to_alias, arm_var_to_type) = build_extended_pattern_query(
                 &combined_patterns,
                 &combined_not_joins,
                 &combined_predicates,
@@ -3523,7 +3571,12 @@ fn build_sql_from_datalog_enriched(
                 &get_else_clauses,
                 &missing_clauses,
                 &with_vars,
+                Some(&mut or_arm),
             )?;
+            arm_kinds.push(or_arm.kinds);
+            if n < arms {
+                arm_maps.push((arm_var_to_alias, arm_var_to_type));
+            }
 
             // Remap $N parameter placeholders so they don't collide
             // when we concatenate multiple arms into a single query.
@@ -3538,7 +3591,33 @@ fn build_sql_from_datalog_enriched(
             union_parts.push(format!("({})", remapped));
         }
 
-        (union_parts.join(" UNION "), true)
+        let union = union_parts.join(" UNION ");
+        // Aggregates run over the union of the arms' tuples, so each sees
+        // every arm's rows (each arm aggregated alone, and `.` kept one).
+        let sql = if find_spec_has_aggregates(&parsed.find_spec) {
+            let cols: Vec<_> = (0..find_vars.len())
+                .map(|i| match get_find_element(&parsed.find_spec, i) {
+                    Some(Element::Aggregate(agg)) => {
+                        let kind = arm_kinds
+                            .iter()
+                            .filter_map(|k| k.get(i).copied().flatten())
+                            .reduce(merged_arg_kind)
+                            .unwrap_or(ArgKind::Text);
+                        Some((agg, kind))
+                    }
+                    _ => None,
+                })
+                .collect();
+            aggregate_over_tuples(&cols, true, &format!("({union}) AS _agg"))?
+        } else {
+            union
+        };
+        // :order reads each variable as its merged type (every column "v").
+        let order_alias = or_types
+            .keys()
+            .map(|v| (v.clone(), (String::new(), "v")))
+            .collect();
+        (sql, true, order_alias, or_types)
     };
 
     // Prepend CTEs if we have rules
@@ -3548,25 +3627,14 @@ fn build_sql_from_datalog_enriched(
         format!("{} {}", cte_prefix, query_sql)
     };
 
-    // Append ORDER BY
-    // For non-UNION queries, pass var_to_alias so numeric columns (e, a, tx)
-    // are ordered numerically rather than lexicographically as TEXT.
-    let var_alias_ref = if has_union {
-        None
-    } else {
-        Some(&base_var_to_alias)
-    };
-    let var_type_ref = if has_union {
-        None
-    } else {
-        Some(&base_var_to_type)
-    };
+    // Append ORDER BY. The variable maps let numeric columns (e, a, tx, longs,
+    // numbers) order numerically rather than lexicographically as TEXT.
     let query_sql = append_order_by(
         query_sql,
         &parsed.order,
         find_vars,
-        var_alias_ref,
-        var_type_ref,
+        Some(&order_alias),
+        Some(&order_types),
     );
 
     // If no explicit ORDER BY was specified and we have fulltext joins with score
@@ -6274,6 +6342,7 @@ fn build_extended_pattern_query(
     get_else_clauses: &[GetElseClause],
     missing_clauses: &[MissingClause],
     with_vars: &[String],
+    or_arm: Option<&mut OrArm<'_>>,
 ) -> Result<
     (
         String,
@@ -6791,6 +6860,18 @@ fn build_extended_pattern_query(
         }
     }
 
+    // In an `or` arm, a variable the arms bind to values of different types
+    // compares and aggregates as one column, as a rule column does: a
+    // "number" (longs and doubles) or a value of unknown type. The :in
+    // bindings above still bind it as this arm's type.
+    if let Some(arm) = &or_arm {
+        for (v, t) in arm.types {
+            if matches!(var_to_alias.get(v), Some((_, "v"))) {
+                var_to_type.insert(v.clone(), t.clone());
+            }
+        }
+    }
+
     // Handle NOT clauses as NOT EXISTS subqueries
     for not_join in not_joins {
         let not_sql = build_not_exists_subquery(
@@ -7082,7 +7163,7 @@ fn build_extended_pattern_query(
     let mut with_exprs = Vec::new();
     for w in with_vars {
         match var_value_sql(w, &var_to_alias, &extra_var_bindings, &var_to_type) {
-            Some((e, _)) => with_exprs.push(e),
+            Some(e) => with_exprs.push(e),
             None => {
                 return Err(format!(
                     ":db.error/unbound-variable :with variable {w} is not bound by any \
@@ -7091,6 +7172,45 @@ fn build_extended_pattern_query(
                 .into())
             }
         }
+    }
+    // An `or` arm: its de-duplicated tuples, as text, so the arms' UNION is
+    // one set; the caller aggregates over it (aggregate_over_tuples).
+    if let Some(arm) = or_arm {
+        let text = |(e, kind): (String, ArgKind)| match kind {
+            ArgKind::Double => double_text(&e),
+            _ => format!("({e})::TEXT"),
+        };
+        let mut inner = Vec::new();
+        for (i, expr) in select_exprs.iter().enumerate() {
+            let Some((_, agg)) = agg_cols.iter().find(|(j, _)| *j == i) else {
+                inner.push(format!("{expr} AS _g{i}"));
+                arm.kinds.push(None);
+                continue;
+            };
+            let (arg, kind) =
+                aggregate_arg_sql(agg, &var_to_alias, &extra_var_bindings, &var_to_type);
+            let var = aggregate_var(agg).unwrap_or_default();
+            // A function result is a SQL value of its own type: a long or
+            // double (rule_fn_type) aggregates as a number, as in a rule; any
+            // other as text. An arm that doesn't bind the variable (NULL) has
+            // no say in its kind.
+            let fn_kind = match var_to_type.get(&var).cloned().flatten().as_deref() {
+                Some("long") => ArgKind::Int,
+                Some("double") => ArgKind::Number,
+                _ => ArgKind::Text,
+            };
+            arm.kinds.push(if var_to_alias.contains_key(&var) {
+                Some(kind)
+            } else {
+                extra_var_bindings.contains_key(&var).then_some(fn_kind)
+            });
+            inner.push(format!("{} AS _a{i}", text((arg, kind))));
+        }
+        for (j, w) in with_exprs.into_iter().enumerate() {
+            inner.push(format!("{} AS _w{j}", text(w)));
+        }
+        let sql = format!("SELECT DISTINCT {}{body}", inner.join(", "));
+        return Ok((sql, var_to_alias, var_to_type));
     }
     // Projection rows are keyed by (e, a[, v]); history rows are not.
     let use_projection = temporal.as_of.is_none()
@@ -7134,34 +7254,113 @@ fn build_extended_pattern_query(
     // Both levels plan as HashAggregate, which measured cheaper than
     // COUNT(DISTINCT ..) (a full sort per group) at 10M datoms.
     let mut inner = Vec::new();
-    let mut outer = Vec::new();
-    let mut groups = Vec::new();
+    let mut cols = Vec::new();
     for (i, expr) in select_exprs.iter().enumerate() {
         if let Some((_, agg)) = agg_cols.iter().find(|(j, _)| *j == i) {
             let (arg, kind) =
                 aggregate_arg_sql(agg, &var_to_alias, &extra_var_bindings, &var_to_type);
             inner.push(format!("{arg} AS _a{i}"));
-            outer.push(aggregate_call_sql(agg, &format!("_a{i}"), kind, false)?);
+            cols.push(Some((*agg, kind)));
         } else {
             inner.push(format!("{expr} AS _g{i}"));
-            outer.push(format!("_g{i}"));
-            groups.push(format!("_g{i}"));
+            cols.push(None);
         }
     }
-    for (j, w) in with_exprs.iter().enumerate() {
+    for (j, (w, _)) in with_exprs.iter().enumerate() {
         inner.push(format!("{w} AS _w{j}"));
     }
-    let mut sql = format!(
-        "SELECT {} FROM (SELECT DISTINCT {}{body}) AS _agg",
-        outer.join(", "),
-        inner.join(", ")
-    );
+    let from = format!("(SELECT DISTINCT {}{body}) AS _agg", inner.join(", "));
+    let sql = aggregate_over_tuples(&cols, false, &from)?;
+    Ok((sql, var_to_alias, var_to_type))
+}
+
+/// Compiling one arm of an `or` (build_extended_pattern_query): the type of
+/// each variable across the arms (merged_value_type), and, filled in for an
+/// aggregate query, each find column's aggregate argument kind in this arm
+/// (None for a grouping column or a variable the arm doesn't bind).
+struct OrArm<'t> {
+    types: &'t HashMap<String, Option<String>>,
+    kinds: Vec<Option<ArgKind>>,
+}
+
+/// The type of each variable an `or`'s arms bind: merged across the arms
+/// that bind it (merged_value_type). An entity, attribute or tx place is a
+/// ref and `added` a boolean, as in a rule body (rule_body_var_type). `arms`
+/// holds each arm's variable maps, as build_extended_pattern_query returns
+/// them.
+fn or_merged_types(
+    arms: &[(
+        HashMap<String, (String, &'static str)>,
+        HashMap<String, Option<String>>,
+    )],
+) -> HashMap<String, Option<String>> {
+    let mut out: HashMap<String, Option<String>> = HashMap::new();
+    for (alias, types) in arms {
+        for (v, (_, col)) in alias {
+            let t = match *col {
+                "v" => types.get(v).cloned().flatten(),
+                "added" => Some("boolean".to_string()),
+                _ => Some("ref".to_string()),
+            };
+            let merged = match out.get(v) {
+                Some(cur) => merged_value_type(cur, &t),
+                None => t,
+            };
+            out.insert(v.clone(), merged);
+        }
+    }
+    out
+}
+
+/// The kind of an aggregate argument that is `a` in one `or` arm and `b` in
+/// another: numbers of different kinds are a Number, anything else Text.
+fn merged_arg_kind(a: ArgKind, b: ArgKind) -> ArgKind {
+    match (a, b) {
+        _ if a == b => a,
+        (ArgKind::Text, _) | (_, ArgKind::Text) => ArgKind::Text,
+        _ => ArgKind::Number,
+    }
+}
+
+/// The aggregate query over `from`, a set of de-duplicated tuples: `_g<i>`
+/// for find column `i` when `cols[i]` is None (a grouping column), else
+/// `_a<i>`, the argument of that aggregate, of that kind. `text_args`: the
+/// arguments are the decoded text of the value (an `or`'s arms), not its
+/// native column.
+fn aggregate_over_tuples(
+    cols: &[Option<(&edn::query::Aggregate, ArgKind)>],
+    text_args: bool,
+    from: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut outer = Vec::new();
+    let mut groups = Vec::new();
+    for (i, col) in cols.iter().enumerate() {
+        let Some((agg, kind)) = col else {
+            outer.push(format!("_g{i}"));
+            groups.push(format!("_g{i}"));
+            continue;
+        };
+        let a = format!("_a{i}");
+        let arg = match (text_args, kind) {
+            (true, ArgKind::Int) => format!("{a}::BIGINT"),
+            (true, ArgKind::Double) => decoded_number_sql(&a),
+            _ => a,
+        };
+        outer.push(aggregate_call_sql(agg, &arg, *kind, false)?);
+    }
+    let mut sql = format!("SELECT {} FROM {from}", outer.join(", "));
+    // Over no rows an ungrouped SQL aggregate still returns one row, NULL for sum, avg, min
+    // and max. Those are nil in Datomic, so the find returns nothing (#237); a count is 0.
+    let nullable = cols
+        .iter()
+        .flatten()
+        .any(|(a, _)| !matches!(a.func.0 .0.as_str(), "count" | "count-distinct"));
     if !groups.is_empty() {
         sql.push_str(&format!(" GROUP BY {}", groups.join(", ")));
-    } else if nullable_aggregate {
+    } else if nullable {
         sql.push_str(" HAVING COUNT(*) > 0");
     }
-    Ok((sql, var_to_alias, var_to_type))
+    Ok(sql)
 }
 
 /// Get the Element at the given index from a FindSpec.
@@ -8504,17 +8703,10 @@ fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
                     }
                     _ => Some(None),
                 };
-                let numeric = |t: &str| matches!(t, "long" | "double" | "number");
                 let merged = match (&cols[n], t) {
                     (cur, None) => cur.clone(),
                     (None, Some(t)) => Some(t),
-                    (Some(Some(x)), Some(Some(y))) if *x == y => Some(Some(y)),
-                    // Longs and doubles: a "number" column, compared and
-                    // aggregated numerically.
-                    (Some(Some(x)), Some(Some(y))) if numeric(x) && numeric(&y) => {
-                        Some(Some("number".to_string()))
-                    }
-                    (Some(_), Some(_)) => Some(None),
+                    (Some(x), Some(y)) => Some(merged_value_type(x, &y)),
                 };
                 if merged != cols[n] {
                     cols[n] = merged;
@@ -8525,6 +8717,19 @@ fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
         if !changed {
             return cols.into_iter().map(Option::flatten).collect();
         }
+    }
+}
+
+/// The type of a variable bound to a value of type `x` in one place and `y`
+/// in another (two rule clauses, two `or` arms): the type both share; longs
+/// and doubles are a "number", compared and aggregated numerically; else
+/// None, a value of unknown type.
+fn merged_value_type(x: &Option<String>, y: &Option<String>) -> Option<String> {
+    let numeric = |t: &Option<String>| matches!(t.as_deref(), Some("long" | "double" | "number"));
+    match (x, y) {
+        (Some(a), Some(b)) if a == b => x.clone(),
+        _ if numeric(x) && numeric(y) => Some("number".to_string()),
+        _ => None,
     }
 }
 

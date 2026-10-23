@@ -814,6 +814,8 @@ pub mod no_history_tests;
 pub mod operational_accessors_tests;
 mod operators;
 #[cfg(any(test, feature = "pg_test"))]
+mod or_aggregate_tests;
+#[cfg(any(test, feature = "pg_test"))]
 pub mod or_not_tests;
 #[cfg(any(test, feature = "pg_test"))]
 pub mod or_rule_tests;

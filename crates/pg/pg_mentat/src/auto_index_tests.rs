@@ -134,6 +134,35 @@ mod tests {
         assert!(plan.contains(&idx), "{plan}");
     }
 
+    /// An `or` whose arms bind one variable to a long and a double is compiled
+    /// twice (the arms are retyped); its range evidence counts once. 4 such
+    /// queries stay under min_queries = 5 (counted twice, they were 8).
+    #[pg_test]
+    fn test_auto_index_or_retyped_arms_count_once() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :ai/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run(
+            "SELECT edn_t('[' || string_agg(format('{:ai/d %s.5}', g), ' ') || ']') \
+             FROM generate_series(1, 300) g",
+        )
+        .expect("data");
+        Spi::run("ANALYZE mentat.datoms_double_new, mentat.current_double").expect("analyze");
+        let t = max_tx();
+        for i in 0..4 {
+            Spi::run(&format!(
+                "SELECT edn_q('[:find (sum ?v) . :where (or [?e :ai/n ?v] [?e :ai/d ?v]) [(> ?v {})]]'::TEXT, \
+                 '{{\"asOf\": {t}}}'::jsonb)",
+                280 + i
+            ))
+            .expect("q");
+        }
+        let planned = tune(true);
+        assert!(planned.iter().all(|(a, _)| a != "create"), "{planned:?}");
+    }
+
     #[pg_test]
     fn test_auto_index_below_threshold_creates_nothing() {
         setup();

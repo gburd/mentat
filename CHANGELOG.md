@@ -229,6 +229,20 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: an `or` aggregates over all its arms (#390).** Each arm
+  aggregated its own rows, so `[:find (sum ?v) . :where (or [?e :p/age ?v]
+  [?e :p/score ?v])]` returned one arm's sum (87 where the rule form gives
+  102.0), and count, min and avg were one arm's too. Two arms of one
+  attribute broke it as well: `(count ?e)` over `(or [?e :p/age 30] [?e
+  :p/age 12])` was 1. A variable that an `or` binds to a long in one arm and
+  a double in another now compares, orders and aggregates as a number, as a
+  rule column does; one bound to a string or another type in some arm
+  compares as a value of unknown type, so `[(= ?v "c")]` no longer fails
+  with "operator does not exist: bigint = text". `:order` on an `or`
+  variable is numeric (it was text order). An `or` whose arms differ in type
+  is compiled twice; its auto-index evidence counts once. pg_mentat keeps 5
+  and 5.0 as two values, as Datomic does; the embedded engine and DuckDB
+  merge them (#391).
 - **DuckDB: a store made by 1.11.0-1.14.0 opened read-only failed every call
   with DuckDB's "Cannot execute statement of type DROP ... read-only mode"**
   ([#385](https://codeberg.org/gregburd/mentat/issues/385)). Opening such a
