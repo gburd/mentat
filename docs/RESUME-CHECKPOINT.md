@@ -505,3 +505,32 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - DuckDB use-after-free report: sent privately to Jelte Fennema-Nio by the
   user; files in ~/.cache/mentat/duckup/send/. Keep private.
 - Open follow-ups filed: #376 #378 #379 #381-#384 #386-#389 #391.
+
+## v1.18.0 RELEASED and QUALIFIED (2026-10-23)
+- Channels: GitHub Release (8 assets, all builds incl. pg15-19 glibc floor
+  green), PGXN 1.18.0, crates.io: 20 crates at 1.18.0 (mino_gc 0.5.1 and
+  mino_gc_derive 0.5.0 unchanged, so skipped). DuckDB registry PR
+  duckdb/community-extensions#3348 (fork run 40028563491 green on 4
+  platforms; linux_amd64 artifact C_STRUCT 1.18.0 loads + queries in the
+  v1.5.6 and 2.0 CLIs). Needs a maintainer v1.5.6 (variegata) dispatch
+  after merge, as #3171 did.
+- Full release gate re-run on the TAGGED tree on a new box (kiwi account
+  437803535746, c7i.24xlarge, Debian 12):
+  - pgrx +script: pg13 2050/0/1, pg14-19 2057/0/1 each.
+  - packages pg15-19: GLIBC_2.34 max, 1.17.1/1.17.2 edges present.
+  - Upgrade with the RELEASED tarballs (install released 1.17.1 or 1.17.2
+    package, add data + a named store, install the released 1.18.0 package
+    over it, restart, ALTER EXTENSION UPDATE), pg15-19 x {1.17.1,1.17.2}:
+    all reach 1.18.0, data reads back, the named store is rebuilt with its
+    WARNING and t()/q() work on it, functions and extension members are
+    identical to a fresh install. Only difference: the leftover
+    mentat.idx_app_mentat_fts_text from 1.17 create_store (#381, documented).
+    (The first attempt in relgate118-b.sh mixed the 1.17.x SQL with the 1.18.0
+    .so and its install omitted the script-feature functions; up118.sh is the
+    correct procedure.)
+  - Trusted install by a non-superuser owner: 1.18.0 on pg15-19.
+  - Hijack test: owner never becomes superuser (f f t f = before/after/works/after_use).
+  - DuckDB: build ok, cross-version PASS (v1.5.6 and v2.0), harness 59/0.
+- EC2 torn down: i-024ef67cf2f84ec44, key, SG deleted (account 437803535746).
+- kiwi burner: account 437803535746, expires 2026-10-30 19:14:53 UTC. The
+  account also holds someone else's libdtfl-dev-* instance: never touch it.
