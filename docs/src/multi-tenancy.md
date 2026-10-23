@@ -1,6 +1,192 @@
-# Multi-Tenancy with Per-Store Row-Level Security
+# Multi-Tenancy: Named Stores and Per-Store Row-Level Security
 
-pg_mentat ships with optional per-store Row-Level Security (RLS) for the
+pg_mentat has two ways to keep several stores in one database:
+
+| | Schema per store (`create_store`) | Rows in `mentat` keyed by `store_id` |
+|---|---|---|
+| Created by | `SELECT create_store('acme')` | `INSERT INTO mentat.stores (store_name, schema_name) VALUES ('acme', 'mentat')` |
+| Data lives in | schema `mentat_acme`: its own narrow logs, projections, `schema`, `idents`, `partitions`, `transactions`, sequences | the shared `mentat.*` tables, rows tagged with the store's `store_id` |
+| Attributes | per store: `acme` and `beta` can define `:p/name` differently | per store as rows, but the `mentat.schema` table is shared |
+| Entity ids | per store (each store has its own sequences) | shared sequences |
+| Isolation | by schema: grant or revoke `USAGE ON SCHEMA mentat_acme` | by Row-Level Security (below) |
+| Drop | `drop_store('acme')` drops the schema | delete the rows yourself |
+| Use with | `t`, `q`, `pull`, `pull_many`, `entity`, `schema`, `log`, `diff`, `"with"`, `mentat_excise(ids, 'acme')`, `recursive`, `materialize` | the same functions, plus `SET mentat.current_store_id` for RLS |
+
+Choose schema per store unless you need the RLS model: it is the one
+`create_store` / `drop_store` / `rename_store` / `list_stores` manage, and
+each store's tables stay small.
+
+## Named stores (one schema per store)
+
+```sql
+SELECT create_store('acme', 'Acme Corp');
+SELECT t('acme', '[{:db/ident :p/name :db/valueType :db.type/string
+                    :db/cardinality :db.cardinality/one}]');
+SELECT t('acme', '[{:p/name "Ann"}]');
+SELECT q('acme', '[:find ?n :where [_ :p/name ?n]]', '{}');
+SELECT q('acme', '[:find ?n :where [_ :p/name ?n]]', '{"asOf": 1000000000005}');
+SELECT pull('acme', '[*]', 1000001);
+SELECT pull('acme', '[*]', 1000001, '{"asOf": 1000000000005}');
+SELECT rename_store('acme', 'acme_corp');   -- schema becomes mentat_acme_corp
+SELECT list_stores();
+SELECT drop_store('acme_corp');             -- drops schema mentat_acme_corp
+```
+
+`create_store` builds `mentat_<name>` from the default store's own table
+definitions (`mentat._create_store_layout`, sql/30_store_layout.sql), so a
+named store has every table, column, constraint and shipped index the
+default store has. The store also gets the read-only views
+(`mentat_<name>.facts`, `.entities`, `.attributes`, ...) and helper
+functions (`lookup_entity`, `entity_value`, `find_text`, ...). The default
+store (`mentat`) cannot be dropped or renamed.
+
+The extension-wide functions that have no store argument (`edn_t`, `edn_q`,
+`edn_pull`, `edn_eval`, `mentat_tune_indexes`, the `mentat.attach_*`
+per-attribute index helpers) work on the default store only. So the
+where-fns backed by the per-attribute tables those helpers make
+(`vector-near`, `turbovec-near`, `geom-near`, `geom-within`,
+`geom-contains`, `geom-intersects`) raise `:db.error/unsupported` on a named
+store. User transaction functions (an ident with `:db/fn`) run on the
+default store only: invoking one in `t('acme', ...)` or `with('acme', ...)`
+is `:db.error/unsupported`, because the function's `db` would read the
+default store (issue #389). The built-in `:db/cas` and `:db/retractEntity`
+work on every store.
+`fulltext`, `fuzzy`, the trigram where-fns and `bm25-match` read the
+store's own tables; `mentat.create_fts_index` indexes the default store's
+table only. `subscribe('acme', ...)` re-runs its query against `acme`, and
+a `(pull ?e [...])` in a `q('acme', ...)` find pulls from `acme`.
+Subscriptions and materialized views move with `rename_store` and go away
+with `drop_store`. A subscription name is shared by all stores and ignores
+case, because its channel (`mentat_<name>`) does: `subscribe` refuses a
+name that any store already uses in any case (a unique index on
+`lower(name)` in `mentat.subscriptions` enforces it).
+
+**Permissions.** The role that calls `create_store` owns the new schema and
+everything in it. Every role with a privilege on the default store's
+`mentat` schema or its tables gets the same privilege on the new store's,
+with the same grant option (`mentat._store_grants`). On a trusted install
+that is the installing role, and anyone it granted to. PUBLIC gets nothing.
+To give another role access to just one store:
+
+```sql
+GRANT USAGE ON SCHEMA mentat_acme TO acme_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA mentat_acme TO acme_app;
+GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA mentat_acme TO acme_app;
+-- the functions also read mentat.stores and mentat.cache_generation:
+GRANT USAGE ON SCHEMA mentat TO acme_app;
+GRANT SELECT ON mentat.stores, mentat.cache_generation TO acme_app;
+GRANT UPDATE ON mentat.cache_generation TO acme_app;   -- schema transactions bump it
+```
+
+A writer to a store with an `on_write` materialized view refreshes the
+view in every `t()`, so it must own the view, or on PostgreSQL 17 and later
+hold `MAINTAIN` on it (`GRANT MAINTAIN ON mentat_acme.<view> TO acme_app`).
+Otherwise every `t()` fails with `permission denied for materialized view`.
+A role that runs `rename_store` or `drop_store` also needs `UPDATE` and
+`DELETE` on `mentat.subscriptions` and `mentat.materialized_views`; the
+installing role of a trusted install has them.
+
+### Upgrading from 1.17
+
+`create_store` used to build the pre-1.5 wide layout, which no release
+since 1.5.0 could write to (the first `t()` failed with `relation
+"mentat_<name>.current_instant" does not exist`). So a 1.17 named store
+holds only rows someone inserted by hand. `ALTER EXTENSION pg_mentat
+UPDATE TO '1.18.0'` rebuilds each such store: the old schema is renamed
+`mentat_<name>_pre118` and kept, and a new, empty `mentat_<name>` is built
+with the store's owner and grants. A WARNING names each store rebuilt
+and where its old tables are. A 1.17 subscription or materialized view on
+the store stays with the old tables and stops working; the upgrade names
+each one in a WARNING: run `unsubscribe` / `drop_matview`, then
+`subscribe` / `materialize` again.
+
+1.17 let two subscriptions share a name that differs only in case, or the
+same name on two stores, and then their listeners got each other's
+results. The upgrade deletes none of them: a WARNING names each group and
+the `unsubscribe` calls that leave one. While any are left, the upgrade
+does not create the unique index on `lower(name)`, and says so;
+`subscribe` still refuses a name in use, but two `subscribe` calls of one
+name at the same moment can both succeed. Once each name is held once, a
+superuser can create the index with the statement the WARNING prints.
+
+The upgrade copies nothing out of the old schema. It runs as a superuser,
+and the old schema belongs to the store's owner, who could have replaced
+any table in it with a view; reading it would run that view as superuser.
+If the old store holds rows you want, copy them yourself, as the store's
+owner (shown for a store named `acme`):
+
+```sql
+BEGIN;
+INSERT INTO mentat_acme.schema
+    SELECT entid, ident, value_type, cardinality, unique_constraint,
+           indexed, fulltext, component, no_history
+      FROM mentat_acme_pre118.schema ON CONFLICT DO NOTHING;
+INSERT INTO mentat_acme.idents (ident, entid)
+    SELECT ident, entid FROM mentat_acme_pre118.idents ON CONFLICT DO NOTHING;
+INSERT INTO mentat_acme.transactions (tx, tx_instant)
+    SELECT tx, tx_instant FROM mentat_acme_pre118.transactions ON CONFLICT DO NOTHING;
+-- The store's datoms view routes each row to its narrow log table.
+INSERT INTO mentat_acme.datoms (e, a, value_type_tag, v_ref, v_bool, v_long, v_double,
+                                v_text, v_keyword, v_instant, v_uuid, v_bytes, tx, added)
+    SELECT e, a, value_type_tag, v_ref, v_bool, v_long, v_double,
+           v_text, v_keyword, v_instant, v_uuid, v_bytes, tx, added
+      FROM mentat_acme_pre118.datoms
+     WHERE num_nonnulls(v_ref, v_bool, v_long, v_double, v_text,
+                        v_keyword, v_instant, v_uuid, v_bytes) = 1;
+-- The current-state projection: per (e, a, v), the latest tx wins.
+DO $$ DECLARE ty TEXT; BEGIN
+  FOREACH ty IN ARRAY ARRAY['ref', 'boolean', 'long', 'double', 'instant',
+                            'text', 'keyword', 'uuid', 'bytes'] LOOP
+    EXECUTE format('INSERT INTO mentat_acme.current_%1$s (store_id, e, a, v, tx)
+                    SELECT store_id, e, a, v, tx FROM (
+                      SELECT DISTINCT ON (e, a, v) store_id, e, a, v, tx, added
+                        FROM mentat_acme.datoms_%1$s_new ORDER BY e, a, v, tx DESC) l
+                    WHERE added ON CONFLICT DO NOTHING', ty);
+  END LOOP; END $$;
+-- Never re-issue an id the copied rows use.
+SELECT setval('mentat_acme.partition_db_seq', GREATEST(
+    (SELECT last_value FROM mentat_acme.partition_db_seq),
+    (SELECT max(entid) FROM mentat_acme.idents WHERE entid BETWEEN 100 AND 999999)));
+SELECT setval('mentat_acme.partition_user_seq', GREATEST(
+    (SELECT last_value FROM mentat_acme.partition_user_seq),
+    (SELECT max(e) FROM mentat_acme_pre118.datoms WHERE e BETWEEN 1000001 AND 999999999999)));
+SELECT setval('mentat_acme.partition_tx_seq', GREATEST(
+    (SELECT last_value FROM mentat_acme.partition_tx_seq),
+    (SELECT max(tx) FROM mentat_acme.transactions
+      WHERE tx BETWEEN 1000000000000 AND 1999999999999)));
+-- Other sessions reload the store's attributes.
+UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = 'acme';
+COMMIT;
+```
+
+Drop `mentat_<name>_pre118` once you have checked the result.
+
+**A store the upgrade skipped.** The upgrade never aborts over a named
+store; it leaves one alone, with a WARNING saying why, when its schema does
+not hold the old layout, `mentat_<name>_pre118` already exists, its name
+is reserved (`default`, `information_schema`, `pg_*`, in any case; only a
+row edited by hand can have one), or its name
+is longer than 56 characters (the limit since 1.18.0: `mentat_` plus the
+name must fit PostgreSQL's 63-character identifiers; 1.17 accepted 63 and
+PostgreSQL cut the schema name short). It also
+leaves alone any `mentat.stores` row that `create_store` would not have
+made (its schema is not `mentat_<store_name>`). To rebuild a skipped store
+after the upgrade, set its schema aside and create the store again, then
+copy as above from the schema you set aside:
+
+```sql
+ALTER SCHEMA mentat_acme RENAME TO mentat_acme_old;
+DELETE FROM mentat.stores WHERE store_name = 'acme';
+SELECT create_store('acme');
+```
+
+For a name over 56 characters, create the store under a shorter name and
+look up its truncated schema with
+`SELECT nspname FROM pg_namespace WHERE nspname LIKE 'mentat\_<first letters>%'`.
+
+## Row-Level Security over `store_id` (shared `mentat` tables)
+
+pg_mentat also ships with optional per-store Row-Level Security (RLS) for the
 nine narrow datom tables (`mentat.datoms_<type>_new`). When armed, every
 SELECT, INSERT, UPDATE, and DELETE against those tables is automatically
 filtered by `store_id = mentat.current_store_id()`, where
@@ -12,7 +198,7 @@ code.
 This is one of the genuine differentiators pg_mentat has over Datomic:
 isolation lives in the storage layer, not at the application boundary.
 
-## The model
+### The model
 
 * The narrow datom tables are **shared** across all stores in a single
   Postgres database. Each row carries a `store_id BIGINT` column.
@@ -28,7 +214,7 @@ isolation lives in the storage layer, not at the application boundary.
   the docs treat the GUC as authoritative; the actual enforcement is
   per-table state (next section).
 
-## Opting in
+### Opting in
 
 RLS is **off by default** so that single-store deployments pay zero
 overhead. Two steps arm it:
@@ -65,7 +251,7 @@ The two-step opt-in is intentional: arming RLS briefly takes
 `AccessExclusiveLock` on each narrow table, and we do not want that to
 happen implicitly on a session GUC change.
 
-## Per-session usage
+### Per-session usage
 
 Once RLS is armed, every session that wants to read or write datoms
 must set its store id:
@@ -86,7 +272,7 @@ A connection authenticating as `tenant_alice` then sees only
 `WHERE store_id = ...` clause; forgetting one used to leak data, with
 RLS it cannot.
 
-## Threat model
+### Threat model
 
 What this protects:
 
@@ -127,7 +313,7 @@ What this does **not** protect against:
   send the tenant id is its own bug, not one that pg_mentat will
   catch.
 
-## Installing as a non-superuser
+### Installing as a non-superuser
 
 pg_mentat is a trusted extension (since 1.17.0; #331). A role with `CREATE`
 on the database (for example the database owner) can install it without
@@ -166,7 +352,7 @@ the dump. Restore a non-superuser's database *as that role*
 restore too. A superuser restoring it instead must re-run the `GRANT`s for
 `app`.
 
-## A worked example
+### A worked example
 
 ```sql
 -- One-time install and arming
@@ -202,7 +388,7 @@ INSERT INTO mentat.datoms_long_new (store_id, e, a, v, tx, added)
 VALUES (2, 1, 1, 1, 1, true);                  -- ERROR: WITH CHECK violation
 ```
 
-## Caveats
+### Caveats
 
 * The `mentat.datoms` compatibility view is currently hard-coded to
   `store_id = 0`. Code that still reads from the view sees only the
@@ -214,7 +400,6 @@ VALUES (2, 1, 1, 1, 1, true);                  -- ERROR: WITH CHECK violation
   In the present model all stores share one schema; tenants can see
   one another's attribute definitions. If your tenants must not even
   share schema, run them in separate databases.
-* `mentat.enable_multi_tenant_rls(true)` does not (and cannot) attach
-  RLS retroactively to per-store schemas created by
-  `mentat_create_store()`. Per-store schemas predate the narrow-table
-  multi-tenancy model and are gradually being subsumed by it.
+* `mentat.enable_multi_tenant_rls(true)` arms RLS on the `mentat` schema's
+  tables only. A store made by `create_store()` is isolated by its schema
+  instead (see "Named stores" above); its tables are not under RLS.

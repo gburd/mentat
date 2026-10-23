@@ -310,39 +310,39 @@ pub fn log(
                d.added
         FROM (
             SELECT tx, e, a, 0::smallint AS type_tag, v::text AS v_text, added
-              FROM mentat.datoms_ref_new
+              FROM {schema}.datoms_ref_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 1::smallint, v::text, added
-              FROM mentat.datoms_boolean_new
+              FROM {schema}.datoms_boolean_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 2::smallint, v::text, added
-              FROM mentat.datoms_long_new
+              FROM {schema}.datoms_long_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 3::smallint, v::text, added
-              FROM mentat.datoms_double_new
+              FROM {schema}.datoms_double_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 4::smallint, v::text, added
-              FROM mentat.datoms_instant_new
+              FROM {schema}.datoms_instant_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 7::smallint, v, added
-              FROM mentat.datoms_text_new
+              FROM {schema}.datoms_text_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 8::smallint, v, added
-              FROM mentat.datoms_keyword_new
+              FROM {schema}.datoms_keyword_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 10::smallint, v::text, added
-              FROM mentat.datoms_uuid_new
+              FROM {schema}.datoms_uuid_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
             UNION ALL
             SELECT tx, e, a, 11::smallint, encode(v, 'hex'), added
-              FROM mentat.datoms_bytes_new
+              FROM {schema}.datoms_bytes_new
              WHERE store_id = $1 AND tx > $2 AND tx <= $3
         ) d
         JOIN {schema}.transactions t ON t.tx = d.tx
@@ -381,7 +381,7 @@ pub fn log(
 
             // Resolve attribute entid to ident if possible.
             let a_display: serde_json::Value =
-                if let Some(ident) = crate::cache::get_cache().get_ident(a) {
+                if let Some(ident) = crate::cache::get_cache_for_store(store_name).get_ident(a) {
                     json!(ident)
                 } else {
                     json!(a)

@@ -9,30 +9,41 @@ use serde_json::json;
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-/// Maximum length for a subscription name.
-const MAX_SUBSCRIPTION_NAME_LEN: usize = 58;
+/// Maximum length for a subscription name: its trigger, mentat_sub_trg_<name>,
+/// fits the 63-character identifier limit. Longer names were cut, so two of
+/// them on one store shared one trigger; a 57-character one made every
+/// write fail (its channel, mentat_<name>, is 64).
+const MAX_SUBSCRIPTION_NAME_LEN: usize = 63 - "mentat_sub_trg_".len();
 
 /// Validate a subscription name.
 ///
 /// Rules:
 /// - Must not be empty
-/// - Must be <= 58 characters (channel name = "mentat_" prefix + name, max 63)
+/// - Must be <= 48 characters (see [`MAX_SUBSCRIPTION_NAME_LEN`])
 /// - Must start with a letter or underscore
 /// - Must contain only letters, digits, and underscores
 fn validate_subscription_name(name: &str) -> Result<(), MentatError> {
-    if name.is_empty() {
-        return Err(MentatError::InvalidQuery {
-            message: "Subscription name cannot be empty.".to_string(),
-            suggestion: None,
-        });
-    }
-
     if name.len() > MAX_SUBSCRIPTION_NAME_LEN {
         return Err(MentatError::InvalidQuery {
             message: format!(
-                "Subscription name exceeds maximum length of {} characters.",
+                "Subscription name '{}' is {} characters; the limit is {}, so that its \
+                 trigger name (mentat_sub_trg_<name>) fits PostgreSQL's 63.",
+                name,
+                name.len(),
                 MAX_SUBSCRIPTION_NAME_LEN
             ),
+            suggestion: Some("Choose a shorter subscription name.".to_string()),
+        });
+    }
+    validate_subscription_name_chars(name)
+}
+
+/// The character rules alone. unsubscribe() uses these, so a subscription
+/// made before 1.18.0 with a longer name can still be removed.
+fn validate_subscription_name_chars(name: &str) -> Result<(), MentatError> {
+    if name.is_empty() {
+        return Err(MentatError::InvalidQuery {
+            message: "Subscription name cannot be empty.".to_string(),
             suggestion: None,
         });
     }
@@ -92,6 +103,57 @@ fn subscription_exists(
     })
 }
 
+/// The error for a subscription name already in use (ignoring case) by this
+/// store or another, or None if it is free.
+fn name_taken(
+    store_name: &str,
+    subscription_name: &str,
+) -> Result<Option<Box<dyn std::error::Error + Send + Sync>>, pgrx::spi::SpiError> {
+    // One row always (LEFT JOIN): NULLs when the name is free. The exact
+    // (store, name) row first, for the "already exists" message.
+    let (store, name): (Option<String>, Option<String>) = Spi::get_two_with_args(
+        "SELECT s.store_name, s.name FROM (SELECT 1) one LEFT JOIN LATERAL \
+           (SELECT store_name, name FROM mentat.subscriptions \
+             WHERE pg_catalog.lower(name) = pg_catalog.lower($1) \
+             ORDER BY (store_name = $2 AND name = $1) DESC, id LIMIT 1) s ON true",
+        &[
+            DatumWithOid::from(subscription_name),
+            DatumWithOid::from(store_name),
+        ],
+    )?;
+    let (Some(store), Some(name)) = (store, name) else {
+        return Ok(None);
+    };
+    if store == store_name && name == subscription_name {
+        return Ok(Some(Box::new(MentatError::InvalidQuery {
+            message: format!(
+                "Subscription '{}' already exists for store '{}'.",
+                subscription_name, store_name
+            ),
+            suggestion: Some(format!(
+                "Use mentat_unsubscribe('{}', '{}') first to remove the existing subscription.",
+                store_name, subscription_name
+            )),
+        })));
+    }
+    let as_name = if name == subscription_name {
+        String::new()
+    } else {
+        format!(" as '{}'", name)
+    };
+    Ok(Some(Box::new(MentatError::InvalidQuery {
+        message: format!(
+            "Subscription name '{}' is already used by store '{}'{}. Subscription names are \
+             shared by all stores and ignore case (the channel is {}).",
+            subscription_name,
+            store,
+            as_name,
+            channel_name(subscription_name)
+        ),
+        suggestion: Some("Choose another subscription name.".to_string()),
+    })))
+}
+
 // ---------------------------------------------------------------------------
 // Trigger function SQL generators
 // ---------------------------------------------------------------------------
@@ -100,7 +162,7 @@ fn subscription_exists(
 /// on datom changes and issues NOTIFY if results differ.
 ///
 /// The trigger function:
-/// 1. Runs the subscribed Datalog query via edn_q
+/// 1. Runs the subscribed Datalog query against the subscribed store, via q()
 /// 2. Computes an MD5 hash of the result
 /// 3. Compares with the last known hash (stored in a session variable)
 /// 4. Sends NOTIFY on the subscription channel if the hash changed
@@ -123,12 +185,21 @@ fn trigger_function_sql(
 CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
+    sub_store TEXT;
     new_hash TEXT;
     old_hash TEXT;
     result_json JSONB;
 BEGIN
+    -- The store whose datoms view fired this trigger. Looked up from the
+    -- view's schema on every call, not baked in, so rename_store doesn't
+    -- break it.
+    SELECT s.store_name INTO sub_store FROM mentat.stores s WHERE s.schema_name = TG_TABLE_SCHEMA;
+    IF sub_store IS NULL THEN
+        RAISE EXCEPTION 'subscription {subscription_name}: no store has schema %', TG_TABLE_SCHEMA;
+    END IF;
+
     -- Re-evaluate the subscribed Datalog query
-    SELECT edn_q('{escaped_query}', '{{}}'::jsonb) INTO result_json;
+    SELECT q(sub_store, '{escaped_query}', '{{}}'::jsonb) INTO result_json;
 
     -- Compute hash of current results
     new_hash := md5(result_json::TEXT);
@@ -151,6 +222,7 @@ END;
 $$;
 ",
         func_name = func_name,
+        subscription_name = subscription_name,
         escaped_query = escaped_query,
         var_name = var_name,
         channel = channel,
@@ -234,18 +306,39 @@ pub fn subscribe(
         }));
     }
 
-    // Check if subscription already exists
-    if subscription_exists(store_name, subscription_name)? {
-        return Err(Box::new(MentatError::InvalidQuery {
-            message: format!(
-                "Subscription '{}' already exists for store '{}'.",
-                subscription_name, store_name
-            ),
-            suggestion: Some(format!(
-                "Use mentat_unsubscribe('{}', '{}') first to remove the existing subscription.",
-                store_name, subscription_name
-            )),
-        }));
+    // The channel (mentat_<name>) and the hash setting carry no store, and
+    // the trigger and function names fold to lower case, so a name is one per
+    // database, ignoring case: a second store reusing it would NOTIFY the
+    // first store's listeners with its results.
+    if let Some(err) = name_taken(store_name, subscription_name)? {
+        return Err(err);
+    }
+    // Register first, before any DDL. The unique index on lower(name) makes a
+    // concurrent subscribe() of the same name wait for this one, then insert
+    // nothing; the check above could not see its uncommitted row.
+    let inserted: i64 = Spi::get_one_with_args(
+        "WITH ins AS (INSERT INTO mentat.subscriptions (store_name, name, query) \
+                      VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING 1) \
+         SELECT count(*) FROM ins",
+        &[
+            DatumWithOid::from(store_name),
+            DatumWithOid::from(subscription_name),
+            DatumWithOid::from(query),
+        ],
+    )?
+    .unwrap_or(0);
+    if inserted == 0 {
+        return Err(
+            name_taken(store_name, subscription_name)?.unwrap_or_else(|| {
+                Box::new(MentatError::InvalidQuery {
+                    message: format!(
+                        "Subscription name '{}' was just taken by a concurrent transaction.",
+                        subscription_name
+                    ),
+                    suggestion: Some("Choose another subscription name.".to_string()),
+                })
+            }),
+        );
     }
 
     let schema = get_schema_for_store(store_name);
@@ -263,19 +356,12 @@ pub fn subscribe(
     let trg_sql = trigger_sql(&quoted_schema, subscription_name);
     Spi::run(&trg_sql)?;
 
-    // Register in metadata table
-    Spi::run_with_args(
-        "INSERT INTO mentat.subscriptions (store_name, name, query) VALUES ($1, $2, $3)",
-        &[
-            DatumWithOid::from(store_name),
-            DatumWithOid::from(subscription_name),
-            DatumWithOid::from(query),
-        ],
-    )?;
-
+    // Quoted when it has capitals: an unquoted LISTEN folds to lower case,
+    // and pg_notify's channel does not.
     Ok(format!(
         "Subscription '{}' created. LISTEN {} to receive notifications.",
-        subscription_name, channel
+        subscription_name,
+        quote_ident(&channel)
     ))
 }
 
@@ -299,7 +385,7 @@ pub fn unsubscribe(
     subscription_name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     validate_store_name(store_name)?;
-    validate_subscription_name(subscription_name)?;
+    validate_subscription_name_chars(subscription_name)?;
 
     // Verify subscription exists
     if !subscription_exists(store_name, subscription_name)? {
@@ -410,8 +496,13 @@ mod tests {
 
     #[test]
     fn test_validate_subscription_name_too_long() {
-        let long_name = "a".repeat(59);
-        assert!(validate_subscription_name(&long_name).is_err());
+        assert_eq!(MAX_SUBSCRIPTION_NAME_LEN, 48);
+        assert!(validate_subscription_name(&"a".repeat(48)).is_ok());
+        assert_eq!(format!("mentat_sub_trg_{}", "a".repeat(48)).len(), 63);
+        for n in [49, 57, 58, 59] {
+            let e = validate_subscription_name(&"a".repeat(n)).unwrap_err();
+            assert!(e.to_string().contains("the limit is 48"), "{n}: {e}");
+        }
     }
 
     #[test]
@@ -441,7 +532,7 @@ mod tests {
             "[:find ?e :where [?e :person/name]]",
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
-        assert!(sql.contains("edn_q"));
+        assert!(sql.contains("q(sub_store, '[:find"));
         assert!(sql.contains("pg_notify"));
         assert!(sql.contains("mentat_test_sub"));
         assert!(sql.contains("[:find ?e :where [?e :person/name]]"));
@@ -455,12 +546,29 @@ mod tests {
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
         );
-        // Single quotes are doubled once for the edn_q('...') string
+        // Single quotes are doubled once for the q('...') string
         // literal embedded inside the $$-quoted function body. The function
         // body is dollar-quoted, so the quotes inside it are literal -- there
         // is no second nesting level, hence one level of doubling (O''Brien),
         // not two (O''''Brien).
         assert!(sql.contains("O''Brien"));
+    }
+
+    // The trigger fires on the subscribed store's datoms view; it must query
+    // that store, not the default one (edn_q), and find it by the view's
+    // schema at run time: a store name baked in breaks on rename_store.
+    #[test]
+    fn test_trigger_function_sql_queries_its_store() {
+        let sql = trigger_function_sql(
+            "mentat_acme",
+            "s",
+            "mentat_s",
+            "[:find ?n :where [_ :p/name ?n]]",
+        );
+        assert!(sql.contains("q(sub_store, '[:find ?n"), "{sql}");
+        assert!(sql.contains("schema_name = TG_TABLE_SCHEMA"), "{sql}");
+        assert!(!sql.contains("acme'"), "{sql}");
+        assert!(!sql.contains("edn_q"), "{sql}");
     }
 
     #[test]

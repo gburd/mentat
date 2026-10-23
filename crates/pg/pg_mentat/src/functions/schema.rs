@@ -37,7 +37,7 @@ pub fn mentat_schema() -> Result<JsonB, Box<dyn std::error::Error + Send + Sync>
 /// ```
 #[pg_extern]
 pub fn schema(store: &str) -> Result<JsonB, Box<dyn std::error::Error + Send + Sync>> {
-    let schema_name = get_schema_for_store(store);
+    let schema_name = crate::functions::store_management::quote_ident(&get_schema_for_store(store));
     let mut schema_map = serde_json::Map::new();
 
     Spi::connect(|client| {

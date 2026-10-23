@@ -39,6 +39,10 @@ pub use mentat_script::txfn::DB_FN_IDENT;
 /// embedded SQLite and DuckDB backends run). One sandboxed interpreter per
 /// transaction, built only when an invocation is found.
 pub fn expand_user_tx_fns(value: edn::Value, qs: &str) -> Result<edn::Value, BoxErr> {
+    if qs != "mentat" {
+        refuse_on_named_store(&value, qs)?;
+        return Ok(value);
+    }
     let mut it: Option<mino_rs::Interpreter> = None;
     mentat_script::txfn::expand(
         value,
@@ -52,17 +56,45 @@ pub fn expand_user_tx_fns(value: edn::Value, qs: &str) -> Result<edn::Value, Box
     .map_err(|e| e.into())
 }
 
+/// A tx-fn's `db` comes from the script backend, which reads the default
+/// store only (`script::PgBackend`), so on a named store it would read the
+/// default store's values. Refuse a top-level invocation of an ident that
+/// has a `:db/fn` (nested ones only come out of an evaluated fn). The
+/// built-ins (`:db/cas`, `:db/retractEntity`, `:db.fn/*`) aren't tx-fns:
+/// the transactor runs them on the store's own tables.
+fn refuse_on_named_store(value: &edn::Value, qs: &str) -> Result<(), BoxErr> {
+    let edn::Value::Vector(items) = value else {
+        return Ok(());
+    };
+    for kw in items
+        .iter()
+        .filter_map(mentat_script::txfn::invocation_head)
+    {
+        let ident = format!("{kw}");
+        if lookup_db_fn(qs, &ident)?.is_some() {
+            let store = qs.trim_matches('"').strip_prefix("mentat_").unwrap_or(qs);
+            return Err(format!(
+                ":db.error/unsupported transaction function {ident} can't run on named \
+                 store '{store}': in 1.18.0 user transaction functions run on the default \
+                 store only (issue #389). The built-ins :db/cas and :db/retractEntity work \
+                 on every store."
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// The `:db/fn` source on the entity whose `:db/ident` is `ident`, if any.
 fn lookup_db_fn(qs: &str, ident: &str) -> Result<Option<String>, BoxErr> {
     // Resolve through the store's own idents table (the cache may not have a
     // freshly defined fn yet) and read the live value from the current-state
-    // projection. Every store's datoms live in mentat.current_* keyed by
-    // store_id (resolved the same way the transactor resolves it).
+    // projection of the same store.
     let store_id = super::transact::get_store_id_from_schema(qs)?;
     let sql = format!(
         "SELECT t.v FROM {qs}.idents i \
          JOIN {qs}.idents f ON f.ident = $2 \
-         JOIN mentat.current_text t ON t.e = i.entid AND t.a = f.entid \
+         JOIN {qs}.current_text t ON t.e = i.entid AND t.a = f.entid \
          WHERE i.ident = $1 AND t.store_id = $3 \
          LIMIT 1"
     );

@@ -178,4 +178,121 @@ mod tests {
         .expect("NULL");
         assert_eq!(j.0["result"].as_i64(), Some(150));
     }
+
+    fn t_on(store: &str, edn: &str) -> String {
+        Spi::get_one_with_args::<String>(
+            "SELECT t($1, $2)",
+            &[
+                pgrx::datum::DatumWithOid::from(store),
+                pgrx::datum::DatumWithOid::from(edn),
+            ],
+        )
+        .unwrap_or_else(|e| panic!("t({store}, {edn}): {e}"))
+        .expect("NULL")
+    }
+
+    fn err_on(store: &str, edn: &str) -> String {
+        let stmt = format!("SELECT t({}, {})", quote(store), quote(edn));
+        Spi::get_one_with_args::<String>(
+            "SELECT mentat._txfn_err($1)",
+            &[pgrx::datum::DatumWithOid::from(stmt.as_str())],
+        )
+        .expect("err helper")
+        .unwrap_or_default()
+    }
+
+    fn n_on(store: &str, name: &str) -> Option<i64> {
+        let q = format!("[:find ?n . :where [?e :tf/name \"{name}\"] [?e :tf/n ?n]]");
+        Spi::get_one_with_args::<JsonB>(
+            "SELECT q($1, $2, '{}'::jsonb)",
+            &[
+                pgrx::datum::DatumWithOid::from(store),
+                pgrx::datum::DatumWithOid::from(q.as_str()),
+            ],
+        )
+        .expect("q")
+        .expect("NULL")
+        .0["result"]
+            .as_i64()
+    }
+
+    /// A user tx-fn on a named store is refused (issue #389): its `db` came
+    /// from the script backend, which reads the default store, so with the
+    /// named store's counter at 1 and the default's at 100, :tf/inc set the
+    /// named store's to 101. The built-ins still work there.
+    #[pg_test]
+    fn txfn_on_a_named_store_is_refused() {
+        setup();
+        Spi::run("SELECT create_store('tfn')").expect("create_store");
+        t_on(
+            "tfn",
+            r#"[{:db/ident :tf/name :db/valueType :db.type/string
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
+                {:db/ident :tf/n :db/valueType :db.type/long
+                 :db/cardinality :db.cardinality/one}]"#,
+        );
+        t_on(
+            "tfn",
+            r#"[{:tf/name "ctr" :tf/n 1} {:tf/name "gone" :tf/n 7}]"#,
+        );
+        t(r#"[{:tf/name "ctr" :tf/n 100}]"#);
+        t_on(
+            "tfn",
+            r#"[{:db/ident :tf/inc :db/fn "(fn [db name] (let [n (ffirst (mentat.store/q db '[:find ?n :in $ ?name :where [?e :tf/name ?name] [?e :tf/n ?n]] name))] [{:tf/name name :tf/n (inc n)}]))"}]"#,
+        );
+
+        let e = err_on("tfn", r#"[[:tf/inc "ctr"]]"#);
+        assert!(
+            e.contains(":db.error/unsupported")
+                && e.contains(":tf/inc")
+                && e.contains("'tfn'")
+                && e.contains("default store only")
+                && e.contains("#389"),
+            "got: {e}"
+        );
+        // Next to other tx-data, too; nothing is written.
+        let e = err_on("tfn", r#"[{:tf/name "x" :tf/n 5} [:tf/inc "ctr"]]"#);
+        assert!(e.contains(":db.error/unsupported"), "got: {e}");
+        assert_eq!(n_on("tfn", "ctr"), Some(1));
+        assert_eq!(n_on("tfn", "x"), None);
+        assert_eq!(n_of("ctr"), Some(100));
+        // with() runs the same transactor.
+        let e = Spi::get_one::<String>(
+            r#"SELECT mentat._txfn_err($$SELECT "with"('tfn', '[[:tf/inc "ctr"]]')$$)"#,
+        )
+        .expect("with")
+        .unwrap_or_default();
+        assert!(e.contains(":db.error/unsupported"), "with: {e}");
+
+        // The built-ins run on the store's own tables.
+        t_on("tfn", r#"[[:db/cas [:tf/name "ctr"] :tf/n 1 2]]"#);
+        assert_eq!(n_on("tfn", "ctr"), Some(2));
+        t_on("tfn", r#"[[:db.fn/cas [:tf/name "ctr"] :tf/n 2 3]]"#);
+        assert_eq!(n_on("tfn", "ctr"), Some(3));
+        let e = err_on("tfn", r#"[[:db/cas [:tf/name "ctr"] :tf/n 100 4]]"#);
+        assert!(
+            !e.is_empty(),
+            "cas against the default store's value must fail"
+        );
+        assert_eq!(n_on("tfn", "ctr"), Some(3));
+        t_on("tfn", r#"[[:db/retractEntity [:tf/name "gone"]]]"#);
+        assert_eq!(n_on("tfn", "gone"), None);
+        t_on("tfn", r#"[{:tf/name "gone2" :tf/n 8}]"#);
+        t_on("tfn", r#"[[:db.fn/retractEntity [:tf/name "gone2"]]]"#);
+        assert_eq!(n_on("tfn", "gone2"), None);
+        assert_eq!(n_of("ctr"), Some(100), "the default store is untouched");
+
+        // On the default store, through t('default', ...), tx-fns still run.
+        install(
+            ":tf/inc",
+            "(fn [db name] \
+               (let [n (ffirst (mentat.store/q db \
+                          '[:find ?n :in $ ?name :where [?e :tf/name ?name] [?e :tf/n ?n]] \
+                          name))] \
+                 [{:tf/name name :tf/n (inc n)}]))",
+        );
+        t_on("default", r#"[[:tf/inc "ctr"]]"#);
+        assert_eq!(n_of("ctr"), Some(101));
+        assert_eq!(n_on("tfn", "ctr"), Some(3));
+    }
 }

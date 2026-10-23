@@ -117,6 +117,76 @@ mod tests {
         assert_eq!(eval_ok("(mentat.store/open)"), "1");
     }
 
+    /// `(mentat.store/open "nz")` named a store but got the default one: the
+    /// pg backend reads and writes the default store only, so a transact
+    /// through it wrote the default store (issue #389). It is refused now.
+    #[pg_test]
+    fn open_with_a_store_name_is_refused() {
+        setup();
+        Spi::run("SELECT create_store('ev_nz')").expect("create_store");
+        let schema = "[{:db/ident :ev/name :db/valueType :db.type/string \
+                      :db/cardinality :db.cardinality/one}]";
+        for store in ["ev_nz", "default"] {
+            Spi::run(&format!("SELECT t('{store}', '{schema}')")).expect("schema");
+            Spi::run(&format!(
+                "SELECT t('{store}', '[{{:ev/name \"in-{store}\"}}]')"
+            ))
+            .expect("seed");
+        }
+        let names = |store: &str| -> String {
+            Spi::get_one::<pgrx::JsonB>(&format!(
+                "SELECT q('{store}', '[:find [?n ...] :where [_ :ev/name ?n]]', '{{}}')"
+            ))
+            .expect("q")
+            .expect("NULL")
+            .0["result"]
+                .to_string()
+        };
+        let before = (names("ev_nz"), names("default"));
+        for name in ["ev_nz", "mentat_ev_nz", "nope", "Default"] {
+            for script in [
+                format!("(mentat.store/open \"{name}\")"),
+                format!(
+                    "(mentat.store/transact (mentat.store/open \"{name}\") \
+                       [{{:ev/name \"via-script\"}}])"
+                ),
+                format!(
+                    "(mentat.store/q (mentat.store/db (mentat.store/open \"{name}\")) \
+                       '[:find [?n ...] :where [_ :ev/name ?n]])"
+                ),
+            ] {
+                let msg = eval_error(&script);
+                assert!(
+                    msg.contains(":db.error/unsupported")
+                        && msg.contains(&format!("'{name}'"))
+                        && msg.contains("default store only")
+                        && msg.contains("#389"),
+                    "{script}: {msg}"
+                );
+            }
+        }
+        assert_eq!(
+            (names("ev_nz"), names("default")),
+            before,
+            "nothing written"
+        );
+        // The default store, by no name or its own.
+        for open in [
+            "(mentat.store/open)",
+            "(mentat.store/open nil)",
+            "(mentat.store/open \"default\")",
+        ] {
+            assert_eq!(
+                eval_ok(&format!(
+                    "(mentat.store/q (mentat.store/db {open}) \
+                       '[:find [?n ...] :where [_ :ev/name ?n]])"
+                )),
+                "[\"in-default\"]",
+                "{open}"
+            );
+        }
+    }
+
     // ---- CPU: step limit + interrupt hook ----
 
     #[pg_test]

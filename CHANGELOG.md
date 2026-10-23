@@ -30,6 +30,20 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **pg_mentat: named stores work (#337).** `create_store(name)` builds
+  `mentat_<name>` from the default store's own table definitions (one DDL
+  source, `mentat._create_store_layout` in sql/30_store_layout.sql), so a
+  named store has every table, constraint and shipped index the default
+  store has, owned by the creating role and granted like the default store
+  (`mentat._store_grants`). `t`, `q`, `pull`, `entity`, schema, log,
+  history, as-of / since, `with`, rules, `not`, `or`, get-else, missing?,
+  fulltext, fuzzy and trigram where-fns, subscriptions and materialized
+  views all read and write the store's own tables; the default store is
+  untouched. New `pull(store, pattern, entity_id, options)` pulls as of /
+  since a transaction, and a find-pull in `q(store, ...)` uses it. Store
+  names are at most 56 characters. Before 1.18.0 `create_store` built a
+  layout no release since 1.5.0 could write to. See
+  docs/src/multi-tenancy.md.
 - **Transaction reports count the datoms asserted and retracted (#281).** The
   counts leave out the transaction's `:db/txInstant`. A redundant assertion
   or a retraction of an absent datom is not counted; replacing a
@@ -60,6 +74,29 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat on a named store (#337):** `vector-near`, `turbovec-near` and
+  the `geom-*` where-fns, user transaction functions (an ident with
+  `:db/fn`) and `edn_eval`'s `(mentat.store/open "<name>")` are
+  `:db.error/unsupported`; they would read the default store (#389).
+  The built-in `:db/cas` and `:db/retractEntity` work on every store.
+- **pg_mentat subscriptions:** a subscription name is unique across all
+  stores ignoring case (a unique index on `lower(name)` in
+  `mentat.subscriptions`), because the NOTIFY channel `mentat_<name>` is
+  shared; names are at most 48 characters, so the trigger name fits; a
+  capitalised channel is printed quoted (`LISTEN "mentat_Names"`).
+  Subscriptions and `on_write` materialized views move with `rename_store`
+  and are removed by `drop_store`.
+- **The 1.18.0 upgrade rebuilds each 1.17 named store** (`ALTER EXTENSION
+  pg_mentat UPDATE`): the old schema is renamed `mentat_<name>_pre118` and
+  kept, a new empty `mentat_<name>` is built with the store's owner and
+  grants, and a WARNING names each store rebuilt or skipped (reserved name,
+  dropped schema, already on the 1.18 layout). It also warns about each 1.17
+  subscription or materialized view on a rebuilt store (unsubscribe /
+  drop_matview, then re-create), about subscription names that collide
+  ignoring case (it then skips the unique index and prints the statement to
+  run once they are gone), and about names over 48 characters. It deletes
+  no rows. It runs as the installing superuser and reads nothing a store
+  owner controls.
 - **The rules for a vector in a ref attribute's value (#152), the same on
   every backend** (docs/src/datomic-compat.md, "Lookup refs in a list of
   values"):
@@ -130,6 +167,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: subscriptions and `on_write` materialized views ran one
+  transaction behind** (#337 review): the statement trigger fired before the
+  transaction's data was written, so the last write before a quiet period
+  was never notified or refreshed. This affected the default store too.
 - **pg_mentat: instants are exact to the microsecond in every year 1-9999 on
   every PostgreSQL version (#375).** They were written with
   `to_timestamp(double)`, which loses a microsecond outside roughly
@@ -235,6 +276,11 @@ and the project follows [Semantic Versioning](https://semver.org/).
   as on 1.17.2; rules no longer hide it. Expensive non-recursive rule bodies
   run once per invocation (#387). Longs above 2^53 compare as doubles
   against values of unknown type (#388).
+- **pg_mentat: LISTEN has no access control (#379)**: any role that can
+  connect can LISTEN on a store's subscription channel. 1.17 `create_store`
+  left per-store fulltext/trigram indexes on the default store's tables
+  (#381); `materialize()` with a find-pull fails on PostgreSQL 17 (#382);
+  generated subscription trigger functions don't pin `search_path` (#383).
 
 ## [1.17.2] — security: pg_mentat install script
 

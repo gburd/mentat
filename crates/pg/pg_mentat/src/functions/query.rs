@@ -356,17 +356,6 @@ fn build_datoms_from_fragment(
     )
 }
 
-/// The schema prefix (`mentat.`) of the narrow `datoms_<type>_new` /
-/// `current_<type>` tables a query on store `schema_prefix` reads. Every
-/// read of those tables -- a pattern's FROM and its as-of anti-join alike --
-/// takes the prefix from here, so they always read the same schema.
-// named-stores: every store's rows sit in mentat's tables today, keyed by
-// store_id; feat/pg-named-stores moves them into each store's schema. Return
-// `schema_prefix` here then (value_type_to_table_info takes it too).
-fn narrow_tables_prefix(_schema_prefix: &str) -> &str {
-    "mentat."
-}
-
 // ============================================================================
 // Schema-Aware Single-Table Query Helpers
 // ============================================================================
@@ -374,13 +363,17 @@ fn narrow_tables_prefix(_schema_prefix: &str) -> &str {
 /// Metadata for a single type-specific datoms table, used by the schema-aware
 /// query optimizer to replace the 9-way UNION ALL with a direct table scan.
 struct TypedTableInfo {
-    /// The table name (e.g., "mentat.datoms_text_new").
-    table: &'static str,
-    /// The current-state projection table for this type (e.g.,
+    /// The store's log table (e.g., "mentat.datoms_text_new" or
+    /// "mentat_s1.datoms_text_new").
+    table: String,
+    /// The store's current-state projection table for this type (e.g.,
     /// "mentat.current_text"). Read instead of `table` for current-time
     /// (non-as-of) queries: it holds only live datoms, so liveness needs no
     /// `added=true` filter or latest-tx-wins resolution over the log.
-    current_table: &'static str,
+    current_table: String,
+    /// The default store's log table, for auto-index evidence (whose table
+    /// names are pinned to the `mentat` schema).
+    default_table: &'static str,
     /// The SQL type of the native `v` column (e.g., "TEXT", "BIGINT").
     sql_type: &'static str,
     /// The type tag constant for this value type.
@@ -390,77 +383,102 @@ struct TypedTableInfo {
     value_column: &'static str,
 }
 
-/// Map a value_type enum label (as stored in the schema table) to its typed table metadata.
+/// Map a value_type enum label (as stored in the schema table) to its typed
+/// table metadata, with table names under `schema_prefix` (the store's
+/// schema, e.g. "mentat." or "mentat_s1.").
 ///
 /// Returns `None` for unrecognized type names, which causes the caller to fall
 /// back to the UNION ALL strategy.
-fn value_type_to_table_info(value_type: &str) -> Option<TypedTableInfo> {
-    match value_type {
-        "ref" => Some(TypedTableInfo {
-            table: "mentat.datoms_ref_new",
-            current_table: "mentat.current_ref",
-            sql_type: "BIGINT",
-            type_tag: type_tag::REF,
-            value_column: "v_ref",
-        }),
-        "boolean" => Some(TypedTableInfo {
-            table: "mentat.datoms_boolean_new",
-            current_table: "mentat.current_boolean",
-            sql_type: "BOOLEAN",
-            type_tag: type_tag::BOOLEAN,
-            value_column: "v_bool",
-        }),
-        "long" => Some(TypedTableInfo {
-            table: "mentat.datoms_long_new",
-            current_table: "mentat.current_long",
-            sql_type: "BIGINT",
-            type_tag: type_tag::LONG,
-            value_column: "v_long",
-        }),
-        "double" => Some(TypedTableInfo {
-            table: "mentat.datoms_double_new",
-            current_table: "mentat.current_double",
-            sql_type: "DOUBLE PRECISION",
-            type_tag: type_tag::DOUBLE,
-            value_column: "v_double",
-        }),
-        "instant" => Some(TypedTableInfo {
-            table: "mentat.datoms_instant_new",
-            current_table: "mentat.current_instant",
-            sql_type: "TIMESTAMPTZ",
-            type_tag: type_tag::INSTANT,
-            value_column: "v_instant",
-        }),
-        "string" => Some(TypedTableInfo {
-            table: "mentat.datoms_text_new",
-            current_table: "mentat.current_text",
-            sql_type: "TEXT",
-            type_tag: type_tag::STRING,
-            value_column: "v_text",
-        }),
-        "keyword" => Some(TypedTableInfo {
-            table: "mentat.datoms_keyword_new",
-            current_table: "mentat.current_keyword",
-            sql_type: "TEXT",
-            type_tag: type_tag::KEYWORD,
-            value_column: "v_keyword",
-        }),
-        "uuid" => Some(TypedTableInfo {
-            table: "mentat.datoms_uuid_new",
-            current_table: "mentat.current_uuid",
-            sql_type: "UUID",
-            type_tag: type_tag::UUID,
-            value_column: "v_uuid",
-        }),
-        "bytes" => Some(TypedTableInfo {
-            table: "mentat.datoms_bytes_new",
-            current_table: "mentat.current_bytes",
-            sql_type: "BYTEA",
-            type_tag: type_tag::BYTES,
-            value_column: "v_bytes",
-        }),
-        _ => None,
-    }
+fn value_type_to_table_info(value_type: &str, schema_prefix: &str) -> Option<TypedTableInfo> {
+    let (log, cur, default_table, sql_type, type_tag, value_column) = match value_type {
+        "ref" => (
+            "datoms_ref_new",
+            "current_ref",
+            "mentat.datoms_ref_new",
+            "BIGINT",
+            type_tag::REF,
+            "v_ref",
+        ),
+        "boolean" => (
+            "datoms_boolean_new",
+            "current_boolean",
+            "mentat.datoms_boolean_new",
+            "BOOLEAN",
+            type_tag::BOOLEAN,
+            "v_bool",
+        ),
+        "long" => (
+            "datoms_long_new",
+            "current_long",
+            "mentat.datoms_long_new",
+            "BIGINT",
+            type_tag::LONG,
+            "v_long",
+        ),
+        "double" => (
+            "datoms_double_new",
+            "current_double",
+            "mentat.datoms_double_new",
+            "DOUBLE PRECISION",
+            type_tag::DOUBLE,
+            "v_double",
+        ),
+        "instant" => (
+            "datoms_instant_new",
+            "current_instant",
+            "mentat.datoms_instant_new",
+            "TIMESTAMPTZ",
+            type_tag::INSTANT,
+            "v_instant",
+        ),
+        "string" => (
+            "datoms_text_new",
+            "current_text",
+            "mentat.datoms_text_new",
+            "TEXT",
+            type_tag::STRING,
+            "v_text",
+        ),
+        "keyword" => (
+            "datoms_keyword_new",
+            "current_keyword",
+            "mentat.datoms_keyword_new",
+            "TEXT",
+            type_tag::KEYWORD,
+            "v_keyword",
+        ),
+        "uuid" => (
+            "datoms_uuid_new",
+            "current_uuid",
+            "mentat.datoms_uuid_new",
+            "UUID",
+            type_tag::UUID,
+            "v_uuid",
+        ),
+        "bytes" => (
+            "datoms_bytes_new",
+            "current_bytes",
+            "mentat.datoms_bytes_new",
+            "BYTEA",
+            type_tag::BYTES,
+            "v_bytes",
+        ),
+        _ => return None,
+    };
+    Some(TypedTableInfo {
+        table: format!("{schema_prefix}{log}"),
+        current_table: format!("{schema_prefix}{cur}"),
+        default_table,
+        sql_type,
+        type_tag,
+        value_column,
+    })
+}
+
+/// A value type's column metadata (`value_column`, `sql_type`, `type_tag`)
+/// for code that reads no table; its table names are left unqualified.
+fn value_type_columns(value_type: &str) -> Option<TypedTableInfo> {
+    value_type_to_table_info(value_type, "")
 }
 
 /// The table that answers "does e have a live value for attribute a"
@@ -475,12 +493,12 @@ fn attr_lookup_table(
     store_id_param: &str,
     builder: &mut SqlBuilder<'_>,
 ) -> String {
-    match value_type_to_table_info(value_type) {
+    match value_type_to_table_info(value_type, tables_prefix) {
         Some(info) => {
             let from = if reads_projection(temporal, false) {
-                info.current_table
+                info.current_table.clone()
             } else {
-                info.table
+                info.table.clone()
             };
             let live = temporal_conditions(
                 temporal,
@@ -644,9 +662,9 @@ fn build_typed_datoms_from_fragment_with_pushdown(
     // append-only log and keep the `added` column for supersession logic.
     let (table, added_col, drop_added_pushdown) = if use_projection {
         // Projection rows are all live: synthesize `true AS added`.
-        (info.current_table, "true AS added", true)
+        (info.current_table.as_str(), "true AS added", true)
     } else {
-        (info.table, "added", false)
+        (info.table.as_str(), "added", false)
     };
 
     // Build pushdown WHERE conditions for direct index usage
@@ -1269,7 +1287,8 @@ fn resolve_lookup_ref_to_eid(arr: &[serde_json::Value], schema_prefix: &str) -> 
     }
 
     // Resolve the attribute ident to an entid via cache
-    let attr_entid = crate::cache::get_cache().resolve_ident(attr_str)?;
+    let attr_entid = crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix))
+        .resolve_ident(attr_str)?;
 
     // Query for the entity with this unique attribute value using typed columns
     lookup_ref_query(attr_entid, &arr[1], schema_prefix)
@@ -1291,8 +1310,10 @@ fn lookup_ref_query(
         serde_json::Value::String(s) => {
             if let Some(stripped) = s.strip_prefix(':') {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_keyword_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_keyword_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1301,8 +1322,10 @@ fn lookup_ref_query(
                 )
             } else {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_text_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_text_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1314,8 +1337,10 @@ fn lookup_ref_query(
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_long_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_long_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1324,8 +1349,10 @@ fn lookup_ref_query(
                 )
             } else if let Some(f) = n.as_f64() {
                 select_one_i64_ro(
-                    "SELECT e FROM mentat.datoms_double_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+                    &format!(
+                        "SELECT e FROM {schema_prefix}datoms_double_new \
+                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                    ),
                     &[
                         DatumWithOid::from(store_id),
                         DatumWithOid::from(attr_entid),
@@ -1337,8 +1364,10 @@ fn lookup_ref_query(
             }
         }
         serde_json::Value::Bool(b) => select_one_i64_ro(
-            "SELECT e FROM mentat.datoms_boolean_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1",
+            &format!(
+                "SELECT e FROM {schema_prefix}datoms_boolean_new \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+            ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_entid),
@@ -2396,8 +2425,8 @@ fn reads_projection(temporal: &TemporalOption, history: bool) -> bool {
 ///
 /// `typed` is the pattern's typed table info (its log table, and the alias
 /// column its `v` lands in), or `None` for the nine-way UNION (attribute or
-/// type unknown). `tables_prefix` is the schema the pattern reads
-/// ([`narrow_tables_prefix`]); the anti-join reads the same one.
+/// type unknown). `tables_prefix` is the schema the pattern reads (the
+/// store's, e.g. `"mentat_s".`); the anti-join reads the same one.
 fn temporal_conditions(
     temporal: &TemporalOption,
     history: bool,
@@ -2756,7 +2785,13 @@ fn build_sql_from_datalog_enriched(
             // search backed by the optional pg_turbovec extension (issue #332).
             // Vectors live in the per-attribute aux table created by
             // mentat.attach_turbovec_attribute(...). See build_turbovec_near_join.
-            let fj = build_turbovec_near_join(wf, fts_idx, builder, &mut extra_var_bindings)?;
+            let fj = build_turbovec_near_join(
+                wf,
+                fts_idx,
+                builder,
+                &mut extra_var_bindings,
+                schema_prefix,
+            )?;
             fts_joins.push(fj);
         } else if op_name == "bm25-match" {
             // (bm25-match $ :attr "query" k)  — BM25-ranked full-text search
@@ -2811,7 +2846,8 @@ fn build_sql_from_datalog_enriched(
             //   (geom-intersects $ :attr "WKT") — ST_Intersects filter
             //     binds [[?e]]
             // See build_postgis_join + docs/src/postgis.md.
-            let fj = build_postgis_join(wf, fts_idx, builder, &mut extra_var_bindings)?;
+            let fj =
+                build_postgis_join(wf, fts_idx, builder, &mut extra_var_bindings, schema_prefix)?;
             fts_joins.push(fj);
         } else if op_name == "get-else" {
             // [(get-else $ ?e :attr default-val) ?result]
@@ -3375,6 +3411,7 @@ fn build_sql_from_datalog_enriched(
                         fts_idx,
                         &mut arm_builder,
                         &mut arm_extra_var_bindings,
+                        schema_prefix,
                     )?;
                     arm_fts_joins.push(fts_join);
                 } else if op_name == "bm25-match" {
@@ -3418,6 +3455,7 @@ fn build_sql_from_datalog_enriched(
                         fts_idx,
                         &mut arm_builder,
                         &mut arm_extra_var_bindings,
+                        schema_prefix,
                     )?;
                     arm_fts_joins.push(fts_join);
                 } else if matches!(
@@ -3601,8 +3639,8 @@ fn build_sql_from_datalog_enriched(
 
             // Determine table from attribute type
             let table = resolve_pattern_value_type(&pattern.attribute, schema_prefix)
-                .and_then(|vt| value_type_to_table_info(&vt))
-                .map(|info| info.table.to_string())
+                .and_then(|vt| value_type_to_table_info(&vt, schema_prefix))
+                .map(|info| info.table)
                 .unwrap_or_else(|| "union_all".to_string());
 
             // Collect variable names for join detection
@@ -3750,6 +3788,10 @@ fn resolve_fts_language(attr_ident: &str, schema_prefix: &str) -> String {
     // Look up the attribute's entid, then find its :db/doc datom.
     // The attr_ident comes from keyword_to_ident which strips the leading colon,
     // e.g. "person/bio". The schema table stores idents without the colon prefix.
+    // The store's own rows: a named store's carry its store_id, not 0.
+    let Ok(store_id) = resolve_store_id(schema_prefix) else {
+        return "english".to_string();
+    };
     let lang = pgrx::spi::Spi::connect(|client| {
         // Two-step query: find the entid for :db/doc (entid 8 in bootstrap), then
         // look up the doc string for our attribute entity.
@@ -3757,7 +3799,7 @@ fn resolve_fts_language(attr_ident: &str, schema_prefix: &str) -> String {
             "SELECT dt.v \
              FROM {schema_prefix}schema s \
              JOIN {schema_prefix}datoms_text_new dt \
-               ON dt.store_id = 0 AND dt.e = s.entid AND dt.added = true \
+               ON dt.store_id = {store_id} AND dt.e = s.entid AND dt.added = true \
              WHERE s.ident = '{ident}' \
                AND dt.a = (SELECT entid FROM {schema_prefix}schema WHERE ident = ':db/doc') \
              LIMIT 1",
@@ -3966,7 +4008,7 @@ fn build_fulltext_join(
     }
 
     // Query datoms_text_new directly -- no fulltext table join needed.
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4090,7 +4132,7 @@ fn build_fuzzy_match_join(
         }
     }
 
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4233,7 +4275,7 @@ fn build_similar_to_join(
         }
     }
 
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4369,7 +4411,7 @@ fn build_rum_fulltext_join(
         }
     }
 
-    let from_fragment = format!("mentat.current_text AS {dt_alias}");
+    let from_fragment = format!("{schema_prefix}current_text AS {dt_alias}");
 
     Ok(FtsJoin {
         from_fragment,
@@ -4404,9 +4446,14 @@ fn build_vector_near_join(
     fts_idx: usize,
     builder: &mut SqlBuilder<'_>,
     var_bindings: &mut HashMap<String, String>,
-    _schema_prefix: &str,
+    schema_prefix: &str,
     _store_id_param: &str,
 ) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    default_store_only(
+        "vector-near",
+        "mentat.attach_vector_attribute",
+        schema_prefix,
+    )?;
     if wf.args.len() < 4 || wf.args.len() > 5 {
         return Err(format!(
             ":db.error/fn-arity vector-near requires 4 or 5 arguments \
@@ -4575,11 +4622,12 @@ fn build_vector_near_join(
 fn where_fn_attr_entid(
     fn_name: &str,
     attr_ident: &str,
+    schema_prefix: &str,
 ) -> Result<i64, Box<dyn std::error::Error + Send + Sync>> {
     let lookup = attr_ident.to_string();
     let entid_opt: Option<i64> = pgrx::Spi::connect(|client| {
         let mut tt = client.select(
-            "SELECT entid FROM mentat.schema WHERE ident = $1",
+            &format!("SELECT entid FROM {schema_prefix}schema WHERE ident = $1"),
             Some(1),
             &[lookup.clone().into()],
         )?;
@@ -4600,6 +4648,27 @@ fn where_fn_attr_entid(
         )
         .into()
     })
+}
+
+/// The per-attribute tables behind vector-near, turbovec-near and geom-*
+/// (`mentat.attr_<entid>_vector` / `_tvec` / `_geom`) are made by the
+/// `mentat.attach_*` helpers for the default store only. On a named store
+/// they would read another store's rows, so refuse.
+fn default_store_only(
+    fn_name: &str,
+    helper: &str,
+    schema_prefix: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let store = store_name_from_prefix(schema_prefix);
+    if store == "default" {
+        return Ok(());
+    }
+    Err(format!(
+        ":db.error/unsupported {fn_name} is not supported for named stores yet (store '{store}'): \
+         {helper} makes its per-attribute table for the default store only. \
+         Query the default store, or use the built-in fulltext / fuzzy / trigram where-fns."
+    )
+    .into())
 }
 
 /// Bind the `[[?e ?score]]` relation of a ranked where-fn (vector distance or
@@ -4645,7 +4714,13 @@ fn build_turbovec_near_join(
     fts_idx: usize,
     builder: &mut SqlBuilder<'_>,
     var_bindings: &mut HashMap<String, String>,
+    schema_prefix: &str,
 ) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    default_store_only(
+        "turbovec-near",
+        "mentat.attach_turbovec_attribute",
+        schema_prefix,
+    )?;
     if wf.args.len() < 4 || wf.args.len() > 5 {
         return Err(format!(
             ":db.error/fn-arity turbovec-near requires 4 or 5 arguments \
@@ -4717,7 +4792,7 @@ fn build_turbovec_near_join(
         "<=>"
     };
 
-    let entid = where_fn_attr_entid("turbovec-near", &attr_ident)?;
+    let entid = where_fn_attr_entid("turbovec-near", &attr_ident, schema_prefix)?;
     let aux_table = format!("mentat.attr_{}_tvec", entid);
     let vec_param = builder.bind_text(vec_literal);
     let k_param = builder.bind_bigint(k);
@@ -4803,7 +4878,8 @@ fn build_bm25_match_join(
     // the query's predicate provably implies it, which a subquery or a bind
     // parameter does not. Inline the entid and store_id literals so it can.
     // (Both are integers we resolved ourselves, never user text.)
-    let entid = where_fn_attr_entid("bm25-match", &attr_ident)?;
+    // The store's own attribute: rows below are read from its schema.
+    let entid = where_fn_attr_entid("bm25-match", &attr_ident, schema_prefix)?;
     let _ = store_id_param; // inlined below as a literal instead
     let store_id = resolve_store_id(schema_prefix)?;
     let q_param = builder.bind_text(query);
@@ -5036,7 +5112,7 @@ fn build_infer_near_join(
     // scan with a sort.
     let from_fragment = format!(
         "(SELECT e, (v <~> ({needle_param})::TEXT) AS infer_dist \
-         FROM mentat.current_text \
+         FROM {schema_prefix}current_text \
          WHERE a = (SELECT entid FROM {schema_prefix}schema WHERE ident = {attr_param}) \
            AND store_id = {store_id_param} \
          ORDER BY v <~> ({needle_param})::TEXT \
@@ -5315,8 +5391,10 @@ fn build_postgis_join(
     fts_idx: usize,
     builder: &mut SqlBuilder<'_>,
     var_bindings: &mut HashMap<String, String>,
+    schema_prefix: &str,
 ) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
     let op = wf.operator.0.as_str();
+    default_store_only(op, "mentat.attach_geometry_attribute", schema_prefix)?;
     let dt_alias = format!("geo_d{}", fts_idx);
 
     // Per-op arity validation.
@@ -6394,7 +6472,7 @@ fn build_extended_pattern_query(
         // both the FROM fragment and the NOT EXISTS subquery.
         let typed_info = pattern_value_type
             .as_ref()
-            .and_then(|vt| value_type_to_table_info(vt));
+            .and_then(|vt| value_type_to_table_info(vt, schema_prefix));
 
         // A history pattern -- a non-placeholder 5th place, `[?e ?a ?v ?tx
         // ?added]` -- reads the append-only log, assertions and retractions
@@ -6409,7 +6487,7 @@ fn build_extended_pattern_query(
             history,
             &alias,
             typed_info.as_ref(),
-            narrow_tables_prefix(schema_prefix),
+            schema_prefix,
             store_id_param,
             builder,
         ));
@@ -6465,7 +6543,7 @@ fn build_extended_pattern_query(
                 .as_ref()
                 .and_then(|a| a.parse().ok());
             if let (false, Some(a)) = (use_projection, attr) {
-                alias_attr.insert(alias.clone(), (a, info.table));
+                alias_attr.insert(alias.clone(), (a, info.default_table));
             }
             joins.push(build_typed_datoms_from_fragment_with_pushdown(
                 &alias,
@@ -6480,7 +6558,7 @@ fn build_extended_pattern_query(
                 &alias,
                 store_id_param,
                 use_projection,
-                narrow_tables_prefix(schema_prefix),
+                schema_prefix,
             ));
             crate::monitoring::record_union_all_fallback();
         }
@@ -6532,12 +6610,12 @@ fn build_extended_pattern_query(
             // (temporal_conditions: Datomic's rule, issue #364). get-else
             // reads a value, not the log, so {"history": true} doesn't apply:
             // the log would hand back a retraction row's value.
-            let (from, extra) = match value_type_to_table_info(&info.value_type) {
+            let (from, extra) = match value_type_to_table_info(&info.value_type, schema_prefix) {
                 Some(t) => {
                     let from = if reads_projection(temporal, false) {
-                        t.current_table
+                        t.current_table.clone()
                     } else {
-                        t.table
+                        t.table.clone()
                     };
                     let live = temporal_conditions(
                         temporal,
@@ -6547,7 +6625,7 @@ fn build_extended_pattern_query(
                             value_column: "v",
                             ..t
                         }),
-                        narrow_tables_prefix(schema_prefix),
+                        schema_prefix,
                         store_id_param,
                         builder,
                     );
@@ -6623,7 +6701,7 @@ fn build_extended_pattern_query(
             let table = attr_lookup_table(
                 &info.value_type,
                 temporal,
-                narrow_tables_prefix(schema_prefix),
+                schema_prefix,
                 store_id_param,
                 builder,
             );
@@ -6766,7 +6844,7 @@ fn build_extended_pattern_query(
                         let table = attr_lookup_table(
                             &info.value_type,
                             temporal,
-                            narrow_tables_prefix(schema_prefix),
+                            schema_prefix,
                             store_id_param,
                             builder,
                         );
@@ -6869,16 +6947,32 @@ fn build_extended_pattern_query(
             if let Some(t) = temporal.since {
                 opts.insert("since".into(), json!(t));
             }
-            // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to text
-            // so it flows through the TEXT result-column path.
-            if opts.is_empty() {
+            // named-stores: edn_pull reads the default store; a named store
+            // pulls from its own schema with pull(store, pattern, entity_id
+            // [, options]).
+            let pull_store = store_name_from_prefix(schema_prefix);
+            if pull_store != "default" {
+                let store_param = builder.bind_text(pull_store.to_string());
+                if opts.is_empty() {
+                    select_exprs.push(format!(
+                        "pull({store_param}, {pat_param}, {entity_expr})::TEXT"
+                    ));
+                } else {
+                    let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
+                    select_exprs.push(format!(
+                        "pull({store_param}, {pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                    ));
+                }
+            } else if opts.is_empty() {
+                // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to
+                // text so it flows through the TEXT result-column path.
                 select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
             } else {
                 let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
                 select_exprs.push(format!(
                     "edn_pull({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
                 ));
-            }
+            } // named-stores: end
             if has_aggregates {
                 group_by_exprs.push(format!("{}", col_idx + 1));
             }
@@ -7562,7 +7656,7 @@ fn build_not_exists_subquery(
                 // Schema-aware: resolve type early for FROM, NOT EXISTS, and predicates
                 let typed_info = not_pattern_value_type
                     .as_ref()
-                    .and_then(|vt| value_type_to_table_info(vt));
+                    .and_then(|vt| value_type_to_table_info(vt, schema_prefix));
 
                 // tx / added places: correlate, or bind locally (below).
                 for (place, col) in [(&p.tx, "tx"), (&p.added, "added")] {
@@ -7589,7 +7683,7 @@ fn build_not_exists_subquery(
                     history,
                     &alias,
                     typed_info.as_ref(),
-                    narrow_tables_prefix(schema_prefix),
+                    schema_prefix,
                     store_id_param,
                     builder,
                 ));
@@ -7629,7 +7723,7 @@ fn build_not_exists_subquery(
                         &alias,
                         store_id_param,
                         reads_projection(temporal, history),
-                        narrow_tables_prefix(schema_prefix),
+                        schema_prefix,
                     ));
                 }
 
@@ -8234,7 +8328,7 @@ enum RuleArg {
 /// treats them. `col_type`: the column's value type, when every clause
 /// binds it to one type.
 fn rule_value_cols(arg: &RuleArg, col_type: Option<&str>) -> Vec<String> {
-    if let Some(info) = col_type.and_then(value_type_to_table_info) {
+    if let Some(info) = col_type.and_then(value_type_columns) {
         let (vc, sql_type) = (info.value_column, info.sql_type);
         return vec![match arg {
             RuleArg::Value(a) => format!("{a}.{vc}"),
@@ -8243,7 +8337,7 @@ fn rule_value_cols(arg: &RuleArg, col_type: Option<&str>) -> Vec<String> {
         }];
     }
     let typed = match arg {
-        RuleArg::Typed(x, ty) => value_type_to_table_info(ty).map(|info| (x, info)),
+        RuleArg::Typed(x, ty) => value_type_columns(ty).map(|info| (x, info)),
         _ => None,
     };
     RULE_VALUE_COLS
@@ -8266,7 +8360,7 @@ fn rule_value_cols(arg: &RuleArg, col_type: Option<&str>) -> Vec<String> {
 /// other columns NULL), so a typed rule row is as narrow as a plain one;
 /// else the type tag and every value column.
 fn rule_col_group(col_type: Option<&str>) -> Vec<&'static str> {
-    match col_type.and_then(value_type_to_table_info) {
+    match col_type.and_then(value_type_columns) {
         Some(info) => vec![info.value_column],
         None => RULE_VALUE_COLS.iter().map(|(c, _)| *c).collect(),
     }
@@ -8276,7 +8370,7 @@ fn rule_col_group(col_type: Option<&str>) -> Vec<&'static str> {
 /// column names of a datoms alias, so a variable bound to it binds as a
 /// pattern value does. A typed group's tag and other columns are constants.
 fn rule_arg_lateral(cte: &str, n: usize, alias: &str, col_type: Option<&str>) -> String {
-    let info = col_type.and_then(value_type_to_table_info);
+    let info = col_type.and_then(value_type_columns);
     let cols: Vec<String> = RULE_VALUE_COLS
         .iter()
         .map(|(c, ty)| match &info {
@@ -8439,7 +8533,7 @@ fn rule_col_types(rule: &Rule, schema_prefix: &str) -> Vec<Option<String>> {
 /// type known it is one equality on that type's column -- set only for
 /// values of that type, and hash-joinable -- else every value column.
 fn value_join(alias: &str, existing: &str, value_type: Option<&str>) -> String {
-    if let Some(info) = value_type.and_then(value_type_to_table_info) {
+    if let Some(info) = value_type.and_then(value_type_columns) {
         let c = info.value_column;
         return format!("{alias}.{c} = {existing}.{c}");
     }
@@ -9053,7 +9147,7 @@ fn build_rule_clause_sql(
                 // Schema-aware: reuse resolved type for FROM optimization
                 let typed_info = rule_pattern_value_type
                     .as_ref()
-                    .and_then(|vt| value_type_to_table_info(vt));
+                    .and_then(|vt| value_type_to_table_info(vt, schema_prefix));
 
                 // A 5-place pattern reads the log, as in the main path.
                 let history = reads_history(temporal, p);
@@ -9063,7 +9157,7 @@ fn build_rule_clause_sql(
                     history,
                     &alias,
                     typed_info.as_ref(),
-                    narrow_tables_prefix(schema_prefix),
+                    schema_prefix,
                     store_id_param,
                     builder,
                 ));
@@ -9103,7 +9197,7 @@ fn build_rule_clause_sql(
                         &alias,
                         store_id_param,
                         reads_projection(temporal, history),
-                        narrow_tables_prefix(schema_prefix),
+                        schema_prefix,
                     ));
                 }
             }
@@ -9404,6 +9498,12 @@ mod tests {
             missing.starts_with("(SELECT * FROM \"mentat_s\"."),
             "{missing}"
         );
-        assert_eq!(narrow_tables_prefix("\"mentat_s\"."), "mentat.");
+        // get-else / missing? on a known type read the same schema.
+        let typed = attr_lookup_table("long", &as_of, prefix, "$1", &mut b);
+        assert!(
+            typed.starts_with("\"mentat_s\".datoms_long_new AS g"),
+            "{typed}"
+        );
+        assert!(!typed.contains("mentat."), "{typed}");
     }
 }

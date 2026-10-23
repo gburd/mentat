@@ -139,6 +139,12 @@ extension_sql!(
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (store_name, name)
     );
+    -- A subscription name is one per database, ignoring case: its channel
+    -- (mentat_<name>) and hash setting carry no store, and LISTEN, setting
+    -- names and the trigger names fold case. Unique so that two subscribe()
+    -- calls running at once can't both take a name (#337).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_lower_name
+        ON mentat.subscriptions (pg_catalog.lower(name));
 
     -- Materialized view metadata (used by functions/materialized_views.rs).
     CREATE TABLE IF NOT EXISTS mentat.materialized_views (
@@ -797,6 +803,8 @@ mod mozilla_issue_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod multi_transaction_workflow_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod named_store_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod namespace_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod nesting_tests;
@@ -1210,6 +1218,20 @@ extension_sql_file!(
     "../sql/27_auto_index.sql",
     name = "auto_index",
     requires = ["narrow_storage", "current_projection"],
+);
+
+// Per-schema layout for named stores (#337): mentat._create_store_layout
+// copies the default store's tables into mentat_<name>; create_store() and
+// the 1.17.2 -> 1.18.0 upgrade call it. Needs every store table to exist.
+extension_sql_file!(
+    "../sql/30_store_layout.sql",
+    name = "store_layout",
+    requires = [
+        "bootstrap_schema",
+        "narrow_storage",
+        "current_projection",
+        "bootstrap_data"
+    ],
 );
 
 // Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /

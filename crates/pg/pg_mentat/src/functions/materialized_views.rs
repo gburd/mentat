@@ -112,22 +112,25 @@ fn matview_exists(store_name: &str, view_name: &str) -> Result<bool, pgrx::spi::
 
 /// Generate the SQL for the trigger function that refreshes a materialized view
 /// when datoms change.
+///
+/// The view sits in the same schema as the datoms view that fires the
+/// trigger. The schema is taken from TG_TABLE_SCHEMA at run time, not baked
+/// in, so rename_store doesn't break it.
 fn refresh_trigger_function_sql(schema: &str, view_name: &str) -> String {
     let func_name = format!("{}.mentat_matview_refresh_{}", schema, view_name);
-    let qualified_view = format!("{}.{}", schema, view_name);
 
     format!(
         r"
 CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    REFRESH MATERIALIZED VIEW {qualified_view};
+    EXECUTE format('REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, '{view_name}');
     RETURN NULL;
 END;
 $$;
 ",
         func_name = func_name,
-        qualified_view = qualified_view,
+        view_name = view_name,
     )
 }
 
@@ -238,38 +241,22 @@ pub fn materialize(
     let schema = get_schema_for_store(store_name);
     let quoted_schema = quote_ident(&schema);
 
-    // Infer columns from the Datalog query using mentat_query_sql
-    let query_info = Spi::connect(|client| {
-        let mut rows = client.select(
-            "SELECT mentat_query_sql($1, '{}'::jsonb)",
-            None,
-            &[DatumWithOid::from(datalog_query)],
-        )?;
-        match rows.next() {
-            Some(row) => {
-                let result: Option<JsonB> = row.get::<JsonB>(1)?;
-                Ok::<_, pgrx::spi::SpiError>(result)
-            }
-            None => Ok(None),
-        }
-    })?;
+    // Infer columns from the Datalog query, compiled against the store's
+    // own schema (the default store's may not have its attributes).
+    let JsonB(query_info) = crate::functions::query::mentat_query_sql_store(
+        store_name,
+        datalog_query,
+        JsonB(json!({})),
+    )?;
 
-    let columns = match &query_info {
-        Some(JsonB(info)) => {
-            if let Some(cols) = info.get("columns").and_then(|c| c.as_array()) {
-                cols.iter()
-                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
-                    .collect::<Vec<_>>()
-            } else {
-                return Err(Box::new(MentatError::InvalidQuery {
-                    message: "Could not extract column names from query.".to_string(),
-                    suggestion: None,
-                }));
-            }
-        }
+    let columns = match query_info.get("columns").and_then(|c| c.as_array()) {
+        Some(cols) => cols
+            .iter()
+            .filter_map(|c| c.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>(),
         None => {
             return Err(Box::new(MentatError::InvalidQuery {
-                message: "Query SQL generation returned no results.".to_string(),
+                message: "Could not extract column names from query.".to_string(),
                 suggestion: None,
             }));
         }
@@ -319,12 +306,22 @@ pub fn materialize(
             query = escaped_query,
         )
     } else {
+        // By store_id, which rename_store keeps: a store name baked into the
+        // view would not survive a rename.
+        let store_id: i64 = Spi::get_one_with_args(
+            "SELECT store_id FROM mentat.stores WHERE store_name = $1",
+            &[DatumWithOid::from(store_name)],
+        )?
+        .ok_or_else(|| MentatError::StoreNotFound {
+            store_name: store_name.to_string(),
+        })?;
         format!(
             "CREATE MATERIALIZED VIEW {schema}.{view} AS \
-             SELECT {cols} FROM mentat_query_view_store('{store}', '{query}', '{{}}'::jsonb)",
+             SELECT {cols} FROM mentat_query_view_store(\
+               (SELECT store_name FROM mentat.stores WHERE store_id = {store_id}), \
+               '{query}', '{{}}'::jsonb)",
             schema = quoted_schema,
             view = quote_ident(view_name),
-            store = store_name.replace('\'', "''"),
             cols = col_defs,
             query = escaped_query,
         )
@@ -589,7 +586,7 @@ mod tests {
     fn test_refresh_trigger_function_sql_contains_key_elements() {
         let sql = refresh_trigger_function_sql("mentat", "people_cache");
         assert!(sql.contains("mentat.mentat_matview_refresh_people_cache"));
-        assert!(sql.contains("REFRESH MATERIALIZED VIEW mentat.people_cache"));
+        assert!(sql.contains("REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, 'people_cache'"));
         assert!(sql.contains("RETURNS trigger"));
     }
 
@@ -606,6 +603,7 @@ mod tests {
     fn test_refresh_trigger_custom_schema() {
         let sql = refresh_trigger_function_sql("mentat_my_store", "my_view");
         assert!(sql.contains("mentat_my_store.mentat_matview_refresh_my_view"));
-        assert!(sql.contains("REFRESH MATERIALIZED VIEW mentat_my_store.my_view"));
+        // The refreshed view's schema is not baked in (rename_store).
+        assert!(!sql.contains("mentat_my_store.my_view"));
     }
 }
