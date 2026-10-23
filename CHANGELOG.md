@@ -8,6 +8,16 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.18.0] — named stores on PostgreSQL, historical pull, DuckDB fulltext, Mozilla-era fixes
+
+Upgrading: `ALTER EXTENSION pg_mentat UPDATE` reaches 1.18.0 from 1.17.2
+(and from 1.17.1 through 1.17.2). It rebuilds 1.17 named stores (see
+Changed) and adds a `(store_id, tx)` index to each `current_<type>` table.
+Read **Breaking (Rust API)** before upgrading a Rust crate: `TxReport`,
+`SQLError`, `PullAttributeSpec` and `TemporalBound` changed. Embedded and
+DuckDB callers that passed several refs in one list-form `:db/add` must
+switch to map form (Changed, #152).
+
 ### Breaking (Rust API)
 
 - **`mentat_sql_traits::SQLError` has a new variant, `MalformedMatch`**

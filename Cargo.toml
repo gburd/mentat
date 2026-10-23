@@ -50,7 +50,7 @@ default-members = [
 exclude = ["crates/sqlite/fixtures", "crates/duckdb/store/tests-harness"]
 
 [workspace.package]
-version = "1.17.2"
+version = "1.18.0"
 edition = "2021"
 # MSRV of the published (crates.io) crates. pg_mentat overrides it with 1.96
 # (pgrx 0.19); rust-toolchain.toml pins the build toolchain.
