@@ -534,3 +534,16 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - EC2 torn down: i-024ef67cf2f84ec44, key, SG deleted (account 437803535746).
 - kiwi burner: account 437803535746, expires 2026-10-30 19:14:53 UTC. The
   account also holds someone else's libdtfl-dev-* instance: never touch it.
+
+## DuckDB registry after #3348 (checked 2026-10-29)
+- #3348 merged 2026-10-24 by sebastiaan-dev. v2.0.0/* serves mentat 1.18.0
+  (C_STRUCT, floor v1.5.6, deployed 2026-10-24 17:51).
+- v1.5.6/* still serves 1.10.3 (C_STRUCT_UNSTABLE, 2026-10-05). The
+  maintainer's v1.5.6 dispatch (run 40116772143) failed in Generate matrix:
+  it passed ci_tools_version v1.5-variegata, but _extension_distribution.yml
+  @v2.0-cyanoptera needs extension-ci-tools/scripts/extbuild/go.mod, which
+  only v2.0-cyanoptera has. Working v1.5.6 dispatches use
+  duckdb_version v1.5.6 + ci_tools_version v2.0-cyanoptera.
+- Asked on #3348 (comment 6496532709) for a re-run with those inputs.
+  Verify after: footer field 5 of v1.5.6/linux_amd64/mentat.duckdb_extension.gz
+  should read v1.18.0.
