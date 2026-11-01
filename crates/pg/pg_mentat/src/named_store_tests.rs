@@ -1710,6 +1710,37 @@ mod tests {
         Spi::run("SELECT drop_store('mvr_b')").expect("drop");
     }
 
+    // materialize / refresh / drop_matview validated the store name as
+    // create_store does, which refuses "default": materialize('default', ...)
+    // (the form docs/src/sql-functions.md shows) always failed with
+    // ":db.error/invalid-store-name ... 'default' is a reserved name".
+    #[pg_test]
+    fn materialize_on_the_default_store() {
+        setup();
+        tx("default", SCHEMA_TX);
+        tx("default", "[{:p/name \"one\"}]");
+        Spi::run("SELECT materialize('default', 'mvd_names', '[:find ?n :where [_ :p/name ?n]]')")
+            .expect("materialize('default', ...)");
+        let rows = || {
+            sorted(json(
+                "SELECT coalesce(jsonb_agg(n), '[]') FROM mentat.mvd_names",
+            ))
+        };
+        assert_eq!(rows(), vec!["one"]);
+        tx("default", "[{:p/name \"two\"}]");
+        assert_eq!(rows(), vec!["one"], "manual: refreshed only on request");
+        Spi::run("SELECT refresh('default', 'mvd_names')").expect("refresh");
+        assert_eq!(rows(), vec!["one", "two"]);
+        let listed = json("SELECT list_matviews('default')");
+        assert_eq!(listed.as_array().map(|a| a.len()), Some(1), "{listed}");
+        Spi::run("SELECT drop_matview('default', 'mvd_names')").expect("drop_matview");
+        let gone: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_matviews WHERE matviewname = 'mvd_names'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(gone, 0);
+    }
+
     // (pull ?e [...]) in :find called edn_pull, which reads the default
     // store: on a named store it returned the default store's values for the
     // same entity id. Entity ids overlap across stores.
