@@ -569,4 +569,65 @@ mod tests {
             .expect("NULL");
         assert!(sql.contains(&format!("AND a = {a})")), "{sql}");
     }
+
+    /// sum / avg of a value of unknown type ([?e ?a ?v]) cast the decoded
+    /// text of every type to NUMERIC: a double ('d:' and its bits) failed
+    /// with "invalid input syntax for type numeric", and a string would have
+    /// too. They add the longs and doubles and skip the rest, as the
+    /// embedded engine and DuckDB do (#397). Keyed (every row a distinct
+    /// tuple) and de-duplicated plans both.
+    #[pg_test]
+    fn test_ag_sum_avg_untyped_value() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :un/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                            {:db/ident :un/long :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                            {:db/ident :un/double :db/valueType :db.type/double :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run(
+            "SELECT edn_t('[{:un/name \"a\" :un/long 3 :un/double 2.5}
+                            {:un/name \"b\" :un/long 4 :un/double 0.25}]'::TEXT)",
+        )
+        .expect("data");
+        let q = |query: &str| -> serde_json::Value {
+            Spi::get_one::<pgrx::JsonB>(&format!(
+                "SELECT edn_q('{}', '{{}}'::jsonb)",
+                query.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{query}: {e}"))
+            .expect("NULL")
+            .0["result"]
+                .clone()
+        };
+        // Numbers > 1: 3, 4, 2.5 (the strings and 0.25 drop out).
+        let filtered = "[?e :un/name _] [?e ?a ?v] [(> ?v 1)]";
+        assert_eq!(q(&format!("[:find (sum ?v) . :where {filtered}]")), 9.5);
+        assert_eq!(
+            q(&format!("[:find (avg ?v) . :where {filtered}]")),
+            9.5 / 3.0
+        );
+        // Unfiltered: the strings "a" and "b" are skipped, not an error.
+        let all = "[?e :un/name _] [?e ?a ?v]";
+        assert_eq!(q(&format!("[:find (sum ?v) . :where {all}]")), 9.75);
+        assert_eq!(
+            q(&format!("[:find (avg ?v) . :with ?e ?a :where {all}]")),
+            9.75 / 4.0
+        );
+        // Grouped by entity.
+        let mut by_e = q(&format!(
+            "[:find ?n (sum ?v) :where [?e :un/name ?n] [?e ?a ?v]]"
+        ))
+        .as_array()
+        .cloned()
+        .unwrap();
+        by_e.sort_by_key(|r| r[0].as_str().unwrap_or("").to_string());
+        assert_eq!(
+            by_e,
+            vec![
+                serde_json::json!(["a", 5.5]),
+                serde_json::json!(["b", 4.25])
+            ]
+        );
+    }
 }

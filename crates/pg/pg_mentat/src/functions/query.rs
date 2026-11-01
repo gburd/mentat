@@ -7559,14 +7559,34 @@ fn aggregate_var(agg: &edn::query::Aggregate) -> Option<String> {
 }
 
 /// The aggregate's argument expression (NULL when its variable is unbound).
+///
+/// `sum` / `avg` of a value of unknown type (`[?e ?a ?v]`) add its longs and
+/// doubles and skip every other value, as the embedded engine and DuckDB do:
+/// the numbers in their decoded text form, NULL for the rest, aggregated as
+/// a long-and-double column is. Before 1.19.0 the decoded text of every type
+/// was cast to NUMERIC, and a double's ('d:' and its bits) failed (#397).
 fn aggregate_arg_sql(
     agg: &edn::query::Aggregate,
     var_to_alias: &HashMap<String, (String, &'static str)>,
     extra_var_bindings: &HashMap<String, String>,
     var_to_type: &HashMap<String, Option<String>>,
 ) -> (String, ArgKind) {
-    aggregate_var(agg)
-        .and_then(|v| var_value_sql(&v, var_to_alias, extra_var_bindings, var_to_type))
+    let var = aggregate_var(agg);
+    if let (Some(v), "sum" | "avg") = (&var, agg.func.0 .0.as_str()) {
+        if let (Some((alias, "v")), None | Some(None)) = (var_to_alias.get(v), var_to_type.get(v)) {
+            return (
+                format!(
+                    "CASE {alias}.value_type_tag WHEN {long} THEN {alias}.v_long::TEXT \
+                     WHEN {double} THEN {} END",
+                    double_text(&format!("{alias}.v_double")),
+                    long = type_tag::LONG,
+                    double = type_tag::DOUBLE,
+                ),
+                ArgKind::Number,
+            );
+        }
+    }
+    var.and_then(|v| var_value_sql(&v, var_to_alias, extra_var_bindings, var_to_type))
         .unwrap_or_else(|| ("NULL".to_string(), ArgKind::Text))
 }
 
