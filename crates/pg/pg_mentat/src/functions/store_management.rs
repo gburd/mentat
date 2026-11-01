@@ -329,6 +329,36 @@ pub fn rename_store(
         }));
     }
 
+    // Rows a 1.17 drop_store left under the new name (#380) would collide
+    // with the store's own on (store_name, name): a raw duplicate-key error.
+    let (subs, views): (Option<String>, Option<String>) = Spi::get_two_with_args(
+        "SELECT (SELECT pg_catalog.string_agg(name, ', ' ORDER BY name) \
+                   FROM mentat.subscriptions WHERE store_name = $1), \
+                (SELECT pg_catalog.string_agg(view_name, ', ' ORDER BY view_name) \
+                   FROM mentat.materialized_views WHERE store_name = $1)",
+        &[DatumWithOid::from(new_name)],
+    )?;
+    if subs.is_some() || views.is_some() {
+        let mut left = Vec::new();
+        if let Some(s) = subs {
+            left.push(format!("subscriptions ({s})"));
+        }
+        if let Some(v) = views {
+            left.push(format!("materialized views ({v})"));
+        }
+        return Err(Box::new(MentatError::InvalidStoreName {
+            store_name: new_name.to_string(),
+            reason: format!(
+                "mentat.subscriptions / mentat.materialized_views still list {} under this \
+                 name, left by a dropped store. Delete those rows (DELETE FROM \
+                 mentat.subscriptions WHERE store_name = '{n}'; DELETE FROM \
+                 mentat.materialized_views WHERE store_name = '{n}'), then rename again.",
+                left.join(" and "),
+                n = new_name,
+            ),
+        }));
+    }
+
     let new_schema = get_schema_for_store(new_name);
     let quoted_old = quote_ident(&old_schema);
     let quoted_new = quote_ident(&new_schema);

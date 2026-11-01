@@ -608,7 +608,15 @@ mod tests {
 
     /// The upgrade's `DO $tag$ ... $tag$;` block, @extschema@ resolved.
     fn upgrade_block(tag: &str) -> String {
-        let script = include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql");
+        script_block(include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql"), tag)
+    }
+
+    /// The 1.18.0 -> 1.19.0 upgrade's `DO $tag$ ... $tag$;` block.
+    fn upgrade_119_block(tag: &str) -> String {
+        script_block(include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql"), tag)
+    }
+
+    fn script_block(script: &str, tag: &str) -> String {
         let (open, close) = (format!("DO ${tag}$"), format!("${tag}$;"));
         let start = script.find(&open).expect("DO block");
         let end = script[start..].find(&close).expect("DO block end") + start;
@@ -2187,6 +2195,106 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(left, 0);
+    }
+
+    // 1.17's drop_store kept the store's subscription and materialized-view
+    // rows. A leftover row blocked a later store of that name: rename_store
+    // to it failed with a raw duplicate-key error, and subscribe() said
+    // "already exists" (#380). The 1.19.0 upgrade deletes rows of stores that
+    // no longer exist; rename_store explains what is in the way.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn upgrade_deletes_rows_of_dropped_stores() {
+        setup();
+        Spi::run(
+            "CREATE TABLE public.or_ran (n INT); \
+             CREATE FUNCTION public.or_trg() RETURNS trigger LANGUAGE plpgsql AS \
+               $$ BEGIN INSERT INTO public.or_ran VALUES (1); RETURN NULL; END $$; \
+             CREATE TRIGGER or_trg AFTER DELETE ON mentat.subscriptions \
+               FOR EACH STATEMENT EXECUTE FUNCTION public.or_trg(); \
+             INSERT INTO mentat.subscriptions (store_name, name, query) \
+               VALUES ('or_gone', 'or_sub1', '[:find ?e :where [?e :db/ident _]]'); \
+             INSERT INTO mentat.materialized_views (store_name, view_name, datalog_query) \
+               VALUES ('or_gone', 'or_mv', '[:find ?e :where [?e :db/ident _]]')",
+        )
+        .expect("rows a 1.17 drop_store left");
+        Spi::run("SELECT create_store('or_live')").expect("create");
+        Spi::run(
+            "SELECT subscribe('or_live', 'or_live_sub', '[:find ?e :where [?e :db/ident _]]')",
+        )
+        .expect("a live store's subscription");
+        // Same view name as the leftover: rename_store's UPDATE hit
+        // materialized_views_store_name_view_name_key.
+        Spi::run("SELECT materialize('or_live', 'or_mv', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("a live store's view");
+        Spi::run("SELECT materialize('default', 'or_dmv', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("a default-store view");
+
+        // Before the upgrade: rename_store says what is in the way.
+        let err = text("SELECT pg_temp.capture($$SELECT rename_store('or_live', 'or_gone')$$)");
+        assert!(
+            err.contains("subscriptions (or_sub1)")
+                && err.contains("materialized views (or_mv)")
+                && err.contains("left by a dropped store"),
+            "{err:?}"
+        );
+        assert_eq!(
+            text("SELECT schema_name FROM mentat.stores WHERE store_name = 'or_live'"),
+            "mentat_or_live",
+            "nothing renamed"
+        );
+
+        let block = upgrade_119_block("orphans");
+        Spi::run(&block).expect("the upgrade DO block");
+        Spi::run(&block).expect("again");
+        let left = |table: &str, store: &str| -> i64 {
+            Spi::get_one(&format!(
+                "SELECT count(*) FROM mentat.{table} WHERE store_name = '{store}'"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(left("subscriptions", "or_gone"), 0);
+        assert_eq!(left("materialized_views", "or_gone"), 0);
+        assert_eq!(
+            left("subscriptions", "or_live"),
+            1,
+            "a live store's row stays"
+        );
+        assert_eq!(
+            left("materialized_views", "default"),
+            1,
+            "the default store's row stays"
+        );
+        let ran: i64 = Spi::get_one("SELECT count(*) FROM public.or_ran")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ran, 0,
+            "a trigger on mentat.subscriptions ran during the upgrade"
+        );
+        Spi::run("DROP TRIGGER or_trg ON mentat.subscriptions").expect("drop trigger");
+        assert_eq!(
+            text("SELECT current_setting('session_replication_role')"),
+            "origin"
+        );
+
+        // A new store of that name subscribes and materializes.
+        Spi::run("SELECT create_store('or_gone')").expect("create or_gone");
+        tx("or_gone", SCHEMA_TX);
+        Spi::run("SELECT subscribe('or_gone', 'or_sub1', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("subscribe under the freed name");
+        Spi::run("SELECT materialize('or_gone', 'or_mv', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("materialize under the freed name");
+        Spi::run("SELECT drop_store('or_gone')").expect("drop");
+        Spi::run("SELECT rename_store('or_live', 'or_gone')").expect("rename to the freed name");
+        assert_eq!(
+            left("subscriptions", "or_gone"),
+            1,
+            "the row followed the rename"
+        );
+        Spi::run("SELECT drop_store('or_gone')").expect("drop");
+        Spi::run("SELECT drop_matview('default', 'or_dmv')").expect("drop_matview");
     }
 
     // A 1.17 subscription or materialized view on a named store stays with
