@@ -4195,8 +4195,13 @@ fn build_fuzzy_match_join(
     // The %~~ operator and tre_pattern() function are provided by the
     // pg_tre extension. Cast k to int4 since tre_pattern's two-arg variant
     // takes (text, int4); using ::INT in SQL avoids a binding-OID mismatch.
+    // Each named through pg_tre's schema (#382).
+    let (op, tre_pattern) = (
+        ext_operator("pg_tre", "%~~"),
+        ext_qualified("pg_tre", "tre_pattern"),
+    );
     where_parts.push(format!(
-        "{dt_alias}.v %~~ tre_pattern({pattern_param}, ({k_param})::INT)"
+        "{dt_alias}.v {op} {tre_pattern}({pattern_param}, ({k_param})::INT)"
     ));
 
     // Bind result variables from a [[?e ?val]] relation pattern.
@@ -4332,8 +4337,10 @@ fn build_similar_to_join(
     where_parts.push(format!("{dt_alias}.store_id = {store_id_param}"));
     // similarity() is provided by pg_trgm. The expression returns float in
     // [0.0, 1.0]; we filter and (optionally) project it as the score.
+    // pg_trgm's similarity, through its schema (#382).
+    let similarity = ext_qualified("pg_trgm", "similarity");
     where_parts.push(format!(
-        "similarity({dt_alias}.v, {needle_param}) >= ({threshold_param})::REAL"
+        "{similarity}({dt_alias}.v, {needle_param}) >= ({threshold_param})::REAL"
     ));
 
     // Bind result variables from a [[?e ?val ?score]] relation pattern.
@@ -4353,7 +4360,7 @@ fn build_similar_to_join(
                     2 => {
                         var_bindings.insert(
                             var_name,
-                            format!("similarity({dt_alias}.v, {needle_param})"),
+                            format!("{similarity}({dt_alias}.v, {needle_param})"),
                         );
                     }
                     _ => {}
@@ -4368,7 +4375,7 @@ fn build_similar_to_join(
         from_fragment,
         where_parts,
         // Expose pg_trgm similarity as the score so :order :score works.
-        score_expr: Some(format!("similarity({dt_alias}.v, {needle_param})")),
+        score_expr: Some(format!("{similarity}({dt_alias}.v, {needle_param})")),
         entity_alias: sim_entity_var.map(|n| (n, dt_alias.clone())),
     })
 }
@@ -4466,8 +4473,9 @@ fn build_rum_fulltext_join(
         // rum_ts_score returns a real — higher = more relevant. Unlike
         // ts_rank_cd, it factors in lexeme positions stored in the rum
         // index for proximity-aware ranking.
+        let rum_ts_score = ext_qualified("rum", "rum_ts_score");
         score_expr = Some(format!(
-            "rum_ts_score(to_tsvector('{fts_lang}', {dt_alias}.v), \
+            "{rum_ts_score}(to_tsvector('{fts_lang}', {dt_alias}.v), \
              {tsquery_fn}('{fts_lang}', {search_param}))"
         ));
     } else {
@@ -4666,10 +4674,15 @@ fn build_vector_near_join(
     let _ = attr_param;
 
     let dt_alias = format!("vn_d{}", fts_idx);
+    // pgvector's type and operator, through its schema (#382).
+    let (dist_op, vector) = (
+        ext_operator("vector", dist_op),
+        ext_qualified("vector", "vector"),
+    );
     let from_fragment = format!(
-        "(SELECT e, (v {dist_op} ({vec_param})::vector) AS vec_dist \
+        "(SELECT e, (v {dist_op} ({vec_param})::{vector}) AS vec_dist \
          FROM {aux_table} \
-         ORDER BY v {dist_op} ({vec_param})::vector \
+         ORDER BY v {dist_op} ({vec_param})::{vector} \
          LIMIT {k_param}) AS {dt_alias}"
     );
 
@@ -4974,15 +4987,20 @@ fn build_bm25_match_join(
     let dt_alias = format!("bm_d{}", fts_idx);
     // The @@@ predicate is required for pg_fts to use the index; ordering by
     // <=> gives the BM25 ranking, served from the index.
-    let doc = format!("to_ftsdoc('{lang}', t.v)");
-    let ftsq = format!("to_ftsquery('{lang}', {q_param})");
+    // pg_fts's functions and operators, through its schema (#382).
+    let doc = format!("{}('{lang}', t.v)", ext_qualified("pg_fts", "to_ftsdoc"));
+    let ftsq = format!(
+        "{}('{lang}', {q_param})",
+        ext_qualified("pg_fts", "to_ftsquery")
+    );
+    let (rank, matches) = (ext_operator("pg_fts", "<=>"), ext_operator("pg_fts", "@@@"));
     let from_fragment = format!(
-        "(SELECT t.e, ({doc} <=> {ftsq}) AS bm25_score \
+        "(SELECT t.e, ({doc} {rank} {ftsq}) AS bm25_score \
          FROM {schema_prefix}datoms_text_new t \
          WHERE t.a = {entid} \
            AND t.store_id = {store_id} AND t.added \
-           AND {doc} @@@ {ftsq} \
-         ORDER BY {doc} <=> {ftsq} \
+           AND {doc} {matches} {ftsq} \
+         ORDER BY {doc} {rank} {ftsq} \
          LIMIT {k_param}) AS {dt_alias}"
     );
     let entity_var = bind_entity_score_rel(&wf.binding, &dt_alias, "bm25_score", var_bindings);
@@ -5080,13 +5098,16 @@ fn build_pg_infer_scalar_binding(
             // The 3rd arg is accepted syntactically for symmetry with
             // infer-implies, but emits a NOTICE'able no-op (silent here).
             let _ = &model_arg; // explicitly ignored
-            format!("infer_similarity({arg0}, {arg1})")
+            format!(
+                "{}({arg0}, {arg1})",
+                ext_qualified("pg_infer", "infer_similarity")
+            )
         }
-        "infer-implies" => match &model_arg {
+        "infer-implies" => match (&model_arg, ext_qualified("pg_infer", "implies")) {
             // implies(subject, object, model) returns bool; cast to INT for
             // pg_mentat's scalar-binding return path.
-            Some(m) => format!("(implies({arg0}, {arg1}, {m}))::INT"),
-            None => format!("(implies({arg0}, {arg1}))::INT"),
+            (Some(m), implies) => format!("({implies}({arg0}, {arg1}, {m}))::INT"),
+            (None, implies) => format!("({implies}({arg0}, {arg1}))::INT"),
         },
         _ => unreachable!(
             "build_pg_infer_scalar_binding called with non-pg_infer op '{}'",
@@ -5197,12 +5218,13 @@ fn build_infer_near_join(
     // Top-K subquery using <~>. The infer index opclass infer_text_ops
     // supports ORDER BY <~>; without an index this is a sequential
     // scan with a sort.
+    let dist = ext_operator("pg_infer", "<~>");
     let from_fragment = format!(
-        "(SELECT e, (v <~> ({needle_param})::TEXT) AS infer_dist \
+        "(SELECT e, (v {dist} ({needle_param})::TEXT) AS infer_dist \
          FROM {schema_prefix}current_text \
          WHERE a = (SELECT entid FROM {schema_prefix}schema WHERE ident = {attr_param}) \
            AND store_id = {store_id_param} \
-         ORDER BY v <~> ({needle_param})::TEXT \
+         ORDER BY v {dist} ({needle_param})::TEXT \
          LIMIT {k_param}) AS {dt_alias}"
     );
 
@@ -5286,7 +5308,10 @@ fn build_pg_infer_table_join(
             let _ = optional_model_keyword(&wf.args, 2, op)?; // accepted, GUC-driven
             let cols = vec!["layer", "feature", "gate_score", "concept"];
             (
-                format!("SELECT layer, feature, gate_score, concept FROM walk({prompt}, {top})"),
+                format!(
+                    "SELECT layer, feature, gate_score, concept FROM {}({prompt}, {top})",
+                    ext_qualified("pg_infer", "walk")
+                ),
                 cols,
             )
         }
@@ -5327,7 +5352,8 @@ fn build_pg_infer_table_join(
             let cols = vec!["relation", "target", "gate_score", "layer"];
             (
                 format!(
-                    "SELECT relation, target, gate_score, layer FROM describe({entity}, {threshold_sql})"
+                    "SELECT relation, target, gate_score, layer FROM {}({entity}, {threshold_sql})",
+                    ext_qualified("pg_infer", "describe")
                 ),
                 cols,
             )
@@ -5347,7 +5373,10 @@ fn build_pg_infer_table_join(
             let _ = optional_model_keyword(&wf.args, 2, op)?;
             let cols = vec!["token", "probability", "rank"];
             (
-                format!("SELECT token, probability, rank FROM infer({prompt}, {top})"),
+                format!(
+                    "SELECT token, probability, rank FROM {}({prompt}, {top})",
+                    ext_qualified("pg_infer", "infer")
+                ),
                 cols,
             )
         }
@@ -5580,8 +5609,9 @@ fn build_postgis_join(
     // errors when the column was attached with a non-zero SRID.
     let srid: i32 = pgrx::Spi::connect(|client| {
         let q = format!(
-            "SELECT srid FROM geometry_columns WHERE f_table_schema = 'mentat' \
+            "SELECT srid FROM {} WHERE f_table_schema = 'mentat' \
              AND f_table_name = 'attr_{}_geom' AND f_geometry_column = 'geom'",
+            ext_qualified("postgis", "geometry_columns"),
             entid
         );
         let mut tt = client.select(&q, Some(1), &[])?;
@@ -5601,7 +5631,10 @@ fn build_postgis_join(
     // (column was attached with srid=0 or geometry_columns has no row)
     // we still emit the 2-arg call; PostGIS treats SRID 0 as "unknown"
     // and accepts it for predicates between SRID-0 geometries.
-    let geom_expr = format!("ST_GeomFromText({wkt_param}, {srid})");
+    // PostGIS's functions and operator, through its schema (#382).
+    let st = |f: &str| ext_qualified("postgis", f);
+    let geom_expr = format!("{}({wkt_param}, {srid})", st("ST_GeomFromText"));
+    let (st_distance, knn) = (st("ST_Distance"), ext_operator("postgis", "<->"));
 
     // Build per-op SQL.
     let from_fragment = match op {
@@ -5617,9 +5650,9 @@ fn build_postgis_join(
             // and let PostGIS pick. The <-> GIST-friendly distance op
             // is index-orderable.
             format!(
-                "(SELECT e, ST_Distance(geom, {geom_expr}) AS geo_dist \
+                "(SELECT e, {st_distance}(geom, {geom_expr}) AS geo_dist \
                  FROM {aux_table} \
-                 ORDER BY geom <-> {geom_expr} \
+                 ORDER BY geom {knn} {geom_expr} \
                  LIMIT {k_param}) AS {dt_alias}"
             )
         }
@@ -5635,24 +5668,27 @@ fn build_postgis_join(
                 .into());
             }
             let radius_param = builder.bind_double(radius);
+            let st_dwithin = st("ST_DWithin");
             format!(
-                "(SELECT e, ST_Distance(geom, {geom_expr}) AS geo_dist \
+                "(SELECT e, {st_distance}(geom, {geom_expr}) AS geo_dist \
                  FROM {aux_table} \
-                 WHERE ST_DWithin(geom, {geom_expr}, ({radius_param})::FLOAT8)) \
+                 WHERE {st_dwithin}(geom, {geom_expr}, ({radius_param})::FLOAT8)) \
                  AS {dt_alias}"
             )
         }
         "geom-contains" => format!(
             "(SELECT e, NULL::FLOAT8 AS geo_dist \
              FROM {aux_table} \
-             WHERE ST_Contains(geom, {geom_expr})) \
-             AS {dt_alias}"
+             WHERE {st_contains}(geom, {geom_expr})) \
+             AS {dt_alias}",
+            st_contains = st("ST_Contains"),
         ),
         "geom-intersects" => format!(
             "(SELECT e, NULL::FLOAT8 AS geo_dist \
              FROM {aux_table} \
-             WHERE ST_Intersects(geom, {geom_expr})) \
-             AS {dt_alias}"
+             WHERE {st_intersects}(geom, {geom_expr})) \
+             AS {dt_alias}",
+            st_intersects = st("ST_Intersects"),
         ),
         _ => unreachable!(),
     };
@@ -5936,7 +5972,12 @@ fn build_fuzzystrmatch_binding(
             }
             let a = render_text_arg(&wf.args[0], builder)?;
             let b = render_text_arg(&wf.args[1], builder)?;
-            format!("levenshtein({}, {})", a, b)
+            format!(
+                "{}({}, {})",
+                ext_qualified("fuzzystrmatch", "levenshtein"),
+                a,
+                b
+            )
         }
         "soundex" => {
             if wf.args.len() != 1 {
@@ -5948,7 +5989,7 @@ fn build_fuzzystrmatch_binding(
                 .into());
             }
             let a = render_text_arg(&wf.args[0], builder)?;
-            format!("soundex({})", a)
+            format!("{}({})", ext_qualified("fuzzystrmatch", "soundex"), a)
         }
         "metaphone" => {
             if wf.args.len() != 2 {
@@ -5961,7 +6002,12 @@ fn build_fuzzystrmatch_binding(
             }
             let a = render_text_arg(&wf.args[0], builder)?;
             let n = render_int_arg(&wf.args[1])?;
-            format!("metaphone({}, {})", a, n)
+            format!(
+                "{}({}, {})",
+                ext_qualified("fuzzystrmatch", "metaphone"),
+                a,
+                n
+            )
         }
         "daitch-mokotoff" => {
             if wf.args.len() != 1 {
@@ -5976,7 +6022,11 @@ fn build_fuzzystrmatch_binding(
             // daitch_mokotoff returns text[]; cast to text so the scalar
             // binding gets a single value (e.g. "{367460,394000}") that
             // downstream predicates can compare or just inspect.
-            format!("daitch_mokotoff({})::TEXT", a)
+            format!(
+                "{}({})::TEXT",
+                ext_qualified("fuzzystrmatch", "daitch_mokotoff"),
+                a
+            )
         }
         _ => unreachable!(
             "build_fuzzystrmatch_binding called with non-fuzzystrmatch op '{}'",

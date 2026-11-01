@@ -1807,6 +1807,82 @@ mod tests {
         Spi::run("SELECT drop_store('mvp_s')").expect("drop");
     }
 
+    // The contrib functions edn_q generates calls to (fuzzystrmatch's
+    // levenshtein / soundex / metaphone, pg_trgm's similarity) were named
+    // bare, so they resolved only through the search path: in a view on
+    // PostgreSQL 17 (CREATE / REFRESH MATERIALIZED VIEW pin it to
+    // pg_catalog), in a pinned trigger, or with the extension in a schema
+    // off the path, "function levenshtein(text, text) does not exist"
+    // (#382). They are named through their extension's schema.
+    #[pg_test]
+    fn extension_functions_resolve_through_their_schema() {
+        setup();
+        let available: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_available_extensions \
+              WHERE name IN ('fuzzystrmatch', 'pg_trgm')",
+        )
+        .unwrap()
+        .unwrap();
+        if available < 2 {
+            return;
+        }
+        Spi::run(
+            "DROP EXTENSION IF EXISTS fuzzystrmatch CASCADE; DROP EXTENSION IF EXISTS pg_trgm CASCADE; \
+             CREATE SCHEMA ext_off_path; \
+             CREATE EXTENSION fuzzystrmatch SCHEMA ext_off_path; \
+             CREATE EXTENSION pg_trgm SCHEMA ext_off_path",
+        )
+        .expect("extensions off the path");
+        Spi::run("SELECT create_store('xq_s')").expect("create");
+        let lev = "[:find ?n ?d :where [?e :p/name ?n] [(levenshtein ?n \"Alice\") ?d] [(< ?d 2)]]";
+        let codes = "[:find ?s ?m :where [?e :p/name \"Alicia\"] [(soundex \"Alicia\") ?s] \
+                     [(metaphone \"Alicia\" 4) ?m]]";
+        let sim = "[:find ?n :where [(similar-to $ :p/name \"Alice\" 0.3) [[?e ?n ?s]]]]";
+        for store in ["default", "xq_s"] {
+            tx(store, SCHEMA_TX);
+            tx(
+                store,
+                "[{:p/name \"Alice\"} {:p/name \"Alicia\"} {:p/name \"Bob\"}]",
+            );
+            assert_eq!(
+                q(store, lev, "{}")["result"],
+                serde_json::json!([["Alice", 0]]),
+                "{store}"
+            );
+            assert_eq!(
+                q(store, codes, "{}")["result"],
+                serde_json::json!([["A420", "ALX"]]),
+                "{store}"
+            );
+            let near = sorted(
+                q(store, &sim.replace(":find ?n", ":find [?n ...]"), "{}")["result"].clone(),
+            );
+            assert_eq!(near, vec!["Alice", "Alicia"], "{store}");
+            // In a materialized view (PostgreSQL 17 pins its search path).
+            let schema = if store == "default" {
+                "mentat"
+            } else {
+                "mentat_xq_s"
+            };
+            for (view, query) in [("xq_lev", lev), ("xq_sim", sim)] {
+                Spi::run(&format!(
+                    "SELECT materialize('{store}', '{view}', '{query}')"
+                ))
+                .unwrap_or_else(|e| panic!("{store} {view}: {e}"));
+                Spi::run(&format!("SELECT refresh('{store}', '{view}')"))
+                    .unwrap_or_else(|e| panic!("{store} {view}: refresh: {e}"));
+                let n: i64 = Spi::get_one(&format!("SELECT count(*) FROM {schema}.{view}"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(n, if view == "xq_lev" { 1 } else { 2 }, "{store} {view}");
+                Spi::run(&format!("SELECT drop_matview('{store}', '{view}')")).expect("drop");
+            }
+        }
+        Spi::run("SELECT drop_store('xq_s')").expect("drop");
+        Spi::run("DROP EXTENSION fuzzystrmatch; DROP EXTENSION pg_trgm; DROP SCHEMA ext_off_path")
+            .expect("cleanup");
+    }
+
     // (pull ?e [...]) in :find called edn_pull, which reads the default
     // store: on a named store it returned the default store's values for the
     // same entity id. Entity ids overlap across stores.
