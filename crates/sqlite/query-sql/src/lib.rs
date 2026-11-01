@@ -45,6 +45,7 @@ mod fts_unicode61;
 ///
 /// Eventually we might allow different translations by providing a different `QueryBuilder`
 /// implementation for each storage backend. Passing `TypedValue`s here allows for that.
+#[derive(Clone)]
 pub enum ColumnOrExpression {
     Column(QualifiedAlias),
     ExistingColumn(Name),
@@ -56,8 +57,14 @@ pub enum ColumnOrExpression {
     // needs special treatment.
     NullableAggregate(Box<Expression>, ValueType), // Track the return type.
     Expression(Box<Expression>, ValueType),        // Track the return type.
+    /// A value's storage class, to key a set on with the value: SQLite compares a long and
+    /// a double as numbers (5 = 5.0), so DISTINCT, GROUP BY and UNION would merge them,
+    /// and Datomic keeps both (#391). DuckDB's `v` UNION compares by member already, so
+    /// there it is a constant.
+    TypeOf(Box<ColumnOrExpression>),
 }
 
+#[derive(Clone)]
 pub enum Expression {
     Unary {
         sql_op: &'static str,
@@ -276,6 +283,16 @@ impl QueryFragment for ColumnOrExpression {
                 Ok(())
             }
             Value(ref v) => out.push_typed_value(v),
+            TypeOf(ref c) => {
+                if out.dialect() == Dialect::DuckDb {
+                    out.push_sql("0");
+                    return Ok(());
+                }
+                out.push_sql("typeof(");
+                c.push_sql(out)?;
+                out.push_sql(")");
+                Ok(())
+            }
             NullableAggregate(ref e, ref t) | &Expression(ref e, ref t) => {
                 if out.dialect() == Dialect::DuckDb {
                     push_duckdb_aggregate(out, e, *t)

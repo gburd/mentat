@@ -107,9 +107,9 @@ impl RowSource for RusqliteRows<'_> {
     }
 }
 
-use core_traits::{Binding, TypedValue};
+use core_traits::{Binding, TypedValue, ValueType};
 
-use mentat_core::{Schema, ValueTypeTag};
+use mentat_core::{SQLValueType, Schema, ValueTypeTag};
 
 use mentat_core::util::Either;
 
@@ -393,6 +393,8 @@ type Index = usize; // A 0-based result column.
 enum TypedIndex {
     Known(Index, ValueTypeTag),
     Unknown(Index, Index),
+    /// A double, read from an integer too: an aggregate over longs and doubles (#391).
+    Double(Index),
 }
 
 impl TypedIndex {
@@ -427,6 +429,12 @@ impl TypedIndex {
                     .map(|v| v.into())
                     .map_err(|e| e.into())
             }
+            Double(value_index) => match row.get_value(value_index)? {
+                SqlValue::Integer(x) => Ok(TypedValue::Double((x as f64).into()).into()),
+                v => TypedValue::from_sql(v, ValueType::Double.value_type_tag())
+                    .map(|v| v.into())
+                    .map_err(|e| e.into()),
+            },
         }
     }
 }

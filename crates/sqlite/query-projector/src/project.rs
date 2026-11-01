@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use indexmap::IndexSet;
 
-use core_traits::ValueTypeSet;
+use core_traits::{ValueType, ValueTypeSet};
 
 use mentat_core::{SQLValueType, SQLValueTypeSet};
 
@@ -106,6 +106,30 @@ fn cc_column(cc: &ConjoiningClauses, var: &Variable) -> Result<QualifiedAlias> {
         .get(var)
         .and_then(|cols| cols.get(0).cloned())
         .ok_or_else(|| ProjectorError::UnboundVariable(var.name()))
+}
+
+/// True if a variable of these types can hold both a long and a double, which SQLite
+/// compares as numbers (5 = 5.0) and Datomic keeps apart (#391).
+pub(crate) fn holds_longs_and_doubles(types: ValueTypeSet) -> bool {
+    types.contains(ValueType::Long) && types.contains(ValueType::Double)
+}
+
+/// The name of a variable's storage class column ([`ColumnOrExpression::TypeOf`]).
+pub(crate) fn storage_class_name(var: &Variable) -> Name {
+    format!("{}_typeof", var.as_str())
+}
+
+/// For a variable that can hold both a long and a double, its storage class as a column,
+/// projected next to the value so DISTINCT and GROUP BY keep 5 and 5.0 apart (#391).
+fn storage_class_column(cc: &ConjoiningClauses, var: &Variable) -> Result<Option<ProjectedColumn>> {
+    if cc.is_value_bound(var) || !holds_longs_and_doubles(cc.known_type_set(var)) {
+        return Ok(None);
+    }
+    let column = ColumnOrExpression::Column(cc_column(cc, var)?);
+    Ok(Some(ProjectedColumn(
+        ColumnOrExpression::TypeOf(Box::new(column)),
+        storage_class_name(var),
+    )))
 }
 
 fn candidate_column(cc: &ConjoiningClauses, var: &Variable) -> Result<(ColumnOrExpression, Name)> {
@@ -260,6 +284,11 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                     inner_projection.push(ProjectedColumn(type_column, type_name.clone()));
                     outer_projection.push(Either::Left(type_name));
                 }
+                if let Some(class) = storage_class_column(&query.cc, var)? {
+                    outer_projection.push(Either::Left(class.1.clone()));
+                    inner_projection.push(class);
+                    i += 1;
+                }
             }
             Element::Pull(Pull {
                 ref var,
@@ -334,10 +363,19 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                                 candidate_type_column(&query.cc, &simple.var)?;
                             inner_projection.push(ProjectedColumn(type_column, type_name.clone()));
                         }
+                        if let Some(class) = storage_class_column(&query.cc, &simple.var)? {
+                            inner_projection.push(class);
+                        }
                     }
 
                     // We might regret using the type tag here instead of the `ValueType`.
-                    templates.push(TypedIndex::Known(i, return_type.value_type_tag()));
+                    // A double result is a double even when SQLite returns an integer (the
+                    // max of 40 and 2.5), as on DuckDB and pg.
+                    templates.push(if return_type == ValueType::Double {
+                        TypedIndex::Double(i)
+                    } else {
+                        TypedIndex::Known(i, return_type.value_type_tag())
+                    });
                     i += 1;
                 } else {
                     // TODO(gburd): complex aggregates.
@@ -402,6 +440,12 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
             }
 
             outer_projection.push(Either::Left(type_name));
+        }
+        if let Some(class) = storage_class_column(&query.cc, &var)? {
+            outer_projection.push(Either::Left(class.1.clone()));
+            if !already_inner {
+                inner_projection.push(class);
+            }
         }
     }
 
@@ -477,6 +521,14 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                 group_by.push(GroupBy::ProjectedColumn(type_name));
             }
         };
+        if let Some(class) = storage_class_column(&query.cc, &var)? {
+            if group {
+                group_by.push(GroupBy::ProjectedColumn(class.1.clone()));
+            }
+            if !already_inner {
+                inner_projection.push(class);
+            }
+        }
     }
 
     for var in query.with.iter() {
@@ -494,6 +546,9 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                 // Also project the type from the SQL query.
                 let (type_column, type_name) = candidate_type_column(&query.cc, &var)?;
                 inner_projection.push(ProjectedColumn(type_column, type_name.clone()));
+            }
+            if let Some(class) = storage_class_column(&query.cc, var)? {
+                inner_projection.push(class);
             }
         }
     }

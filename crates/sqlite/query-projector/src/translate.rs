@@ -25,6 +25,7 @@ use mentat_query_algebrizer::{
 use mentat_core::HasSchema;
 use query_projector_traits::aggregates::{SimpleAggregation, SimpleAggregationOp};
 
+use crate::project::{holds_longs_and_doubles, storage_class_name};
 use crate::{
     projected_column_for_var, query_projection, CombinedProjection, ConstantProjector, Projector,
 };
@@ -274,6 +275,18 @@ fn table_for_computed(computed: ComputedTable, alias: TableAlias) -> TableOrSubq
         } => {
             // The projection list for each CC must have the same shape and the same names.
             // The values we project might be fixed or they might be columns.
+            // A variable the arms bind to longs and doubles also projects its storage
+            // class, so the UNION keeps 5 and 5.0 apart (#391).
+            let mixed: Vec<Variable> = projection
+                .iter()
+                .filter(|var| {
+                    let types = arms.iter().fold(ValueTypeSet::none(), |t, cc| {
+                        t.union(cc.known_type_set(var))
+                    });
+                    holds_longs_and_doubles(types)
+                })
+                .cloned()
+                .collect();
             TableOrSubquery::Union(
                 arms.into_iter()
                     .map(|cc| {
@@ -287,6 +300,10 @@ fn table_for_computed(computed: ComputedTable, alias: TableAlias) -> TableOrSubq
                         for var in projection.iter() {
                             // TODO: chain results out.
                             let (projected_column, type_set) = projected_column_for_var(var, &cc).expect("every var to be bound");
+                            let class = mixed.contains(var).then(|| ProjectedColumn(
+                                ColumnOrExpression::TypeOf(Box::new(projected_column.0.clone())),
+                                storage_class_name(var),
+                            ));
                             columns.push(projected_column);
 
                             // Similarly, project type tags if they're not known conclusively in the
@@ -313,6 +330,7 @@ fn table_for_computed(computed: ComputedTable, alias: TableAlias) -> TableOrSubq
                                 let proj = ProjectedColumn(expression, type_column.column_name());
                                 columns.push(proj);
                             }
+                            columns.extend(class);
                         }
 
                         // Each arm simply turns into a subquery.
@@ -572,6 +590,7 @@ fn count_distinct(
         .collect();
     if grouped
         || !query.cc.known_type_set(&x).has_unique_type_tag()
+        || holds_longs_and_doubles(query.cc.known_type_set(&x))
         || vars.len() != others.len() + 1
     {
         return false;

@@ -52,6 +52,8 @@ pub const TXS: &[&str] = &[
     r#"[{:p/name "Alice" :p/age 31}]"#,
     r#"[{:p/name "Dan" :p/height 1.9}]"#,
     r#"[{:p/name "Eve" :p/age 25 :p/blob #bytes 010203}]"#,
+    // A long and an equal double on one entity: two values of a set (#391).
+    r#"[{:p/name "Fay" :p/age 2 :p/height 2.0}]"#,
     // No-ops, a cardinality-one replacement, a retraction of an absent value (#281).
     r#"[{:p/name "Eve" :p/age 25} [:db/retract [:p/name "Eve"] :p/age 99] [:db/retract [:p/name "Eve"] :p/nick "x"]]"#,
     r#"[{:p/name "Eve" :p/age 26} {:p/name "Bob" :p/nick ["Bobby"]}]"#,
@@ -133,6 +135,13 @@ pub const QUERIES: &[&str] = &[
     "[:find (count ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count ?h) . :with ?e :where [?e :p/height ?h]]",
     "[:find (count ?r) . :with ?e :where [?e :p/role ?r]]",
+    // A variable of longs and doubles: one value per type (#391).
+    "[:find (sum ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find (count ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find (count ?v) . :with ?e :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find ?v (count ?e) :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find [?v ...] :where [?e :p/name \"Fay\"] [?e ?a ?v] [(> ?v 1)]]",
+    "[:find (sum ?v) . :where [?e :p/name \"Fay\"] [?e ?a ?v] [(> ?v 1)]]",
     // Aggregates over no rows (#237): nil, and 0 for a count. Nobody is 99.
     "[:find (sum ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
     "[:find (avg ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
