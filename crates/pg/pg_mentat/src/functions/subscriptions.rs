@@ -158,6 +158,26 @@ fn name_taken(
 // Trigger function SQL generators
 // ---------------------------------------------------------------------------
 
+/// `s` as an SQL string literal, written as quote_literal() writes it: E''
+/// when it has a backslash, so standard_conforming_strings doesn't matter.
+fn sql_literal(s: &str) -> String {
+    let doubled = s.replace('\'', "''");
+    if s.contains('\\') {
+        format!("E'{}'", doubled.replace('\\', "\\\\"))
+    } else {
+        format!("'{doubled}'")
+    }
+}
+
+/// A dollar-quote tag that `body` doesn't contain, so no text in the body
+/// (the subscribed query) can end it early.
+fn dollar_tag(body: &str) -> String {
+    (0..)
+        .map(|n| format!("$mentat_sub{n}$"))
+        .find(|tag| !body.contains(tag.as_str()))
+        .expect("some tag is free")
+}
+
 /// Generate the SQL for the trigger function that re-evaluates a Datalog query
 /// on datom changes and issues NOTIFY if results differ.
 ///
@@ -166,24 +186,24 @@ fn name_taken(
 /// 2. Computes an MD5 hash of the result
 /// 3. Compares with the last known hash (stored in a session variable)
 /// 4. Sends NOTIFY on the subscription channel if the hash changed
+///
+/// It runs as the writer, so its search_path is pinned and every call in it
+/// is qualified: `q_fn` is pg_mentat's q, named through its schema (#383).
 fn trigger_function_sql(
     schema: &str,
     subscription_name: &str,
     channel: &str,
     query: &str,
+    q_fn: &str,
 ) -> String {
-    // Escape single quotes in the query for embedding in PL/pgSQL
-    let escaped_query = query.replace('\'', "''");
     let func_name = format!("{}.mentat_sub_{}", schema, subscription_name);
 
     // The session variable key stores the last known hash for this subscription.
     // We use a custom GUC-like approach with current_setting / set_config.
     let var_name = format!("mentat.sub_hash_{}", subscription_name);
 
-    format!(
+    let body = format!(
         r"
-CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
-LANGUAGE plpgsql AS $$
 DECLARE
     sub_store TEXT;
     new_hash TEXT;
@@ -199,33 +219,36 @@ BEGIN
     END IF;
 
     -- Re-evaluate the subscribed Datalog query
-    SELECT q(sub_store, '{escaped_query}', '{{}}'::jsonb) INTO result_json;
+    SELECT {q_fn}(sub_store, {query_literal}, '{{}}'::jsonb) INTO result_json;
 
     -- Compute hash of current results
-    new_hash := md5(result_json::TEXT);
+    new_hash := pg_catalog.md5(result_json::TEXT);
 
     -- Get last known hash from session state (returns empty string if unset)
     BEGIN
-        old_hash := current_setting('{var_name}', true);
+        old_hash := pg_catalog.current_setting('{var_name}', true);
     EXCEPTION WHEN OTHERS THEN
         old_hash := '';
     END;
 
     -- If results changed, notify and update the stored hash
     IF old_hash IS DISTINCT FROM new_hash THEN
-        PERFORM set_config('{var_name}', new_hash, false);
-        PERFORM pg_notify('{channel}', result_json::TEXT);
+        PERFORM pg_catalog.set_config('{var_name}', new_hash, false);
+        PERFORM pg_catalog.pg_notify('{channel}', result_json::TEXT);
     END IF;
 
     RETURN NULL;
 END;
-$$;
 ",
-        func_name = func_name,
-        subscription_name = subscription_name,
-        escaped_query = escaped_query,
-        var_name = var_name,
-        channel = channel,
+        query_literal = sql_literal(query),
+    );
+    let tag = dollar_tag(&body);
+
+    format!(
+        r"
+CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS {tag}{body}{tag};
+"
     )
 }
 
@@ -346,7 +369,8 @@ pub fn subscribe(
     let channel = channel_name(subscription_name);
 
     // Create the trigger function
-    let func_sql = trigger_function_sql(&quoted_schema, subscription_name, &channel, query);
+    let q_fn = crate::functions::query::ext_qualified("pg_mentat", "q");
+    let func_sql = trigger_function_sql(&quoted_schema, subscription_name, &channel, query, &q_fn);
     Spi::run(&func_sql)?;
 
     // Create the trigger on the datoms table.
@@ -530,6 +554,7 @@ mod tests {
             "test_sub",
             "mentat_test_sub",
             "[:find ?e :where [?e :person/name]]",
+            "public.q",
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
         assert!(sql.contains("q(sub_store, '[:find"));
@@ -545,6 +570,7 @@ mod tests {
             "test_sub",
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
+            "public.q",
         );
         // Single quotes are doubled once for the q('...') string
         // literal embedded inside the $$-quoted function body. The function
@@ -564,11 +590,48 @@ mod tests {
             "s",
             "mentat_s",
             "[:find ?n :where [_ :p/name ?n]]",
+            "public.q",
         );
         assert!(sql.contains("q(sub_store, '[:find ?n"), "{sql}");
         assert!(sql.contains("schema_name = TG_TABLE_SCHEMA"), "{sql}");
         assert!(!sql.contains("acme'"), "{sql}");
         assert!(!sql.contains("edn_q"), "{sql}");
+    }
+
+    // The function runs as the writer: a pinned path, every call qualified,
+    // so a function of the same name earlier on the writer's path isn't the
+    // one called (#383).
+    #[test]
+    fn test_trigger_function_sql_pins_the_path() {
+        let sql = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "\"my ext\".q");
+        assert!(
+            sql.contains("SET search_path = pg_catalog, pg_temp"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("\"my ext\".q(sub_store, '[:find ?e]'"),
+            "{sql}"
+        );
+        for f in ["md5", "current_setting", "set_config", "pg_notify"] {
+            assert!(sql.contains(&format!("pg_catalog.{f}(")), "{f}: {sql}");
+            assert!(!sql.contains(&format!(" {f}(")), "{f}: {sql}");
+        }
+    }
+
+    // The body was $$-quoted with only ' doubled: a query containing $$
+    // ended it early (#383).
+    #[test]
+    fn test_trigger_function_sql_quotes_any_query() {
+        let query = "[:find ?e :where [?e :p/name \"$$ $mentat_sub0$ \\ '\"]]";
+        let sql = trigger_function_sql("mentat", "s", "mentat_s", query, "public.q");
+        assert!(sql.contains("AS $mentat_sub1$"), "{sql}");
+        assert_eq!(sql.matches("$mentat_sub1$").count(), 2, "{sql}");
+        assert!(
+            sql.contains("E'[:find ?e :where [?e :p/name \"$$ $mentat_sub0$ \\\\ ''\"]]'"),
+            "{sql}"
+        );
+        assert_eq!(sql_literal("it's"), "'it''s'");
+        assert_eq!(sql_literal("a\\b"), "E'a\\\\b'");
     }
 
     #[test]

@@ -2017,6 +2017,134 @@ mod tests {
         Spi::run("SELECT drop_store('fp_s')").expect("drop");
     }
 
+    // The trigger functions subscribe() and materialize(..., 'on_write')
+    // generate run as the writer, and had no pinned search_path: a q(), md5()
+    // or format() in a schema ahead of pg_mentat's (or of pg_catalog, when
+    // the path names it) on the writer's path was called instead of
+    // pg_mentat's / pg_catalog's (#383).
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn generated_triggers_pin_the_search_path() {
+        setup();
+        Spi::run("SELECT create_store('sp_s')").expect("create");
+        tx("sp_s", SCHEMA_TX);
+        tx("sp_s", "[{:p/name \"one\"}]");
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        Spi::run(&format!("SELECT subscribe('sp_s', 'sp_names', '{query}')")).expect("subscribe");
+        Spi::run(
+            "SELECT materialize('sp_s', 'sp_mv', '[:find ?n :where [_ :p/name ?n]]', 'on_write')",
+        )
+        .expect("materialize");
+        Spi::run(
+            "CREATE TABLE public.sp_hits (f TEXT); CREATE SCHEMA sp_other; \
+             CREATE FUNCTION sp_other.q(TEXT, TEXT, JSONB) RETURNS JSONB LANGUAGE sql AS \
+               $$ INSERT INTO public.sp_hits VALUES ('q') RETURNING '{}'::jsonb $$; \
+             CREATE FUNCTION sp_other.md5(TEXT) RETURNS TEXT LANGUAGE sql AS \
+               $$ INSERT INTO public.sp_hits VALUES ('md5') RETURNING 'x' $$; \
+             CREATE FUNCTION sp_other.format(TEXT, NAME, TEXT) RETURNS TEXT LANGUAGE sql AS \
+               $$ INSERT INTO public.sp_hits VALUES ('format') RETURNING 'SELECT 1' $$",
+        )
+        .expect("functions in another schema");
+        Spi::run("SET search_path TO sp_other, pg_catalog, mentat, public").expect("path");
+        tx("sp_s", "[{:p/name \"two\"}]");
+        Spi::run("SET search_path TO mentat, public").expect("path back");
+        let hits = json("SELECT coalesce(jsonb_agg(f), '[]') FROM public.sp_hits");
+        assert_eq!(hits, serde_json::json!([]), "called from the triggers");
+        let sent = text("SELECT current_setting('mentat.sub_hash_sp_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('sp_s', '{query}', '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        let rows = sorted(json(
+            "SELECT coalesce(jsonb_agg(n), '[]') FROM mentat_sp_s.sp_mv",
+        ));
+        assert_eq!(rows, vec!["one", "two"]);
+        for (f, store) in [
+            ("mentat_sub_sp_names", "sp_s"),
+            ("mentat_matview_refresh_sp_mv", "sp_s"),
+        ] {
+            let cfg = text(&format!(
+                "SELECT array_to_string(proconfig, ',') FROM pg_proc \
+                 WHERE proname = '{f}' AND pronamespace = 'mentat_{store}'::regnamespace"
+            ));
+            assert_eq!(cfg, "search_path=pg_catalog, pg_temp", "{f}");
+        }
+        Spi::run("SELECT drop_store('sp_s')").expect("drop");
+    }
+
+    // subscribe() put the query into a $$-quoted function body with only '
+    // doubled: a query containing $$ ended the body early, so subscribe
+    // failed with a syntax error (or ran the rest as SQL) (#383).
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_query_with_dollar_quotes() {
+        setup();
+        Spi::run("SELECT create_store('dq_s')").expect("create");
+        tx("dq_s", SCHEMA_TX);
+        let query =
+            r#"[:find [?n ...] :where [_ :p/name ?n] [(!= ?n "it's $$ a \"$mentat_sub0$\" \\")]]"#;
+        Spi::run(&format!(
+            "SELECT subscribe('dq_s', 'dq_names', $q${query}$q$)"
+        ))
+        .expect("subscribe a query containing $$");
+        tx("dq_s", "[{:p/name \"one\"}]");
+        let sent = text("SELECT current_setting('mentat.sub_hash_dq_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('dq_s', $q${query}$q$, '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        assert_eq!(
+            text("SELECT query FROM mentat.subscriptions WHERE name = 'dq_names'"),
+            query
+        );
+        Spi::run("SELECT drop_store('dq_s')").expect("drop");
+    }
+
+    // With the trigger functions' path pinned to pg_catalog, pg_temp, a
+    // find-pull subscription and a find-pull on_write view still fire on t():
+    // the generated pull() / edn_pull() call is qualified (#382, #383). The
+    // view on the default store (edn_pull) and on a named store (pull); the
+    // subscription on the named store (subscribe refuses 'default').
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn find_pull_triggers_fire_under_the_pinned_path() {
+        // Before setup(), as in default_store_view_triggers_fire_after_the_data:
+        // a default-store view's trigger goes on mentat.datoms.
+        Spi::run("LOCK TABLE mentat.datoms IN SHARE ROW EXCLUSIVE MODE").expect("lock");
+        setup();
+        Spi::run("SELECT create_store('fpt_s')").expect("create");
+        let pull_q = "[:find (pull ?e [:p/name]) :where [?e :p/name _]]";
+        tx("fpt_s", SCHEMA_TX);
+        tx("default", SCHEMA_TX);
+        Spi::run(&format!(
+            "SELECT subscribe('fpt_s', 'fpt_names', '{pull_q}')"
+        ))
+        .expect("subscribe");
+        for (store, schema) in [("default", "mentat"), ("fpt_s", "mentat_fpt_s")] {
+            Spi::run(&format!(
+                "SELECT materialize('{store}', 'fpt_mv', '{pull_q}', 'on_write')"
+            ))
+            .unwrap_or_else(|e| panic!("{store}: materialize: {e}"));
+            tx(store, &format!("[{{:p/name \"{store}-1\"}}]"));
+            let rows = sorted(json(&format!(
+                "SELECT coalesce(jsonb_agg(p), '[]') FROM \
+                 (SELECT (\"(pull ?e [ :p_name ])\")::jsonb->>':p/name' AS p FROM {schema}.fpt_mv) s"
+            )));
+            assert_eq!(rows, vec![format!("{store}-1")], "{store}");
+            Spi::run(&format!("SELECT drop_matview('{store}', 'fpt_mv')")).expect("drop_matview");
+        }
+        let sent = text("SELECT current_setting('mentat.sub_hash_fpt_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('fpt_s', '{pull_q}', '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        assert_eq!(
+            q("fpt_s", pull_q, "{}")["results"][0][0][":p/name"],
+            serde_json::json!("fpt_s-1")
+        );
+        Spi::run("SELECT drop_store('fpt_s')").expect("drop");
+    }
+
     // A 1.17 subscription or materialized view on a named store stays with
     // the old tables, under _pre118, and stops working. The upgrade said
     // nothing about them; now it names each one. (A WARNING can't be caught,
