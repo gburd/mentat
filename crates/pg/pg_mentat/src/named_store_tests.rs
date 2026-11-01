@@ -2297,6 +2297,79 @@ mod tests {
         Spi::run("SELECT drop_matview('default', 'or_dmv')").expect("drop_matview");
     }
 
+    // 1.17's create_store('x') made idx_x_fts_text (and with pg_trgm
+    // idx_x_trgm_text / idx_x_trgm_keyword) on the default store's
+    // mentat.datoms_text_new / datoms_keyword_new; the 1.18.0 upgrade kept
+    // them, so every default-store write kept paying for them (#381). The
+    // 1.19.0 upgrade drops them, and only them.
+    #[pg_test]
+    fn upgrade_drops_old_store_indexes_on_the_default_tables() {
+        // Before setup(): DROP INDEX locks the tables, and taking that lock
+        // after another test's writes would deadlock with it.
+        Spi::run(
+            "LOCK TABLE mentat.datoms_text_new, mentat.datoms_keyword_new, mentat.datoms_long_new \
+             IN ACCESS EXCLUSIVE MODE",
+        )
+        .expect("lock");
+        setup();
+        let on_tables = || -> Vec<String> {
+            let v = json(
+                "SELECT coalesce(jsonb_agg(c.relname::text ORDER BY c.relname), '[]') \
+                   FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+                  WHERE i.indrelid IN ('mentat.datoms_text_new'::regclass, \
+                                       'mentat.datoms_keyword_new'::regclass, \
+                                       'mentat.datoms_long_new'::regclass)",
+            );
+            sorted(v)
+        };
+        let own = on_tables();
+        assert!(
+            own.contains(&"idx_datoms_text_new_fts".to_string()),
+            "{own:?}"
+        );
+        let long = "Ix_".to_string() + &"l".repeat(53);
+        Spi::run(&format!(
+            "INSERT INTO mentat.stores (store_name, schema_name) VALUES \
+               ('Ix_S', 'mentat_Ix_S'), ('{long}', 'mentat_{long}'); \
+             CREATE SCHEMA mentat_ix_old_pre118; \
+             CREATE INDEX idx_ix_s_fts_text ON mentat.datoms_text_new \
+               USING GIN (to_tsvector('english', COALESCE(v, ''))) WHERE added = true; \
+             CREATE INDEX idx_ix_s_trgm_text ON mentat.datoms_text_new (v) WHERE added = true; \
+             CREATE INDEX idx_ix_old_trgm_keyword ON mentat.datoms_keyword_new (v) WHERE added = true; \
+             CREATE INDEX idx_{long}_trgm_keyword ON mentat.datoms_keyword_new (v) WHERE added = true; \
+             CREATE INDEX idx_ix_s_trgm_keyword ON mentat.datoms_long_new (v); \
+             CREATE INDEX idx_ix_gone_fts_text ON mentat.datoms_text_new (v) WHERE added = true"
+        ))
+        .expect("1.17 indexes");
+        // An index on another table, or with a name no store gives, stays.
+        let kept = |mut v: Vec<String>| {
+            v.extend(["idx_ix_s_trgm_keyword", "idx_ix_gone_fts_text"].map(String::from));
+            v.sort();
+            v
+        };
+        let block = upgrade_119_block("oldidx");
+        let warned = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace(
+                "RAISE WARNING 'pg_mentat upgrade: indexes",
+                "RAISE EXCEPTION 'pg_mentat upgrade: indexes"
+            )
+        ));
+        assert!(
+            warned.contains("indexes mentat.idx_ix_gone_fts_text on") && !warned.contains("ix_s"),
+            "{warned:?}"
+        );
+        Spi::run(&block).expect("the upgrade DO block");
+        Spi::run(&block).expect("again");
+        assert_eq!(on_tables(), kept(own));
+        Spi::run(
+            "DROP INDEX mentat.idx_ix_s_trgm_keyword, mentat.idx_ix_gone_fts_text; \
+             DROP SCHEMA mentat_ix_old_pre118; \
+             DELETE FROM mentat.stores WHERE store_name LIKE 'Ix\\_%'",
+        )
+        .expect("clean up");
+    }
+
     // A 1.17 subscription or materialized view on a named store stays with
     // the old tables, under _pre118, and stops working. The upgrade said
     // nothing about them; now it names each one. (A WARNING can't be caught,

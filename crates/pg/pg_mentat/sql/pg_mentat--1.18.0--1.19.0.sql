@@ -62,3 +62,66 @@ BEGIN
     PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
 $orphans$;
+
+-- ---------------------------------------------------------------------------
+-- Indexes 1.17 named stores made on the default store's tables (#381).
+-- 1.17's create_store('x') made idx_x_fts_text on mentat.datoms_text_new and,
+-- with pg_trgm, idx_x_trgm_text / idx_x_trgm_keyword on
+-- mentat.datoms_text_new / mentat.datoms_keyword_new (names unquoted, so
+-- folded to lower case, and cut to 63). They duplicate the default store's
+-- own indexes, and every default-store write paid for them; neither the
+-- 1.18.0 upgrade nor drop_store removed them. Only a superuser could make
+-- them (CREATE INDEX needs the table's owner).
+--
+-- Dropped by exact name, for every store in mentat.stores and every
+-- mentat_<name>_pre118 schema the 1.18.0 upgrade left, and only on those two
+-- tables. The default store's own indexes there are *_pkey and
+-- idx_datoms_<type>_new_{eavt,aevt,vaet,tx,fts}: none ends in _fts_text,
+-- _trgm_text or _trgm_keyword, and all are under 63 characters, so no name
+-- built here is one of them. An index that only looks like one (its store
+-- was renamed or dropped under 1.17) gets a WARNING instead.
+-- ---------------------------------------------------------------------------
+DO $oldidx$
+DECLARE
+    idx RECORD;
+    others TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOR idx IN
+        WITH names AS (
+            SELECT s.store_name AS n FROM mentat.stores s WHERE s.store_name <> 'default'
+            UNION
+            SELECT pg_catalog.substr(ns.nspname, 8, pg_catalog.length(ns.nspname) - 14)
+              FROM pg_namespace ns WHERE ns.nspname LIKE 'mentat\_%\_pre118'
+        )
+        SELECT DISTINCT c.relname
+          FROM names
+         CROSS JOIN pg_catalog.unnest(ARRAY['_fts_text', '_trgm_text', '_trgm_keyword']) AS sfx
+          JOIN pg_class c
+            ON c.relname = pg_catalog.left('idx_' || pg_catalog.lower(names.n) || sfx, 63)
+          JOIN pg_index i ON i.indexrelid = c.oid
+         WHERE c.relnamespace = 'mentat'::regnamespace
+           AND i.indrelid IN ('mentat.datoms_text_new'::regclass, 'mentat.datoms_keyword_new'::regclass)
+         ORDER BY c.relname
+    LOOP
+        EXECUTE pg_catalog.format('DROP INDEX IF EXISTS %I.%I', 'mentat', idx.relname);
+        RAISE NOTICE 'pg_mentat upgrade: dropped index mentat.%, a duplicate a 1.17 named store made '
+                     'on the default store''s tables', idx.relname;
+    END LOOP;
+
+    SELECT pg_catalog.string_agg(pg_catalog.format('%I.%I', 'mentat', c.relname), ', ' ORDER BY c.relname)
+      INTO others
+      FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+     WHERE c.relnamespace = 'mentat'::regnamespace
+       AND i.indrelid IN ('mentat.datoms_text_new'::regclass, 'mentat.datoms_keyword_new'::regclass)
+       AND c.relname ~ '^idx_.+_(fts_text|trgm_text|trgm_keyword)$';
+    IF others IS NOT NULL THEN
+        RAISE WARNING 'pg_mentat upgrade: indexes % on mentat.datoms_text_new / mentat.datoms_keyword_new '
+                      'look like ones a 1.17 named store made, for a store renamed or dropped since. '
+                      'They duplicate the default store''s own indexes and slow its writes. If you did '
+                      'not make them, DROP INDEX each.', others;
+    END IF;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$oldidx$;
