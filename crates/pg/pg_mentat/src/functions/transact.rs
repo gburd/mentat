@@ -3388,6 +3388,9 @@ fn typed_value_column(v: &TypedValue) -> &'static str {
 }
 
 /// Check for unique constraint violation by looking up existing datom with same (a, v).
+/// Reads the current-state projection: the append-only log keeps a value an
+/// entity has given up, which would upsert into (or conflict with) its former
+/// holder (#393).
 ///
 /// The `schema` parameter is the quoted PostgreSQL schema name.
 fn check_unique_typed_value(
@@ -3402,8 +3405,8 @@ fn check_unique_typed_value(
     let result = match v {
         TypedValue::Ref(id) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_ref_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_ref \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
@@ -3413,8 +3416,8 @@ fn check_unique_typed_value(
         ),
         TypedValue::Boolean(b) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_boolean_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_boolean \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
@@ -3424,8 +3427,8 @@ fn check_unique_typed_value(
         ),
         TypedValue::Long(n) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_long_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_long \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
@@ -3435,8 +3438,8 @@ fn check_unique_typed_value(
         ),
         TypedValue::Double(f) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_double_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_double \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
@@ -3446,8 +3449,8 @@ fn check_unique_typed_value(
         ),
         TypedValue::Text(s) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_text_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_text \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
@@ -3457,8 +3460,8 @@ fn check_unique_typed_value(
         ),
         TypedValue::Keyword(s) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_keyword_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_keyword \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
@@ -3468,8 +3471,8 @@ fn check_unique_typed_value(
         ),
         TypedValue::Instant(micros) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_instant_new \
-                 WHERE store_id = $1 AND a = $2 AND v = {} AND added = true LIMIT 1",
+                "SELECT e FROM {schema}.current_instant \
+                 WHERE store_id = $1 AND a = $2 AND v = {} LIMIT 1",
                 sql_instant_from_micros("$3")
             ),
             &[
@@ -3482,8 +3485,8 @@ fn check_unique_typed_value(
             let uuid_str = u.to_string();
             Spi::get_one_with_args::<i64>(
                 &format!(
-                    "SELECT e FROM {schema}.datoms_uuid_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3::UUID AND added = true LIMIT 1"
+                    "SELECT e FROM {schema}.current_uuid \
+                     WHERE store_id = $1 AND a = $2 AND v = $3::UUID LIMIT 1"
                 ),
                 &[
                     DatumWithOid::from(store_id),
@@ -3494,8 +3497,8 @@ fn check_unique_typed_value(
         }
         TypedValue::Bytes(b) => Spi::get_one_with_args::<i64>(
             &format!(
-                "SELECT e FROM {schema}.datoms_bytes_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {schema}.current_bytes \
+                 WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),

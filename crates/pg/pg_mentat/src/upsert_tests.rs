@@ -270,4 +270,103 @@ mod tests {
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(j["result"].as_i64().expect("v"), 105);
     }
+
+    // ========================================================================
+    // A unique value an entity gave up (#393)
+    // ========================================================================
+
+    /// The transactor's unique-value lookup read the append-only log with
+    /// `added = true`, so a value an entity had moved off (or retracted)
+    /// still named it: upserting by that value merged into the former
+    /// holder, a :db.unique/value assert of it was refused, and a lookup ref
+    /// to a value nobody held resolved. It reads the store's live datoms
+    /// now, on the default store and on a named store.
+    #[pg_test]
+    fn test_upsert_unique_value_given_up() {
+        setup();
+        Spi::run(
+            "CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("capture helper");
+        Spi::run("SELECT create_store('up_freed_s')").expect("create_store");
+        for store in ["default", "up_freed_s"] {
+            let t = |edn: &str| -> serde_json::Value {
+                let out = Spi::get_one::<String>(&format!(
+                    "SELECT t('{store}', '{}')",
+                    edn.replace('\'', "''")
+                ))
+                .unwrap_or_else(|e| panic!("{store} {edn}: {e}"))
+                .expect("NULL");
+                serde_json::from_str(&out).expect("tx report")
+            };
+            let err = |edn: &str| -> String {
+                let stmt = format!("SELECT t('{store}', '{}')", edn.replace('\'', "''"));
+                Spi::get_one::<String>(&format!(
+                    "SELECT pg_temp.capture('{}')",
+                    stmt.replace('\'', "''")
+                ))
+                .expect("capture")
+                .unwrap_or_default()
+            };
+            let n_of = |e: i64| -> serde_json::Value {
+                Spi::get_one::<pgrx::JsonB>(&format!(
+                    "SELECT q('{store}', '[:find ?n . :in $ ?e :where [?e :u/n ?n]]', \
+                     '{{\"inputs\": [{e}]}}'::jsonb)"
+                ))
+                .expect("q")
+                .expect("NULL")
+                .0["result"]
+                    .clone()
+            };
+            t("[{:db/ident :u/email :db/valueType :db.type/string \
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity} \
+                {:db/ident :u/code :db/valueType :db.type/string \
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/value} \
+                {:db/ident :u/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]");
+            let r = t("[{:db/id \"u\" :u/email \"old@x\" :u/code \"c1\" :u/n 1}]");
+            let u = r["tempids"]["u"].as_i64().expect("u");
+            t(&format!(
+                "[[:db/add {u} :u/email \"new@x\"] [:db/retract {u} :u/code \"c1\"]]"
+            ));
+
+            // Upsert by the old identity value: a new entity, u untouched.
+            let r = t("[{:db/id \"w\" :u/email \"old@x\" :u/n 50}]");
+            let w = r["tempids"]["w"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("{store}: {r}"));
+            assert_ne!(w, u, "{store}: upserted into u, which gave old@x up");
+            assert_eq!(n_of(u), serde_json::json!(1), "{store}");
+            assert_eq!(n_of(w), serde_json::json!(50), "{store}");
+            // Upsert by the current value still finds u.
+            let r = t("[{:db/id \"x\" :u/email \"new@x\" :u/n 2}]");
+            assert_eq!(r["tempids"]["x"].as_i64(), Some(u), "{store}: {r}");
+            assert_eq!(n_of(u), serde_json::json!(2), "{store}");
+
+            // A lookup ref to a value nobody holds now: the usual error.
+            // (old@x is w's now; z@x was u's for one transaction.)
+            t(&format!("[[:db/add {u} :u/email \"z@x\"]]"));
+            t(&format!("[[:db/add {u} :u/email \"new@x\"]]"));
+            let e = err("[[:db/add [:u/email \"z@x\"] :u/n 9]]");
+            assert!(
+                e.contains(":db.error/lookup-ref-not-found"),
+                "{store}: {e:?}"
+            );
+            assert_eq!(n_of(u), serde_json::json!(2), "{store}");
+            t("[[:db/add [:u/email \"old@x\"] :u/n 51]]");
+            assert_eq!(n_of(w), serde_json::json!(51), "{store}");
+
+            // A :db.unique/value value u retracted is free for another entity.
+            let r = t("[{:db/id \"v\" :u/code \"c1\"}]");
+            let v = r["tempids"]["v"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("{store}: {r}"));
+            assert_ne!(v, u, "{store}");
+            // And held now, it is refused for anyone else.
+            let e = err(&format!("[[:db/add {u} :u/code \"c1\"]]"));
+            assert!(e.contains(":db.error/unique-conflict"), "{store}: {e:?}");
+        }
+        Spi::run("SELECT drop_store('up_freed_s')").expect("drop_store");
+    }
 }
