@@ -359,14 +359,15 @@ next transaction on the store sends a new one.
 
 ### `mentat.subscribe(store, name, query)`
 
-Subscribe to changes matching a Datalog query pattern. Uses PostgreSQL `LISTEN`/`NOTIFY`.
+Subscribe to changes matching a Datalog query pattern. Uses PostgreSQL `LISTEN`/`NOTIFY`:
+the channel is `mentat_<name>`.
 
 ```sql
 SELECT mentat.subscribe('default', 'new_people',
   '[:find ?e :where [?e :person/name]]');
 
 -- In another session:
-LISTEN mentat_subscription_new_people;
+LISTEN mentat_new_people;
 ```
 
 ### `mentat.unsubscribe(store, name)`
