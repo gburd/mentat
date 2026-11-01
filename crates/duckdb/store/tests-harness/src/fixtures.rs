@@ -61,6 +61,22 @@ pub const TXS: &[&str] = &[
     r#"[{:db/id [:p/name "Eve"] :p/boss [:p/name "Carol"] :p/likes [[:p/name "Bob"] [:p/name "Dan"]]}]"#,
 ];
 
+/// Queries in [`QUERIES`] that both engines reject today. The differential
+/// and import tests count both engines failing as agreement only for these;
+/// any other query must run. Each is a gap in the embedded engine (SQLite and
+/// DuckDB alike): remove it here when the engine learns it.
+pub const BOTH_ERR: &[&str] = &[
+    // count-distinct: "complex aggregates" not implemented (#394).
+    "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
+    // Arithmetic functions (`*`, `+`, ...) are not implemented.
+    "[:find ?n ?x :where [?e :p/age ?a] [(* ?a 2) ?x] [?e :p/name ?n]]",
+    // `<` and `!=` take numbers and instants only, not strings.
+    "[:find ?n :where [_ :p/name ?n] [(< ?n \"Bz\")]]",
+    "[:find ?n :where [?e :p/name ?n] [?e :p/nick ?k] [(!= ?k \"Al\")]]",
+    // A lookup ref in a pattern's value place doesn't parse.
+    "[:find ?n :where [?e :p/boss [:p/name \"Alice\"]] [?e :p/name ?n]]",
+];
+
 pub const QUERIES: &[&str] = &[
     "[:find ?n :where [_ :p/name ?n]]",
     "[:find ?n ?a :where [?e :p/name ?n] [?e :p/age ?a]]",
@@ -100,6 +116,23 @@ pub const QUERIES: &[&str] = &[
     "[:find (sum ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
     "[:find (max ?t) . :where [_ :p/born ?t]]",
+    // count over every value type: on DuckDB it counted a double, string,
+    // keyword, uuid or bytes value as nothing (#392). Scalar, grouped, :with.
+    "[:find (count ?v) . :where [_ :p/name ?v]]",
+    "[:find (count ?v) . :where [_ :p/age ?v]]",
+    "[:find (count ?v) . :where [_ :p/height ?v]]",
+    "[:find (count ?v) . :where [_ :p/alive ?v]]",
+    "[:find (count ?v) . :where [_ :p/born ?v]]",
+    "[:find (count ?v) . :where [_ :p/id ?v]]",
+    "[:find (count ?v) . :where [_ :p/role ?v]]",
+    "[:find (count ?v) . :where [_ :p/likes ?v]]",
+    "[:find (count ?v) . :where [_ :p/nick ?v]]",
+    "[:find (count ?v) . :where [_ :p/blob ?v]]",
+    "[:find ?n (count ?r) :where [?e :p/name ?n] [?e :p/role ?r]]",
+    "[:find ?a (count ?h) :where [?e :p/age ?a] [?e :p/height ?h]]",
+    "[:find (count ?a) . :with ?e :where [?e :p/age ?a]]",
+    "[:find (count ?h) . :with ?e :where [?e :p/height ?h]]",
+    "[:find (count ?r) . :with ?e :where [?e :p/role ?r]]",
     // Aggregates over no rows (#237): nil, and 0 for a count. Nobody is 99.
     "[:find (sum ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
     "[:find (avg ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",

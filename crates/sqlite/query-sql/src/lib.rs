@@ -308,6 +308,11 @@ impl QueryFragment for Expression {
 /// - doubles, and `avg` of anything: long or double, as DOUBLE;
 /// - longs, instants, booleans, refs: the `i` member; strings, keywords: `s`;
 /// - `count`, and anything else: the value as is.
+///
+/// `count(DISTINCT(x))` (the projector's rewrite of `(count ?x)`) is `count`
+/// over a `DISTINCT` expression. That DISTINCT is typed as count's Long, so
+/// it must not be unwrapped: its `i` member is NULL for a double, a string or
+/// a keyword, which `count` skips (#392).
 fn push_duckdb_aggregate(
     out: &mut dyn QueryBuilder,
     e: &Expression,
@@ -320,7 +325,7 @@ fn push_duckdb_aggregate(
     out.push_sql(sql_op);
     out.push_sql("(");
     let member = match (*sql_op, t) {
-        ("count", _) => None,
+        ("count" | "DISTINCT", _) => None,
         ("avg", _) | (_, ValueType::Double) => Some("num"),
         (_, ValueType::Long | ValueType::Instant | ValueType::Boolean | ValueType::Ref) => {
             Some("i")
