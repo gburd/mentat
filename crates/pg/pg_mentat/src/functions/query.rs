@@ -1152,6 +1152,7 @@ fn bind_input_value(
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     match value {
         serde_json::Value::String(s) => {
@@ -1202,7 +1203,7 @@ fn bind_input_value(
         serde_json::Value::Array(arr) => {
             // Lookup ref in value position: [":person/email", "alice@example.com"].
             // One that identifies no entity matches nothing.
-            let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix) else {
+            let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix, temporal) else {
                 return Some("FALSE".to_string());
             };
             let param = builder.bind_bigint(eid);
@@ -1232,10 +1233,11 @@ fn scalar_input_constraint(
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     match col {
-        "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix),
-        "e" | "a" => bind_input_entity(alias, col, value, builder, schema_prefix),
+        "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix, temporal),
+        "e" | "a" => bind_input_entity(alias, col, value, builder, schema_prefix, temporal),
         // A value no datom has here matches nothing.
         "tx" => Some(match value.as_i64() {
             Some(i) => format!("{alias}.tx = {}", builder.bind_bigint(i)),
@@ -1262,6 +1264,7 @@ fn bind_input_entity(
     value: &serde_json::Value,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     if let Some(i) = value.as_i64() {
         let param = builder.bind_bigint(i);
@@ -1270,7 +1273,7 @@ fn bind_input_entity(
         // Lookup ref: [":person/email", "alice@example.com"]. One that
         // identifies no entity matches nothing (no constraint would match
         // every entity).
-        let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix) else {
+        let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix, temporal) else {
             return Some("FALSE".to_string());
         };
         let param = builder.bind_bigint(eid);
@@ -1297,7 +1300,11 @@ fn bind_input_entity(
 ///
 /// Returns the resolved entity ID, or None if the lookup ref is malformed
 /// or cannot be resolved.
-fn resolve_lookup_ref_to_eid(arr: &[serde_json::Value], schema_prefix: &str) -> Option<i64> {
+fn resolve_lookup_ref_to_eid(
+    arr: &[serde_json::Value],
+    schema_prefix: &str,
+    temporal: &TemporalOption,
+) -> Option<i64> {
     if arr.len() != 2 {
         return None;
     }
@@ -1313,89 +1320,57 @@ fn resolve_lookup_ref_to_eid(arr: &[serde_json::Value], schema_prefix: &str) -> 
         .resolve_ident(attr_str)?;
 
     // Query for the entity with this unique attribute value using typed columns
-    lookup_ref_query(attr_entid, &arr[1], schema_prefix)
+    lookup_ref_query(attr_entid, &arr[1], schema_prefix, temporal)
 }
 
-/// Perform a lookup ref query against type-specific tables.
+/// The entity that holds `value` for the unique attribute `attr_entid`, on
+/// the query's basis: the current-state projection, or the log as of / since
+/// the query's tx (pull's rule, [`crate::functions::pull::live_table`]). The
+/// log alone keeps every value ever asserted, so a value moved to another
+/// entity or retracted would still resolve to its old holder (#374).
 ///
-/// Queries the appropriate type-specific table directly based on the value type,
-/// using store_id for multi-store isolation.
+/// The table is picked by the JSON type of the value, using store_id for
+/// multi-store isolation.
 fn lookup_ref_query(
     attr_entid: i64,
     value: &serde_json::Value,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<i64> {
     // Resolve store_id for the type-specific tables
     let store_id = resolve_store_id(schema_prefix).ok()?;
-
-    match value {
-        serde_json::Value::String(s) => {
-            if let Some(stripped) = s.strip_prefix(':') {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_keyword_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(stripped),
-                    ],
-                )
-            } else {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_text_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(s.as_str()),
-                    ],
-                )
-            }
-        }
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_long_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(i),
-                    ],
-                )
-            } else if let Some(f) = n.as_f64() {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_double_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(f),
-                    ],
-                )
-            } else {
-                None
-            }
-        }
-        serde_json::Value::Bool(b) => select_one_i64_ro(
+    let lookup = |ty: &str, v: DatumWithOid<'_>| {
+        let table = crate::functions::pull::live_table(
+            schema_prefix.trim_end_matches('.'),
+            ty,
+            temporal.as_of,
+            temporal.since,
+        );
+        select_one_i64_ro(
             &format!(
-                "SELECT e FROM {schema_prefix}datoms_boolean_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {table} AS l WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_entid),
-                DatumWithOid::from(*b),
+                v,
             ],
-        ),
+        )
+    };
+
+    match value {
+        serde_json::Value::String(s) => match s.strip_prefix(':') {
+            Some(stripped) => lookup("keyword", DatumWithOid::from(stripped)),
+            None => lookup("text", DatumWithOid::from(s.as_str())),
+        },
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                lookup("long", DatumWithOid::from(i))
+            } else {
+                lookup("double", DatumWithOid::from(n.as_f64()?))
+            }
+        }
+        serde_json::Value::Bool(b) => lookup("boolean", DatumWithOid::from(*b)),
         _ => None,
     }
 }
@@ -6185,6 +6160,7 @@ fn build_collection_in_clause(
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     if values.is_empty() {
         return Some("FALSE".to_string()); // Empty collection matches nothing
@@ -6195,7 +6171,7 @@ fn build_collection_in_clause(
         let ids: Vec<i64> = values
             .iter()
             .filter_map(|v| match v.as_array() {
-                Some(arr) => resolve_lookup_ref_to_eid(arr, schema_prefix),
+                Some(arr) => resolve_lookup_ref_to_eid(arr, schema_prefix, temporal),
                 None => v.as_i64(),
             })
             .collect();
@@ -6288,6 +6264,7 @@ fn build_relation_values_join(
     var_to_type: &HashMap<String, Option<String>>,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
     joins: &mut Vec<String>,
 ) -> Option<String> {
     if rows.is_empty() || vars.is_empty() {
@@ -6307,10 +6284,12 @@ fn build_relation_values_join(
                 row_params.push(format!("{}::TEXT", builder.bind_text(s.to_string())));
             } else if let Some(arr) = val.as_array() {
                 // A lookup ref: its entity id, NULL (matches nothing) if none.
-                row_params.push(match resolve_lookup_ref_to_eid(arr, schema_prefix) {
-                    Some(eid) => format!("{}::BIGINT", builder.bind_bigint(eid)),
-                    None => "NULL::BIGINT".to_string(),
-                });
+                row_params.push(
+                    match resolve_lookup_ref_to_eid(arr, schema_prefix, temporal) {
+                        Some(eid) => format!("{}::BIGINT", builder.bind_bigint(eid)),
+                        None => "NULL::BIGINT".to_string(),
+                    },
+                );
             } else {
                 row_params.push("NULL".to_string());
             }
@@ -6851,7 +6830,7 @@ fn build_extended_pattern_query(
         if let Some((alias, col)) = var_to_alias.get(var_name.as_str()) {
             let is_ref = is_ref_var(&var_to_type, var_name);
             if let Some(c) =
-                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix, temporal)
             {
                 where_clauses.push(c);
             }
@@ -6874,6 +6853,7 @@ fn build_extended_pattern_query(
                         is_ref_var(&var_to_type, var),
                         builder,
                         schema_prefix,
+                        temporal,
                     );
                     if let Some(c) = in_clause {
                         where_clauses.push(c);
@@ -6896,6 +6876,7 @@ fn build_extended_pattern_query(
                                 is_ref,
                                 builder,
                                 schema_prefix,
+                                temporal,
                             ) {
                                 where_clauses.push(c);
                             }
@@ -6912,6 +6893,7 @@ fn build_extended_pattern_query(
                     &var_to_type,
                     builder,
                     schema_prefix,
+                    temporal,
                     &mut joins,
                 ) {
                     where_clauses.push(values_join);
@@ -8044,7 +8026,7 @@ fn build_not_exists_subquery(
         if let Some((alias, col)) = not_var_to_alias.get(var_name) {
             let is_ref = is_ref_var(&not_var_to_type, var_name);
             if let Some(c) =
-                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix, temporal)
             {
                 sub_where.push(c);
             }

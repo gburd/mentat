@@ -542,4 +542,112 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&qresult).expect("parse");
         assert_eq!(json["result"].as_i64().expect("age"), 10);
     }
+
+    // ========================================================================
+    // Current state, not the log (#374)
+    // ========================================================================
+
+    /// Since 1.5.0 the log is append-only: a replace or a retraction appends
+    /// a retraction row. entity() and :in lookup refs read the log with only
+    /// `added = true`, so they saw every value ever asserted: entity() showed
+    /// `":u/email": ["old@x", "new@x"]`, and the lookup ref [:u/email
+    /// "old@x"] still resolved to the entity that had given it up. Both read
+    /// the store's live datoms now (lookup refs on the query's basis), on
+    /// the default store and on a named store.
+    #[pg_test]
+    fn test_entity_and_lookup_refs_read_current_state() {
+        setup();
+        Spi::run("SELECT create_store('ent_cur_s')").expect("create_store");
+        for store in ["default", "ent_cur_s"] {
+            let t = |edn: &str| -> serde_json::Value {
+                let out = Spi::get_one::<String>(&format!(
+                    "SELECT t('{store}', '{}')",
+                    edn.replace('\'', "''")
+                ))
+                .unwrap_or_else(|e| panic!("{store} {edn}: {e}"))
+                .expect("NULL");
+                serde_json::from_str(&out).expect("tx report")
+            };
+            let entity = |e: i64| -> serde_json::Value {
+                Spi::get_one::<pgrx::JsonB>(&format!("SELECT entity('{store}', {e})"))
+                    .expect("entity")
+                    .expect("NULL")
+                    .0
+            };
+            let q = |query: &str, inputs: &str| -> serde_json::Value {
+                Spi::get_one::<pgrx::JsonB>(&format!(
+                    "SELECT q('{store}', '{}', '{}'::jsonb)",
+                    query.replace('\'', "''"),
+                    inputs.replace('\'', "''")
+                ))
+                .unwrap_or_else(|e| panic!("{store} {query}: {e}"))
+                .expect("NULL")
+                .0["result"]
+                    .clone()
+            };
+            t("[{:db/ident :u/email :db/valueType :db.type/string \
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity} \
+                {:db/ident :u/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+                {:db/ident :u/note :db/valueType :db.type/string :db/cardinality :db.cardinality/one} \
+                {:db/ident :u/tag :db/valueType :db.type/keyword :db/cardinality :db.cardinality/many}]");
+            let r = t("[{:db/id \"u\" :u/email \"old@x\" :u/n 1 :u/note \"hi\" \
+                         :u/tag [:k/a :k/b :k/c]}]");
+            let u = r["tempids"]["u"].as_i64().expect("u");
+            let t_old = r["db-after"]["basis-t"].as_i64().expect("basis-t");
+            // Card-one replacements (1 -> 2 -> 3 -> 1), a retraction, a
+            // card-many retraction, and the unique value moved.
+            for n in [2, 3, 1] {
+                t(&format!("[[:db/add {u} :u/n {n}]]"));
+            }
+            t(&format!("[[:db/retract {u} :u/note \"hi\"]]"));
+            t(&format!("[[:db/retract {u} :u/tag :k/b]]"));
+            let r = t(&format!("[[:db/add {u} :u/email \"new@x\"]]"));
+            let t_new = r["db-after"]["basis-t"].as_i64().expect("basis-t");
+
+            let ent = entity(u);
+            assert_eq!(
+                ent[":u/email"],
+                serde_json::json!("new@x"),
+                "{store}: {ent}"
+            );
+            assert_eq!(ent[":u/n"], serde_json::json!(1), "{store}: {ent}");
+            assert!(ent.get(":u/note").is_none(), "{store}: {ent}");
+            let mut tags: Vec<String> = ent[":u/tag"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{store}: {ent}"))
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .collect();
+            tags.sort();
+            assert_eq!(tags, vec![":k/a", ":k/c"], "{store}: {ent}");
+
+            // The issue's repro: the old value no longer identifies u.
+            let by = "[:find ?n . :in $ ?e :where [?e :u/n ?n]]";
+            let old = r#"{"inputs": [[":u/email", "old@x"]]}"#;
+            let new = r#"{"inputs": [[":u/email", "new@x"]]}"#;
+            assert_eq!(q(by, old), serde_json::Value::Null, "{store}: old@x");
+            assert_eq!(q(by, new), serde_json::json!(1), "{store}: new@x");
+            // On an as-of basis the value held then resolves; since the
+            // move, only the new one (u's :u/n 1 is older, so nothing).
+            let as_of =
+                |inputs: &str, t: i64| inputs.replace("]]}", &format!("]], \"asOf\": {t}}}"));
+            assert_eq!(q(by, &as_of(old, t_old)), serde_json::json!(1), "{store}");
+            assert_eq!(
+                q(by, &as_of(new, t_old)),
+                serde_json::Value::Null,
+                "{store}"
+            );
+            assert_eq!(
+                q(by, &as_of(old, t_new)),
+                serde_json::Value::Null,
+                "{store}"
+            );
+            let since = "[:find ?m . :in $ ?e :where [?e :u/email ?m]]";
+            let since_old = old.replace("]]}", &format!("]], \"since\": {t_old}}}"));
+            let since_new = new.replace("]]}", &format!("]], \"since\": {t_old}}}"));
+            assert_eq!(q(since, &since_old), serde_json::Value::Null, "{store}");
+            assert_eq!(q(since, &since_new), serde_json::json!("new@x"), "{store}");
+        }
+        Spi::run("SELECT drop_store('ent_cur_s')").expect("drop_store");
+    }
 }
