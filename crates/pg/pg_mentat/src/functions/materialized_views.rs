@@ -23,7 +23,8 @@ const MAX_VIEW_NAME_LEN: usize = 58;
 /// A view's store: "default" (the default store, schema `mentat`) or a
 /// name create_store() accepts. validate_store_name alone refuses
 /// "default", so before 1.19.0 materialize('default', ...) always failed.
-fn validate_view_store(store_name: &str) -> Result<(), MentatError> {
+/// subscribe / unsubscribe take the same.
+pub(crate) fn validate_view_store(store_name: &str) -> Result<(), MentatError> {
     if store_name == "default" {
         return Ok(());
     }

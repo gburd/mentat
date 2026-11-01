@@ -1,5 +1,6 @@
 use crate::error::MentatError;
-use crate::functions::store_management::{get_schema_for_store, quote_ident, validate_store_name};
+use crate::functions::materialized_views::validate_view_store;
+use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::JsonB;
@@ -319,7 +320,7 @@ pub fn subscribe(
     subscription_name: &str,
     query: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_subscription_name(subscription_name)?;
 
     if query.trim().is_empty() {
@@ -408,7 +409,7 @@ pub fn unsubscribe(
     store_name: &str,
     subscription_name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_subscription_name_chars(subscription_name)?;
 
     // Verify subscription exists

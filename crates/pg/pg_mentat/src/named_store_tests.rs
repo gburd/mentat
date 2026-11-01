@@ -2145,6 +2145,50 @@ mod tests {
         Spi::run("SELECT drop_store('fpt_s')").expect("drop");
     }
 
+    // subscribe / unsubscribe validated the store name as create_store does,
+    // which refuses "default": subscribe('default', ...) (the form
+    // docs/src/sql-functions.md shows) always failed with
+    // ":db.error/invalid-store-name ... 'default' is a reserved name". A
+    // default-store subscription fires on edn_t, also a find-pull one under
+    // the pinned path (#383).
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscribe_on_the_default_store() {
+        // Before setup(): the trigger goes on mentat.datoms (see
+        // default_store_view_triggers_fire_after_the_data).
+        Spi::run("LOCK TABLE mentat.datoms IN SHARE ROW EXCLUSIVE MODE").expect("lock");
+        setup();
+        tx("default", SCHEMA_TX);
+        let names_q = "[:find [?n ...] :where [_ :p/name ?n]]";
+        let pull_q = "[:find (pull ?e [:p/name]) :where [?e :p/name _]]";
+        for (sub, query) in [("sd_names", names_q), ("sd_pull", pull_q)] {
+            Spi::run(&format!("SELECT subscribe('default', '{sub}', '{query}')"))
+                .unwrap_or_else(|e| panic!("{sub}: subscribe('default', ...): {e}"));
+        }
+        Spi::run("SELECT edn_t('[{:p/name \"sd-1\"}]')").expect("edn_t");
+        for (sub, query) in [("sd_names", names_q), ("sd_pull", pull_q)] {
+            let sent = text(&format!(
+                "SELECT current_setting('mentat.sub_hash_{sub}', true)"
+            ));
+            let now = text(&format!(
+                "SELECT md5(edn_q('{query}', '{{}}'::jsonb)::text)"
+            ));
+            assert_eq!(sent, now, "{sub}");
+        }
+        let listed = json("SELECT list_subscriptions('default')");
+        assert_eq!(listed.as_array().map(|a| a.len()), Some(2), "{listed}");
+        for sub in ["sd_names", "sd_pull"] {
+            Spi::run(&format!("SELECT unsubscribe('default', '{sub}')"))
+                .unwrap_or_else(|e| panic!("{sub}: unsubscribe('default', ...): {e}"));
+        }
+        let left: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'mentat\\_sub\\_trg\\_sd\\_%'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(left, 0);
+    }
+
     // A 1.17 subscription or materialized view on a named store stays with
     // the old tables, under _pre118, and stops working. The upgrade said
     // nothing about them; now it names each one. (A WARNING can't be caught,
