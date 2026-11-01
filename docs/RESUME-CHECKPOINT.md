@@ -547,3 +547,12 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
 - Asked on #3348 (comment 6496532709) for a re-run with those inputs.
   Verify after: footer field 5 of v1.5.6/linux_amd64/mentat.duckdb_extension.gz
   should read v1.18.0.
+
+## DuckDB registry: 1.18.0 on both lines (checked 2026-11-01)
+- sebastiaan-dev re-dispatched the v1.5.6 build on 2026-10-29 12:27 UTC
+  (run 40873436339) after our comment: success on linux_amd64, linux_arm64,
+  osx_arm64, windows_amd64, deployed 13:12 UTC.
+- v1.5.6/linux_amd64 and v2.0.0/linux_amd64 both serve mentat v1.18.0,
+  C_STRUCT. Nothing open for 1.18.0.
+- Scratch state (~/.cache/mentat: worker brief, dev.sh, gate scripts, review
+  notes) lives on floki, not werk.
