@@ -1741,6 +1741,72 @@ mod tests {
         assert_eq!(gone, 0);
     }
 
+    // On PostgreSQL 17 CREATE / REFRESH MATERIALIZED VIEW run the view's query
+    // with search_path = pg_catalog, pg_temp, and the SQL edn_q generates
+    // for a find-pull called pull(...) / edn_pull(...) unqualified: "function
+    // pull(text, text, bigint) does not exist" (#382). Through materialize
+    // and create_datalog_materialized_view, on the default store and on a
+    // named store, created and refreshed. Also with the caller's own path
+    // pinned, as a pinned trigger function runs it.
+    #[pg_test]
+    fn find_pull_in_a_materialized_view() {
+        setup();
+        Spi::run("SELECT create_store('mvp_s')").expect("create");
+        let pull_q = "[:find (pull ?e [:p/name]) :where [?e :p/name _]]";
+        for store in ["default", "mvp_s"] {
+            tx(store, SCHEMA_TX);
+            tx(store, &format!("[{{:p/name \"{store}-1\"}}]"));
+            let schema = if store == "default" {
+                "mentat"
+            } else {
+                "mentat_mvp_s"
+            };
+            Spi::run(&format!(
+                "SELECT materialize('{store}', 'mvp_v', '{pull_q}')"
+            ))
+            .unwrap_or_else(|e| panic!("{store}: materialize: {e}"));
+            let rows = || -> Vec<String> {
+                let v = json(&format!(
+                    "SELECT coalesce(jsonb_agg(p ORDER BY p::TEXT), '[]') FROM \
+                     (SELECT (\"(pull ?e [ :p_name ])\")::jsonb->>':p/name' AS p FROM {schema}.mvp_v) s"
+                ));
+                sorted(v)
+            };
+            assert_eq!(rows(), vec![format!("{store}-1")], "{store}");
+            tx(store, &format!("[{{:p/name \"{store}-2\"}}]"));
+            Spi::run(&format!("SELECT refresh('{store}', 'mvp_v')"))
+                .unwrap_or_else(|e| panic!("{store}: refresh: {e}"));
+            assert_eq!(
+                rows(),
+                vec![format!("{store}-1"), format!("{store}-2")],
+                "{store}"
+            );
+            Spi::run(&format!("SELECT drop_matview('{store}', 'mvp_v')")).expect("drop");
+        }
+        Spi::run(&format!(
+            "SELECT mentat.create_datalog_materialized_view('mvp_d', '{pull_q}')"
+        ))
+        .expect("create_datalog_materialized_view");
+        // (mentat.refresh_datalog_view doesn't compile: `concurrently` is a
+        // keyword in its IF.)
+        Spi::run("REFRESH MATERIALIZED VIEW mvp_d").expect("refresh mvp_d");
+        Spi::run("SELECT mentat.drop_datalog_view('mvp_d', false, true)")
+            .expect("drop_datalog_view");
+        // The caller's path pinned to pg_catalog, as in a pinned trigger.
+        Spi::run("SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)")
+            .expect("pin");
+        let got = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT public.q('mvp_s', '{pull_q}', '{{}}'::jsonb)"
+        ))
+        .expect("q under a pinned path")
+        .expect("NULL")
+        .0;
+        assert_eq!(got["result"].as_array().map(|a| a.len()), Some(2), "{got}");
+        Spi::run("SELECT pg_catalog.set_config('search_path', '\"$user\", public', true)")
+            .expect("unpin");
+        Spi::run("SELECT drop_store('mvp_s')").expect("drop");
+    }
+
     // (pull ?e [...]) in :find called edn_pull, which reads the default
     // store: on a named store it returned the default store's values for the
     // same entity id. Entity ids overlap across stores.

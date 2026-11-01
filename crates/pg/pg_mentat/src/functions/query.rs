@@ -148,6 +148,28 @@ pub(crate) fn select_one_i64_ro(sql: &str, args: &[DatumWithOid<'_>]) -> Option<
         .flatten()
 }
 
+/// `name` (a function or type of extension `ext`) qualified with the schema
+/// `ext` is installed in, for the SQL edn_q generates: on PostgreSQL 17
+/// CREATE / REFRESH MATERIALIZED VIEW run it with search_path = pg_catalog,
+/// pg_temp, as do the pinned trigger functions, so a bare name is not found
+/// (#382). The bare name when `ext` isn't installed: the query then fails
+/// with PostgreSQL's own "does not exist", as before.
+pub(crate) fn ext_qualified(ext: &str, name: &str) -> String {
+    match crate::functions::virtual_tables::extension_schema(ext) {
+        Some(schema) => format!("{schema}.{name}"),
+        None => name.to_string(),
+    }
+}
+
+/// Operator `op` of extension `ext`, as `OPERATOR(schema.op)` (see
+/// [`ext_qualified`]); the bare operator when `ext` isn't installed.
+pub(crate) fn ext_operator(ext: &str, op: &str) -> String {
+    match crate::functions::virtual_tables::extension_schema(ext) {
+        Some(schema) => format!("OPERATOR({schema}.{op})"),
+        None => op.to_string(),
+    }
+}
+
 /// State accumulated during SQL generation: the parameterized query string
 /// and the bound parameter values for safe execution via SPI.
 struct SqlBuilder<'a> {
@@ -7073,27 +7095,31 @@ fn build_extended_pattern_query(
             // named-stores: edn_pull reads the default store; a named store
             // pulls from its own schema with pull(store, pattern, entity_id
             // [, options]).
+            // Qualified with pg_mentat's schema (#382).
             let pull_store = store_name_from_prefix(schema_prefix);
             if pull_store != "default" {
+                let pull_fn = ext_qualified("pg_mentat", "pull");
                 let store_param = builder.bind_text(pull_store.to_string());
                 if opts.is_empty() {
                     select_exprs.push(format!(
-                        "pull({store_param}, {pat_param}, {entity_expr})::TEXT"
+                        "{pull_fn}({store_param}, {pat_param}, {entity_expr})::TEXT"
                     ));
                 } else {
                     let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
                     select_exprs.push(format!(
-                        "pull({store_param}, {pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                        "{pull_fn}({store_param}, {pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
                     ));
                 }
             } else if opts.is_empty() {
                 // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to
                 // text so it flows through the TEXT result-column path.
-                select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+                let pull_fn = ext_qualified("pg_mentat", "edn_pull");
+                select_exprs.push(format!("{pull_fn}({pat_param}, {entity_expr})::TEXT"));
             } else {
+                let pull_fn = ext_qualified("pg_mentat", "edn_pull");
                 let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
                 select_exprs.push(format!(
-                    "edn_pull({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                    "{pull_fn}({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
                 ));
             } // named-stores: end
             if has_aggregates {

@@ -17,16 +17,54 @@ use pgrx::prelude::*;
 
 /// The schema an extension is installed in, quoted as %I would, or None if
 /// it isn't installed. Name its objects through it, never the search path:
-/// an extension can live in any schema, and the 1.18.0 upgrade calls
-/// create_virtual_tables with the path pinned to pg_catalog.
-fn extension_schema(ext_name: &str) -> Option<String> {
-    Spi::get_one_with_args::<String>(
-        "SELECT pg_catalog.quote_ident(n.nspname) FROM pg_catalog.pg_extension e \
-         JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1",
-        &[DatumWithOid::from(ext_name)],
-    )
+/// an extension can live in any schema, the 1.18.0 upgrade calls
+/// create_virtual_tables with the path pinned to pg_catalog, and on
+/// PostgreSQL 17 CREATE / REFRESH MATERIALIZED VIEW run the SQL edn_q
+/// generates with that path (#382).
+///
+/// Cached per backend (edn_q asks on every compile); a change to pg_proc or
+/// pg_namespace (CREATE / DROP / ALTER EXTENSION, ALTER SCHEMA RENAME)
+/// clears the cache. Read-only SPI, so a hot standby can run it.
+pub(crate) fn extension_schema(ext_name: &str) -> Option<String> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+        static REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[pg_guard]
+    unsafe extern "C-unwind" fn clear(_arg: pg_sys::Datum, _cacheid: i32, _hash: u32) {
+        CACHE.with(|c| c.borrow_mut().clear());
+    }
+    if !REGISTERED.with(|r| r.replace(true)) {
+        for id in [
+            pg_sys::SysCacheIdentifier::PROCOID,
+            pg_sys::SysCacheIdentifier::NAMESPACEOID,
+        ] {
+            // SAFETY: a plain C callback with no captured state, registered
+            // once per backend; it only clears a thread-local map.
+            unsafe {
+                pg_sys::CacheRegisterSyscacheCallback(id as _, Some(clear), pg_sys::Datum::from(0))
+            };
+        }
+    }
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(ext_name).cloned()) {
+        return hit;
+    }
+    let schema = Spi::connect(|client| {
+        client
+            .select(
+                "SELECT pg_catalog.quote_ident(n.nspname) FROM pg_catalog.pg_extension e \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1",
+                Some(1),
+                &[DatumWithOid::from(ext_name)],
+            )?
+            .first()
+            .get_one::<String>()
+    })
     .ok()
-    .flatten()
+    .flatten();
+    CACHE.with(|c| c.borrow_mut().insert(ext_name.to_string(), schema.clone()));
+    schema
 }
 
 // ---------------------------------------------------------------------------
