@@ -1,0 +1,6 @@
+-- pg_mentat 1.18.0 -> 1.19.0 upgrade.
+--
+-- Each section below belongs to one change; add yours as a new section under a
+-- line `-- === <name> ===`. Script-time rules: pg_catalog-qualify every call,
+-- pin search_path per DO block with pg_catalog.set_config and restore it, and
+-- never SET LOCAL search_path (scripts/pg/check-script-search-path.py).
