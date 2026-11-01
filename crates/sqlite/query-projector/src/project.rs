@@ -132,6 +132,20 @@ fn storage_class_column(cc: &ConjoiningClauses, var: &Variable) -> Result<Option
     )))
 }
 
+/// What `count-distinct` counts for a variable of several types, in the outer query: its
+/// inner column and type tag, as one key. Its column alone would merge a long and a double
+/// (5 = 5.0), or a ref and a long. None for one type (the column alone is the key).
+fn typed_value_key(cc: &ConjoiningClauses, var: &Variable) -> Option<ColumnOrExpression> {
+    let types = cc.known_type_set(var);
+    let one_tag = types.has_unique_type_tag();
+    if cc.is_value_bound(var) || (one_tag && !holds_longs_and_doubles(types)) {
+        return None;
+    }
+    let value = VariableColumn::Variable(var.clone()).column_name();
+    let tag = (!one_tag).then(|| VariableColumn::VariableTypeTag(var.clone()).column_name());
+    Some(ColumnOrExpression::TypedKey(value, tag))
+}
+
 fn candidate_column(cc: &ConjoiningClauses, var: &Variable) -> Result<(ColumnOrExpression, Name)> {
     // Every variable should be bound by the top-level CC to at least
     // one column in the query. If that constraint is violated it's a
@@ -331,7 +345,7 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                         Max | Min => {
                             min_max_count += 1;
                         }
-                        Avg | Count | Sum => (),
+                        Avg | Count | CountDistinct | Sum => (),
                     }
 
                     // When we encounter a simple aggregate -- one in which the aggregation can be
@@ -343,8 +357,12 @@ pub(crate) fn project_elements<'a, I: IntoIterator<Item = &'a Element>>(
                     // - The type set must be appropriate for the operation. E.g., `Sum` is not a
                     //   meaningful operation on instants.
 
+                    let key = match simple.op {
+                        CountDistinct => typed_value_key(&query.cc, &simple.var),
+                        _ => None,
+                    };
                     let (projected_column, return_type) =
-                        projected_column_for_simple_aggregate(&simple, &query.cc)?;
+                        projected_column_for_simple_aggregate(&simple, &query.cc, key)?;
                     outer_projection.push(Either::Right(projected_column));
 
                     if !inner_variables.contains(&simple.var) {

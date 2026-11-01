@@ -2563,8 +2563,9 @@ fn test_aggregates_over_no_rows_are_nil() {
         ("min", &[":z/n", ":z/d", ":z/t"]),
         ("max", &[":z/n", ":z/d", ":z/t"]),
         ("count", &[":z/n", ":z/d", ":z/t"]),
+        ("count-distinct", &[":z/n", ":z/d", ":z/t"]),
     ] {
-        let count = agg == "count";
+        let count = agg.starts_with("count");
         for attr in attrs {
             let r = run(
                 &mut store,

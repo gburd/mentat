@@ -62,6 +62,12 @@ pub enum ColumnOrExpression {
     /// and Datomic keeps both (#391). DuckDB's `v` UNION compares by member already, so
     /// there it is a constant.
     TypeOf(Box<ColumnOrExpression>),
+    /// A value of several types as one key, for `count(DISTINCT ...)`: the inner query's
+    /// value column and, if the value can be of several type tags, its type tag column.
+    /// SQLite: `tag || ':' || quote(value)` (quote keeps storage classes apart and prints
+    /// a double exactly). DuckDB: the row `(value, tag)` (`v` is a UNION, which keeps a
+    /// long and a double apart, but not a ref and a long).
+    TypedKey(Name, Option<Name>),
 }
 
 #[derive(Clone)]
@@ -290,6 +296,24 @@ impl QueryFragment for ColumnOrExpression {
                 }
                 out.push_sql("typeof(");
                 c.push_sql(out)?;
+                out.push_sql(")");
+                Ok(())
+            }
+            TypedKey(ref value, ref tag) => {
+                let duck = out.dialect() == Dialect::DuckDb;
+                out.push_sql(if duck { "(" } else { "" });
+                if !duck {
+                    if let Some(tag) = tag {
+                        out.push_identifier(tag)?;
+                        out.push_sql(" || ':' || ");
+                    }
+                    out.push_sql("quote(");
+                }
+                out.push_identifier(value)?;
+                if let (true, Some(tag)) = (duck, tag) {
+                    out.push_sql(", ");
+                    out.push_identifier(tag)?;
+                }
                 out.push_sql(")");
                 Ok(())
             }

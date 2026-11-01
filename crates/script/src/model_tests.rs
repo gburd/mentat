@@ -1327,6 +1327,7 @@ pub fn long_and_double_values_stay_distinct(it: &mut Interpreter) {
     assert_eq!(q_391(it, "(sum ?v) .", or), "102.0");
     assert_eq!(q_391(it, "(sum ?v) . :with ?e", or), "102.0");
     assert_eq!(q_391(it, "(count ?v) .", or), "7");
+    assert_eq!(q_391(it, "(count-distinct ?v) .", or), "7");
     assert_eq!(q_391(it, "(min ?v) .", or), "2.5");
     // The set of ?v: 7 values, 5 and 5.0 both.
     let set = q_391(it, "[?v ...]", or);
@@ -1386,6 +1387,7 @@ pub fn untyped_long_and_double_values_stay_distinct(it: &mut Interpreter) {
     let any = "[?e ?a ?v] [(> ?v 1)]";
     assert_eq!(q_391(it, "(sum ?v) .", any), "102.0");
     assert_eq!(q_391(it, "(count ?v) .", any), "7");
+    assert_eq!(q_391(it, "(count-distinct ?v) .", any), "7");
     let set = q_391(it, "[?v ...]", any);
     assert_eq!(
         it.eval_to_string(&format!("(count {set})")).unwrap(),

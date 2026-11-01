@@ -110,3 +110,59 @@ fn test_count_over_counting_cases_stay_set_counts() {
         ]
     );
 }
+
+// #394: `(count-distinct ?x)` counts distinct values whatever else the query
+// projects, as one key of value and type: it keeps a long apart from an equal
+// double, a boolean or a ref, and two doubles that differ in the last bit.
+#[test]
+fn test_count_distinct() {
+    let s = store();
+    let one = |q: &str| rows(&s, q);
+    // Medusa, Cyclops, Chimera 1 head; Cerberus 3: two distinct head counts.
+    assert_eq!(
+        one("[:find (count-distinct ?h) . :where [_ :m/heads ?h]]"),
+        [[long(2)]]
+    );
+    // :with doesn't change it (count does: one per monster).
+    assert_eq!(
+        one("[:find (count-distinct ?h) (count ?h) :with ?m :where [?m :m/heads ?h]]"),
+        [[long(2), long(4)]]
+    );
+    // Grouped: weapons per head count. 1 head: Stony gaze, Large club, Mighty
+    // arms, Stompy feet; 3 heads: Large club, Deadly drool.
+    let mut g = one("[:find ?h (count-distinct ?w) :where [?m :m/heads ?h] [?m :m/weapon ?w]]");
+    g.sort_by_key(|r| format!("{r:?}"));
+    assert_eq!(g, [[long(1), long(4)], [long(3), long(2)]]);
+    // Over no rows: 0.
+    assert_eq!(
+        one("[:find (count-distinct ?h) . :where [_ :m/heads ?h] [(> ?h 9)]]"),
+        [[long(0)]]
+    );
+
+    let mut s = Store::open("").expect("open");
+    s.transact(
+        r#"[{:db/ident :k/l :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+            {:db/ident :k/d :db/valueType :db.type/double :db/cardinality :db.cardinality/many}
+            {:db/ident :k/b :db/valueType :db.type/boolean :db/cardinality :db.cardinality/one}]"#,
+    )
+    .unwrap();
+    let e = s
+        .transact(r#"[{:db/id "x" :k/l [1 5] :k/d [5.0 0.3 0.30000000000000004] :k/b true}]"#)
+        .unwrap()
+        .tempids["x"];
+    let one = |q: &str| rows(&s, q);
+    // Every value of x: longs 1 5, doubles 5.0 0.3 0.30000000000000004,
+    // boolean true (stored as 1): six.
+    assert_eq!(
+        one(&format!("[:find (count-distinct ?v) . :where [{e} ?a ?v]]")),
+        [[long(6)]]
+    );
+    assert_eq!(
+        one("[:find (count-distinct ?v) . :where (or [_ :k/l ?v] [_ :k/d ?v])]"),
+        [[long(5)]]
+    );
+    assert_eq!(
+        one("[:find (count-distinct ?v) . :where [_ :k/d ?v]]"),
+        [[long(3)]]
+    );
+}

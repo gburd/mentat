@@ -68,8 +68,6 @@ pub const TXS: &[&str] = &[
 /// any other query must run. Each is a gap in the embedded engine (SQLite and
 /// DuckDB alike): remove it here when the engine learns it.
 pub const BOTH_ERR: &[&str] = &[
-    // count-distinct: "complex aggregates" not implemented (#394).
-    "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
     // Arithmetic functions (`*`, `+`, ...) are not implemented.
     "[:find ?n ?x :where [?e :p/age ?a] [(* ?a 2) ?x] [?e :p/name ?n]]",
     // `<` and `!=` take numbers and instants only, not strings.
@@ -135,8 +133,28 @@ pub const QUERIES: &[&str] = &[
     "[:find (count ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count ?h) . :with ?e :where [?e :p/height ?h]]",
     "[:find (count ?r) . :with ?e :where [?e :p/role ?r]]",
+    // count-distinct (#394): every value type, :with, grouped, beside count,
+    // and a variable of several types (a long and an equal double, a ref,
+    // a boolean and a long).
+    "[:find (count-distinct ?v) . :where [_ :p/name ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/height ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/alive ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/born ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/id ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/role ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/likes ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/blob ?v]]",
+    "[:find (count-distinct ?a) . :with ?e :where [?e :p/age ?a]]",
+    "[:find (count-distinct ?a) (count ?a) :with ?e :where [?e :p/age ?a]]",
+    "[:find ?al (count-distinct ?a) :where [?e :p/alive ?al] [?e :p/age ?a]]",
+    "[:find (count-distinct ?v) . :where [?e :p/name _] [?e ?a ?v]]",
+    "[:find ?n (count-distinct ?v) :where [?e :p/name ?n] [?e ?a ?v]]",
+    "[:find (count-distinct ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find (count-distinct ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
     // A variable of longs and doubles: one value per type (#391).
-    "[:find (sum ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    // (A sum of doubles: SQLite and DuckDB add them in different orders, so
+    // compare one that is exact in binary.)
+    "[:find (sum ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v]) [(> ?v 1.95)]]",
     "[:find (count ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
     "[:find (count ?v) . :with ?e :where (or [?e :p/age ?v] [?e :p/height ?v])]",
     "[:find ?v (count ?e) :where (or [?e :p/age ?v] [?e :p/height ?v])]",
