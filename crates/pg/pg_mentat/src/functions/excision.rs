@@ -84,7 +84,8 @@ fn excise_internal(
         }
     }
 
-    // Check for dangling references: other entities that reference the excised entities
+    // Check for dangling references: other entities that reference the excised
+    // entities now (the projection; a reference retracted since is not one).
     let eid_list: String = entity_ids
         .iter()
         .map(|id| id.to_string())
@@ -92,10 +93,9 @@ fn excise_internal(
         .join(",");
 
     let ref_count = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM {schema_prefix}datoms_ref_new \
+        "SELECT COUNT(*) FROM {schema_prefix}current_ref \
          WHERE store_id = {store_id} AND v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
-         AND e != ALL(ARRAY[{eid_list}]::BIGINT[]) \
-         AND added = true"
+         AND e != ALL(ARRAY[{eid_list}]::BIGINT[])"
     ))
     .ok()
     .flatten()
@@ -104,10 +104,9 @@ fn excise_internal(
     if ref_count > 0 {
         // Collect referencing entities for the error message
         let referrers = Spi::get_one::<String>(&format!(
-            "SELECT array_agg(DISTINCT e)::TEXT FROM {schema_prefix}datoms_ref_new \
+            "SELECT array_agg(DISTINCT e)::TEXT FROM {schema_prefix}current_ref \
              WHERE store_id = {store_id} AND v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
              AND e != ALL(ARRAY[{eid_list}]::BIGINT[]) \
-             AND added = true \
              LIMIT 10"
         ))
         .ok()

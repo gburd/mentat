@@ -100,7 +100,7 @@ pub fn mentat_query_stats() -> Result<JsonB, Box<dyn std::error::Error + Send + 
     let db_stats = Spi::connect(|client| {
         let total_datoms: i64 = client
             .select(
-                "SELECT COUNT(*)::BIGINT FROM mentat.datoms WHERE added = true",
+                "SELECT COUNT(*)::BIGINT FROM mentat.current_datoms",
                 None,
                 &[],
             )

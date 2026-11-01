@@ -3863,8 +3863,8 @@ fn resolve_fts_language(attr_ident: &str, schema_prefix: &str) -> String {
         let query = format!(
             "SELECT dt.v \
              FROM {schema_prefix}schema s \
-             JOIN {schema_prefix}datoms_text_new dt \
-               ON dt.store_id = {store_id} AND dt.e = s.entid AND dt.added = true \
+             JOIN {schema_prefix}current_text dt \
+               ON dt.store_id = {store_id} AND dt.e = s.entid \
              WHERE s.ident = '{ident}' \
                AND dt.a = (SELECT entid FROM {schema_prefix}schema WHERE ident = ':db/doc') \
              LIMIT 1",

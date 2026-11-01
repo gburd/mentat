@@ -274,8 +274,8 @@ fn export_edn(entity_ids: Vec<i64>) -> Result<String, Box<dyn std::error::Error 
                         v_text, v_keyword, \
                         {} AS v_instant_micros, \
                         v_uuid::TEXT, v_bytes \
-                 FROM mentat.datoms \
-                 WHERE e = $1 AND added = true \
+                 FROM mentat.current_datoms \
+                 WHERE e = $1 \
                  ORDER BY a",
                 sql_micros_from_instant("v_instant")
             );
@@ -408,7 +408,7 @@ fn query_export_edn(
 fn export_all_edn() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // Get all distinct entity IDs
     let entity_ids: Vec<i64> = Spi::connect(|client| {
-        let query = "SELECT DISTINCT e FROM mentat.datoms WHERE added = true ORDER BY e";
+        let query = "SELECT DISTINCT e FROM mentat.current_datoms ORDER BY e";
 
         let mut ids = Vec::new();
         for row in client.select(query, None, &[])? {
