@@ -1200,15 +1200,19 @@ fn bind_input_value(
             ))
         }
         serde_json::Value::Array(arr) => {
-            // Lookup ref in value position: [":person/email", "alice@example.com"]
-            let eid = resolve_lookup_ref_to_eid(arr, schema_prefix)?;
+            // Lookup ref in value position: [":person/email", "alice@example.com"].
+            // One that identifies no entity matches nothing.
+            let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix) else {
+                return Some("FALSE".to_string());
+            };
             let param = builder.bind_bigint(eid);
             Some(format!(
                 "({alias}.v_ref = {param} AND {alias}.value_type_tag = {tag})",
                 tag = type_tag::REF
             ))
         }
-        _ => None,
+        // null or an object: no datom has that value.
+        _ => Some("FALSE".to_string()),
     }
 }
 
@@ -1231,40 +1235,58 @@ fn scalar_input_constraint(
 ) -> Option<String> {
     match col {
         "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix),
-        "e" => bind_input_entity(alias, value, builder, schema_prefix),
-        "a" | "tx" => value.as_i64().map(|i| {
-            let param = builder.bind_bigint(i);
-            format!("{alias}.{col} = {param}")
+        "e" | "a" => bind_input_entity(alias, col, value, builder, schema_prefix),
+        // A value no datom has here matches nothing.
+        "tx" => Some(match value.as_i64() {
+            Some(i) => format!("{alias}.tx = {}", builder.bind_bigint(i)),
+            None => "FALSE".to_string(),
         }),
-        "added" => value.as_bool().map(|b| {
-            let param = builder.bind_bool(b);
-            format!("{alias}.added = {param}")
+        "added" => Some(match value.as_bool() {
+            Some(b) => format!("{alias}.added = {}", builder.bind_bool(b)),
+            None => "FALSE".to_string(),
         }),
         _ => None,
     }
 }
 
-/// Bind an :in clause variable to a WHERE constraint on an entity column.
+/// Bind an :in clause variable to a WHERE constraint on an entity column
+/// (`col`: `e`, or `a` for an attribute).
 ///
-/// For entity-position variables, the bound value must be an integer entity ID
+/// The bound value is an integer entity ID, an ident keyword (`":person/name"`)
 /// or a lookup ref array like `[":person/email", "alice@example.com"]`.
-/// Lookup refs are resolved eagerly against the store's datoms table.
+/// Lookup refs are resolved eagerly against the store's datoms table. A value
+/// that identifies no entity matches nothing.
 fn bind_input_entity(
     alias: &str,
+    col: &str,
     value: &serde_json::Value,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
 ) -> Option<String> {
     if let Some(i) = value.as_i64() {
         let param = builder.bind_bigint(i);
-        Some(format!("{alias}.e = {param}"))
+        Some(format!("{alias}.{col} = {param}"))
     } else if let Some(arr) = value.as_array() {
-        // Lookup ref: [":person/email", "alice@example.com"]
-        let eid = resolve_lookup_ref_to_eid(arr, schema_prefix)?;
+        // Lookup ref: [":person/email", "alice@example.com"]. One that
+        // identifies no entity matches nothing (no constraint would match
+        // every entity).
+        let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix) else {
+            return Some("FALSE".to_string());
+        };
         let param = builder.bind_bigint(eid);
-        Some(format!("{alias}.e = {param}"))
+        Some(format!("{alias}.{col} = {param}"))
     } else {
-        None
+        // An ident (":db/ident" keyword) names its entity; any other value
+        // identifies none.
+        let ident = value.as_str().filter(|s| s.starts_with(':'));
+        let eid = ident.and_then(|s| {
+            crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix))
+                .resolve_ident(s)
+        });
+        Some(match eid {
+            Some(eid) => format!("{alias}.{col} = {}", builder.bind_bigint(eid)),
+            None => "FALSE".to_string(),
+        })
     }
 }
 
@@ -6162,11 +6184,27 @@ fn build_collection_in_clause(
     values: &[serde_json::Value],
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
-    _schema_prefix: &str,
+    schema_prefix: &str,
 ) -> Option<String> {
     if values.is_empty() {
         return Some("FALSE".to_string()); // Empty collection matches nothing
     }
+    // Entity ids: integers and the lookup refs that resolve. Lookup refs
+    // that identify no entity drop out; none left matches nothing.
+    let entity_ids = |builder: &mut SqlBuilder<'_>| -> String {
+        let ids: Vec<i64> = values
+            .iter()
+            .filter_map(|v| match v.as_array() {
+                Some(arr) => resolve_lookup_ref_to_eid(arr, schema_prefix),
+                None => v.as_i64(),
+            })
+            .collect();
+        if ids.is_empty() {
+            "FALSE".to_string()
+        } else {
+            builder.bind_any(ids)
+        }
+    };
     // One array parameter (`= ANY($n)`), not one parameter per value: the
     // statement text and parameter count stay the same for any collection
     // size, so edn_q's cached plan settles on a generic plan instead of
@@ -6179,7 +6217,14 @@ fn build_collection_in_clause(
         "v" => {
             // Determine the type from the first value and build typed IN clause
             let first = &values[0];
-            if first.is_i64() || first.is_u64() {
+            if first.is_array() {
+                // Lookup refs into a ref attribute's value.
+                let p = entity_ids(builder);
+                if p == "FALSE" {
+                    return Some(p);
+                }
+                Some(format!("{alias}.v_ref = ANY({p})"))
+            } else if first.is_i64() || first.is_u64() {
                 let p = builder.bind_any(ints()?);
                 let c = if is_ref { "v_ref" } else { "v_long" };
                 Some(format!("{alias}.{c} = ANY({p})"))
@@ -6214,7 +6259,14 @@ fn build_collection_in_clause(
                 None
             }
         }
-        "e" | "tx" => {
+        "e" => {
+            let p = entity_ids(builder);
+            if p == "FALSE" {
+                return Some(p);
+            }
+            Some(format!("{alias}.e = ANY({p})"))
+        }
+        "tx" => {
             let p = builder.bind_any(ints()?);
             Some(format!("{alias}.{col} = ANY({p})"))
         }
@@ -6235,7 +6287,7 @@ fn build_relation_values_join(
     var_to_alias: &HashMap<String, (String, &'static str)>,
     var_to_type: &HashMap<String, Option<String>>,
     builder: &mut SqlBuilder<'_>,
-    _schema_prefix: &str,
+    schema_prefix: &str,
     joins: &mut Vec<String>,
 ) -> Option<String> {
     if rows.is_empty() || vars.is_empty() {
@@ -6253,6 +6305,12 @@ fn build_relation_values_join(
                 row_params.push(format!("{}::DOUBLE PRECISION", builder.bind_double(f)));
             } else if let Some(s) = val.as_str() {
                 row_params.push(format!("{}::TEXT", builder.bind_text(s.to_string())));
+            } else if let Some(arr) = val.as_array() {
+                // A lookup ref: its entity id, NULL (matches nothing) if none.
+                row_params.push(match resolve_lookup_ref_to_eid(arr, schema_prefix) {
+                    Some(eid) => format!("{}::BIGINT", builder.bind_bigint(eid)),
+                    None => "NULL::BIGINT".to_string(),
+                });
             } else {
                 row_params.push("NULL".to_string());
             }
@@ -6303,6 +6361,8 @@ fn build_relation_values_join(
                 Some(serde_json::Value::String(s)) if s.starts_with(':') => "v_keyword",
                 Some(serde_json::Value::String(_)) => "v_text",
                 Some(serde_json::Value::Bool(_)) => "v_bool",
+                // A lookup ref, in a ref attribute's value place.
+                Some(serde_json::Value::Array(_)) => "v_ref",
                 _ => continue,
             };
             on_parts.push(format!("{}.{} = {}.c{}", alias, typed_col, values_alias, i));

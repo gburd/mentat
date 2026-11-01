@@ -205,4 +205,103 @@ mod tests {
         let j: serde_json::Value = serde_json::from_str(&q).expect("parse");
         assert_eq!(j["result"].as_array().expect("arr").len(), 2);
     }
+
+    // ========================================================================
+    // :in inputs that identify no entity (Refs #374)
+    // ========================================================================
+
+    /// The sorted :u/n values `query` finds on `store` for `inputs`.
+    fn in_ns(store: &str, query: &str, inputs: &str) -> Vec<i64> {
+        let r = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT q('{store}', '{}', '{}'::jsonb)",
+            query.replace('\'', "''"),
+            inputs.replace('\'', "''")
+        ))
+        .unwrap_or_else(|e| panic!("{query} {inputs}: {e}"))
+        .expect("NULL")
+        .0;
+        let mut out: Vec<i64> = r["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{r}"))
+            .iter()
+            .map(|row| row[0].as_i64().unwrap_or_else(|| panic!("{r}")))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// An :in value for an entity that identifies none (a lookup ref nobody
+    /// holds, an unknown ident, a string) matched EVERY entity: the
+    /// constraint was dropped. It matches nothing, on the default store and
+    /// on a named store.
+    #[pg_test]
+    fn test_lr_in_unresolved_matches_nothing() {
+        setup();
+        Spi::run("SELECT create_store('lr_in_s')").expect("create_store");
+        for store in ["default", "lr_in_s"] {
+            let t = |edn: &str| {
+                Spi::run(&format!(
+                    "SELECT t('{store}', '{}')",
+                    edn.replace('\'', "''")
+                ))
+                .unwrap_or_else(|e| panic!("{store} {edn}: {e}"))
+            };
+            t("[{:db/ident :u/email :db/valueType :db.type/string \
+                 :db/cardinality :db.cardinality/one :db/unique :db.unique/identity} \
+                {:db/ident :u/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+                {:db/ident :u/boss :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]");
+            t("[{:db/id \"a\" :u/email \"a@x\" :u/n 1} \
+                {:db/id \"b\" :u/email \"b@x\" :u/n 2 :u/boss \"a\"}]");
+            let one = "[:find ?n :in $ ?e :where [?e :u/n ?n]]";
+            let coll = "[:find ?n :in $ [?e ...] :where [?e :u/n ?n]]";
+            let rel = "[:find ?n :in $ [[?e]] :where [?e :u/n ?n]]";
+            let boss = "[:find ?n :in $ ?b :where [?e :u/boss ?b] [?e :u/n ?n]]";
+            let attr = "[:find ?v :in $ ?a :where [?e :u/email \"a@x\"] [?e ?a ?v]]";
+            let none: Vec<i64> = vec![];
+            let cases: Vec<(&str, &str, Vec<i64>)> = vec![
+                (one, r#"{"inputs": [[":u/email", "a@x"]]}"#, vec![1]),
+                (
+                    one,
+                    r#"{"inputs": [[":u/email", "nobody@x"]]}"#,
+                    none.clone(),
+                ),
+                (one, r#"{"inputs": [[":u/nonesuch", "a@x"]]}"#, none.clone()),
+                (one, r#"{"inputs": ["a@x"]}"#, none.clone()),
+                (one, r#"{"inputs": [":u/nonesuch"]}"#, none.clone()),
+                (
+                    coll,
+                    r#"{"inputs": [[[":u/email", "nobody@x"]]]}"#,
+                    none.clone(),
+                ),
+                (
+                    coll,
+                    r#"{"inputs": [[[":u/email", "nobody@x"], [":u/email", "b@x"]]]}"#,
+                    vec![2],
+                ),
+                (rel, r#"{"inputs": [[[[":u/email", "b@x"]]]]}"#, vec![2]),
+                (
+                    rel,
+                    r#"{"inputs": [[[[":u/email", "nobody@x"]]]]}"#,
+                    none.clone(),
+                ),
+                (boss, r#"{"inputs": [[":u/email", "a@x"]]}"#, vec![2]),
+                (
+                    boss,
+                    r#"{"inputs": [[":u/email", "nobody@x"]]}"#,
+                    none.clone(),
+                ),
+                // An attribute by its ident; an unknown one names nothing.
+                (attr, r#"{"inputs": [":u/n"]}"#, vec![1]),
+                (attr, r#"{"inputs": [":u/nonesuch"]}"#, none.clone()),
+            ];
+            for (query, inputs, want) in cases {
+                assert_eq!(
+                    in_ns(store, query, inputs),
+                    want,
+                    "{store}: {query} {inputs}"
+                );
+            }
+        }
+        Spi::run("SELECT drop_store('lr_in_s')").expect("drop_store");
+    }
 }
