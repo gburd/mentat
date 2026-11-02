@@ -1632,8 +1632,10 @@ BEGIN
             CONTINUE;
         END IF;
         -- The full-text index find_text and searchable_text use (see above),
-        -- if v is still text.
-        IF EXISTS (SELECT 1 FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
+        -- if v is still text. Looked up first: CREATE INDEX IF NOT EXISTS
+        -- would lock the table even when the index is there.
+        IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = st.ns AND c.relname = 'idx_current_text_fts')
+           AND EXISTS (SELECT 1 FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
                     WHERE t.relnamespace = st.ns AND t.relname = 'current_text' AND t.relkind = 'r'
                       AND a.attname = 'v' AND a.atttypid = 'pg_catalog.text'::regtype
                       AND NOT a.attisdropped) THEN
