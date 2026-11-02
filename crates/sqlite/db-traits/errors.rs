@@ -148,6 +148,22 @@ impl ::std::fmt::Display for InputError {
     }
 }
 
+fn tempid_not_an_entity(t: &TempId) -> String {
+    match t {
+        TempId::External(s) if s.starts_with("datomic") => format!(
+            ":db.error/tempid-not-an-entity tempid \"{s}\" used only as value in transaction \
+             (mentat has no reserved tempids; use (transaction-tx) for the current transaction)"
+        ),
+        TempId::External(s) => {
+            format!(":db.error/tempid-not-an-entity tempid \"{s}\" used only as value in transaction")
+        }
+        // An entity map without :db/id gets an internal tempid.
+        TempId::Internal(_) => ":db.error/tempid-not-an-entity an entity map without :db/id \
+                                is used only as value in transaction (it has only reverse attributes)"
+            .to_string(),
+    }
+}
+
 #[derive(Clone, Debug, Error)]
 #[error(transparent)]
 pub struct DbError {
@@ -308,6 +324,11 @@ pub enum DbErrorKind {
         expected: Option<String>,
         actual: Option<String>,
     },
+
+    /// A tempid is the value of a ref but the entity of no datom, and doesn't upsert, so it
+    /// would name a new entity with no datoms (Datomic's `:db.error/tempid-not-an-entity`).
+    #[error("{}", tempid_not_an_entity(.0))]
+    TempIdNotAnEntity(TempId),
 
     // It would be better to capture the underlying `rusqlite::Error`, but that type doesn't
     // implement many useful traits, including `Clone`, `Eq`, and `PartialEq`.

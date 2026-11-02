@@ -264,6 +264,8 @@ impl Generation {
         assert!(self.upserts_ev.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
 
         let mut temp_ids: BTreeSet<TempIdHandle> = BTreeSet::default();
+        // Tempids in entity position: each is the entity of a datom this transaction asserts.
+        let mut entity_temp_ids: BTreeSet<TempIdHandle> = BTreeSet::default();
         let mut tempid_avs: BTreeMap<(Entid, TypedValueOr<TempIdHandle>), Vec<TempIdHandle>> =
             BTreeMap::default();
 
@@ -272,6 +274,7 @@ impl Generation {
                 Term::AddOrRetract(OpType::Add, Right(ref t1), a, Right(ref t2)) => {
                     temp_ids.insert(t1.clone());
                     temp_ids.insert(t2.clone());
+                    entity_temp_ids.insert(t1.clone());
                     let attribute: &Attribute = schema.require_attribute_for_entid(*a)?;
                     if attribute.unique == Some(attribute::Unique::Identity) {
                         tempid_avs
@@ -282,6 +285,7 @@ impl Generation {
                 }
                 Term::AddOrRetract(OpType::Add, Right(ref t), a, ref x @ Left(_)) => {
                     temp_ids.insert(t.clone());
+                    entity_temp_ids.insert(t.clone());
                     let attribute: &Attribute = schema.require_attribute_for_entid(*a)?;
                     if attribute.unique == Some(attribute::Unique::Identity) {
                         tempid_avs
@@ -299,6 +303,12 @@ impl Generation {
                     // other upserts (or they fail the transaction).
                 }
             }
+        }
+
+        // A tempid that didn't upsert and is only ever a value would be a new entity with no
+        // datoms: Datomic's :db.error/tempid-not-an-entity (#384).
+        if let Some(t) = temp_ids.difference(&entity_temp_ids).next() {
+            bail!(DbErrorKind::TempIdNotAnEntity((**t).clone()));
         }
 
         // Now we union-find all the known tempids.  Two tempids are unioned if they both appear as

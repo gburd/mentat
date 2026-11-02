@@ -2405,11 +2405,23 @@ mod tests {
         );
         assert_matches!(tempids(&report), "{\"t1\" 100}");
 
+        // A tempid used only as a value is an error (#384), as in Datomic.
+        assert_transact!(
+            conn,
+            "[[:db/add \"t1\" :db.schema/attribute \"t2\"]]",
+            Err(":db.error/tempid-not-an-entity tempid \"t2\" used only as value in transaction")
+        );
+
         // A single complex upsert allocates a new entid.
-        let report = assert_transact!(conn, "[[:db/add \"t1\" :db.schema/attribute \"t2\"]]");
+        let report = assert_transact!(
+            conn,
+            "[[:db/add \"t1\" :db.schema/attribute \"t2\"]
+                                              [:db/add \"t2\" :db/doc \"t2\"]]"
+        );
         assert_matches!(
             conn.last_transaction(),
             "[[65536 :db.schema/attribute 65537 ?tx true]
+                          [65537 :db/doc \"t2\" ?tx true]
                           [?tx :db/txInstant ?ms ?tx true]]"
         );
         assert_matches!(
@@ -3830,11 +3842,22 @@ mod tests {
         );
         assert_matches!(tempids(&report), "{}");
 
-        // Check that we can explode direct reversed notation, tempids.
-        let report = assert_transact!(conn, "[[:db/add \"s\" :test/_dangling \"t\"]]");
+        // Check that we can explode direct reversed notation, tempids.  "s" is then only a value,
+        // so it needs a datom of its own (#384).
+        assert_transact!(
+            conn,
+            "[[:db/add \"s\" :test/_dangling \"t\"]]",
+            Err(":db.error/tempid-not-an-entity tempid \"s\" used only as value in transaction")
+        );
+        let report = assert_transact!(
+            conn,
+            "[[:db/add \"s\" :test/_dangling \"t\"]
+                                              [:db/add \"s\" :test/many 1]]"
+        );
         assert_matches!(
             conn.last_transaction(),
-            "[[65537 :test/dangling 65536 ?tx true]
+            "[[65536 :test/many 1 ?tx true]
+                          [65537 :test/dangling 65536 ?tx true]
                           [?tx :db/txInstant ?ms ?tx true]]"
         );
         // This is implementation specific, but it should be deterministic.
@@ -3844,18 +3867,27 @@ mod tests {
                           \"t\" 65537}"
         );
 
-        // Check that we can explode reversed notation in map notation without :db/id.
+        // Check that we can explode reversed notation in map notation without :db/id.  The map's
+        // entity is then only a value, so it needs a datom of its own (#384).
+        assert_transact!(
+            conn,
+            "[{:test/_dangling 501}]",
+            Err(":db.error/tempid-not-an-entity an entity map without :db/id is used only as value in transaction (it has only reverse attributes)")
+        );
         let report = assert_transact!(
             conn,
-            "[{:test/_dangling 501}
-                                              {:test/_dangling :test/many}
-                                              {:test/_dangling \"t\"}]"
+            "[{:test/_dangling 501 :test/many 1}
+                                              {:test/_dangling :test/many :test/many 2}
+                                              {:test/_dangling \"t\" :test/many 3}]"
         );
         assert_matches!(
             conn.last_transaction(),
-            "[[111 :test/dangling ?e1 ?tx true]
-                          [501 :test/dangling ?e2 ?tx true]
+            "[[111 :test/dangling ?e2 ?tx true]
+                          [501 :test/dangling ?e1 ?tx true]
                           [65538 :test/dangling ?e3 ?tx true]
+                          [?e1 :test/many 1 ?tx true]
+                          [?e2 :test/many 2 ?tx true]
+                          [?e3 :test/many 3 ?tx true]
                           [?tx :db/txInstant ?ms ?tx true]]"
         );
         assert_matches!(tempids(&report), "{\"t\" 65538}");
@@ -3882,10 +3914,14 @@ mod tests {
         assert_matches!(tempids(&report), "{}");
 
         // Check that we can explode reversed notation in map notation with :db/id, tempid.
-        let report = assert_transact!(conn, "[{:db/id \"s\" :test/_dangling \"t\"}]");
+        let report = assert_transact!(
+            conn,
+            "[{:db/id \"s\" :test/_dangling \"t\" :test/many 4}]"
+        );
         assert_matches!(
             conn.last_transaction(),
-            "[[65543 :test/dangling 65542 ?tx true]
+            "[[65542 :test/many 4 ?tx true]
+                          [65543 :test/dangling 65542 ?tx true]
                           [?tx :db/txInstant ?ms ?tx true]]"
         );
         // This is implementation specific, but it should be deterministic.
