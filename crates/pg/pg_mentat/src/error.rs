@@ -79,6 +79,10 @@ pub enum MentatError {
     /// Stored data is corrupt (wrong byte length for type tag, etc.).
     DataCorruption { message: String },
 
+    /// A tempid is the value of a ref but the entity of no datom, and doesn't upsert, so it
+    /// would name a new entity with no datoms (#384).
+    TempIdNotAnEntity { tempid: String },
+
     /// An unsupported value type tag was encountered.
     UnsupportedType { type_tag: i16 },
 
@@ -359,6 +363,18 @@ impl fmt::Display for MentatError {
                 )
             }
 
+            Self::TempIdNotAnEntity { tempid } => {
+                write!(
+                    f,
+                    ":db.error/tempid-not-an-entity tempid \"{}\" used only as value in transaction",
+                    tempid
+                )?;
+                if tempid.starts_with("datomic") {
+                    write!(f, " (pg_mentat has no reserved transaction tempid)")?;
+                }
+                Ok(())
+            }
+
             Self::NothingToRetract { entity } => {
                 write!(
                     f,
@@ -516,6 +532,7 @@ impl MentatError {
             Self::CardinalityViolation { .. } => ":db.error/cardinality-violation",
             Self::CasFailed { .. } => ":db.fn/cas",
             Self::DataCorruption { .. } => ":db.error/data-corruption",
+            Self::TempIdNotAnEntity { .. } => ":db.error/tempid-not-an-entity",
             Self::UnsupportedType { .. } => ":db.error/unsupported-type",
             Self::InvalidEntityPlace { .. } => ":db.error/invalid-entity-place",
             Self::InvalidAttribute { .. } => ":db.error/invalid-attribute",

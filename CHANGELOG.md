@@ -28,6 +28,15 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A tempid used only as a ref value fails the transaction** (#384), on
+  every backend, with `:db.error/tempid-not-an-entity` naming the tempid,
+  as in Datomic. A tempid that never names the entity of an assertion and
+  doesn't upsert used to get a fresh entid, so the transaction committed a
+  ref to an entity with no datoms. Transactions that did this now fail:
+  give the tempid a datom of its own, or use a lookup ref. In map form,
+  `{:a/refs [:b/unique-value "x"]}` on a cardinality-many ref is a list of
+  two values, so `"x"` is such a tempid; write `[[:b/unique-value "x"]]` for
+  the lookup ref.
 - **pg_mentat: a transaction function can't call `mentat.store/transact` or
   `mentat.store/with`** (`:db.error/txfn-transact`): it returns tx-data, as
   in Datomic. A tx-fn that transacted its own store used to re-run itself

@@ -199,6 +199,32 @@ fn inputs_upsert_cardinality_one_and_tx_fns() {
     );
 }
 
+/// #384: a tempid used only as a ref value fails the transaction; one with a datom of its
+/// own, or that upserts, is fine.
+#[test]
+fn tempid_used_only_as_a_value_is_rejected() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    let err = s
+        .transact(r#"[{:person/name "Carol" :person/friend ["t1"]}]"#)
+        .expect_err("value-only tempid")
+        .to_string();
+    assert!(
+        err.contains(":db.error/tempid-not-an-entity") && err.contains("\"t1\""),
+        "{err}"
+    );
+    assert!(q(&s, "[:find ?e :where [?e :person/name \"Carol\"]]").is_empty());
+    s.transact(
+        r#"[{:person/name "Carol" :person/friend ["t1" "a"]} {:db/id "t1" :person/name "Dan"}
+            {:db/id "a" :person/name "Alice"}]"#,
+    )
+    .expect("t1 has a datom; a upserts to Alice");
+    assert_eq!(
+        q(&s, "[:find ?n :where [?c :person/name \"Carol\"] [?c :person/friend ?f] [?f :person/name ?n]]"),
+        vec![vec!["Alice".to_string()], vec!["Dan".to_string()]]
+    );
+}
+
 #[test]
 fn history_as_of_since() {
     let c = Connection::open_in_memory().unwrap();

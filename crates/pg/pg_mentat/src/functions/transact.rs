@@ -1431,6 +1431,32 @@ fn execute_transaction_inner(
         }
     }
 
+    // A tempid that is a ref value but the entity of no assertion (after upserts) would be a
+    // new entity with no datoms: Datomic's :db.error/tempid-not-an-entity (#384).
+    {
+        let entities: std::collections::HashSet<i64> = pending_datoms
+            .iter()
+            .filter(|d| d.added)
+            .map(|d| d.e)
+            .collect();
+        let values: std::collections::HashSet<i64> = pending_datoms
+            .iter()
+            .filter_map(|d| match d.v {
+                TypedValue::Ref(r) if d.added => Some(r),
+                _ => None,
+            })
+            .collect();
+        if let Some((tempid, _)) = tempid_map
+            .iter()
+            .find(|(_, e)| values.contains(e) && !entities.contains(e))
+        {
+            return Err(MentatError::TempIdNotAnEntity {
+                tempid: tempid.clone(),
+            }
+            .into());
+        }
+    }
+
     // Concurrent writers (#376), part 2: with the entities now fixed, lock every
     // cardinality-one (e, a) the transaction writes and every (e, a) a :db/cas
     // reads, then check each cas. A second writer of one (e, a) waits here for the

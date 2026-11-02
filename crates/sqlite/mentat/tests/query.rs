@@ -1304,6 +1304,11 @@ fn test_combinatorial() {
         [:db/add "a"  :foo/dance "ad"]
         [:db/add "d"  :foo/dance "ad"]
 
+        ;; Each dance is an entity of its own (a tempid only used as a value fails, #384).
+        [:db/add "ab" :foo/name "ab"]
+        [:db/add "ba" :foo/name "ba"]
+        [:db/add "cd" :foo/name "cd"]
+        [:db/add "ad" :foo/name "ad"]
    ]"#,
         )
         .unwrap();
