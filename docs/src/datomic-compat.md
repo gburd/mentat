@@ -18,7 +18,7 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | `:db.fn/cas` | Yes | Yes | **Complete** -- compare-and-swap; accepts a lookup ref |
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
-| Tempids | Yes | Yes | **Complete** |
+| Tempids | Yes | Yes | **Complete** -- a tempid used only as a ref value, never as the entity of a datom and not upserting, fails with `:db.error/tempid-not-an-entity` naming it, as in Datomic (1.19.0; it used to make an entity with no datoms). The reserved tempid `"datomic.tx"` is not supported (it is an ordinary tempid); the embedded engine and DuckDB have `(transaction-tx)` |
 | Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; in map form, for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs (see [Lookup refs in a list of values](#lookup-refs-in-a-list-of-values)). The embedded engine and DuckDB accept the vector form since 1.18.0 |
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
 | Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
@@ -58,6 +58,11 @@ error).
 [:db/add "f" :form/owners [:user/email "a@x"]]   ; one ref, by :user/email
 [:db/add "f" :form/fields [:user/email :user/name]] ; error: a lookup ref that does not resolve
 ```
+
+A plain string in that list is a tempid, so `{:form/owners [:user/email "a@x"]}`
+is a ref to the `:user/email` attribute plus the tempid `"a@x"`, which is used
+only as a value and fails with `:db.error/tempid-not-an-entity` (since 1.19.0).
+Write `[[:user/email "a@x"]]` for the lookup ref.
 
 `:db/ident` is itself `:db.unique/identity`, so `[:db/ident :user/name]` is a
 lookup ref to the entity named `:user/name`, not refs to `:db/ident` and
