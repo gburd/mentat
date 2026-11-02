@@ -3889,6 +3889,48 @@ mod tests {
         }
     }
 
+    // Stores the upgrade can't replace the views of were skipped with no
+    // WARNING: a store row whose schema was renamed by hand, and one whose
+    // schema is gone.
+    #[pg_test]
+    fn upgrade_names_the_stores_it_skips() {
+        setup();
+        make_1_18_store("sk_ren", false);
+        make_1_18_store("sk_gone", false);
+        Spi::run(
+            "ALTER SCHEMA mentat_sk_ren RENAME TO mentat_sk_moved; \
+             UPDATE mentat.stores SET schema_name = 'mentat_sk_moved' WHERE store_name = 'sk_ren'",
+        )
+        .expect("renamed");
+        let block = upgrade_119_block("views");
+        let first = || {
+            text(&format!(
+                "SELECT pg_temp.capture($cap${}$cap$)",
+                block.replace("RAISE WARNING", "RAISE EXCEPTION")
+            ))
+        };
+        assert_eq!(
+            first(),
+            "pg_mentat upgrade: views in schema mentat_sk_moved not replaced: its mentat.stores row \
+             \"sk_ren\" would not have been made by create_store() (renamed by hand?). Rename it back, \
+             or use rename_store, then run create_virtual_tables('sk_ren')."
+        );
+        Spi::run(
+            "UPDATE mentat.stores SET schema_name = 'mentat_sk_ren' WHERE store_name = 'sk_ren'; \
+             ALTER SCHEMA mentat_sk_moved RENAME TO mentat_sk_ren; \
+             DROP SCHEMA mentat_sk_gone CASCADE",
+        )
+        .expect("gone");
+        assert_eq!(
+            first(),
+            "pg_mentat upgrade: views of named store \"sk_gone\" not replaced: its schema \
+             mentat_sk_gone does not exist (dropped by hand?). drop_store('sk_gone') removes the store."
+        );
+        Spi::run("DELETE FROM mentat.stores WHERE store_name = 'sk_gone'").expect("drop row");
+        assert_eq!(first(), "", "the others: no WARNING");
+        Spi::run(&block).expect("the upgrade goes on");
+    }
+
     fn names_of(store: &str) -> Vec<String> {
         sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
     }

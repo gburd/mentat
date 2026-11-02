@@ -1423,8 +1423,13 @@ BEGIN
            AND i.indrelid = 'mentat.datoms_text_new'::regclass
            AND am.amname = 'fts'
            AND fts_schema IS NOT NULL
-           AND e.cfg IS NOT NULL
     LOOP
+        IF idx.cfg IS NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: pg_fts index mentat.% not moved to mentat.current_text: it is '
+                          'not on to_ftsdoc(<configuration>, v). bm25-match reads current_text now, so it '
+                          'no longer uses it: drop it and run mentat.create_fts_index again.', idx.relname;
+            CONTINUE;
+        END IF;
         EXECUTE pg_catalog.format('DROP INDEX %I.%I', 'mentat', idx.relname);
         EXECUTE pg_catalog.format(
             'CREATE INDEX %I ON mentat.current_text USING fts (%I.to_ftsdoc(%L::pg_catalog.regconfig, v)) '
@@ -1508,6 +1513,29 @@ DECLARE
 BEGIN
     PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
     ext := (SELECT e.oid FROM pg_extension e WHERE e.extname = 'pg_mentat');
+    -- Rows left alone, as the 1.18.0 upgrade leaves them: one whose schema
+    -- is gone, or that names a schema create_store() would not have made,
+    -- gets a WARNING.
+    FOR st IN
+        SELECT s.store_name, s.schema_name, n.oid AS ns
+          FROM mentat.stores s
+          LEFT JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE s.schema_name IS DISTINCT FROM 'mentat'
+           AND ((n.oid IS NULL AND s.schema_name = 'mentat_' || s.store_name)
+                OR (n.oid IS NOT NULL AND s.schema_name IS DISTINCT FROM 'mentat_' || s.store_name))
+         ORDER BY s.store_id
+    LOOP
+        IF st.ns IS NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: views of named store "%" not replaced: its schema % does not '
+                          'exist (dropped by hand?). drop_store(%) removes the store.',
+                          st.store_name, st.schema_name, pg_catalog.quote_literal(st.store_name);
+        ELSE
+            RAISE WARNING 'pg_mentat upgrade: views in schema % not replaced: its mentat.stores row "%" '
+                          'would not have been made by create_store() (renamed by hand?). Rename it back, '
+                          'or use rename_store, then run create_virtual_tables(%).',
+                          st.schema_name, st.store_name, pg_catalog.quote_literal(st.store_name);
+        END IF;
+    END LOOP;
     FOR st IN
         SELECT s.store_name, n.oid AS ns, n.nspname
           FROM mentat.stores s

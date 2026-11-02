@@ -272,6 +272,32 @@ mod tests {
             );
             assert_eq!(v["result"], serde_json::json!([[1]]), "{round}: {v}");
         }
+        // One it can't read the configuration of (made by hand on another
+        // expression) stays on the log, with a WARNING: it was skipped
+        // silently, and bm25-match no longer used it.
+        Spi::run(&format!(
+            "DROP INDEX mentat.{name}; \
+             CREATE INDEX {name} ON mentat.datoms_text_new USING fts (to_ftsdoc('german', lower(v))) \
+             WHERE a = {entid} AND store_id = 0 AND added; \
+             CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$"
+        ))
+        .expect("another expression");
+        let msg = Spi::get_one::<String>(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ))
+        .unwrap()
+        .unwrap_or_default();
+        assert_eq!(
+            msg,
+            format!(
+                "pg_mentat upgrade: pg_fts index mentat.{name} not moved to mentat.current_text: it is not \
+                 on to_ftsdoc(<configuration>, v). bm25-match reads current_text now, so it no longer \
+                 uses it: drop it and run mentat.create_fts_index again."
+            )
+        );
     }
 
     #[pg_test]
