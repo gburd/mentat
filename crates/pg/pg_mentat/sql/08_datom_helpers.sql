@@ -29,12 +29,11 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    SELECT d.e, d.v_text, d.tx
-    FROM mentat.datoms d
-    WHERE d.a = attr_entid
-      AND d.value_type_tag = 7
-      AND d.v_text LIKE pattern
-      AND d.added = TRUE;
+    SELECT d.e, d.v, d.tx
+    FROM mentat.current_text d
+    WHERE d.store_id = 0
+      AND d.a = attr_entid
+      AND d.v LIKE pattern;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -62,12 +61,11 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    SELECT d.e, d.v_long, d.tx
-    FROM mentat.datoms d
-    WHERE d.a = attr_entid
-      AND d.value_type_tag = 2
-      AND d.v_long BETWEEN low_val AND high_val
-      AND d.added = TRUE;
+    SELECT d.e, d.v, d.tx
+    FROM mentat.current_long d
+    WHERE d.store_id = 0
+      AND d.a = attr_entid
+      AND d.v BETWEEN low_val AND high_val;
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -94,12 +92,11 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    SELECT d.e, d.v_ref, d.tx
-    FROM mentat.datoms d
-    WHERE d.a = attr_entid
-      AND d.value_type_tag = 0
-      AND d.v_ref = ANY(ref_ids)
-      AND d.added = TRUE;
+    SELECT d.e, d.v, d.tx
+    FROM mentat.current_ref d
+    WHERE d.store_id = 0
+      AND d.a = attr_entid
+      AND d.v = ANY(ref_ids);
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -125,12 +122,11 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    SELECT d.v_text, d.tx
-    FROM mentat.datoms d
-    WHERE d.e = eid
+    SELECT d.v, d.tx
+    FROM mentat.current_text d
+    WHERE d.store_id = 0
+      AND d.e = eid
       AND d.a = attr_entid
-      AND d.value_type_tag = 7
-      AND d.added = TRUE
     ORDER BY d.tx;
 END;
 $$ LANGUAGE plpgsql STABLE;
@@ -157,12 +153,11 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    SELECT d.v_ref, d.tx
-    FROM mentat.datoms d
-    WHERE d.e = eid
+    SELECT d.v, d.tx
+    FROM mentat.current_ref d
+    WHERE d.store_id = 0
+      AND d.e = eid
       AND d.a = attr_entid
-      AND d.value_type_tag = 0
-      AND d.added = TRUE
     ORDER BY d.tx;
 END;
 $$ LANGUAGE plpgsql STABLE;

@@ -31,12 +31,12 @@ $$;
 -- ---------------------------------------------------------------------------
 -- mentat.current(e, a) -> TEXT
 --
--- Returns the current (latest, added=true) value of attribute `a` for
--- entity `e`, rendered as TEXT, by probing the narrow datom tables in
--- value-type order. Each probe is a single index lookup on the
--- (store_id, e, a, tx DESC) ... WHERE added covering index, so this is
--- the cheap "live projection" accessor the views can call per (e, a)
--- instead of a DISTINCT ON / LATERAL fan-out.
+-- Returns the current value of attribute `a` for entity `e`, rendered as
+-- TEXT, from the current_<type> projection (one primary-key lookup), so a
+-- replaced or retracted value is never returned: the append-only log keeps
+-- its added = true row (#395). For a cardinality-many attribute it returns
+-- the value asserted last. This is the cheap "live projection" accessor the
+-- views can call per (e, a) instead of a DISTINCT ON / LATERAL fan-out.
 --
 -- `a` is the attribute entid (use mentat.attr_id(':ns/name') to resolve).
 -- `store` defaults to 0 (the default store).
@@ -44,7 +44,7 @@ $$;
 -- Returns NULL if the entity has no current value for the attribute.
 --
 -- The function dispatches on the attribute's declared value_type so only
--- ONE narrow table is touched. For attributes whose type is unknown at
+-- ONE projection table is touched. For attributes whose type is unknown at
 -- call time it falls back to probing all tables in tag order.
 CREATE OR REPLACE FUNCTION mentat.current(p_e BIGINT, p_a BIGINT, p_store BIGINT DEFAULT 0)
 RETURNS TEXT
@@ -58,54 +58,54 @@ BEGIN
 
     -- Dispatch on the declared type: a single indexed lookup.
     IF v_type = 'string' THEN
-        SELECT v INTO v_out FROM mentat.datoms_text_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v INTO v_out FROM mentat.current_text
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'keyword' THEN
-        SELECT v INTO v_out FROM mentat.datoms_keyword_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v INTO v_out FROM mentat.current_keyword
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'long' THEN
-        SELECT v::text INTO v_out FROM mentat.datoms_long_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v::text INTO v_out FROM mentat.current_long
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'ref' THEN
-        SELECT v::text INTO v_out FROM mentat.datoms_ref_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v::text INTO v_out FROM mentat.current_ref
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'double' THEN
-        SELECT v::text INTO v_out FROM mentat.datoms_double_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v::text INTO v_out FROM mentat.current_double
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'boolean' THEN
-        SELECT v::text INTO v_out FROM mentat.datoms_boolean_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v::text INTO v_out FROM mentat.current_boolean
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'instant' THEN
         SELECT to_char(v, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') INTO v_out
-            FROM mentat.datoms_instant_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+            FROM mentat.current_instant
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'uuid' THEN
-        SELECT v::text INTO v_out FROM mentat.datoms_uuid_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT v::text INTO v_out FROM mentat.current_uuid
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSIF v_type = 'bytes' THEN
-        SELECT encode(v, 'hex') INTO v_out FROM mentat.datoms_bytes_new
-            WHERE store_id = p_store AND e = p_e AND a = p_a AND added
+        SELECT encode(v, 'hex') INTO v_out FROM mentat.current_bytes
+            WHERE store_id = p_store AND e = p_e AND a = p_a
             ORDER BY tx DESC LIMIT 1;
     ELSE
         -- Type unknown: probe all tables, newest tx wins.
         SELECT value INTO v_out FROM (
-            SELECT v AS value, tx FROM mentat.datoms_text_new    WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT v, tx FROM mentat.datoms_keyword_new WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT v::text, tx FROM mentat.datoms_long_new    WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT v::text, tx FROM mentat.datoms_ref_new     WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT v::text, tx FROM mentat.datoms_double_new  WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT v::text, tx FROM mentat.datoms_boolean_new WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT to_char(v,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), tx FROM mentat.datoms_instant_new WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT v::text, tx FROM mentat.datoms_uuid_new    WHERE store_id=p_store AND e=p_e AND a=p_a AND added
-            UNION ALL SELECT encode(v,'hex'), tx FROM mentat.datoms_bytes_new WHERE store_id=p_store AND e=p_e AND a=p_a AND added
+            SELECT v AS value, tx FROM mentat.current_text    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v, tx FROM mentat.current_keyword WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_long    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_ref     WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_double  WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_boolean WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT to_char(v,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), tx FROM mentat.current_instant WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_uuid    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT encode(v,'hex'), tx FROM mentat.current_bytes WHERE store_id=p_store AND e=p_e AND a=p_a
             ORDER BY tx DESC LIMIT 1
         ) probe;
     END IF;
@@ -125,9 +125,8 @@ $$;
 -- ---------------------------------------------------------------------------
 -- mentat.attribute_health() -> TABLE
 --
--- Per-attribute operational snapshot: live datom count, total (incl.
--- retracted) datom count, and the dead-tuple % of the backing narrow
--- table. Lets operators alert before instant-datom bloat bites (user
+-- Per-attribute operational snapshot: live datom count (the current_<type>
+-- projection) and the dead-tuple % of the backing narrow log table. Lets operators alert before instant-datom bloat bites (user
 -- feedback §4).
 --
 -- dead_pct is table-level (the narrow tables are shared across
@@ -171,7 +170,7 @@ AS $$
         t.attr_ident,
         t.value_type,
         t.backing_table,
-        (SELECT count(*) FROM mentat.datoms WHERE a = t.a AND added)::BIGINT AS live_datoms,
+        (SELECT count(*) FROM mentat.current_datoms WHERE a = t.a)::BIGINT AS live_datoms,
         COALESCE(d.dead_pct, 0) AS dead_pct
     FROM tbl t
     LEFT JOIN deadstats d ON d.backing_table = t.backing_table

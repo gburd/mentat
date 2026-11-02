@@ -61,14 +61,13 @@ ORDER BY pg_total_relation_size(relid) DESC;
 
 -- mentat.store_overview: Per-store datom counts by value type.
 --
--- Aggregates live datoms grouped by `value_type_tag` from the current
--- (wide-row) `mentat.datoms` table. This view will be rewritten when the
--- narrow-leaf-partition storage redesign lands (see docs/STORAGE_REDESIGN.md).
+-- Aggregates the default store's live datoms (`mentat.current_datoms`, the
+-- current_<type> projections) grouped by `value_type_tag`. Not the log: it
+-- keeps a replaced or retracted value's added = true row (#395).
 CREATE OR REPLACE VIEW mentat.store_overview AS
 WITH counts AS (
     SELECT value_type_tag, count(*) AS cnt
-    FROM mentat.datoms
-    WHERE added = TRUE
+    FROM mentat.current_datoms
     GROUP BY value_type_tag
 )
 SELECT

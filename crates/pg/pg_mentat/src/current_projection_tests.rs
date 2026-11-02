@@ -495,4 +495,134 @@ mod tests {
         let out = text(&format!("SELECT mentat_excise(ARRAY[{a}]::BIGINT[])"));
         assert!(out.contains("\"excised\":1"), "{out}");
     }
+
+    /// The default store's SQL helpers that answer for the current state
+    /// (datom_text_like, datom_long_between, datom_ref_in, datom_text_values,
+    /// datom_ref_values, current(e, a), attribute_health's live_datoms and the
+    /// store_overview view) read the projection (#395): the log keeps a
+    /// replaced or retracted value's added = true row. After a card-one
+    /// replace and a retraction each returns only the live value.
+    #[pg_test]
+    fn pg_test_proj_datom_helpers_and_current_read_live_values() {
+        setup();
+        schema();
+        Spi::run(
+            "SELECT edn_t('[{:db/id \"a\" :p/email \"a@x.io\" :p/name \"Ann\" :p/age 1 \
+                            :p/tag [\"t1\" \"t2\"]}
+                            {:db/id \"b\" :p/email \"b@x.io\" :p/name \"Bob\" :p/age 5 :p/friend \"a\"}
+                            {:db/id \"c\" :p/email \"c@x.io\"}]'::TEXT)",
+        )
+        .expect("tx");
+        let (a, b, c) = (email_eid("a@x.io"), email_eid("b@x.io"), email_eid("c@x.io"));
+        // a: card-one replace of name and age, a card-many value retracted.
+        // b: name and age retracted, friend a replaced by c.
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {a} :p/name \"Anna\"] [:db/add {a} :p/age 2] \
+                            [:db/retract {a} :p/tag \"t1\"] [:db/retract {b} :p/name \"Bob\"] \
+                            [:db/retract {b} :p/age 5] [:db/retract {b} :p/friend {a}] \
+                            [:db/add {b} :p/friend {c}]]'::TEXT)"
+        ))
+        .expect("replace and retract");
+        let col = |sql: &str| -> Vec<String> {
+            let mut out: Vec<String> = Spi::connect(|client| {
+                client
+                    .select(sql, None, &[])
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                    .map(|row| row.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect()
+            });
+            out.sort();
+            out
+        };
+        {
+            let round = "install";
+            let n = |sql: &str| -> Vec<String> { col(&format!("SELECT x::TEXT FROM {sql}")) };
+            assert_eq!(
+                n("mentat.datom_text_like(':p/name', '%') AS t(e, x, tx)"),
+                vec!["Anna"],
+                "{round}"
+            );
+            assert_eq!(
+                n("mentat.datom_long_between(':p/age', 0, 10) AS t(e, x, tx)"),
+                vec!["2"],
+                "{round}"
+            );
+            assert_eq!(
+                n(&format!("mentat.datom_ref_in(':p/friend', ARRAY[{a}, {c}]) AS t(x, v, tx)")),
+                vec![b.to_string()],
+                "{round}"
+            );
+            assert_eq!(
+                n(&format!("mentat.datom_ref_in(':p/friend', ARRAY[{a}, {c}]) AS t(e, x, tx)")),
+                vec![c.to_string()],
+                "{round}"
+            );
+            assert_eq!(
+                n(&format!("mentat.datom_text_values({a}, ':p/tag') AS t(x, tx)")),
+                vec!["t2"],
+                "{round}"
+            );
+            assert_eq!(
+                n(&format!("mentat.datom_ref_values({b}, ':p/friend') AS t(x, tx)")),
+                vec![c.to_string()],
+                "{round}"
+            );
+            for (e, attr, want) in [
+                (a, ":p/name", Some("Anna".to_string())),
+                (a, ":p/age", Some("2".to_string())),
+                (b, ":p/name", None),
+                (b, ":p/age", None),
+                (b, ":p/friend", Some(c.to_string())),
+            ] {
+                let by_ident =
+                    Spi::get_one::<String>(&format!("SELECT mentat.current({e}, '{attr}')")).unwrap();
+                assert_eq!(by_ident, want, "{round}: current({e}, {attr})");
+            }
+            // An attribute the schema doesn't type: current() probes every
+            // table. A value only the log has (as a replaced one is) is not
+            // current.
+            Spi::run(&format!(
+                "INSERT INTO mentat.datoms_text_new (store_id, e, a, v, tx, added) \
+                 VALUES (0, {a}, 999999, 'logged', 1, true) ON CONFLICT DO NOTHING"
+            ))
+            .expect("log row");
+            assert_eq!(
+                Spi::get_one::<String>(&format!("SELECT mentat.current({a}, 999999::BIGINT)"))
+                    .unwrap(),
+                None,
+                "{round}"
+            );
+            Spi::run("DELETE FROM mentat.datoms_text_new WHERE a = 999999").expect("cleanup");
+            let live = |attr: &str| -> i64 {
+                Spi::get_one::<i64>(&format!(
+                    "SELECT live_datoms FROM mentat.attribute_health() WHERE attr_ident = '{attr}'"
+                ))
+                .unwrap()
+                .unwrap()
+            };
+            assert_eq!(live(":p/name"), 1, "{round}");
+            assert_eq!(live(":p/tag"), 1, "{round}");
+            let total = Spi::get_one::<i64>(
+                "SELECT total_datoms FROM mentat.store_overview WHERE store_name = 'default'",
+            )
+            .unwrap()
+            .unwrap();
+            let current = Spi::get_one::<i64>("SELECT count(*) FROM mentat.current_datoms")
+                .unwrap()
+                .unwrap();
+            assert_eq!(total, current, "{round}: store_overview counts live datoms");
+            let text = Spi::get_one::<i64>(
+                "SELECT text_datoms FROM mentat.store_overview WHERE store_name = 'default'",
+            )
+            .unwrap()
+            .unwrap();
+            let current_text = Spi::get_one::<i64>(
+                "SELECT count(*) FROM mentat.current_text WHERE store_id = 0",
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(text, current_text, "{round}");
+        }
+        verify_clean();
+    }
 }

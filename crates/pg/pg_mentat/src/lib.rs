@@ -253,7 +253,10 @@ extension_sql_file!(
     requires = ["bootstrap_schema", "narrow_storage"],
 );
 
-// Datom helper functions: convenience PL/pgSQL wrappers for common query patterns
+// Datom helper functions: convenience PL/pgSQL wrappers for common query patterns.
+// The current-state ones read the default store's current_<type> projections:
+// the log keeps a replaced or retracted value's added = true row (#395). Kept
+// in sync with sql/08_datom_helpers.sql and the 1.18.0 -> 1.19.0 upgrade.
 extension_sql!(
     r"
     -- datom_text_like: Find entities whose text attribute matches a LIKE pattern.
@@ -272,12 +275,11 @@ extension_sql!(
         END IF;
 
         RETURN QUERY
-        SELECT d.e, d.v_text, d.tx
-        FROM mentat.datoms d
-        WHERE d.a = attr_entid
-          AND d.value_type_tag = 7
-          AND d.v_text LIKE pattern
-          AND d.added = TRUE;
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_text d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v LIKE pattern;
     END;
     $$ LANGUAGE plpgsql STABLE;
 
@@ -298,12 +300,11 @@ extension_sql!(
         END IF;
 
         RETURN QUERY
-        SELECT d.e, d.v_long, d.tx
-        FROM mentat.datoms d
-        WHERE d.a = attr_entid
-          AND d.value_type_tag = 2
-          AND d.v_long BETWEEN low_val AND high_val
-          AND d.added = TRUE;
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_long d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v BETWEEN low_val AND high_val;
     END;
     $$ LANGUAGE plpgsql STABLE;
 
@@ -323,12 +324,11 @@ extension_sql!(
         END IF;
 
         RETURN QUERY
-        SELECT d.e, d.v_ref, d.tx
-        FROM mentat.datoms d
-        WHERE d.a = attr_entid
-          AND d.value_type_tag = 0
-          AND d.v_ref = ANY(ref_ids)
-          AND d.added = TRUE;
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_ref d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v = ANY(ref_ids);
     END;
     $$ LANGUAGE plpgsql STABLE;
 
@@ -348,12 +348,11 @@ extension_sql!(
         END IF;
 
         RETURN QUERY
-        SELECT d.v_text, d.tx
-        FROM mentat.datoms d
-        WHERE d.e = eid
+        SELECT d.v, d.tx
+        FROM mentat.current_text d
+        WHERE d.store_id = 0
+          AND d.e = eid
           AND d.a = attr_entid
-          AND d.value_type_tag = 7
-          AND d.added = TRUE
         ORDER BY d.tx;
     END;
     $$ LANGUAGE plpgsql STABLE;
@@ -374,12 +373,11 @@ extension_sql!(
         END IF;
 
         RETURN QUERY
-        SELECT d.v_ref, d.tx
-        FROM mentat.datoms d
-        WHERE d.e = eid
+        SELECT d.v, d.tx
+        FROM mentat.current_ref d
+        WHERE d.store_id = 0
+          AND d.e = eid
           AND d.a = attr_entid
-          AND d.value_type_tag = 0
-          AND d.added = TRUE
         ORDER BY d.tx;
     END;
     $$ LANGUAGE plpgsql STABLE;
@@ -1046,7 +1044,7 @@ mod mentat {
 extension_sql_file!(
     "../sql/monitoring_views.sql",
     name = "monitoring_views",
-    requires = ["view_helpers"],
+    requires = ["view_helpers", "current_projection"],
 );
 
 // Optional pg_tre integration helpers (mentat.has_pg_tre,
@@ -1204,7 +1202,7 @@ extension_sql_file!(
 extension_sql_file!(
     "../sql/23_operational_accessors.sql",
     name = "operational_accessors",
-    requires = ["narrow_storage"],
+    requires = ["narrow_storage", "current_projection"],
 );
 
 // Current-state projection: nine mentat.current_<type> tables holding only
