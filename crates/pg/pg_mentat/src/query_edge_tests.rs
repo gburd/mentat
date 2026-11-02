@@ -784,4 +784,75 @@ mod tests {
             "Should reject invalid EDN syntax"
         );
     }
+
+    /// edn_q's plan cache was keyed by the SQL text alone. One text can be
+    /// bound with different parameter types, and a plan prepared for the
+    /// first call's types then ran with the next call's Datums: a text input
+    /// then an integer one crashed the backend (SIGSEGV), and a long constant
+    /// then a double one (or back) compared the wrong column and found
+    /// nothing. The key holds the parameter types too.
+    #[pg_test]
+    fn test_plan_cache_keys_on_parameter_types() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :pc/s :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                            {:db/ident :pc/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                            {:db/ident :pc/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run("SELECT edn_t('[{:pc/s \"abc\" :pc/n 3 :pc/d 1.5}]'::TEXT)").expect("data");
+        Spi::run("SELECT mentat_stmt_cache_clear()").expect("clear");
+        let q = |query: &str, inputs: &str| -> serde_json::Value {
+            Spi::get_one::<pgrx::JsonB>(&format!(
+                "SELECT edn_q('{}', '{inputs}'::jsonb)",
+                query.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{query} {inputs}: {e}"))
+            .expect("NULL")
+            .0["result"]
+                .clone()
+        };
+        let by_input = "[:find ?v :in ?x :where [?e :pc/s ?v] [(= ?v ?x)]]";
+        assert_eq!(
+            q(by_input, r#"{"inputs": ["abc"]}"#),
+            serde_json::json!([["abc"]])
+        );
+        // A string attribute against an integer: PostgreSQL's own error, not
+        // a crash, and the backend runs the next query.
+        Spi::run(
+            "CREATE OR REPLACE FUNCTION pg_temp.try_q(query TEXT, inputs JSONB) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN RETURN edn_q(query, inputs)::TEXT; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("try_q");
+        let err = Spi::get_one::<String>(&format!(
+            "SELECT pg_temp.try_q('{by_input}', '{{\"inputs\": [5]}}')"
+        ))
+        .expect("an integer input after a string one")
+        .unwrap_or_default();
+        assert!(err.contains("operator does not exist"), "{err}");
+        assert_eq!(
+            q(by_input, r#"{"inputs": ["abc"]}"#),
+            serde_json::json!([["abc"]])
+        );
+        // Same types: the plan is reused. The = ?v query text is cached once
+        // per parameter-type list (BIGINT, then DOUBLE), and each is hit on
+        // the second round.
+        Spi::run("SELECT mentat_stmt_cache_clear()").expect("clear");
+        for _ in 0..2 {
+            let three = q("[:find ?v :where [?e ?a ?v] [(= ?v 3)]]", "{}");
+            assert_eq!(three, serde_json::json!([[3]]));
+            let half = q("[:find ?v :where [?e ?a ?v] [(= ?v 1.5)]]", "{}");
+            assert_eq!(half, serde_json::json!([[1.5]]));
+        }
+        let stats = Spi::get_one::<pgrx::JsonB>("SELECT mentat_stmt_cache_stats()")
+            .expect("stats")
+            .expect("NULL")
+            .0;
+        assert_eq!(
+            (stats["size"].as_i64(), stats["total_hits"].as_i64()),
+            (Some(2), Some(2)),
+            "{stats}"
+        );
+    }
 }

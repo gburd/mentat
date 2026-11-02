@@ -33,7 +33,11 @@ const STMT_CACHE_CAPACITY: usize = 256;
 
 // Thread-local prepared statement cache.
 //
-// Uses the generated SQL string as the cache key. Since PostgreSQL backends
+// Keyed by the generated SQL string and its parameters' type OIDs: a plan is
+// prepared for its parameter types, and one SQL text can be bound with
+// different types (`[(= ?v ?x)]` with a string, then an integer input). A
+// plan run with another type's Datum crashed the backend or compared the
+// wrong column. Since PostgreSQL backends
 // are single-threaded, a `RefCell` is sufficient (no `Mutex` needed).
 // `OwnedPreparedStatement` uses `SPI_keepplan` to persist the plan in
 // `TopMemoryContext`, so it survives across SPI connection lifetimes.
@@ -82,9 +86,14 @@ fn execute_cached_query<'a>(
     // Try to execute with a cached statement.
     // The borrow of the RefCell is scoped to the closure and released
     // before the SpiTupleTable is used (it references SPI memory, not the plan).
+    let arg_types: Vec<PgOid> = params
+        .iter()
+        .map(|p| PgOid::from_untagged(p.oid()))
+        .collect();
+    let key = stmt_cache_key(sql, &arg_types);
     let cached_result: Option<Result<pgrx::spi::SpiTupleTable<'a>, _>> = STMT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some(entry) = cache.get_mut(sql) {
+        if let Some(entry) = cache.get_mut(&key) {
             entry.hits += 1;
             // Execute using the cached prepared statement.
             // SPI_execute_plan copies what it needs from the plan;
@@ -102,10 +111,6 @@ fn execute_cached_query<'a>(
 
     // Cache miss: prepare, execute, then cache the plan.
     crate::monitoring::record_stmt_cache_miss();
-    let arg_types: Vec<PgOid> = params
-        .iter()
-        .map(|p| PgOid::from_untagged(p.oid()))
-        .collect();
     let prepared = client.prepare(sql, &arg_types)?;
 
     // Execute using the borrowed prepared statement (does not consume it).
@@ -116,7 +121,7 @@ fn execute_cached_query<'a>(
     let owned = prepared.keep();
     STMT_CACHE.with(|cache| {
         cache.borrow_mut().put(
-            sql.to_string(),
+            key,
             CacheEntry {
                 stmt: owned,
                 hits: 0,
@@ -125,6 +130,13 @@ fn execute_cached_query<'a>(
     });
 
     Ok(result)
+}
+
+/// The plan cache key: the SQL text, then a NUL and the parameter type OIDs
+/// (SQL text holds no NUL, so the stats' SQL prefix is the text itself).
+fn stmt_cache_key(sql: &str, arg_types: &[PgOid]) -> String {
+    let oids: Vec<String> = arg_types.iter().map(|t| t.value().to_string()).collect();
+    format!("{sql}\0{}", oids.join(","))
 }
 
 use crate::types::constants::type_tag;
