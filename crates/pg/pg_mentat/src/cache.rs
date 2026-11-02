@@ -46,10 +46,14 @@ thread_local! {
     /// runs, but a role's membership can change under a kept plan.
     static ROLE_GEN: Cell<u32> = const { Cell::new(0) };
     static CALLBACKS: Cell<bool> = const { Cell::new(false) };
+    /// A cache was loaded while this transaction had written (it may hold
+    /// this transaction's uncommitted idents): drop every cache on abort.
+    static LOADED_IN_WRITE_XACT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Register, once per backend, the callbacks the caches depend on: syscache
-/// invalidations of schemas, tables and roles (#402).
+/// invalidations of schemas, tables and roles (#402), and transaction and
+/// subtransaction abort (#404).
 fn register_callbacks() {
     if CALLBACKS.with(|c| c.replace(true)) {
         return;
@@ -63,8 +67,37 @@ fn register_callbacks() {
             ROLE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
         }
     }
-    // SAFETY: a plain C callback with no captured state, registered once per
-    // backend; it only bumps thread-local counters.
+    #[pg_guard]
+    unsafe extern "C-unwind" fn xact_end(
+        event: pg_sys::XactEvent::Type,
+        _arg: *mut std::ffi::c_void,
+    ) {
+        use pg_sys::XactEvent::*;
+        match event {
+            // A prepared transaction can still be rolled back, by any session.
+            XACT_EVENT_ABORT | XACT_EVENT_PARALLEL_ABORT | XACT_EVENT_PREPARE => {
+                forget_uncommitted()
+            }
+            XACT_EVENT_COMMIT | XACT_EVENT_PARALLEL_COMMIT => {
+                LOADED_IN_WRITE_XACT.with(|f| f.set(false))
+            }
+            _ => {}
+        }
+    }
+    #[pg_guard]
+    unsafe extern "C-unwind" fn subxact_end(
+        event: pg_sys::SubXactEvent::Type,
+        _my: pg_sys::SubTransactionId,
+        _parent: pg_sys::SubTransactionId,
+        _arg: *mut std::ffi::c_void,
+    ) {
+        if event == pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB {
+            forget_uncommitted();
+        }
+    }
+    // SAFETY: plain C callbacks with no captured state, registered once per
+    // backend; they only touch this backend's caches (no SPI, no allocation
+    // in PostgreSQL memory).
     unsafe {
         for id in [
             pg_sys::SysCacheIdentifier::NAMESPACEOID,
@@ -78,6 +111,16 @@ fn register_callbacks() {
                 pg_sys::Datum::from(0),
             );
         }
+        pg_sys::RegisterXactCallback(Some(xact_end), std::ptr::null_mut());
+        pg_sys::RegisterSubXactCallback(Some(subxact_end), std::ptr::null_mut());
+    }
+}
+
+/// On (sub)transaction abort: a cache loaded after this transaction wrote may
+/// hold idents the abort just removed (#404).
+fn forget_uncommitted() {
+    if LOADED_IN_WRITE_XACT.with(|f| f.replace(false)) {
+        STORE_CACHES.invalidate_all();
     }
 }
 
@@ -182,6 +225,11 @@ impl SchemaCache {
 
         let schema = &self.db_schema;
         let access_key = access_key();
+        // Before loading: a load that fails halfway leaves what it read.
+        // SAFETY: reads backend-local transaction state.
+        if unsafe { pg_sys::GetTopTransactionIdIfAny() } != pg_sys::TransactionId::INVALID {
+            LOADED_IN_WRITE_XACT.with(|f| f.set(true));
+        }
 
         // Record the generation first: a schema change committed while this
         // loads then makes the cache look stale (reloaded), never fresh.

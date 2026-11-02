@@ -1,7 +1,8 @@
 // The per-backend caches against roles (#402): a plan cached for one role
 // was reused by another, and PostgreSQL checks schema USAGE only when a query
 // is parsed; the schema cache answered ident lookups without the role's
-// rights on the store's schema / idents tables.
+// rights on the store's schema / idents tables. And against aborts (#404):
+// the schema cache kept idents a rolled-back transaction installed.
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pgrx::pg_schema]
@@ -228,5 +229,146 @@ mod tests {
                 "got: {err:?}"
             );
         }
+    }
+
+    fn unknown_sql(store: &str, attr: &str) -> String {
+        q_sql(store, &format!("[:find ?v :where [_ {attr} ?v]]"))
+    }
+
+    fn unknown(store: &str, attr: &str) -> String {
+        error_of(&unknown_sql(store, attr))
+    }
+
+    fn define(store: &str, attr: &str) {
+        Spi::run(&format!(
+            "SELECT t('{store}', '[{{:db/ident {attr} :db/valueType :db.type/string \
+             :db/cardinality :db.cardinality/one}}]')"
+        ))
+        .expect("define");
+    }
+
+    /// #404: an ident installed in a rolled-back subtransaction (a plpgsql
+    /// EXCEPTION block; SPI can't run SAVEPOINT) is gone from the cache, also
+    /// when a read after the schema write loaded the cache again.
+    #[pg_test]
+    fn ident_of_a_rolled_back_subtransaction_leaves_the_cache() {
+        setup();
+        Spi::run("SELECT create_store('cr_rb')").expect("create_store");
+        for store in ["default", "cr_rb"] {
+            let err = error_of(&format!(
+                "DO $d$ BEGIN \
+                   PERFORM t('{store}', '[{{:db/ident :cr/ghost :db/valueType :db.type/string \
+                                            :db/cardinality :db.cardinality/one}}]'); \
+                   PERFORM q('{store}', '[:find ?v :where [_ :cr/ghost ?v]]', '{{}}'); \
+                   RAISE EXCEPTION 'undo'; \
+                 END $d$"
+            ));
+            assert_eq!(
+                err, "undo",
+                "{store}: defined and read in the subtransaction"
+            );
+            let err = unknown(store, ":cr/ghost");
+            assert!(
+                err.contains(":db.error/unknown-attribute"),
+                "{store}: got {err:?}"
+            );
+        }
+    }
+
+    /// #404 in a second session (dblink: a pg_test is one transaction, and
+    /// SPI can't run SAVEPOINT): define and read, then ROLLBACK or ROLLBACK
+    /// TO SAVEPOINT; the ident is unknown in that session after. Skipped
+    /// (passes) without dblink.
+    #[pg_test]
+    fn idents_of_rollback_and_rollback_to_savepoint_leave_the_cache() {
+        setup();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run(
+            "CREATE EXTENSION IF NOT EXISTS dblink; \
+             SELECT dblink_connect('cr_c', pg_catalog.format('dbname=%s port=%s host=%s', \
+               current_database(), current_setting('port'), \
+               split_part(current_setting('unix_socket_directories'), ',', 1)))",
+        )
+        .expect("connect");
+        let on = |sql: &str| {
+            Spi::run_with_args(
+                "SELECT dblink_exec('cr_c', $1)",
+                &[pgrx::datum::DatumWithOid::from(sql)],
+            )
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        };
+        // SQLERRM of `sql` in the session, or "".
+        let error_there = |sql: &str| {
+            Spi::get_one_with_args::<String>(
+                "SELECT r FROM dblink('cr_c', \
+                   'SELECT pg_temp.capture(' || pg_catalog.quote_literal($1) || ')') AS t(r text)",
+                &[pgrx::datum::DatumWithOid::from(sql)],
+            )
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+            .unwrap_or_default()
+        };
+        on("SET search_path TO mentat, public");
+        on("CREATE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+            LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+            EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$");
+        let define_there = |attr: &str| {
+            on(&format!(
+                "DO $d$ BEGIN PERFORM t('default', '[{{:db/ident {attr} \
+                 :db/valueType :db.type/string \
+                 :db/cardinality :db.cardinality/one}}]'); END $d$"
+            ))
+        };
+        let read = |attr: &str| error_there(&unknown_sql("default", attr));
+        // ROLLBACK.
+        on("BEGIN");
+        define_there(":cr/top");
+        let in_tx = read(":cr/top");
+        on("ROLLBACK");
+        let after_rollback = read(":cr/top");
+        // ROLLBACK TO SAVEPOINT; the transaction goes on and commits.
+        on("BEGIN");
+        on("SAVEPOINT sp");
+        define_there(":cr/sp");
+        let in_sp = read(":cr/sp");
+        on("ROLLBACK TO SAVEPOINT sp");
+        let after_sp = read(":cr/sp");
+        on("COMMIT");
+        Spi::run("SELECT dblink_disconnect('cr_c')").expect("disconnect");
+        assert_eq!(
+            (in_tx.as_str(), in_sp.as_str()),
+            ("", ""),
+            "defined, then read"
+        );
+        for err in [&after_rollback, &after_sp] {
+            assert!(err.contains(":db.error/unknown-attribute"), "got: {err:?}");
+        }
+    }
+
+    /// #404: an error inside t() after its schema part (here a trigger on
+    /// the narrow table raises) rolls the idents back; the cache drops them.
+    #[pg_test]
+    fn error_after_the_schema_part_leaves_the_cache_clean() {
+        setup();
+        Spi::run(
+            "CREATE FUNCTION pg_temp.cr_boom() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN IF NEW.v = 'boom' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW; END $$; \
+             CREATE TRIGGER cr_boom BEFORE INSERT ON mentat.datoms_text_new \
+             FOR EACH ROW EXECUTE FUNCTION pg_temp.cr_boom()",
+        )
+        .expect("trigger");
+        let err = error_of(
+            "SELECT edn_t('[{:db/ident :cr/boom :db/valueType :db.type/string \
+             :db/cardinality :db.cardinality/one} {:cr/boom \"boom\"}]')",
+        );
+        assert!(err.contains("boom"), "got: {err:?}");
+        let err = unknown("default", ":cr/boom");
+        assert!(err.contains(":db.error/unknown-attribute"), "got: {err:?}");
+        Spi::run("DROP TRIGGER cr_boom ON mentat.datoms_text_new").expect("drop trigger");
     }
 }
