@@ -501,7 +501,8 @@ mod tests {
     /// datom_ref_values, current(e, a), attribute_health's live_datoms and the
     /// store_overview view) read the projection (#395): the log keeps a
     /// replaced or retracted value's added = true row. After a card-one
-    /// replace and a retraction each returns only the live value.
+    /// replace and a retraction each returns only the live value, on the
+    /// install source and on the 1.18.0 -> 1.19.0 upgrade's definitions.
     #[pg_test]
     fn pg_test_proj_datom_helpers_and_current_read_live_values() {
         setup();
@@ -534,8 +535,15 @@ mod tests {
             out.sort();
             out
         };
-        {
-            let round = "install";
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = &upgrade[upgrade.find("-- === pg-views ===").expect("section")..];
+        let upgrade = &upgrade[..upgrade.find("CREATE FUNCTION mentat.\"_store_virtual_tables\"").unwrap()];
+        for round in ["install", "upgrade"] {
+            if round == "upgrade" {
+                // Outside an extension script, CREATE OR REPLACE of a member
+                // is allowed.
+                Spi::run(upgrade).expect("the upgrade's definitions");
+            }
             let n = |sql: &str| -> Vec<String> { col(&format!("SELECT x::TEXT FROM {sql}")) };
             assert_eq!(
                 n("mentat.datom_text_like(':p/name', '%') AS t(e, x, tx)"),

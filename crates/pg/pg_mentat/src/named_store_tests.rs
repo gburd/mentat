@@ -3178,4 +3178,233 @@ mod tests {
         Spi::run("SELECT create_store('Cur_Mixed')").expect("create_store");
         store_objects_read_live_values("Cur_Mixed");
     }
+
+    /// A store's views and functions, but for the layout's datoms /
+    /// current_datoms: (kind, name, definition with the schema and store
+    /// name written as STORE, owner, member of an extension, grants).
+    fn store_object_defs(store: &str) -> Vec<(String, String, String, String, bool, String)> {
+        let schema = format!("mentat_{store}");
+        let sql = format!(
+            "SELECT 'view', c.relname::TEXT, pg_get_viewdef(c.oid), c.relowner::regrole::TEXT, \
+                    EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass \
+                              AND d.objid = c.oid AND d.deptype = 'e'), \
+                    coalesce(c.relacl::TEXT, '') \
+               FROM pg_class c \
+              WHERE c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}') \
+                AND c.relkind = 'v' AND c.relname NOT IN ('datoms', 'current_datoms') \
+             UNION ALL \
+             SELECT 'function', p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', \
+                    p.prosrc, p.proowner::regrole::TEXT, \
+                    EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass \
+                              AND d.objid = p.oid AND d.deptype = 'e'), \
+                    coalesce(p.proacl::TEXT, '') \
+               FROM pg_proc p \
+              WHERE p.pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}') \
+              ORDER BY 1, 2"
+        );
+        Spi::connect(|client| {
+            client
+                .select(&sql, None, &[])
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .map(|row| {
+                    let t = |i| row.get::<String>(i).unwrap().unwrap_or_default();
+                    (
+                        t(1),
+                        t(2),
+                        t(3).replace(&schema, "STORE")
+                            .replace(&format!("'{store}'"), "'STORE'"),
+                        t(4),
+                        row.get::<bool>(5).unwrap().unwrap(),
+                        t(6),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Give store `store` the views and functions 1.18.0's create_store made
+    /// (src/tests/store_views_1_18_0.sql, taken from the released build) and,
+    /// with pg_trgm (in schema ns_vt), its trigram indexes on the log.
+    fn make_1_18_store(store: &str, trgm: bool) {
+        Spi::run(&format!("SELECT create_store('{store}')")).expect("create_store");
+        let old = include_str!("tests/store_views_1_18_0.sql")
+            .replace("mentat_v118", &format!("mentat_{store}"))
+            .replace("'v118'", &format!("'{store}'"));
+        Spi::run(&old).expect("1.18.0 definitions");
+        Spi::run(&format!(
+            "DROP INDEX IF EXISTS mentat_{store}.idx_current_text_trgm; \
+             DROP INDEX IF EXISTS mentat_{store}.idx_current_keyword_trgm"
+        ))
+        .expect("drop 1.19 trigram indexes");
+        if trgm {
+            Spi::run(&format!(
+                "CREATE INDEX idx_datoms_text_new_trgm ON mentat_{store}.datoms_text_new \
+                   USING GIN (v ns_vt.gin_trgm_ops) WHERE added = true; \
+                 CREATE INDEX idx_datoms_keyword_new_trgm ON mentat_{store}.datoms_keyword_new \
+                   USING GIN (v ns_vt.gin_trgm_ops) WHERE added = true"
+            ))
+            .expect("1.18.0 trigram indexes");
+        }
+    }
+
+    /// The trigram indexes in a store's schema, as table.index.
+    fn trgm_indexes(store: &str) -> Vec<String> {
+        let sql = format!(
+            "SELECT t.relname || '.' || c.relname FROM pg_index i \
+               JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid \
+               JOIN pg_opclass o ON o.oid = i.indclass[0] \
+              WHERE o.opcname = 'gin_trgm_ops' AND c.relnamespace = \
+                    (SELECT oid FROM pg_namespace WHERE nspname = 'mentat_{store}') \
+              ORDER BY 1"
+        );
+        Spi::connect(|client| {
+            client
+                .select(&sql, None, &[])
+                .unwrap()
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        })
+    }
+
+    // The 1.18.0 -> 1.19.0 upgrade replaces a 1.18 store's views and helper
+    // functions with ones that read the projections (#395), and only the
+    // ones the store has. Each keeps its owner, grants, extension membership
+    // and the user views built on it; one whose columns its owner changed is
+    // left alone; the trigram indexes move to the projections. The result is
+    // what a fresh store has, and a second run changes nothing.
+    #[pg_test]
+    fn upgrade_replaces_a_1_18_stores_views() {
+        setup();
+        let trgm = pg_trgm_in_schema("ns_vt");
+        make_1_18_store("vt_old", trgm);
+        make_1_18_store("vt_part", false);
+        make_1_18_store("vt_live", false);
+        // vt_part: two objects its owner dropped, one it changed.
+        Spi::run(
+            "DROP VIEW mentat_vt_part.searchable_text; \
+             DROP FUNCTION mentat_vt_part.find_text(TEXT); \
+             DROP VIEW mentat_vt_part.graph_edges; \
+             CREATE VIEW mentat_vt_part.graph_edges AS SELECT 1 AS mine",
+        )
+        .expect("vt_part");
+        // vt_old: another owner, a grant to a reader, a user view on facts,
+        // and one object that is a member of pg_mentat.
+        Spi::run(
+            "CREATE ROLE ns_vt_owner NOLOGIN; CREATE ROLE ns_vt_reader NOLOGIN; \
+             GRANT USAGE ON SCHEMA mentat TO ns_vt_owner; GRANT SELECT ON mentat.stores TO ns_vt_owner; \
+             ALTER SCHEMA mentat_vt_old OWNER TO ns_vt_owner; \
+             SELECT mentat._store_grants('mentat_vt_old'); \
+             GRANT USAGE ON SCHEMA mentat_vt_old TO ns_vt_reader; \
+             GRANT SELECT ON mentat_vt_old.text_values TO ns_vt_reader; \
+             ALTER EXTENSION pg_mentat ADD VIEW mentat_vt_old.attributes",
+        )
+        .expect("owners and grants");
+        tx("vt_old", SCHEMA_TX);
+        let a = tx("vt_old", "[{:db/id \"a\" :p/name \"ann\" :p/age 1}]")["tempids"]["a"]
+            .as_i64()
+            .unwrap();
+        tx(
+            "vt_old",
+            &format!("[[:db/add {a} :p/name \"anna\"] [:db/retract {a} :p/age 1]]"),
+        );
+        Spi::run(
+            "CREATE VIEW public.vt_user_facts AS \
+               SELECT entity_id, value FROM mentat_vt_old.facts WHERE attribute = ':p/name'",
+        )
+        .expect("user view");
+        let user_view =
+            || sorted(json("SELECT coalesce(jsonb_agg(value), '[]') FROM public.vt_user_facts"));
+        let granted = || {
+            sorted(json(
+                "SELECT coalesce(jsonb_agg(value), '[]') FROM mentat_vt_old.text_values \
+                  WHERE attribute = ':p/name'",
+            ))
+        };
+        assert_eq!(user_view(), vec!["ann", "anna"], "1.18.0 reads the log");
+        let before = store_object_defs("vt_old");
+        let part_before = store_object_defs("vt_part");
+
+        let block = upgrade_119_block("views");
+        Spi::run(&block).expect("upgrade");
+
+        assert_eq!(user_view(), vec!["anna"], "the user view on facts");
+        Spi::run("SET LOCAL ROLE ns_vt_reader").expect("set role");
+        assert_eq!(granted(), vec!["anna"], "text_values, as the role granted it");
+        Spi::run("RESET ROLE").expect("reset role");
+        assert_eq!(
+            text(&format!(
+                "SELECT coalesce(mentat_vt_old.entity_value({a}, ':p/age'), 'none')"
+            )),
+            "none"
+        );
+        // The same objects, owners, grants and memberships.
+        type Defs = Vec<(String, String, String, String, bool, String)>;
+        let meta = |v: &Defs| -> Vec<(String, String, String, bool, String)> {
+            v.iter()
+                .map(|(k, n, _, o, m, acl)| (k.clone(), n.clone(), o.clone(), *m, acl.clone()))
+                .collect()
+        };
+        let after = store_object_defs("vt_old");
+        assert_eq!(meta(&after), meta(&before));
+        assert!(
+            after.iter().all(|(_, _, _, o, _, _)| o == "ns_vt_owner"),
+            "{after:?}"
+        );
+        let members: Vec<&str> = after
+            .iter()
+            .filter(|(.., m, _)| *m)
+            .map(|(_, n, ..)| n.as_str())
+            .collect();
+        assert_eq!(members, vec!["attributes"]);
+
+        // vt_part: nothing made; the view its owner changed is left alone.
+        let part_after = store_object_defs("vt_part");
+        assert_eq!(meta(&part_after), meta(&part_before));
+        let def = |v: &Defs, name: &str| {
+            v.iter()
+                .find(|(_, n, ..)| n == name)
+                .map(|x| x.2.clone())
+                .unwrap()
+        };
+        assert_eq!(def(&part_after, "graph_edges"), def(&part_before, "graph_edges"));
+
+        // What a fresh store has.
+        Spi::run("SELECT create_store('vt_new')").expect("fresh store");
+        let defs = |v: &Defs| -> Vec<(String, String, String)> {
+            v.iter()
+                .map(|(k, n, d, ..)| (k.clone(), n.clone(), d.clone()))
+                .collect()
+        };
+        let fresh = store_object_defs("vt_new");
+        assert_eq!(
+            defs(&after).iter().map(|d| d.1.clone()).collect::<Vec<_>>(),
+            defs(&fresh).iter().map(|d| d.1.clone()).collect::<Vec<_>>()
+        );
+        for (old, new) in defs(&after).iter().zip(defs(&fresh).iter()) {
+            assert_eq!(old, new);
+        }
+        for name in ["facts", "references", "entity_value(eid bigint, attr_ident text)"] {
+            assert_eq!(def(&part_after, name), def(&fresh, name));
+        }
+        if trgm {
+            assert_eq!(trgm_indexes("vt_old"), trgm_indexes("vt_new"));
+            assert_eq!(
+                trgm_indexes("vt_old"),
+                vec![
+                    "current_keyword.idx_current_keyword_trgm",
+                    "current_text.idx_current_text_trgm"
+                ]
+            );
+        }
+        assert!(trgm_indexes("vt_part").is_empty());
+
+        // Twice changes nothing.
+        Spi::run(&block).expect("upgrade again");
+        assert_eq!(store_object_defs("vt_old"), after);
+        assert_eq!(store_object_defs("vt_part"), part_after);
+        assert_eq!(trgm_indexes("vt_old"), trgm_indexes("vt_new"));
+
+        // An upgraded store's objects return only live values.
+        store_objects_read_live_values("vt_live");
+    }
 }

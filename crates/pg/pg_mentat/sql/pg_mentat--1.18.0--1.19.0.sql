@@ -778,3 +778,399 @@ BEGIN
     PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
 $movedidents$;
+
+-- === pg-views ===
+-- ---------------------------------------------------------------------------
+-- SQL objects that answer for the current state read the current_<type>
+-- projections (#395). Since 1.5.0 the datoms_<type>_new log is append-only:
+-- a replacement or retraction appends a retraction row and leaves the old
+-- row's added = true, so a read of the log with only `added = true` returned
+-- values an entity no longer has. Same bodies as the install source:
+-- src/lib.rs (datom_helpers), sql/23_operational_accessors.sql and
+-- sql/monitoring_views.sql. Signatures and view columns are unchanged.
+-- ---------------------------------------------------------------------------
+    -- datom_text_like: Find entities whose text attribute matches a LIKE pattern.
+    CREATE OR REPLACE FUNCTION mentat.datom_text_like(
+        attr_ident TEXT,
+        pattern TEXT
+    )
+    RETURNS TABLE(entity_id BIGINT, value TEXT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_text d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v LIKE pattern;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_long_between: Find entities whose long attribute falls within a range.
+    CREATE OR REPLACE FUNCTION mentat.datom_long_between(
+        attr_ident TEXT,
+        low_val BIGINT,
+        high_val BIGINT
+    )
+    RETURNS TABLE(entity_id BIGINT, value BIGINT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_long d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v BETWEEN low_val AND high_val;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_ref_in: Find entities whose ref attribute points to one of a set of targets.
+    CREATE OR REPLACE FUNCTION mentat.datom_ref_in(
+        attr_ident TEXT,
+        ref_ids BIGINT[]
+    )
+    RETURNS TABLE(entity_id BIGINT, ref_value BIGINT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_ref d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v = ANY(ref_ids);
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_text_values: Get all current text values for a cardinality-many attribute on an entity.
+    CREATE OR REPLACE FUNCTION mentat.datom_text_values(
+        eid BIGINT,
+        attr_ident TEXT
+    )
+    RETURNS TABLE(value TEXT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.v, d.tx
+        FROM mentat.current_text d
+        WHERE d.store_id = 0
+          AND d.e = eid
+          AND d.a = attr_entid
+        ORDER BY d.tx;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_ref_values: Get all current ref values for a cardinality-many attribute on an entity.
+    CREATE OR REPLACE FUNCTION mentat.datom_ref_values(
+        eid BIGINT,
+        attr_ident TEXT
+    )
+    RETURNS TABLE(ref_value BIGINT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.v, d.tx
+        FROM mentat.current_ref d
+        WHERE d.store_id = 0
+          AND d.e = eid
+          AND d.a = attr_entid
+        ORDER BY d.tx;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION mentat.current(p_e BIGINT, p_a BIGINT, p_store BIGINT DEFAULT 0)
+RETURNS TEXT
+LANGUAGE plpgsql STABLE
+AS $$
+DECLARE
+    v_type TEXT;
+    v_out  TEXT;
+BEGIN
+    SELECT value_type::text INTO v_type FROM mentat.schema WHERE entid = p_a;
+
+    -- Dispatch on the declared type: a single indexed lookup.
+    IF v_type = 'string' THEN
+        SELECT v INTO v_out FROM mentat.current_text
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'keyword' THEN
+        SELECT v INTO v_out FROM mentat.current_keyword
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'long' THEN
+        SELECT v::text INTO v_out FROM mentat.current_long
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'ref' THEN
+        SELECT v::text INTO v_out FROM mentat.current_ref
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'double' THEN
+        SELECT v::text INTO v_out FROM mentat.current_double
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'boolean' THEN
+        SELECT v::text INTO v_out FROM mentat.current_boolean
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'instant' THEN
+        SELECT to_char(v, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') INTO v_out
+            FROM mentat.current_instant
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'uuid' THEN
+        SELECT v::text INTO v_out FROM mentat.current_uuid
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'bytes' THEN
+        SELECT encode(v, 'hex') INTO v_out FROM mentat.current_bytes
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSE
+        -- Type unknown: probe all tables, newest tx wins.
+        SELECT value INTO v_out FROM (
+            SELECT v AS value, tx FROM mentat.current_text    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v, tx FROM mentat.current_keyword WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_long    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_ref     WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_double  WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_boolean WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT to_char(v,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), tx FROM mentat.current_instant WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_uuid    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT encode(v,'hex'), tx FROM mentat.current_bytes WHERE store_id=p_store AND e=p_e AND a=p_a
+            ORDER BY tx DESC LIMIT 1
+        ) probe;
+    END IF;
+
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mentat.attribute_health()
+RETURNS TABLE (
+    attr_ident   TEXT,
+    value_type   TEXT,
+    backing_table TEXT,
+    live_datoms  BIGINT,
+    dead_pct     NUMERIC
+)
+LANGUAGE sql STABLE
+AS $$
+    WITH tbl AS (
+        SELECT
+            s.ident                                   AS attr_ident,
+            s.value_type::text                        AS value_type,
+            'mentat.datoms_' || CASE s.value_type::text
+                WHEN 'string'  THEN 'text'
+                WHEN 'boolean' THEN 'boolean'
+                ELSE s.value_type::text
+            END || '_new'                             AS backing_table,
+            s.entid                                   AS a
+        FROM mentat.schema s
+    ),
+    deadstats AS (
+        SELECT
+            ('mentat.' || c.relname)                  AS backing_table,
+            n_live_tup, n_dead_tup,
+            CASE WHEN (n_live_tup + n_dead_tup) > 0
+                 THEN round(100.0 * n_dead_tup / (n_live_tup + n_dead_tup), 1)
+                 ELSE 0 END                           AS dead_pct
+        FROM pg_stat_user_tables c
+        WHERE c.schemaname = 'mentat' AND c.relname LIKE 'datoms_%_new'
+    )
+    SELECT
+        t.attr_ident,
+        t.value_type,
+        t.backing_table,
+        (SELECT count(*) FROM mentat.current_datoms WHERE a = t.a)::BIGINT AS live_datoms,
+        COALESCE(d.dead_pct, 0) AS dead_pct
+    FROM tbl t
+    LEFT JOIN deadstats d ON d.backing_table = t.backing_table
+    ORDER BY live_datoms DESC;
+$$;
+
+CREATE OR REPLACE VIEW mentat.store_overview AS
+WITH counts AS (
+    SELECT value_type_tag, count(*) AS cnt
+    FROM mentat.current_datoms
+    GROUP BY value_type_tag
+)
+SELECT
+    s.store_name,
+    s.store_id,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 0), 0)::BIGINT  AS ref_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 1), 0)::BIGINT  AS boolean_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 2), 0)::BIGINT  AS long_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 3), 0)::BIGINT  AS double_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 4), 0)::BIGINT  AS instant_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 7), 0)::BIGINT  AS text_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 8), 0)::BIGINT  AS keyword_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 10), 0)::BIGINT AS uuid_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 11), 0)::BIGINT AS bytes_datoms,
+    COALESCE((SELECT SUM(cnt) FROM counts), 0)::BIGINT                      AS total_datoms
+FROM mentat.stores s
+ORDER BY s.store_name;
+
+-- ---------------------------------------------------------------------------
+-- A named store's views and helper functions (facts, text_values, ...,
+-- lookup_entity, entity_value, find_text) read the store's current_<type>
+-- projections too; tx_log, entity_history and recent_changes are history
+-- and still read the log. mentat._store_virtual_tables(store) returns the
+-- CREATE OR REPLACE statements create_store uses now. Same shape as the
+-- pgrx-generated install SQL.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION mentat."_store_virtual_tables"("store_name" TEXT)
+RETURNS TABLE ("kind" TEXT, "name" TEXT, "args" TEXT, "sql" TEXT)
+STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', 'store_virtual_tables_wrapper';
+
+-- Replace each of these objects a named store has, and only those: a store
+-- may lack one (dropped by its owner), and nothing is created here. CREATE
+-- OR REPLACE keeps the object's owner, grants and the user views built on
+-- it (a view is never dropped). An object that can't be replaced (its
+-- owner changed a view's columns or a function's return type, or another
+-- extension owns it) keeps its old definition, with a WARNING; any other
+-- error aborts the upgrade.
+--
+-- In an extension script CREATE OR REPLACE refuses an object the extension
+-- doesn't own (CVE-2022-2625), and a store's objects are not members (the
+-- 1.18.0 upgrade and create_store leave them out). So each is added to the
+-- extension, replaced and dropped from it again, inside a subtransaction:
+-- its membership ends as it began.
+--
+-- The trigram indexes create_store made with pg_trgm,
+-- idx_datoms_{text,keyword}_new_trgm on the log, move to the projections
+-- the views read (idx_current_{text,keyword}_trgm), unless a trigram index
+-- is already there. This builds the index: on a big store it takes a while.
+--
+-- Stores are the ones the 1.18.0 upgrade would rebuild: mentat.stores is
+-- writable by the installing role, so a row that create_store() would not
+-- have made is skipped. Nothing here reads a store's tables or calls a
+-- function in a store's schema.
+-- ---------------------------------------------------------------------------
+DO $views$
+DECLARE
+    st RECORD;
+    obj RECORD;
+    idx RECORD;
+    oid_ OID;
+    ident TEXT;
+    member BOOLEAN;
+    ext OID;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    ext := (SELECT e.oid FROM pg_extension e WHERE e.extname = 'pg_mentat');
+    FOR st IN
+        SELECT s.store_name, n.oid AS ns, n.nspname
+          FROM mentat.stores s
+          JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE s.schema_name = 'mentat_' || s.store_name
+           AND s.store_name ~ '^[A-Za-z_][A-Za-z0-9_]*$'
+           AND pg_catalog.length(s.store_name) <= 56
+           AND pg_catalog.lower(s.store_name) NOT IN ('default', 'information_schema')
+           AND pg_catalog.lower(s.store_name) NOT LIKE 'pg\_%'
+         ORDER BY s.store_id
+    LOOP
+        FOR obj IN SELECT * FROM mentat._store_virtual_tables(st.store_name) LOOP
+            IF obj.kind = 'VIEW' THEN
+                oid_ := (SELECT c.oid FROM pg_class c
+                          WHERE c.relnamespace = st.ns AND c.relname = obj.name AND c.relkind = 'v');
+                ident := pg_catalog.format('%I.%I', st.nspname, obj.name);
+                member := EXISTS (SELECT 1 FROM pg_depend d
+                                   WHERE d.classid = 'pg_class'::regclass AND d.objid = oid_
+                                     AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext
+                                     AND d.deptype = 'e');
+            ELSE
+                oid_ := pg_catalog.to_regprocedure(pg_catalog.format('%I.%I(%s)', st.nspname, obj.name, obj.args));
+                ident := oid_::regprocedure::TEXT;
+                member := EXISTS (SELECT 1 FROM pg_depend d
+                                   WHERE d.classid = 'pg_proc'::regclass AND d.objid = oid_
+                                     AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext
+                                     AND d.deptype = 'e');
+            END IF;
+            CONTINUE WHEN oid_ IS NULL;
+            BEGIN
+                IF NOT member THEN
+                    EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat ADD %s %s', obj.kind, ident);
+                END IF;
+                EXECUTE obj.sql;
+                IF NOT member THEN
+                    EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat DROP %s %s', obj.kind, ident);
+                END IF;
+            EXCEPTION WHEN invalid_table_definition OR invalid_function_definition
+                           OR object_not_in_prerequisite_state THEN
+                RAISE WARNING 'pg_mentat upgrade: % % of store "%" not replaced (%: %). It still reads the '
+                              'log and returns replaced and retracted values.',
+                              pg_catalog.lower(obj.kind), ident, st.store_name, SQLSTATE, SQLERRM;
+            END;
+        END LOOP;
+
+        FOR idx IN
+            SELECT c.relname AS old_name,
+                   pg_catalog.regexp_replace(t.relname, '^datoms_(.*)_new$', 'current_\1') AS cur_table,
+                   n.nspname AS trgm_schema
+              FROM pg_class c
+              JOIN pg_index i ON i.indexrelid = c.oid
+              JOIN pg_class t ON t.oid = i.indrelid
+              JOIN pg_opclass o ON o.oid = i.indclass[0]
+              JOIN pg_namespace n ON n.oid = o.opcnamespace
+             WHERE c.relnamespace = st.ns
+               AND t.relname IN ('datoms_text_new', 'datoms_keyword_new')
+               AND c.relname = 'idx_' || t.relname || '_trgm'
+               AND o.opcname = 'gin_trgm_ops'
+        LOOP
+            -- A plain table with a text column v (its owner could have
+            -- altered it), with no trigram index yet.
+            IF EXISTS (SELECT 1 FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
+                        WHERE t.relnamespace = st.ns AND t.relname = idx.cur_table AND t.relkind = 'r'
+                          AND a.attname = 'v' AND a.atttypid = 'pg_catalog.text'::regtype
+                          AND NOT a.attisdropped)
+               AND NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_opclass o ON o.oid = i.indclass[0]
+                                JOIN pg_class t ON t.oid = i.indrelid
+                               WHERE t.relnamespace = st.ns AND t.relname = idx.cur_table
+                                 AND o.opcname = 'gin_trgm_ops') THEN
+                EXECUTE pg_catalog.format('CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIN (v %I.gin_trgm_ops)',
+                                          'idx_' || idx.cur_table || '_trgm', st.nspname, idx.cur_table,
+                                          idx.trgm_schema);
+            END IF;
+            EXECUTE pg_catalog.format('DROP INDEX %I.%I', st.nspname, idx.old_name);
+        END LOOP;
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$views$;
