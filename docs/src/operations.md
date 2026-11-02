@@ -650,3 +650,28 @@ Measured on a 32-vCPU box, PostgreSQL 16.15, current-time queries
   per attribute; the automatic index manager (section 7) adds those
   indexes from observed use.
 
+
+## 9. Upgrading to 1.19.0
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.19.0'` builds indexes, and it holds
+the locks they take until it commits:
+
+- Each pg_fts index `mentat.create_fts_index` made (`mentat_fts_<entid>`)
+  is dropped from `mentat.datoms_text_new` and built again on
+  `mentat.current_text`. That is an ACCESS EXCLUSIVE lock on
+  `mentat.datoms_text_new` and a SHARE lock on `mentat.current_text`.
+- The full-text GIN index `idx_current_text_fts` is built on
+  `mentat.current_text` and on each named store's `current_text`: a SHARE
+  lock on each.
+- In each named store, the trigram indexes `create_store` made with
+  pg_trgm move from `datoms_text_new` / `datoms_keyword_new` to
+  `current_text` / `current_keyword`: an ACCESS EXCLUSIVE lock on the log
+  table and a SHARE lock on the projection.
+
+While it runs, every write of a string or keyword value to an affected
+store waits (on the default store, so does every read of
+`mentat.datoms_text_new`); other writes and reads go on. Measured on an
+assert-enabled build: a pg_fts index over 100,000 values took 26 s to
+rebuild, the trigram move on 383,000 values 0.9 s. On a big store, plan a
+maintenance window, or set `lock_timeout` in the session: the upgrade then
+fails and changes nothing instead of waiting.
