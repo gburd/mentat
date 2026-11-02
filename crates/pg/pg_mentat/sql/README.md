@@ -223,6 +223,18 @@ two first assertions of one attribute on one entity, two new entities
 claiming one unique value, or a write racing a many-to-one alteration can
 both commit, and leave two live values.
 
+The locks are taken after three reads, so they don't cover them: a
+transaction function (`:db/fn`) reads the database while it builds its
+tx-data, `:db/retractEntity` reads the entity's datoms to retract them, and
+a lookup ref (`[:attr value]`) resolves to an entity. Under READ COMMITTED
+each can act on a value another transaction is changing. A tx-function that
+reads a counter and returns a plain assertion of the incremented value
+loses updates when two run at once, and a write committed while a
+`retractEntity` waits can survive it. Run read-modify-write through these
+at SERIALIZABLE and retry serialization failures, or have the tx-function
+return a `:db/cas`: the cas is compared after the locks, so the second of
+two racing increments fails instead of overwriting the first.
+
 Each locked value takes a slot in PostgreSQL's shared lock table. Past
 `max_locks_per_transaction` values in one transaction (64 by default), the
 transactor locks the whole attribute instead: other writers of that

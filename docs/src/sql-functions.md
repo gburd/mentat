@@ -78,6 +78,15 @@ two new entities claiming one unique value, or a write racing a many-to-one
 alteration can both commit and leave two live values. See "Transaction
 isolation" in `crates/pg/pg_mentat/sql/README.md`.
 
+Three things read the database before those locks are taken: a transaction
+function (`:db/fn`) while it builds its tx-data, `:db/retractEntity` when it
+lists the entity's datoms, and a lookup ref (`[:attr value]`) when it
+resolves. Under READ COMMITTED they can act on a value another transaction
+is changing: a tx-function increment that returns a plain assertion loses
+updates, and a write that races a `retractEntity` can survive it. Run
+read-modify-write through them at SERIALIZABLE (and retry on 40001), or
+have the tx-function return a `:db/cas`, which is compared after the locks.
+
 ```sql
 SELECT mentat.t('[
   {:db/id "tempid-1"
