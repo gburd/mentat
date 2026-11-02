@@ -3727,9 +3727,20 @@ mod tests {
     fn upgrade_keeps_the_owners_settings() {
         setup();
         make_1_18_store("own_s", false);
+        // security_invoker is PostgreSQL 15+.
+        let invoker =
+            Spi::get_one::<bool>("SELECT current_setting('server_version_num')::INT >= 150000")
+                .unwrap()
+                .unwrap();
+        let facts_opt = if invoker {
+            "security_invoker=true"
+        } else {
+            "security_barrier=false"
+        };
+        Spi::run(&format!("ALTER VIEW mentat_own_s.facts SET ({facts_opt})"))
+            .expect("facts option");
         Spi::run(
             "CREATE SCHEMA \"Own Path\"; \
-             ALTER VIEW mentat_own_s.facts SET (security_invoker = true); \
              ALTER VIEW mentat_own_s.text_values SET (security_barrier = true); \
              ALTER FUNCTION mentat_own_s.entity_value(BIGINT, TEXT) SECURITY DEFINER \
                SET search_path = pg_catalog, \"Own Path\", pg_temp; \
@@ -3762,15 +3773,17 @@ mod tests {
         let before = settings();
         assert_eq!(
             before,
-            vec![
+            [
                 "count_by_attribute f t f s u 100 1000",
                 "entities_with_attribute f f f s u 100 1000",
                 "entity_value t f f s u 100 0 {\"search_path=pg_catalog, \\\"Own Path\\\", pg_temp\"}",
-                "facts {security_invoker=true}",
+                &format!("facts {{{facts_opt}}}"),
                 "find_text f f t s r 5000 7",
                 "lookup_entity f f f v u 100 1000 {work_mem=7MB}",
                 "text_values {security_barrier=true}",
             ]
+            .map(String::from)
+            .to_vec()
         );
         let block = upgrade_119_block("views");
         Spi::run(&block).expect("upgrade");

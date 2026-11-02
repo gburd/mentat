@@ -183,7 +183,7 @@ mod tests {
              CREATE VIEW mentat.v__company_name AS SELECT 1::BIGINT AS e, 'mine'::TEXT AS label; \
              CREATE ROLE inf_gv_reader NOLOGIN; \
              GRANT SELECT ON mentat.v__person_name TO inf_gv_reader; \
-             ALTER VIEW mentat.e__person_employer SET (security_invoker = true)",
+             ALTER VIEW mentat.e__person_employer SET (security_barrier = true)",
             attr(":person/name"),
             attr(":person/employer")
         ))
@@ -209,7 +209,7 @@ mod tests {
                    FROM pg_class WHERE relname IN ('v__person_name', 'e__person_employer')"
             )
             .iter()
-            .map(|r| r.contains("inf_gv_reader=r") || r.contains("security_invoker=true"))
+            .map(|r| r.contains("inf_gv_reader=r") || r.contains("security_barrier=true"))
             .collect::<Vec<_>>(),
             vec![true, true]
         );

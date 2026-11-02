@@ -654,86 +654,120 @@ mod tests {
     // tenant saw another store's current values. Each read now shows a
     // tenant what the log shows it. Also the 1.19.0 upgrade's block, which
     // arms the projections where the log is armed.
+    //
+    // In a database of its own (dblink): enabling RLS takes ACCESS EXCLUSIVE
+    // on the shared tables, which deadlocks the tests running beside it.
     #[pg_test]
     fn pg_test_proj_rls_covers_the_projection() {
         setup();
-        schema();
-        Spi::run("SELECT edn_t('[{:p/email \"zed@x.io\" :p/name \"Zed\"}]'::TEXT)").expect("tx");
-        let z = email_eid("zed@x.io");
-        let name = Spi::get_one::<i64>("SELECT mentat.attr_id(':p/name')")
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run("CREATE EXTENSION IF NOT EXISTS dblink").expect("dblink");
+        let conn = |db: &str| -> String {
+            Spi::get_one::<String>(&format!(
+                "SELECT pg_catalog.format('dbname=%s port=%s host=%s', '{db}', current_setting('port'), \
+                   split_part(current_setting('unix_socket_directories'), ',', 1))"
+            ))
             .unwrap()
-            .unwrap();
-        Spi::run(
-            "CREATE ROLE proj_tenant NOSUPERUSER NOBYPASSRLS; \
-             GRANT USAGE ON SCHEMA mentat TO proj_tenant; \
+            .unwrap()
+        };
+        let on = |c: &str, sql: &str| {
+            Spi::run_with_args("SELECT dblink_exec($1, $2)", &[c.into(), sql.into()])
+                .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        let get = |sql: &str| -> String {
+            Spi::get_one_with_args::<String>(
+                "SELECT r FROM dblink('pr_db', $1) AS t(r TEXT)",
+                &[format!("SELECT ({sql})::TEXT").into()],
+            )
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+            .unwrap_or_default()
+        };
+        Spi::run(&format!(
+            "SELECT dblink_connect('pr_admin', '{}')",
+            conn("postgres")
+        ))
+        .expect("connect");
+        on("pr_admin", "DROP DATABASE IF EXISTS mentat_rls_proj");
+        on("pr_admin", "DROP ROLE IF EXISTS proj_tenant");
+        on("pr_admin", "CREATE DATABASE mentat_rls_proj");
+        on(
+            "pr_admin",
+            "CREATE ROLE proj_tenant NOSUPERUSER NOBYPASSRLS",
+        );
+        Spi::run(&format!(
+            "SELECT dblink_connect('pr_db', '{}')",
+            conn("mentat_rls_proj")
+        ))
+        .expect("connect");
+        on("pr_db", "CREATE EXTENSION pg_mentat");
+        on("pr_db", "SET search_path TO mentat, public");
+        get("bootstrap_schema()");
+        get("edn_t('[{:db/ident :p/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]')");
+        let z = get("(edn_t('[{:db/id \"z\" :p/name \"Zed\"}]')::jsonb)->'tempids'->>'z'");
+        on(
+            "pr_db",
+            "GRANT USAGE ON SCHEMA mentat TO proj_tenant; \
              GRANT SELECT ON ALL TABLES IN SCHEMA mentat TO proj_tenant",
-        )
-        .expect("role");
+        );
         let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
         let block = &upgrade[upgrade.find("DO $rls$").unwrap()..];
         let block = &block[..block.find("$rls$;").unwrap() + "$rls$;".len()];
+        let mut seen = Vec::new();
         for round in ["install", "upgrade"] {
             if round == "upgrade" {
                 // What 1.18.0 had: the log armed, the projections without a policy.
-                Spi::run("SELECT mentat.enable_multi_tenant_rls(false)").expect("off");
-                Spi::run(
+                get("mentat.enable_multi_tenant_rls(false)");
+                on(
+                    "pr_db",
                     "DO $d$ DECLARE t TEXT; BEGIN FOREACH t IN ARRAY ARRAY['ref', 'long', 'text', 'double', \
                        'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP \
                        EXECUTE format('DROP POLICY store_isolation_current_%s ON mentat.current_%s', t, t); \
                        EXECUTE format('ALTER TABLE mentat.datoms_%s_new ENABLE ROW LEVEL SECURITY', t); \
                      END LOOP; END $d$",
-                )
-                .expect("1.18 state");
-                Spi::run(block).expect("upgrade");
-            } else {
-                assert_eq!(
-                    Spi::get_one::<i32>("SELECT mentat.enable_multi_tenant_rls(true)")
-                        .unwrap()
-                        .unwrap(),
-                    18
                 );
+                on("pr_db", block);
+            } else {
+                assert_eq!(get("mentat.enable_multi_tenant_rls(true)"), "18");
             }
-            for (tenant, sees) in [("0", true), ("1", false)] {
-                Spi::run(&format!(
-                    "SET LOCAL ROLE proj_tenant; SET LOCAL mentat.current_store_id = '{tenant}'"
-                ))
-                .expect("tenant");
-                let log = Spi::get_one::<i64>(&format!(
-                    "SELECT count(*) FROM mentat.datoms_text_new WHERE e = {z}"
-                ))
-                .unwrap()
-                .unwrap();
-                let current =
-                    Spi::get_one::<String>(&format!("SELECT mentat.current({z}, {name})")).unwrap();
-                let proj = Spi::get_one::<i64>(&format!(
-                    "SELECT count(*) FROM mentat.current_text WHERE e = {z}"
-                ))
-                .unwrap()
-                .unwrap();
-                let like = Spi::get_one::<i64>(
-                    "SELECT count(*) FROM mentat.datom_text_like(':p/name', 'Zed')",
-                )
-                .unwrap()
-                .unwrap();
-                let q = Spi::get_one::<pgrx::JsonB>(
-                    "SELECT edn_q('[:find ?n :where [?e :p/name ?n]]', '{}'::jsonb)",
-                )
-                .unwrap()
-                .map(|j| j.0.to_string())
-                .unwrap_or_default();
-                Spi::run("RESET ROLE; RESET mentat.current_store_id").expect("reset");
-                assert_eq!(log > 0, sees, "{round} {tenant}: log");
-                assert_eq!(current.is_some(), sees, "{round} {tenant}: current()");
-                assert_eq!(proj > 0, sees, "{round} {tenant}: current_text");
-                assert_eq!(like > 0, sees, "{round} {tenant}: datom_text_like");
-                assert_eq!(q.contains("Zed"), sees, "{round} {tenant}: edn_q {q}");
+            for tenant in ["0", "1"] {
+                on("pr_db", "SET ROLE proj_tenant");
+                on(
+                    "pr_db",
+                    &format!("SET mentat.current_store_id = '{tenant}'"),
+                );
+                let row = [
+                    get(&format!("(SELECT count(*) FROM mentat.datoms_text_new WHERE e = {z}) > 0")),
+                    get(&format!("mentat.current({z}, ':p/name') IS NOT NULL")),
+                    get(&format!("(SELECT count(*) FROM mentat.current_text WHERE e = {z}) > 0")),
+                    get("(SELECT count(*) FROM mentat.datom_text_like(':p/name', 'Zed')) > 0"),
+                    get("edn_q('[:find ?n :where [?e :p/name ?n]]', '{}'::jsonb)::TEXT LIKE '%Zed%'"),
+                ];
+                on("pr_db", "RESET ROLE");
+                on("pr_db", "RESET mentat.current_store_id");
+                seen.push(format!("{round} {tenant}: {}", row.join(" ")));
             }
         }
+        let off = get("mentat.enable_multi_tenant_rls(false)");
+        Spi::run("SELECT dblink_disconnect('pr_db')").expect("close");
+        on("pr_admin", "DROP DATABASE mentat_rls_proj");
+        on("pr_admin", "DROP ROLE proj_tenant");
+        Spi::run("SELECT dblink_disconnect('pr_admin')").expect("close");
+        // log, current(), current_text, datom_text_like, edn_q
         assert_eq!(
-            Spi::get_one::<i32>("SELECT mentat.enable_multi_tenant_rls(false)")
-                .unwrap()
-                .unwrap(),
-            18
+            seen,
+            vec![
+                "install 0: true true true true true",
+                "install 1: false false false false false",
+                "upgrade 0: true true true true true",
+                "upgrade 1: false false false false false",
+            ]
         );
+        assert_eq!(off, "18");
     }
 }
