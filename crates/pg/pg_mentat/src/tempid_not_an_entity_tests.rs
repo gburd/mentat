@@ -74,9 +74,6 @@ mod tests {
         rejects(r#"[{:v/id "c" :v/part "p"}]"#, "p");
         // A cas whose new value is a fresh tempid.
         rejects(r#"[[:db/cas [:v/id "a"] :v/part nil "q"]]"#, "q");
-        // "datomic.tx" is an ordinary tempid; the error says so.
-        let e = err(r#"[{:v/id "x" :v/part "datomic.tx"}]"#);
-        assert!(e.contains("no reserved transaction tempid"), "{e}");
         assert_eq!(likes(), before, "nothing committed");
     }
 

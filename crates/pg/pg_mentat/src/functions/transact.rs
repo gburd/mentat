@@ -2,7 +2,7 @@ use crate::error::{self, MentatError};
 use crate::functions::store_management;
 use crate::functions::write_locks;
 use crate::types::instant::{sql_instant_from_micros, sql_micros_from_instant};
-use edn::entities::{BuiltinTxFn, OpType};
+use edn::entities::{BuiltinTxFn, OpType, TX_TEMPID};
 use edn::parse;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
@@ -941,7 +941,8 @@ fn execute_transaction_inner(
     //   Pass 2: Parse ALL assertions (idents now resolvable), insert datoms
     // ========================================================================
 
-    let mut tempid_map: BTreeMap<String, i64> = BTreeMap::new();
+    // Datomic's reserved tempid "datomic.tx" names this transaction (#414).
+    let mut tempid_map: BTreeMap<String, i64> = BTreeMap::from([(TX_TEMPID.to_string(), tx_id)]);
     let mut schema_builders: BTreeMap<i64, SchemaBuilder> = BTreeMap::new();
     // Track entity IDs allocated for map entities (by index) so Pass 2 reuses
     // the same IDs instead of calling nextval again.
@@ -1092,6 +1093,14 @@ fn execute_transaction_inner(
                             .into());
                         }
                         let e = resolve_entity_place(&entity_vec[1], &mut tempid_map, &qs)?;
+                        if e == tx_id {
+                            return Err(MentatError::InvalidTransaction {
+                                message: ":db/retractEntity cannot retract the transaction \
+                                          being committed"
+                                    .to_string(),
+                            }
+                            .into());
+                        }
                         execute_retract_entity_fn(e, &qs, &mut pending_datoms)?;
                     }
                     BuiltinTxFn::Cas => {
@@ -1227,6 +1236,15 @@ fn execute_transaction_inner(
     // can't both find a unique value free. See write_locks.rs.
     let locked_whole = lock_for_writes(&pending_datoms, &pending_cas, tx_store_id);
 
+    // "datomic.tx" is in the report only if the transaction used it.
+    let tx_tempid_used = pending_datoms
+        .iter()
+        .any(|d| d.e == tx_id || d.v == TypedValue::Ref(tx_id))
+        || pending_cas.iter().any(|c| c.e == tx_id);
+    if !tx_tempid_used {
+        tempid_map.remove(TX_TEMPID);
+    }
+
     // --- Upsert resolution for :db.unique/identity attributes ---
     // In Datomic, when a tempid-allocated entity asserts a value for a
     // :db.unique/identity attribute that already exists in the database,
@@ -1239,9 +1257,10 @@ fn execute_transaction_inner(
     //            identity-unique value (in-transaction unification).
     let mut upsert_remaps: BTreeMap<i64, i64> = BTreeMap::new(); // old_eid -> target_eid
 
-    // Phase A: DB-level upsert resolution
+    // Phase A: DB-level upsert resolution. The transaction is never remapped: it
+    // is a new entity, and a unique value it asserts that another holds is a conflict.
     for datom in &pending_datoms {
-        if !datom.added {
+        if !datom.added || datom.e == tx_id {
             continue;
         }
         if let Some(attr_info) = lookup_attribute_info(datom.a) {
@@ -1280,7 +1299,7 @@ fn execute_transaction_inner(
         let mut identity_assertions: Vec<(usize, i64, i64)> = Vec::new();
 
         for (idx, datom) in pending_datoms.iter().enumerate() {
-            if !datom.added {
+            if !datom.added || datom.e == tx_id {
                 continue;
             }
             if let Some(attr_info) = lookup_attribute_info(datom.a) {
@@ -1420,7 +1439,7 @@ fn execute_transaction_inner(
             .collect();
         if let Some((tempid, _)) = tempid_map
             .iter()
-            .find(|(_, e)| values.contains(e) && !entities.contains(e))
+            .find(|(_, &e)| e != tx_id && values.contains(&e) && !entities.contains(&e))
         {
             return Err(MentatError::TempIdNotAnEntity {
                 tempid: tempid.clone(),
@@ -1478,6 +1497,60 @@ fn execute_transaction_inner(
             i += 1;
             !dead.contains(&(i - 1))
         });
+    }
+
+    // An explicit :db/txInstant on the transaction ("datomic.tx") replaces the one
+    // allocate_tx_id wrote, in the log, the projection and mentat.transactions.
+    let mut tx_instant_micros = tx_instant_micros;
+    let explicit: std::collections::BTreeSet<i64> = pending_datoms
+        .iter()
+        .filter_map(|d| match d.v {
+            TypedValue::Instant(m)
+                if d.added && d.e == tx_id && d.a == bootstrap_entids::DB_TX_INSTANT =>
+            {
+                Some(m)
+            }
+            _ => None,
+        })
+        .collect();
+    if explicit.len() > 1 {
+        return Err(MentatError::CardinalityViolation {
+            attr: ":db/txInstant".to_string(),
+            entity: tx_id,
+            count: explicit.len(),
+        }
+        .into());
+    }
+    if let Some(&micros) = explicit.first() {
+        pending_datoms.retain(|d| {
+            !(d.added
+                && d.e == tx_id
+                && d.a == bootstrap_entids::DB_TX_INSTANT
+                && matches!(d.v, TypedValue::Instant(_)))
+        });
+        let inst = sql_instant_from_micros("$2");
+        for sql in [
+            format!("UPDATE {qs}.transactions SET tx_instant = {inst} WHERE tx = $1"),
+            format!(
+                "UPDATE {qs}.datoms_instant_new SET v = {inst} \
+                 WHERE store_id = $3 AND e = $1 AND a = $4 AND tx = $1"
+            ),
+            format!(
+                "UPDATE {qs}.current_instant SET v = {inst} \
+                 WHERE store_id = $3 AND e = $1 AND a = $4"
+            ),
+        ] {
+            Spi::run_with_args(
+                &sql,
+                &[
+                    DatumWithOid::from(tx_id),
+                    DatumWithOid::from(micros),
+                    DatumWithOid::from(tx_store_id),
+                    DatumWithOid::from(bootstrap_entids::DB_TX_INSTANT),
+                ],
+            )?;
+        }
+        tx_instant_micros = micros;
     }
 
     // Validate and insert all datoms.
@@ -2437,12 +2510,11 @@ fn validate_datom_constraints(
     // 3. Unique constraint validation
     if let Some(ref unique_type) = attr_info.unique_constraint {
         // Check within this transaction for duplicate values from different entities
-        let dups_in_tx = all_pending
+        let dup_in_tx = all_pending
             .iter()
-            .filter(|d| d.a == datom.a && d.v == datom.v && d.e != datom.e && d.added)
-            .count();
+            .find(|d| d.a == datom.a && d.v == datom.v && d.e != datom.e && d.added);
 
-        if dups_in_tx > 0 {
+        if let Some(other) = dup_in_tx {
             // For :db.unique/identity, in-transaction duplicates from different
             // entities should have been resolved by the upsert remapping pass.
             // If we still see them here, it means two different non-tempid entities
@@ -2454,7 +2526,8 @@ fn validate_datom_constraints(
             return Err(MentatError::UniqueConstraintViolation {
                 attr: ident_name,
                 unique_type: unique_type.clone(),
-                existing_eid: datom.e,
+                value: format_typed_value(&datom.v),
+                existing_eid: other.e,
                 new_eid: datom.e,
             }
             .into());
@@ -2478,6 +2551,7 @@ fn validate_datom_constraints(
                 return Err(MentatError::UniqueConstraintViolation {
                     attr: ident_name,
                     unique_type: unique_type.clone(),
+                    value: format_typed_value(&datom.v),
                     existing_eid: existing_e,
                     new_eid: datom.e,
                 }

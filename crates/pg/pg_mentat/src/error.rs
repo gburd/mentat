@@ -33,6 +33,7 @@ pub enum MentatError {
     UniqueConstraintViolation {
         attr: String,
         unique_type: String,
+        value: String,
         existing_eid: i64,
         new_eid: i64,
     },
@@ -202,16 +203,17 @@ impl fmt::Display for MentatError {
             Self::UniqueConstraintViolation {
                 attr,
                 unique_type,
+                value,
                 existing_eid,
                 new_eid,
             } => {
                 write!(
                     f,
                     ":db.error/unique-conflict Unique constraint violation for attribute '{}' \
-                     (unique type: :db.unique/{}). The asserted value already exists on entity {} \
-                     but is being asserted for entity {}. \
+                     (unique type: :db.unique/{}). The asserted value {} already exists on \
+                     entity {} but is being asserted for entity {}. \
                      To reassign the value, first retract it from entity {}.",
-                    attr, unique_type, existing_eid, new_eid, existing_eid
+                    attr, unique_type, value, existing_eid, new_eid, existing_eid
                 )
             }
 
@@ -368,11 +370,7 @@ impl fmt::Display for MentatError {
                     f,
                     ":db.error/tempid-not-an-entity tempid \"{}\" used only as value in transaction",
                     tempid
-                )?;
-                if tempid.starts_with("datomic") {
-                    write!(f, " (pg_mentat has no reserved transaction tempid)")?;
-                }
-                Ok(())
+                )
             }
 
             Self::NothingToRetract { entity } => {
@@ -754,6 +752,7 @@ mod tests {
         let e = MentatError::UniqueConstraintViolation {
             attr: ":person/email".into(),
             unique_type: "identity".into(),
+            value: "\"a@x\"".into(),
             existing_eid: 100,
             new_eid: 200,
         };
@@ -761,6 +760,7 @@ mod tests {
         assert!(msg.starts_with(":db.error/unique-conflict"));
         assert!(msg.contains("100"));
         assert!(msg.contains("200"));
+        assert!(msg.contains("value \"a@x\" already exists"), "{msg}");
     }
 
     #[test]

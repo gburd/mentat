@@ -21,9 +21,17 @@
 -- mentat.entid_collision_report(store BIGINT DEFAULT 0)
 --
 -- One row per colliding entid: an entid that is a transaction (present in
--- mentat.transactions) AND also carries at least one non-txInstant datom as an
--- entity. Reports how many non-tx datoms it carries and whether it is an
--- attribute (appears as `a`) or referenced (appears as ref `v`).
+-- mentat.transactions), that a non-tx sequence could also have issued (it is
+-- at most partition_user_seq's or partition_db_seq's last_value), AND that
+-- carries at least one non-txInstant datom as an entity. Reports how many
+-- non-tx datoms it carries and whether it is an attribute (appears as `a`) or
+-- referenced (appears as ref `v`).
+--
+-- A transaction's own annotations ("datomic.tx", 1.19.0) are datoms on its
+-- entid, so the sequence bound is what keeps them out of the report: on a
+-- store whose sequences stayed in their bands every tx entid is above both
+-- sequences. On a store whose user sequence overflowed past a tx entid, the
+-- data can't tell a collision from an annotation, and both are reported.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION mentat.entid_collision_report(store BIGINT DEFAULT 0)
 RETURNS TABLE (
@@ -36,6 +44,8 @@ LANGUAGE sql STABLE
 AS $$
     WITH tx_entids AS (
         SELECT tx AS e FROM mentat.transactions
+         WHERE tx <= GREATEST((SELECT last_value FROM mentat.partition_user_seq),
+                              (SELECT last_value FROM mentat.partition_db_seq))
     ),
     non_tx AS (
         -- entids that carry a real (non-txInstant) datom as an entity

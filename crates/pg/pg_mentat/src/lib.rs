@@ -757,6 +757,8 @@ mod data_integrity_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod datalog_feature_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod datomic_tx_tempid_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod deprecated_names_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod edge_case_query_tests;
