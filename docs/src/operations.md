@@ -130,8 +130,9 @@ SELECT mentat.cron_schedule_vacuum_datoms('0 4 * * *');
 
 ### Monitoring before it bites
 
-`mentat.attribute_health()` reports live datom counts and the
-dead-tuple % of each backing table:
+`mentat.attribute_health()` reports live datom counts (the values
+entities have now, from the current-state projection) and the
+dead-tuple % of each backing log table:
 
 ```sql
 SELECT * FROM mentat.attribute_health() ORDER BY dead_pct DESC;
@@ -221,9 +222,11 @@ materialized view that joins many attributes.
 ### `mentat.current(e, a)`
 
 `mentat.current()` returns the current value of one attribute for one
-entity as text, with a single indexed lookup on the
-`(store_id, e, a, tx DESC) WHERE added` covering index. It dispatches on
-the attribute's declared value type so only one narrow table is touched.
+entity as text, with a single primary-key lookup on the attribute's
+`mentat.current_<type>` projection table, so a replaced or retracted
+value is never returned. For a cardinality-many attribute it returns the
+value asserted last. It dispatches on the attribute's declared value type
+so only one table is touched.
 
 ```sql
 -- By attribute keyword (resolves the entid for you):
@@ -244,8 +247,8 @@ SELECT
     mentat.current(e, ':person/employer')        AS employer
 FROM (
     -- the set of person entities (one row per entity)
-    SELECT DISTINCT e FROM mentat.datoms_text_new
-    WHERE a = mentat.attr_id(':person/canonical-email') AND added
+    SELECT DISTINCT e FROM mentat.current_text
+    WHERE store_id = 0 AND a = mentat.attr_id(':person/canonical-email')
 ) p;
 ```
 

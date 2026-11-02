@@ -37,8 +37,14 @@ definitions (`mentat._create_store_layout`, sql/30_store_layout.sql), so a
 named store has every table, column, constraint and shipped index the
 default store has. The store also gets the read-only views
 (`mentat_<name>.facts`, `.entities`, `.attributes`, ...) and helper
-functions (`lookup_entity`, `entity_value`, `find_text`, ...). The default
-store (`mentat`) cannot be dropped or renamed.
+functions (`lookup_entity`, `entity_value`, `find_text`, ...). They show
+the store's current datoms, the values its entities have now; `tx_log`,
+`entity_history` and `recent_changes` show history, replaced and
+retracted values included. Before 1.19.0 the current-state ones showed
+replaced and retracted values too; `ALTER EXTENSION pg_mentat UPDATE`
+replaces them in every store (a view or function the store's owner
+dropped is not made again). The default store (`mentat`) cannot be
+dropped or renamed.
 
 The extension-wide functions that have no store argument (`edn_t`, `edn_q`,
 `edn_pull`, `mentat_tune_indexes`, the `mentat.attach_*`
