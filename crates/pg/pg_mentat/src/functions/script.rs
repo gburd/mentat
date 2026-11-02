@@ -50,12 +50,21 @@ use mentat_script::{DbRef, ScriptBackend, TxReport};
 /// preserved: the shared `install()` only adds the store surface; the sandbox
 /// and limits stay here.)
 pub fn build_interpreter() -> mino_rs::Interpreter {
+    build_interpreter_for("default")
+}
+
+/// [`build_interpreter`] where a no-argument `(mentat.store/open)` opens
+/// `store` (a name in `mentat.stores`): a transaction function reads the
+/// store being transacted.
+pub fn build_interpreter_for(store: &str) -> mino_rs::Interpreter {
     use crate::functions::script_gucs::{
         SCRIPT_MAX_DEPTH, SCRIPT_MAX_HEAP_BYTES, SCRIPT_MAX_STEPS,
     };
     let mut it = mino_rs::Interpreter::sandboxed();
     let backend: std::rc::Rc<std::cell::RefCell<dyn ScriptBackend>> =
-        std::rc::Rc::new(std::cell::RefCell::new(PgBackend));
+        std::rc::Rc::new(std::cell::RefCell::new(PgBackend {
+            stores: vec![store.to_string()],
+        }));
     mentat_script::install(&mut it, backend);
     it.set_limits(mino_rs::Limits {
         steps: Some(SCRIPT_MAX_STEPS.get() as u64),
@@ -110,23 +119,48 @@ COMMENT ON FUNCTION public.mentat_eval(TEXT) IS 'Deprecated since 1.9.0: use edn
 // ScriptBackend over the pg_mentat engine
 // ---------------------------------------------------------------------------
 
-/// The pg_mentat storage backend. There is exactly one database (the one you
-/// are connected to), reached through the extension's engine functions over
-/// SPI; the backend holds no connection.
-struct PgBackend;
+/// The pg_mentat storage backend, reached through the extension's engine
+/// functions over SPI as the calling role. Conn handle `n` names the store
+/// `stores[n - 1]`; conn 1 is the store a no-argument `open` returns.
+struct PgBackend {
+    stores: Vec<String>,
+}
+
+impl PgBackend {
+    /// The store name behind a conn handle.
+    fn store(&self, conn: i64) -> Result<&str, String> {
+        usize::try_from(conn)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| self.stores.get(i))
+            .map(String::as_str)
+            .ok_or_else(|| format!("no open store for handle {conn}"))
+    }
+}
 
 impl ScriptBackend for PgBackend {
     fn open(&mut self, path: Option<&str>) -> Result<i64, String> {
-        // Every method below reads and writes the default store, so a
-        // script naming another store would silently use the default one.
-        match path {
-            None | Some("") | Some("default") => Ok(1),
-            Some(name) => Err(format!(
-                ":db.error/unsupported edn_eval can't open store '{name}': in 1.18.0 scripts \
-                 run on the default store only (issue #389). Use (mentat.store/open), or \
-                 t() / q() / pull() / entity() with the store name from SQL."
-            )),
+        use super::store_management::{store_exists, validate_store_name};
+        let name = match path {
+            None | Some("") => return Ok(1),
+            Some(name) => name,
+        };
+        if let Some(i) = self.stores.iter().position(|s| s == name) {
+            return Ok(i as i64 + 1);
         }
+        if name != "default" {
+            validate_store_name(name).map_err(|e| e.to_string())?;
+            if !store_exists(name).map_err(|e| e.to_string())? {
+                return Err(crate::error::MentatError::StoreNotFound {
+                    store_name: name.to_string(),
+                }
+                .to_string());
+            }
+            // Fail here, not at first use, when the role can't reach it.
+            current_basis_tx(name)?;
+        }
+        self.stores.push(name.to_string());
+        Ok(self.stores.len() as i64)
     }
 
     fn close(&mut self, _conn: i64) -> Result<(), String> {
@@ -134,17 +168,18 @@ impl ScriptBackend for PgBackend {
         Ok(())
     }
 
-    fn basis_tx(&self, _conn: i64) -> Result<i64, String> {
-        current_basis_tx()
+    fn basis_tx(&self, conn: i64) -> Result<i64, String> {
+        current_basis_tx(self.store(conn)?)
     }
 
-    fn transact(&mut self, _conn: i64, edn: &str) -> Result<TxReport, String> {
-        let report = super::transact::mentat_transact(edn).map_err(|e| e.to_string())?;
+    fn transact(&mut self, conn: i64, edn: &str) -> Result<TxReport, String> {
+        let report = super::transact::t(self.store(conn)?, edn).map_err(|e| e.to_string())?;
         json_to_tx_report(&report)
     }
 
     fn with(&mut self, db: &DbRef, edn: &str) -> Result<(i64, TxReport), String> {
-        let report = super::transact::mentat_with(edn).map_err(|e| e.to_string())?;
+        let report = super::transact::mentat_with_store(self.store(db.conn)?, edn)
+            .map_err(|e| e.to_string())?;
         let j: J = serde_json::from_str(&report).map_err(|e| format!("bad engine JSON: {e}"))?;
         let basis_after = j
             .get("db-after")
@@ -155,9 +190,8 @@ impl ScriptBackend for PgBackend {
     }
 
     fn q(&self, db: &DbRef, query_edn: &str) -> Result<Value, String> {
-        let out = super::query::mentat_query(query_edn, pgrx::JsonB(temporal_inputs(db)))
-            .map_err(|e| e.to_string())?;
-        Ok(query_result_value(&out.0))
+        run_q(self.store(db.conn)?, query_edn, temporal_inputs(db))
+            .map(|out| query_result_value(&out))
     }
 
     fn q_with_inputs(&self, db: &DbRef, query_edn: &str, inputs: &[J]) -> Result<Value, String> {
@@ -166,15 +200,13 @@ impl ScriptBackend for PgBackend {
         if let J::Object(ref mut o) = opts {
             o.insert("inputs".to_string(), J::Array(inputs.to_vec()));
         }
-        let out =
-            super::query::mentat_query(query_edn, pgrx::JsonB(opts)).map_err(|e| e.to_string())?;
-        Ok(query_result_value(&out.0))
+        run_q(self.store(db.conn)?, query_edn, opts).map(|out| query_result_value(&out))
     }
 
     fn pull(&self, db: &DbRef, eid: i64, pattern_edn: &str) -> Result<Value, String> {
         // The db's as-of / since bound (before 1.18.0 pull ignored it).
         let opts = pgrx::JsonB(temporal_inputs(db));
-        let out = super::pull::mentat_pull_with_options(pattern_edn, eid, opts)
+        let out = super::pull::pull_with_options(self.store(db.conn)?, pattern_edn, eid, opts)
             .map_err(|e| e.to_string())?;
         Ok(json_to_mino(&out.0))
     }
@@ -193,19 +225,17 @@ impl ScriptBackend for PgBackend {
             }
             return Ok(Value::Map(Gc::new(m)));
         }
-        let out = super::entity::mentat_entity(eid).map_err(|e| e.to_string())?;
+        let out = super::entity::entity(self.store(db.conn)?, eid).map_err(|e| e.to_string())?;
         Ok(json_to_mino(&out.0))
     }
 
     fn read(&self, db: &DbRef, eid: i64, attr: &str) -> Result<Value, String> {
         // A collection query -- the value(s) of that attr on that eid.
         let query = format!("[:find [?v ...] :where [{eid} {attr} ?v]]");
-        let out = super::query::mentat_query(&query, pgrx::JsonB(temporal_inputs(db)))
-            .map_err(|e| e.to_string())?;
+        let out = run_q(self.store(db.conn)?, &query, temporal_inputs(db))?;
         // FindColl envelope: {"result": [..]}. Cardinality-one collapses to the
         // scalar; many stays a set; absent -> nil.
         let vals = out
-            .0
             .get("result")
             .and_then(J::as_array)
             .cloned()
@@ -225,10 +255,8 @@ impl ScriptBackend for PgBackend {
 
     fn entities(&self, db: &DbRef, attr: &str) -> Result<Value, String> {
         let query = format!("[:find [?e ...] :where [?e {attr} _]]");
-        let out = super::query::mentat_query(&query, pgrx::JsonB(temporal_inputs(db)))
-            .map_err(|e| e.to_string())?;
+        let out = run_q(self.store(db.conn)?, &query, temporal_inputs(db))?;
         let eids = out
-            .0
             .get("result")
             .and_then(J::as_array)
             .cloned()
@@ -251,11 +279,9 @@ impl ScriptBackend for PgBackend {
         } else {
             "[:find ?e ?a ?v ?tx ?added :where [?e ?a ?v ?tx ?added]]"
         };
-        let out = super::query::mentat_query(query, pgrx::JsonB(temporal_inputs(db)))
-            .map_err(|e| e.to_string())?;
+        let out = run_q(self.store(db.conn)?, query, temporal_inputs(db))?;
         // FindRel envelope: {"results": [[e,a,v,tx(,added)], ...]}.
         let rows = out
-            .0
             .get("results")
             .and_then(J::as_array)
             .cloned()
@@ -277,7 +303,7 @@ impl ScriptBackend for PgBackend {
             Value::Int(n) => Ok(*n),
             Value::Keyword(sym) => {
                 let ident = sym_to_kw_str(sym);
-                crate::cache::get_cache()
+                crate::cache::get_cache_for_store(self.store(db.conn)?)
                     .resolve_ident(&ident)
                     .ok_or_else(|| format!("unknown ident {ident}"))
             }
@@ -293,9 +319,8 @@ impl ScriptBackend for PgBackend {
                     "[:find ?e . :where [?e {attr_kw} {}]]",
                     mino_rs::printer::print_str(val)
                 );
-                let out = super::query::mentat_query(&query, pgrx::JsonB(temporal_inputs(db)))
-                    .map_err(|e| e.to_string())?;
-                out.0.get("result").and_then(J::as_i64).ok_or_else(|| {
+                let out = run_q(self.store(db.conn)?, &query, temporal_inputs(db))?;
+                out.get("result").and_then(J::as_i64).ok_or_else(|| {
                     format!(
                         "lookup-ref {} resolved to no entity",
                         mino_rs::printer::print_str(arg)
@@ -314,11 +339,22 @@ impl ScriptBackend for PgBackend {
 // Engine access over SPI
 // ---------------------------------------------------------------------------
 
-/// The current basis: the max committed transaction id, via SPI.
-fn current_basis_tx() -> Result<i64, String> {
-    Spi::get_one::<i64>("SELECT COALESCE(MAX(tx), 0) FROM mentat.transactions")
-        .map(|o| o.unwrap_or(0))
-        .map_err(|e| format!("current basis tx: {e}"))
+/// The store's current basis: its max committed transaction id, via SPI.
+fn current_basis_tx(store: &str) -> Result<i64, String> {
+    use super::store_management::{get_schema_for_store, quote_ident};
+    let qs = quote_ident(&get_schema_for_store(store));
+    Spi::get_one::<i64>(&format!(
+        "SELECT COALESCE(MAX(tx), 0) FROM {qs}.transactions"
+    ))
+    .map(|o| o.unwrap_or(0))
+    .map_err(|e| format!("current basis tx: {e}"))
+}
+
+/// `q(store, query, inputs)`: the store's `edn_q`, as its JSON envelope.
+fn run_q(store: &str, query_edn: &str, inputs: J) -> Result<J, String> {
+    super::query::q(store, query_edn, pgrx::JsonB(inputs))
+        .map(|out| out.0)
+        .map_err(|e| e.to_string())
 }
 
 /// The query-inputs JSON carrying a db value's temporal bound (empty for the

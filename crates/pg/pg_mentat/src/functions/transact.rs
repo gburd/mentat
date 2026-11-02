@@ -876,7 +876,7 @@ fn execute_transaction_inner(
     // tx-data, so the rest of the transactor (tempids, upserts, built-ins,
     // cardinality) handles it unchanged.
     #[cfg(feature = "script")]
-    let value = super::txfn::expand_user_tx_fns(value, &qs)?;
+    let value = super::txfn::expand_user_tx_fns(value, &qs, schema_to_store_name(schema))?;
 
     // Validate it's a vector
     let entities = match value {

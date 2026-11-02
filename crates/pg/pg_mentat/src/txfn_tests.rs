@@ -216,83 +216,128 @@ mod tests {
             .as_i64()
     }
 
-    /// A user tx-fn on a named store is refused (issue #389): its `db` came
-    /// from the script backend, which reads the default store, so with the
-    /// named store's counter at 1 and the default's at 100, :tf/inc set the
-    /// named store's to 101. The built-ins still work there.
-    #[pg_test]
-    fn txfn_on_a_named_store_is_refused() {
-        setup();
-        Spi::run("SELECT create_store('tfn')").expect("create_store");
+    const INC: &str = "(fn [db name] \
+       (let [n (ffirst (mentat.store/q db \
+                  '[:find ?n :in $ ?name :where [?e :tf/name ?name] [?e :tf/n ?n]] \
+                  name))] \
+         [{:tf/name name :tf/n (inc n)}]))";
+
+    /// A named store with setup()'s :tf/* schema.
+    fn named(store: &str) {
+        Spi::run(&format!("SELECT create_store('{store}')")).expect("create_store");
         t_on(
-            "tfn",
+            store,
             r#"[{:db/ident :tf/name :db/valueType :db.type/string
                  :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}
                 {:db/ident :tf/n :db/valueType :db.type/long
                  :db/cardinality :db.cardinality/one}]"#,
         );
+    }
+
+    fn install_on(store: &str, ident: &str, src: &str) {
+        t_on(store, &format!("[{{:db/ident {ident} :db/fn {src:?}}}]"));
+    }
+
+    /// Issue #389: a tx-fn invoked on a named store reads that store. 1.18.0
+    /// refused it; before that its `db` read the default store, so with nz's
+    /// counter at 1 and the default's at 100, :tf/inc set nz's to 101.
+    #[pg_test]
+    fn txfn_on_a_named_store_reads_that_store() {
+        setup();
+        named("nz");
+        t_on("nz", r#"[{:tf/name "ctr" :tf/n 1}]"#);
+        t(r#"[{:tf/name "ctr" :tf/n 100}]"#);
+        install_on("nz", ":tf/inc", INC);
+
+        t_on("nz", r#"[[:tf/inc "ctr"]]"#);
+        assert_eq!(n_on("nz", "ctr"), Some(2));
+        assert_eq!(n_of("ctr"), Some(100), "the default store is untouched");
+        // Next to other tx-data.
+        t_on("nz", r#"[{:tf/name "x" :tf/n 5} [:tf/inc "ctr"]]"#);
+        assert_eq!(n_on("nz", "ctr"), Some(3));
+        assert_eq!(n_on("nz", "x"), Some(5));
+        assert_eq!(n_of("x"), None);
+        // with() expands against the store too, and commits nothing.
+        let j: JsonB = Spi::get_one(r#"SELECT "with"('nz', '[[:tf/inc "ctr"]]')::jsonb"#)
+            .expect("with")
+            .expect("NULL");
+        let asserted_4 = j.0["tx-data"]
+            .as_array()
+            .expect("tx-data")
+            .iter()
+            .any(|d| d[2].as_i64() == Some(4) && d[4].as_bool() == Some(true));
+        assert!(asserted_4, "with() should assert :tf/n 4: {}", j.0);
+        assert_eq!(n_on("nz", "ctr"), Some(3));
+        // :tf/inc is defined on nz only: on the default store it's not a
+        // tx-fn, so the transactor rejects the call.
+        let e = err(r#"[[:tf/inc "ctr"]]"#);
+        assert!(!e.is_empty() && !e.contains("txfn-error"), "got: {e}");
+        assert_eq!(n_of("ctr"), Some(100));
+    }
+
+    /// The same ident defined on two stores runs each store's own definition,
+    /// over each store's own data; a tx-fn returning another tx-fn call and a
+    /// :db/cas resolves both in the store.
+    #[pg_test]
+    fn txfn_uses_each_stores_own_definition() {
+        setup();
+        named("tfa");
+        for (store, n) in [("tfa", 10), ("default", 20)] {
+            t_on(store, &format!(r#"[{{:tf/name "c" :tf/n {n}}}]"#));
+        }
+        install_on("tfa", ":tf/bump", "(fn [db name] [[:tf/step name 1]])");
+        install_on(
+            "default",
+            ":tf/bump",
+            "(fn [db name] [[:tf/step name 1000]])",
+        );
+        // :tf/step is a cas on the value the fn read from its own store.
+        for store in ["tfa", "default"] {
+            install_on(
+                store,
+                ":tf/step",
+                "(fn [db name by] \
+                   (let [n (ffirst (mentat.store/q db \
+                              '[:find ?n :in $ ?name :where [?e :tf/name ?name] [?e :tf/n ?n]] \
+                              name))] \
+                     [[:db/cas [:tf/name name] :tf/n n (+ n by)]]))",
+            );
+        }
+        t_on("tfa", r#"[[:tf/bump "c"]]"#);
+        t_on("default", r#"[[:tf/bump "c"]]"#);
+        assert_eq!(n_on("tfa", "c"), Some(11));
+        assert_eq!(n_of("c"), Some(1020));
+        // edn_t is the default store, as before.
+        t(r#"[[:tf/bump "c"]]"#);
+        assert_eq!(n_of("c"), Some(2020));
+        assert_eq!(n_on("tfa", "c"), Some(11));
+    }
+
+    /// The built-ins run on the store's own tables, next to a user tx-fn.
+    #[pg_test]
+    fn builtins_on_a_named_store() {
+        setup();
+        named("tfb");
         t_on(
-            "tfn",
+            "tfb",
             r#"[{:tf/name "ctr" :tf/n 1} {:tf/name "gone" :tf/n 7}]"#,
         );
         t(r#"[{:tf/name "ctr" :tf/n 100}]"#);
-        t_on(
-            "tfn",
-            r#"[{:db/ident :tf/inc :db/fn "(fn [db name] (let [n (ffirst (mentat.store/q db '[:find ?n :in $ ?name :where [?e :tf/name ?name] [?e :tf/n ?n]] name))] [{:tf/name name :tf/n (inc n)}]))"}]"#,
-        );
-
-        let e = err_on("tfn", r#"[[:tf/inc "ctr"]]"#);
-        assert!(
-            e.contains(":db.error/unsupported")
-                && e.contains(":tf/inc")
-                && e.contains("'tfn'")
-                && e.contains("default store only")
-                && e.contains("#389"),
-            "got: {e}"
-        );
-        // Next to other tx-data, too; nothing is written.
-        let e = err_on("tfn", r#"[{:tf/name "x" :tf/n 5} [:tf/inc "ctr"]]"#);
-        assert!(e.contains(":db.error/unsupported"), "got: {e}");
-        assert_eq!(n_on("tfn", "ctr"), Some(1));
-        assert_eq!(n_on("tfn", "x"), None);
-        assert_eq!(n_of("ctr"), Some(100));
-        // with() runs the same transactor.
-        let e = Spi::get_one::<String>(
-            r#"SELECT mentat._txfn_err($$SELECT "with"('tfn', '[[:tf/inc "ctr"]]')$$)"#,
-        )
-        .expect("with")
-        .unwrap_or_default();
-        assert!(e.contains(":db.error/unsupported"), "with: {e}");
-
-        // The built-ins run on the store's own tables.
-        t_on("tfn", r#"[[:db/cas [:tf/name "ctr"] :tf/n 1 2]]"#);
-        assert_eq!(n_on("tfn", "ctr"), Some(2));
-        t_on("tfn", r#"[[:db.fn/cas [:tf/name "ctr"] :tf/n 2 3]]"#);
-        assert_eq!(n_on("tfn", "ctr"), Some(3));
-        let e = err_on("tfn", r#"[[:db/cas [:tf/name "ctr"] :tf/n 100 4]]"#);
+        t_on("tfb", r#"[[:db/cas [:tf/name "ctr"] :tf/n 1 2]]"#);
+        assert_eq!(n_on("tfb", "ctr"), Some(2));
+        t_on("tfb", r#"[[:db.fn/cas [:tf/name "ctr"] :tf/n 2 3]]"#);
+        assert_eq!(n_on("tfb", "ctr"), Some(3));
+        let e = err_on("tfb", r#"[[:db/cas [:tf/name "ctr"] :tf/n 100 4]]"#);
         assert!(
             !e.is_empty(),
             "cas against the default store's value must fail"
         );
-        assert_eq!(n_on("tfn", "ctr"), Some(3));
-        t_on("tfn", r#"[[:db/retractEntity [:tf/name "gone"]]]"#);
-        assert_eq!(n_on("tfn", "gone"), None);
-        t_on("tfn", r#"[{:tf/name "gone2" :tf/n 8}]"#);
-        t_on("tfn", r#"[[:db.fn/retractEntity [:tf/name "gone2"]]]"#);
-        assert_eq!(n_on("tfn", "gone2"), None);
+        assert_eq!(n_on("tfb", "ctr"), Some(3));
+        t_on("tfb", r#"[[:db/retractEntity [:tf/name "gone"]]]"#);
+        assert_eq!(n_on("tfb", "gone"), None);
+        t_on("tfb", r#"[{:tf/name "gone2" :tf/n 8}]"#);
+        t_on("tfb", r#"[[:db.fn/retractEntity [:tf/name "gone2"]]]"#);
+        assert_eq!(n_on("tfb", "gone2"), None);
         assert_eq!(n_of("ctr"), Some(100), "the default store is untouched");
-
-        // On the default store, through t('default', ...), tx-fns still run.
-        install(
-            ":tf/inc",
-            "(fn [db name] \
-               (let [n (ffirst (mentat.store/q db \
-                          '[:find ?n :in $ ?name :where [?e :tf/name ?name] [?e :tf/n ?n]] \
-                          name))] \
-                 [{:tf/name name :tf/n (inc n)}]))",
-        );
-        t_on("default", r#"[[:tf/inc "ctr"]]"#);
-        assert_eq!(n_of("ctr"), Some(101));
-        assert_eq!(n_on("tfn", "ctr"), Some(3));
     }
 }

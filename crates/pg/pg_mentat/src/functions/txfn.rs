@@ -37,52 +37,21 @@ pub use mentat_script::txfn::DB_FN_IDENT;
 /// Expand every user tx-fn invocation in the top-level tx vector `value`,
 /// using the shared expander (`mentat_script::txfn`, the same code the
 /// embedded SQLite and DuckDB backends run). One sandboxed interpreter per
-/// transaction, built only when an invocation is found.
-pub fn expand_user_tx_fns(value: edn::Value, qs: &str) -> Result<edn::Value, BoxErr> {
-    if qs != "mentat" {
-        refuse_on_named_store(&value, qs)?;
-        return Ok(value);
-    }
+/// transaction, built only when an invocation is found. `qs` is the quoted
+/// schema of `store`, the store being transacted: the fn's
+/// `(mentat.store/open)` opens it, so its `db` reads that store.
+pub fn expand_user_tx_fns(value: edn::Value, qs: &str, store: &str) -> Result<edn::Value, BoxErr> {
     let mut it: Option<mino_rs::Interpreter> = None;
     mentat_script::txfn::expand(
         value,
         TXFN_MAX_DEPTH.get().max(1) as usize,
         |ident| lookup_db_fn(qs, ident).map_err(|e| e.to_string()),
         |form| {
-            it.get_or_insert_with(crate::functions::script::build_interpreter)
+            it.get_or_insert_with(|| crate::functions::script::build_interpreter_for(store))
                 .eval_to_string(form)
         },
     )
     .map_err(|e| e.into())
-}
-
-/// A tx-fn's `db` comes from the script backend, which reads the default
-/// store only (`script::PgBackend`), so on a named store it would read the
-/// default store's values. Refuse a top-level invocation of an ident that
-/// has a `:db/fn` (nested ones only come out of an evaluated fn). The
-/// built-ins (`:db/cas`, `:db/retractEntity`, `:db.fn/*`) aren't tx-fns:
-/// the transactor runs them on the store's own tables.
-fn refuse_on_named_store(value: &edn::Value, qs: &str) -> Result<(), BoxErr> {
-    let edn::Value::Vector(items) = value else {
-        return Ok(());
-    };
-    for kw in items
-        .iter()
-        .filter_map(mentat_script::txfn::invocation_head)
-    {
-        let ident = format!("{kw}");
-        if lookup_db_fn(qs, &ident)?.is_some() {
-            let store = qs.trim_matches('"').strip_prefix("mentat_").unwrap_or(qs);
-            return Err(format!(
-                ":db.error/unsupported transaction function {ident} can't run on named \
-                 store '{store}': in 1.18.0 user transaction functions run on the default \
-                 store only (issue #389). The built-ins :db/cas and :db/retractEntity work \
-                 on every store."
-            )
-            .into());
-        }
-    }
-    Ok(())
 }
 
 /// The `:db/fn` source on the entity whose `:db/ident` is `ident`, if any.

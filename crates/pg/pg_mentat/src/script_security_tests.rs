@@ -117,15 +117,11 @@ mod tests {
         assert_eq!(eval_ok("(mentat.store/open)"), "1");
     }
 
-    /// `(mentat.store/open "nz")` named a store but got the default one: the
-    /// pg backend reads and writes the default store only, so a transact
-    /// through it wrote the default store (issue #389). It is refused now.
-    #[pg_test]
-    fn open_with_a_store_name_is_refused() {
-        setup();
+    /// `:ev/name` on `ev_nz` and the default store, one value each.
+    fn two_stores() {
         Spi::run("SELECT create_store('ev_nz')").expect("create_store");
         let schema = "[{:db/ident :ev/name :db/valueType :db.type/string \
-                      :db/cardinality :db.cardinality/one}]";
+                      :db/cardinality :db.cardinality/one :db/unique :db.unique/identity}]";
         for store in ["ev_nz", "default"] {
             Spi::run(&format!("SELECT t('{store}', '{schema}')")).expect("schema");
             Spi::run(&format!(
@@ -133,43 +129,80 @@ mod tests {
             ))
             .expect("seed");
         }
-        let names = |store: &str| -> String {
-            Spi::get_one::<pgrx::JsonB>(&format!(
-                "SELECT q('{store}', '[:find [?n ...] :where [_ :ev/name ?n]]', '{{}}')"
-            ))
-            .expect("q")
-            .expect("NULL")
-            .0["result"]
-                .to_string()
-        };
-        let before = (names("ev_nz"), names("default"));
-        for name in ["ev_nz", "mentat_ev_nz", "nope", "Default"] {
-            for script in [
-                format!("(mentat.store/open \"{name}\")"),
-                format!(
-                    "(mentat.store/transact (mentat.store/open \"{name}\") \
-                       [{{:ev/name \"via-script\"}}])"
-                ),
-                format!(
-                    "(mentat.store/q (mentat.store/db (mentat.store/open \"{name}\")) \
-                       '[:find [?n ...] :where [_ :ev/name ?n]])"
-                ),
-            ] {
-                let msg = eval_error(&script);
-                assert!(
-                    msg.contains(":db.error/unsupported")
-                        && msg.contains(&format!("'{name}'"))
-                        && msg.contains("default store only")
-                        && msg.contains("#389"),
-                    "{script}: {msg}"
-                );
-            }
-        }
+    }
+
+    /// The sorted `:ev/name` values in `store`, through SQL q().
+    fn names(store: &str) -> Vec<String> {
+        let j = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT q('{store}', '[:find [?n ...] :where [_ :ev/name ?n]]', '{{}}')"
+        ))
+        .expect("q")
+        .expect("NULL");
+        let mut v: Vec<String> = j.0["result"]
+            .as_array()
+            .expect("coll")
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// Issue #389: `(mentat.store/open "nz")` opens the named store, and
+    /// every read and write through that conn goes to it. 1.18.0 refused it;
+    /// before that it silently used the default store.
+    #[pg_test]
+    fn open_with_a_store_name_uses_that_store() {
+        setup();
+        two_stores();
+        let nz = "(mentat.store/open \"ev_nz\")";
+        let q = "'[:find [?n ...] :where [_ :ev/name ?n]]";
         assert_eq!(
-            (names("ev_nz"), names("default")),
-            before,
-            "nothing written"
+            eval_ok(&format!("(mentat.store/q (mentat.store/db {nz}) {q})")),
+            "[\"in-ev_nz\"]"
         );
+        eval_ok(&format!(
+            "(mentat.store/transact {nz} [{{:ev/name \"via-script\"}}])"
+        ));
+        assert_eq!(names("ev_nz"), ["in-ev_nz", "via-script"]);
+        assert_eq!(names("default"), ["in-default"], "default untouched");
+
+        // The rest of the surface, and two stores in one script. :ev/nz-only
+        // and the "via-script" lookup ref exist in ev_nz only.
+        Spi::run(
+            "SELECT t('ev_nz', '[{:db/ident :ev/nz-only :db/valueType :db.type/long \
+                                 :db/cardinality :db.cardinality/one}]')",
+        )
+        .expect("nz-only attr");
+        let out = eval_ok(&format!(
+            "(let [nz {nz} d (mentat.store/open) db (mentat.store/db nz) \
+                   e (mentat.store/q db '[:find ?e . :where [?e :ev/name \"via-script\"]]) \
+                   t (mentat.store/q db '[:find ?tx . :where [_ :ev/name \"via-script\" ?tx]]) \
+                   r [(:ev/name (mentat.store/pull db e [:ev/name])) \
+                      (:ev/name (mentat.store/entity db e)) \
+                      (mentat.store/read db [:ev/name \"in-ev_nz\"] :ev/name) \
+                      (count (mentat.store/entities db :ev/name)) \
+                      (contains? (set (map (fn [x] (nth x 2)) \
+                                           (mentat.store/datoms (mentat.store/since db (dec t))))) \
+                                 \"via-script\") \
+                      (map? (:mentat.store/tx-report \
+                              (mentat.store/with db [[:db/add [:ev/name \"via-script\"] :ev/name \"spec\"]]))) \
+                      (mentat.store/q (mentat.store/db d) {q}) \
+                      (:db/ident (mentat.store/entity db :ev/nz-only))] \
+                   _ (mentat.store/transact nz [{{:ev/name \"later\"}}])] \
+               (conj r \
+                     (sort (mentat.store/q (mentat.store/as-of (mentat.store/db nz) t) {q})) \
+                     (sort (mentat.store/q (mentat.store/db nz) {q}))))"
+        ));
+        assert_eq!(
+            out,
+            "[\"via-script\" \"via-script\" \"in-ev_nz\" 2 true true \
+             [\"in-default\"] :ev/nz-only (\"in-ev_nz\" \"via-script\") \
+             (\"in-ev_nz\" \"later\" \"via-script\")]"
+        );
+        assert_eq!(names("ev_nz"), ["in-ev_nz", "later", "via-script"]);
+        assert_eq!(names("default"), ["in-default"], "default untouched");
+
         // The default store, by no name or its own.
         for open in [
             "(mentat.store/open)",
@@ -177,14 +210,95 @@ mod tests {
             "(mentat.store/open \"default\")",
         ] {
             assert_eq!(
-                eval_ok(&format!(
-                    "(mentat.store/q (mentat.store/db {open}) \
-                       '[:find [?n ...] :where [_ :ev/name ?n]])"
-                )),
+                eval_ok(&format!("(mentat.store/q (mentat.store/db {open}) {q})")),
                 "[\"in-default\"]",
                 "{open}"
             );
         }
+    }
+
+    /// A name that isn't a store is an error that names it; nothing is written.
+    #[pg_test]
+    fn open_of_an_unknown_store_is_an_error() {
+        setup();
+        two_stores();
+        for (name, want) in [
+            ("nope", ":db.error/store-not-found Store 'nope' not found"),
+            (
+                "mentat_ev_nz",
+                ":db.error/store-not-found Store 'mentat_ev_nz' not found",
+            ),
+            ("Default", ":db.error/invalid-store-name"),
+            ("a'b", ":db.error/invalid-store-name"),
+        ] {
+            for script in [
+                format!("(mentat.store/open \"{name}\")"),
+                format!(
+                    "(mentat.store/transact (mentat.store/open \"{name}\") \
+                       [{{:ev/name \"via-script\"}}])"
+                ),
+            ] {
+                let msg = eval_error(&script);
+                assert!(
+                    msg.contains("mentat.store/open") && msg.contains(want),
+                    "{script}: {msg}"
+                );
+            }
+        }
+        // A conn handle no open returned.
+        let msg = eval_error("(mentat.store/db 7)");
+        assert!(msg.contains("no open store for handle 7"), "{msg}");
+        assert_eq!(names("ev_nz"), ["in-ev_nz"]);
+        assert_eq!(names("default"), ["in-default"]);
+    }
+
+    /// A script runs as the caller: a role without USAGE on a store's schema
+    /// can't open it, and one with privileges on it can.
+    #[pg_test]
+    fn open_respects_the_callers_privileges() {
+        setup();
+        two_stores();
+        // _store_grants copied the default store's PUBLIC USAGE.
+        Spi::run("REVOKE USAGE ON SCHEMA mentat_ev_nz FROM PUBLIC").expect("revoke");
+        as_ordinary_role();
+        let q = "'[:find [?n ...] :where [_ :ev/name ?n]]";
+        for script in [
+            "(mentat.store/open \"ev_nz\")".to_string(),
+            format!("(mentat.store/q (mentat.store/db (mentat.store/open \"ev_nz\")) {q})"),
+        ] {
+            let msg = eval_error(&script);
+            assert!(
+                msg.contains("permission denied for schema mentat_ev_nz"),
+                "{script}: {msg}"
+            );
+        }
+        // The default store still works for this role.
+        assert_eq!(
+            eval_ok(&format!(
+                "(mentat.store/q (mentat.store/db (mentat.store/open)) {q})"
+            )),
+            "[\"in-default\"]"
+        );
+        Spi::run("RESET ROLE").expect("reset role");
+
+        Spi::run(
+            "GRANT USAGE ON SCHEMA mentat_ev_nz TO pgm_eval_user; \
+             GRANT SELECT ON ALL TABLES IN SCHEMA mentat_ev_nz TO pgm_eval_user",
+        )
+        .expect("grant");
+        Spi::run("SET LOCAL ROLE pgm_eval_user").expect("set role");
+        assert_eq!(
+            eval_ok(&format!(
+                "(mentat.store/q (mentat.store/db (mentat.store/open \"ev_nz\")) {q})"
+            )),
+            "[\"in-ev_nz\"]"
+        );
+        // Read-only grants: a write is refused.
+        let msg =
+            eval_error("(mentat.store/transact (mentat.store/open \"ev_nz\") [{:ev/name \"no\"}])");
+        assert!(msg.contains("permission denied"), "{msg}");
+        Spi::run("RESET ROLE").expect("reset role");
+        assert_eq!(names("ev_nz"), ["in-ev_nz"]);
     }
 
     // ---- CPU: step limit + interrupt hook ----
