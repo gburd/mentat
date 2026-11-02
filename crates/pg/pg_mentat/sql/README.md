@@ -235,6 +235,15 @@ at SERIALIZABLE and retry serialization failures, or have the tx-function
 return a `:db/cas`: the cas is compared after the locks, so the second of
 two racing increments fails instead of overwriting the first.
 
+Schema changes on one store run one transaction at a time: an `edn_t` call
+that installs or alters an attribute first locks the store's row in
+`mentat.cache_generation`, and holds it until the transaction ends. A
+transaction that makes several `edn_t` calls should install its schema in
+the first one. Then two such transactions can't deadlock: the second waits
+at its first call, before it has locked anything. One that writes data and
+then changes schema can deadlock with another (PostgreSQL aborts one with
+SQLSTATE 40P01; retry it).
+
 Each locked value takes a slot in PostgreSQL's shared lock table. Past
 `max_locks_per_transaction` values in one transaction (64 by default), the
 transactor locks the whole attribute instead: other writers of that
