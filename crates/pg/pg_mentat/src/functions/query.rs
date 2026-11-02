@@ -7524,6 +7524,9 @@ enum ArgKind {
     Text,
     /// Longs and doubles (a rule column of both), in their decoded TEXT form.
     Number,
+    /// The longs and doubles of a value of unknown type, as Number; NULL for
+    /// the rest. Its sum is a long when no double is among them.
+    Untyped,
 }
 
 /// SQL for a variable's value within the join, in its native typed column
@@ -7594,7 +7597,7 @@ fn aggregate_arg_sql(
                     long = type_tag::LONG,
                     double = type_tag::DOUBLE,
                 ),
-                ArgKind::Number,
+                ArgKind::Untyped,
             );
         }
     }
@@ -7661,8 +7664,17 @@ fn aggregate_call_sql(
         ("count", _) => format!("COUNT({arg})::TEXT"),
         ("count-distinct", _) => format!("COUNT(DISTINCT {arg})::TEXT"),
         (_, ArgKind::Double) => double_text(&format!("{sql_func}({arg})")),
+        // A sum of longs only is an exact long, with a double present a
+        // double, as Clojure's + (#397).
+        ("sum", ArgKind::Untyped) => format!(
+            "CASE WHEN bool_or(({arg}) LIKE 'd:%') THEN {} \
+             ELSE SUM(CASE WHEN ({arg}) NOT LIKE 'd:%' THEN ({arg})::BIGINT END)::TEXT END",
+            double_text(&format!("SUM({})", decoded_number_sql(arg)))
+        ),
         // As on the embedded engine, a long-and-double aggregate is a double.
-        (_, ArgKind::Number) => double_text(&format!("{sql_func}({})", decoded_number_sql(arg))),
+        (_, ArgKind::Number | ArgKind::Untyped) => {
+            double_text(&format!("{sql_func}({})", decoded_number_sql(arg)))
+        }
         ("sum" | "avg", ArgKind::Text) => format!("{sql_func}(({arg})::NUMERIC)::TEXT"),
         _ => format!("{sql_func}({arg})::TEXT"),
     })

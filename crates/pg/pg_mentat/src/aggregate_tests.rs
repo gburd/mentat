@@ -630,4 +630,63 @@ mod tests {
             ]
         );
     }
+
+    /// An untyped sum ([?e ?a ?v]) over longs only is a long, as on master
+    /// and the embedded engine, and exact above 2^53; a double among the
+    /// values makes it a double. avg is a double either way.
+    #[pg_test]
+    fn test_ag_sum_untyped_longs_is_a_long() {
+        setup();
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :ul/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+                            {:db/ident :ul/long :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+                            {:db/ident :ul/double :db/valueType :db.type/double :db/cardinality :db.cardinality/one}]'::TEXT)",
+        )
+        .expect("schema");
+        Spi::run(
+            "SELECT edn_t('[{:ul/name \"a\" :ul/long 3}
+                            {:ul/name \"b\" :ul/long 5}
+                            {:ul/name \"c\" :ul/long 9007199254740993}
+                            {:ul/name \"d\" :ul/long 4 :ul/double 0.5}]'::TEXT)",
+        )
+        .expect("data");
+        // The entities named `names`, every value of each: [?e ?a ?v].
+        let q = |find: &str, names: &[&str]| -> serde_json::Value {
+            let query = format!("[:find {find} :in [?n ...] :where [?e :ul/name ?n] [?e ?a ?v]]");
+            Spi::get_one::<pgrx::JsonB>(&format!(
+                "SELECT edn_q('{query}', '{}'::jsonb)",
+                serde_json::json!({ "inputs": [names] })
+            ))
+            .unwrap_or_else(|e| panic!("{query}: {e}"))
+            .expect("NULL")
+            .0["result"]
+                .clone()
+        };
+        // Only longs (the names are strings, skipped).
+        let small = q("(sum ?v) . :with ?e", &["a", "b"]);
+        assert!(small.is_i64(), "{small}");
+        assert_eq!(small, 8);
+        let big = q("(sum ?v) . :with ?e", &["a", "c"]);
+        assert_eq!(
+            big,
+            serde_json::json!(9007199254740996_i64),
+            "exact above 2^53"
+        );
+        let mut by_n = q("?n (sum ?v)", &["a", "c"]).as_array().cloned().unwrap();
+        by_n.sort_by_key(|r| r[0].as_str().unwrap_or("").to_string());
+        assert_eq!(
+            by_n,
+            vec![
+                serde_json::json!(["a", 3]),
+                serde_json::json!(["c", 9007199254740993_i64])
+            ]
+        );
+        // A double among them: a double.
+        let mixed = q("(sum ?v) . :with ?e ?a", &["a", "d"]);
+        assert!(mixed.is_f64(), "{mixed}");
+        assert_eq!(mixed, 7.5);
+        let avg = q("(avg ?v) . :with ?e", &["a", "b"]);
+        assert!(avg.is_f64(), "{avg}");
+        assert_eq!(avg, 4.0);
+    }
 }
