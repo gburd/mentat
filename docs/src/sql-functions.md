@@ -341,6 +341,18 @@ rows it computed until it is refreshed: run `refresh(store, view)` for each
 one after excising. Before 1.19.0 excision left the current-state projection
 in place, so queries, `pull` and `entity` still returned the excised values.
 
+PostgreSQL itself can still hold copies of excised values for a while. The
+deleted rows stay on disk as dead tuples until `VACUUM` reclaims them, and
+planner statistics (`pg_stats`: most common values, histogram bounds) keep
+sampled values until the next `ANALYZE`. Roles that can read `pg_stats` for
+those tables can see them. To clear them at once, run `VACUUM ANALYZE` on the
+store's `datoms_<type>_new`, `current_<type>` and fulltext tables after
+excising. WAL and existing backups keep their copies until they expire.
+
+Excision sends no subscription notification. A `subscribe` listener keeps the
+last payload it received, which can include the excised values, until the
+next transaction on the store sends a new one.
+
 ---
 
 ## Subscription Functions
