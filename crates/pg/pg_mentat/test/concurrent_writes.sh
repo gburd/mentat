@@ -52,8 +52,7 @@ race() {
     exec 3> "$WORK/a"
     echo "BEGIN ISOLATION LEVEL $iso;" >&3
     report_sql "$a" >&3
-    local i
-    for i in $(seq 200); do  # until A's edn_t is done (its transaction is still open)
+    for _ in $(seq 200); do  # until A's edn_t is done (its transaction is still open)
         [ -n "$(q "SELECT 1 FROM pg_stat_activity WHERE application_name = 'race_a' \
                    AND state LIKE 'idle in transaction%'")" ] && break
         sleep 0.05
@@ -63,7 +62,7 @@ race() {
         > "$WORK/b.out" 2>&1 &
     local bpid=$!
     WAITED=no
-    for i in $(seq 100); do  # until B waits on a lock or finishes (5 s)
+    for _ in $(seq 100); do  # until B waits on a lock or finishes (5 s)
         WAITED=$(q "SELECT wait_event FROM pg_stat_activity WHERE application_name = 'race_b' \
                     AND wait_event_type = 'Lock'")
         [ -n "$WAITED" ] && break
