@@ -2991,6 +2991,7 @@ mod tests {
             r["tempids"]["b"].as_i64().unwrap(),
             r["tempids"]["c"].as_i64().unwrap(),
         );
+        let tx1 = r["db-after"]["basis-t"].as_i64().unwrap();
         tx(
             store,
             &format!(
@@ -2998,6 +2999,20 @@ mod tests {
                   [:db/retract {a} :p/tag \"fox jumps\"] [:db/add {a} :p/tag \"lazy dog\"] \
                   [:db/retract {b} :p/age 7] [:db/retract {b} :p/friend {a}] [:db/add {b} :p/friend {c}]]"
             ),
+        );
+        // c's only value replaced: c was still created at tx1.
+        let tx3 = tx(store, &format!("[[:db/add {c} :p/name \"cyd\"]]"))["db-after"]["basis-t"]
+            .as_i64()
+            .unwrap();
+        let first_last = text(&format!(
+            "SELECT e.first_tx || ' ' || e.last_tx || ' ' || (e.first_ts = t.tx_instant) \
+               FROM {schema}.entities e JOIN {schema}.transactions t ON t.tx = {tx1} \
+              WHERE e.entity_id = {c}"
+        ));
+        assert_eq!(
+            first_last,
+            format!("{tx1} {tx3} true"),
+            "entities: first_tx of {c}"
         );
         let rows = |sql: &str| -> Vec<String> {
             let mut out: Vec<String> = Spi::connect(|client| {
@@ -3030,7 +3045,7 @@ mod tests {
                 &format!("{a} :p/tag lazy dog"),
                 &format!("{b} :p/name bob"),
                 &format!("{b} :p/friend {c}"),
-                &format!("{c} :p/name cy"),
+                &format!("{c} :p/name cyd"),
             ]),
             "facts"
         );
@@ -3042,7 +3057,7 @@ mod tests {
             s(&[
                 &format!("{a} anna"),
                 &format!("{b} bob"),
-                &format!("{c} cy")
+                &format!("{c} cyd")
             ]),
             "text_values"
         );
@@ -3163,7 +3178,7 @@ mod tests {
                 "SELECT value FROM {schema}.recent_changes WHERE attribute = ':p/name' AND {}",
                 in_mine("entity_id")
             )),
-            s(&["ann", "anna", "bob", "cy"]),
+            s(&["ann", "anna", "bob", "cy", "cyd"]),
             "recent_changes"
         );
     }

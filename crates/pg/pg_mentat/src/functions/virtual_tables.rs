@@ -169,20 +169,50 @@ fn all_datoms_union_sql(schema: &str, store_id_expr: &str, live: bool) -> String
 /// Generate SQL for the `entities` view.
 ///
 /// Shows the entities that have a datom now (the current_<type>
-/// projection), with the earliest and latest transactions among those
-/// datoms.
+/// projection). first_tx / first_ts are when the entity was first asserted
+/// (the earliest assertion in the log, as on 1.18), so replacing its values
+/// doesn't move them; last_tx / last_ts and attribute_count are over its
+/// current datoms.
 ///
 /// Columns: entity_id, first_tx, last_tx, first_ts, last_ts, attribute_count
 fn entities_view_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
     let union = all_datoms_union_sql(schema, &sid, true);
+    // One index probe (EAVT, WHERE added) per log table.
+    let first = [
+        "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
+    ]
+    .iter()
+    .map(|ty| {
+        format!(
+            "(SELECT MIN(l.tx) FROM {schema}.datoms_{ty}_new l \
+             WHERE l.store_id = {sid} AND l.e = c.entity_id AND l.added)"
+        )
+    })
+    .collect::<Vec<_>>()
+    .join(",\n        ");
     format!(
         r"CREATE OR REPLACE VIEW {schema}.entities AS
 SELECT
+    x.entity_id,
+    x.first_tx,
+    x.last_tx,
+    (SELECT t.tx_instant FROM {schema}.transactions t WHERE t.tx = x.first_tx) AS first_ts,
+    x.last_ts,
+    x.attribute_count
+FROM (
+SELECT
+    c.entity_id,
+    COALESCE(LEAST(
+        {first}), c.min_tx) AS first_tx,
+    c.last_tx,
+    c.last_ts,
+    c.attribute_count
+FROM (
+SELECT
     d.e AS entity_id,
-    MIN(d.tx) AS first_tx,
+    MIN(d.tx) AS min_tx,
     MAX(d.tx) AS last_tx,
-    MIN(t.tx_instant) AS first_ts,
     MAX(t.tx_instant) AS last_ts,
     COUNT(DISTINCT d.a) AS attribute_count
 FROM (
@@ -190,9 +220,9 @@ FROM (
 ) d
 JOIN {schema}.transactions t ON t.tx = d.tx
 GROUP BY d.e
-ORDER BY d.e",
-        schema = schema,
-        union = union,
+) c
+) x
+ORDER BY x.entity_id",
     )
 }
 
@@ -1193,6 +1223,10 @@ mod tests {
         for (_, name, _, sql) in views_and_functions_sql("mentat_s") {
             if history.contains(&name) {
                 assert!(sql.contains("mentat_s.datoms_"), "{name}: {sql}");
+            } else if name == "entities" {
+                // Its rows are current; only first_tx looks in the log.
+                let rows = &sql[sql.find("FROM (\nSELECT\n    d.e").unwrap()..];
+                assert!(!rows.contains("datoms_"), "{rows}");
             } else {
                 assert!(!sql.contains("datoms_"), "{name} reads the log: {sql}");
                 assert!(!sql.contains("added"), "{name}: {sql}");
