@@ -1260,6 +1260,14 @@ extension_sql_file!(
     requires = [mentat_transact, t],
 );
 
+// Idents moved by pg_mentat before 1.19.0 (#415): mentat.moved_idents and
+// mentat.repair_moved_idents.
+extension_sql_file!(
+    "../sql/32_moved_idents.sql",
+    name = "moved_idents",
+    requires = ["bootstrap_schema", "narrow_storage", "current_projection"],
+);
+
 // Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /
 // mentat_pull) as thin SQL wrappers over edn_t / edn_q / edn_pull. The
 // deprecated mentat_eval wrapper lives next to edn_eval in

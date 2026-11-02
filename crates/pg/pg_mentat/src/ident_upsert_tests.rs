@@ -309,4 +309,184 @@ mod tests {
         let doc = q(s, "[:find ?d . :where [?e :db/ident :r/n] [?e :db/doc ?d]]");
         assert_eq!(doc, "n");
     }
+
+    /// A store as 1.18.0 left it after `[{:db/ident I :db/doc ...}]`: the
+    /// idents row names a new entity N, and the :db/ident datom stays on O.
+    /// (The transactor no longer writes this, so the test moves the row as
+    /// the old ON CONFLICT did, then writes through it.)
+    fn break_like_118(s: &str, ident: &str) -> (i64, i64) {
+        let owner = ident_entid(s, ident).expect("ident");
+        let moved = Spi::get_one::<i64>(&format!(
+            "SELECT nextval('{}.partition_user_seq')",
+            schema_of(s)
+        ))
+        .unwrap()
+        .unwrap();
+        Spi::run(&format!(
+            "UPDATE {}.idents SET entid = {moved} WHERE ident = '{ident}'; \
+             UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = '{s}'",
+            schema_of(s)
+        ))
+        .expect("move the ident");
+        (owner, moved)
+    }
+
+    fn moved_idents(s: &str) -> Vec<serde_json::Value> {
+        let r = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.ident), '[]') \
+               FROM mentat.moved_idents('{s}') m"
+        ))
+        .unwrap()
+        .unwrap();
+        r.0.as_array().cloned().unwrap_or_default()
+    }
+
+    fn repair(s: &str, dry_run: bool) -> Vec<serde_json::Value> {
+        let r = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT COALESCE(jsonb_agg(to_jsonb(m) ORDER BY m.ident), '[]') \
+               FROM mentat.repair_moved_idents('{s}', {dry_run}) m"
+        ))
+        .unwrap()
+        .unwrap();
+        r.0.as_array().cloned().unwrap_or_default()
+    }
+
+    fn repair_moved_enum(s: &str) {
+        tx(
+            s,
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+              {:db/ident :c/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+              {:db/ident :c/rank :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        tx(
+            s,
+            "[{:db/ident :color/red} {:db/ident :color/blue} {:db/ident :color/green}]",
+        );
+        tx(s, r#"[{:c/name "car" :c/color :color/red}]"#);
+        assert!(moved_idents(s).is_empty(), "a healthy store has none");
+        let (red, red2) = break_like_118(s, ":color/red");
+        // Written after the move: a ref to N, and a datom on N.
+        tx(
+            s,
+            r#"[{:c/name "rose" :c/color :color/red} [:db/add :color/red :c/rank 1]]"#,
+        );
+        // green moved too, and both entities got :c/rank: not repairable.
+        tx(s, "[[:db/add :color/green :c/rank 3]]");
+        let (_green, green2) = break_like_118(s, ":color/green");
+        tx(s, "[[:db/add :color/green :c/rank 4]]");
+
+        let found = moved_idents(s);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[1]["ident"], ":color/red");
+        assert_eq!(found[1]["owner"], red);
+        assert_eq!(found[1]["moved_to"], red2);
+        assert_eq!(found[1]["n_datoms"], 1);
+        assert_eq!(found[1]["n_refs"], 1);
+        assert_eq!(found[1]["blocker"], serde_json::Value::Null);
+        assert_eq!(found[0]["moved_to"], green2);
+        assert!(found[0]["blocker"].is_string(), "{found:?}");
+        // The split: the datom query finds only the car.
+        let q1 =
+            "[:find [?n ...] :where [?c :db/ident :color/red] [?e :c/color ?c] [?e :c/name ?n]]";
+        assert_eq!(len(&q(s, q1)), 1);
+
+        let dry = repair(s, true);
+        assert_eq!(dry[1]["action"], "would repair", "{dry:?}");
+        assert_eq!(moved_idents(s).len(), 2, "a dry run changes nothing");
+        let done = repair(s, false);
+        assert_eq!(done[1]["action"], "repaired", "{done:?}");
+        assert!(done[0]["action"].as_str().unwrap().starts_with("skipped"));
+
+        assert_eq!(ident_entid(s, ":color/red"), Some(red));
+        assert_eq!(len(&q(s, q1)), 2, "{}", q(s, q1));
+        let q2 = "[:find [?n ...] :where [?e :c/color :color/red] [?e :c/name ?n]]";
+        assert_eq!(len(&q(s, q2)), 2);
+        assert_eq!(
+            q(
+                s,
+                "[:find ?r . :where [?c :db/ident :color/red] [?c :c/rank ?r]]"
+            ),
+            1
+        );
+        let left = moved_idents(s);
+        assert_eq!(left.len(), 1, "only green is left: {left:?}");
+        // New writes resolve to the owner, and history keeps the tx.
+        tx(s, r#"[{:c/name "fire" :c/color :color/red}]"#);
+        assert_eq!(len(&q(s, q1)), 3);
+        let h = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT q('{s}', '[:find ?e :where [?e :c/color {red2} _ _]]', '{{\"history\": true}}'::jsonb)"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            len(&h.0["results"]),
+            0,
+            "no ref to N is left in the log: {}",
+            h.0
+        );
+    }
+
+    /// Before the repair, re-asserting the ident names its owner, and the
+    /// transactor does not move the row from an entity that has data.
+    #[pg_test]
+    fn ident_reassert_on_a_moved_ident() {
+        setup("default");
+        let s = "default";
+        tx(
+            s,
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]",
+        );
+        tx(s, "[{:db/ident :color/red} {:db/ident :color/blue}]");
+        let (red, _) = break_like_118(s, ":color/red");
+        tx(s, "[{:c/color :color/red}]");
+        let err = tx_err(s, r#"[{:db/ident :color/red :db/doc "r"}]"#);
+        assert!(err.contains("moved_idents('default')"), "{err}");
+        // An empty moved row is repointed by the re-assert itself.
+        let (blue, _) = break_like_118(s, ":color/blue");
+        tx(s, r#"[{:db/ident :color/blue :db/doc "b"}]"#);
+        assert_eq!(ident_entid(s, ":color/blue"), Some(blue));
+        assert_ne!(ident_entid(s, ":color/red"), Some(red));
+    }
+
+    /// The 1.18.0 -> 1.19.0 upgrade makes the same functions as a fresh
+    /// install, and its check runs on a store with a moved ident.
+    #[pg_test]
+    fn ident_upgrade_section() {
+        let fresh = include_str!("../sql/32_moved_idents.sql");
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let funcs = &fresh[fresh.find("-- mentat.moved_idents(store TEXT").unwrap()..];
+        assert!(
+            upgrade.contains(funcs.trim_end()),
+            "the upgrade's functions differ from 32_moved_idents.sql"
+        );
+        setup("default");
+        let s = "default";
+        tx(s, "[{:db/ident :color/red}]");
+        break_like_118(s, ":color/red");
+        let start = upgrade.find("DO $movedidents$").unwrap();
+        let end = upgrade.rfind("$movedidents$;").unwrap() + "$movedidents$".len();
+        // The block's WARNING, raised as an error so the test can read it.
+        Spi::run("SET LOCAL client_min_messages = warning").unwrap();
+        let block = upgrade[start..end].replace("RAISE WARNING", "RAISE EXCEPTION");
+        let err = Spi::get_one::<String>(&format!(
+            "SELECT pg_temp.capture('{}')",
+            block.replace('\'', "''")
+        ))
+        .unwrap()
+        .unwrap_or_default();
+        assert!(err.contains("the default store has 1 ident(s)"), "{err}");
+        assert_eq!(moved_idents(s).len(), 1);
+    }
+
+    #[pg_test]
+    fn ident_repair_moved_idents() {
+        setup("default");
+        repair_moved_enum("default");
+    }
+
+    #[pg_test]
+    fn ident_repair_moved_idents_named_store() {
+        setup("id415r");
+        repair_moved_enum("id415r");
+    }
 }

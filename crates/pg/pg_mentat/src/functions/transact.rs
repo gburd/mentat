@@ -1982,12 +1982,13 @@ fn install_ident(
         .into());
     }
     if holder == Some(entid) && entity_in_use(old, schema)? {
+        let store = schema_to_store_name(schema);
         return Err(MentatError::InvalidTransaction {
             message: format!(
                 "{ident} is the :db/ident of entity {entid}, but the store's idents table \
-                 maps it to entity {old}, which has data (moved by pg_mentat before 1.19.0, \
-                 issue #415). Run SELECT * FROM mentat.moved_idents() and \
-                 mentat.repair_moved_idents() first."
+                 maps it to entity {old}, which has data (moved by pg_mentat 1.18.0 or \
+                 earlier, issue #415). See SELECT * FROM mentat.moved_idents('{store}') and \
+                 mentat.repair_moved_idents('{store}')."
             ),
         }
         .into());

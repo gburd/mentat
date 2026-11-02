@@ -410,6 +410,50 @@ On a store with many collisions the repair rewrites every datom of each
 colliding entity, so run it in a maintenance window and expect it to scale
 with the number of affected datoms, not with total store size.
 
+### Idents moved by 1.18.0 and earlier (#415)
+
+Before 1.19.0, re-asserting an existing ident in a map without `:db/id`
+(`[{:db/ident :color/red :db/doc "red"}]`, or an idempotent schema install
+that lists enum idents) pointed the store's `idents` row at a new, empty
+entity. Values written afterwards went to that entity, values written
+before stayed on the ident's own entity, so an enum's data split in two
+(`[?c :db/ident :color/red] [?e :c/color ?c]` found only the older ones),
+and a redefined transaction function stopped being one. 1.19.0 no longer
+does this, but it does not change existing data on upgrade. The 1.19.0
+upgrade WARNs if the default store has such idents; check every store:
+
+```sql
+SELECT * FROM mentat.moved_idents('default');   -- no rows == healthy
+```
+
+Each row is one ident: `owner` is the entity with its `:db/ident` datom,
+`moved_to` the entity the `idents` row names, `n_datoms` / `n_refs` what
+was written to `moved_to` since, and `blocker` why the repair can't merge
+the two (NULL if it can).
+
+`mentat.repair_moved_idents(store TEXT DEFAULT 'default', dry_run BOOLEAN
+DEFAULT true)` points each ident with no blocker back at its owner, and
+moves what was written to `moved_to` onto the owner: datoms whose entity
+is `moved_to`, and ref values that point at it, in the log and the current
+state. Transaction ids stay as they are. It skips (and reports) an ident
+when both entities have a value of one attribute, when one entity refers
+to both through one attribute, or when `moved_to` was used as an
+attribute; those need a decision about which value to keep. Fix them by
+hand (retract one value), then run the repair again.
+
+```sql
+SELECT * FROM mentat.repair_moved_idents('default');           -- dry run
+-- back up, stop writers to the store, then:
+BEGIN;
+SELECT * FROM mentat.repair_moved_idents('default', false);
+SELECT * FROM mentat.moved_idents('default');   -- only skipped ones left
+COMMIT;
+```
+
+An ident re-asserted more than once moved each time; only the last move
+is visible, so refs written to an earlier `moved_to` are not found or
+repaired.
+
 ### The 1.5.6 upgrade caveat (fixed in 1.5.7)
 
 The 1.5.5→1.5.6 migration bounded the sequences with a fixed `MAXVALUE`,
