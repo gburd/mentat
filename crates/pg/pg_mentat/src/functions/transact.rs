@@ -373,47 +373,19 @@ fn execute_speculative_transaction(
     // "snapshot reference not owned by resource owner" errors when SPI snapshots
     // outlive the subtransaction.
     //
-    // Strategy: Execute the real transaction, capture the JSON result, then
-    // intentionally RAISE an exception to trigger rollback of the subtransaction.
-    // The EXCEPTION handler catches our marker exception and returns the result.
-    // The writes from edn_t are rolled back by the exception mechanism.
-    let escaped_edn = edn_tx.replace('\'', "''");
-    let escaped_schema = schema.replace('\'', "''");
-
-    // Execute via a PL/pgSQL helper function that runs the transaction,
-    // captures the result, then raises an exception to trigger rollback.
-    // The EXCEPTION handler catches our marker and returns the result.
-    let get_sql = format!("SELECT mentat._speculative_exec('{escaped_schema}', '{escaped_edn}')");
-
-    // Create the helper function if it doesn't exist yet
-    Spi::run(&format!(
-        "CREATE OR REPLACE FUNCTION mentat._speculative_exec(p_schema TEXT, p_edn TEXT)
-         RETURNS TEXT LANGUAGE plpgsql AS $fn$
-         DECLARE
-             _result TEXT;
-         BEGIN
-             -- Execute in the appropriate schema
-             IF p_schema = 'mentat' THEN
-                 SELECT edn_t(p_edn::TEXT)::TEXT INTO _result;
-             ELSE
-                 -- p_schema is mentat_<store>
-                 SELECT t(substr(p_schema, 8), p_edn::TEXT)::TEXT INTO _result;
-             END IF;
-             -- Intentionally raise to trigger subtransaction rollback
-             RAISE EXCEPTION 'SPECULATIVE_OK:%', _result;
-         EXCEPTION
-             WHEN OTHERS THEN
-                 IF SQLERRM LIKE 'SPECULATIVE_OK:%' THEN
-                     RETURN substring(SQLERRM FROM 16);
-                 ELSE
-                     RAISE;
-                 END IF;
-         END;
-         $fn$"
-    ))?;
-
-    let result = Spi::get_one::<String>(&get_sql)?
-        .ok_or_else(|| "Speculative transaction returned NULL".to_string())?;
+    // mentat._speculative_exec (sql/31_speculative_exec.sql) executes the real
+    // transaction, then raises a marker exception carrying the report, which
+    // rolls the writes back; its EXCEPTION handler returns the report. It is
+    // the extension's: before 1.19.0 this created it on every call, which
+    // only the mentat schema's owner may (#403).
+    let result = Spi::get_one_with_args::<String>(
+        "SELECT mentat._speculative_exec($1, $2)",
+        &[
+            pgrx::datum::DatumWithOid::from(schema),
+            pgrx::datum::DatumWithOid::from(edn_tx),
+        ],
+    )?
+    .ok_or_else(|| "Speculative transaction returned NULL".to_string())?;
 
     // Invalidate caches since the subtransaction rollback may have left stale state
     crate::cache::get_cache_for_store(schema_to_store_name(schema)).invalidate();

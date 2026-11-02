@@ -733,6 +733,8 @@ mod bootstrap_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod boundary_value_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod cache_role_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod cache_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod cardinality_tests;
@@ -1242,6 +1244,14 @@ extension_sql_file!(
         "current_projection",
         "bootstrap_data"
     ],
+);
+
+// with() / mentat_with()'s helper (#403): runs the transaction in a
+// subtransaction and rolls it back. Calls edn_t and t.
+extension_sql_file!(
+    "../sql/31_speculative_exec.sql",
+    name = "speculative_exec",
+    requires = [mentat_transact, t],
 );
 
 // Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /

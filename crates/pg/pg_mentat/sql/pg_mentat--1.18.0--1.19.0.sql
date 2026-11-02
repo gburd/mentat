@@ -204,3 +204,39 @@ BEGIN
     RETURN format('MATERIALIZED VIEW %s refreshed', safe_view_name);
 END;
 $$ LANGUAGE plpgsql;
+
+-- === pg-cache ===
+-- ---------------------------------------------------------------------------
+-- with() / mentat_with()'s helper mentat._speculative_exec (#403). Before
+-- 1.19.0 with() ran CREATE OR REPLACE FUNCTION on every call, so it failed
+-- ("permission denied for schema mentat") for every role that doesn't own
+-- the mentat schema, and the function, where one exists, belongs to whoever
+-- called with() first and not to the extension. It is dropped and made again
+-- as an extension member (CREATE OR REPLACE refuses a function the extension
+-- doesn't own). Runs as the caller; EXECUTE is PUBLIC's, as with()'s is. Same
+-- body as sql/31_speculative_exec.sql.
+-- ---------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS mentat._speculative_exec(TEXT, TEXT);
+CREATE FUNCTION mentat._speculative_exec(p_schema TEXT, p_edn TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    _result TEXT;
+BEGIN
+    IF p_schema = 'mentat' THEN
+        _result := @extschema@.edn_t(p_edn);
+    ELSE
+        -- p_schema is mentat_<store>
+        _result := @extschema@.t(pg_catalog.substr(p_schema, 8), p_edn);
+    END IF;
+    -- Roll the subtransaction back, carrying the report out.
+    RAISE EXCEPTION 'SPECULATIVE_OK:%', _result;
+EXCEPTION
+    WHEN OTHERS THEN
+        IF SQLERRM LIKE 'SPECULATIVE_OK:%' THEN
+            RETURN pg_catalog.substr(SQLERRM, 16);
+        END IF;
+        RAISE;
+END;
+$fn$;

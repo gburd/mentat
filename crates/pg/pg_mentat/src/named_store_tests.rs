@@ -1972,6 +1972,35 @@ mod tests {
         assert_eq!(dropped, None, "dropped");
     }
 
+    // recursive / drop_recursive / list_recursive refused "default" as a
+    // reserved store name, as materialize did (#406).
+    #[pg_test]
+    fn recursive_on_the_default_and_a_named_store() {
+        setup();
+        Spi::run("SELECT create_store('rq_a')").expect("create");
+        for (store, schema) in [("default", "mentat"), ("rq_a", "mentat_rq_a")] {
+            Spi::run(&format!(
+                "SELECT recursive('{store}', 'rq_nums', 'r', 'SELECT 1 AS n', \
+                 'SELECT n + 1 FROM r WHERE n < 3')"
+            ))
+            .unwrap_or_else(|e| panic!("recursive('{store}', ...): {e}"));
+            let n: i64 = Spi::get_one(&format!("SELECT sum(n) FROM {schema}.rq_nums"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(n, 6, "{store}");
+            let listed = json(&format!("SELECT list_recursive('{store}')"));
+            assert_eq!(listed.as_array().map(|a| a.len()), Some(1), "{listed}");
+            Spi::run(&format!("SELECT drop_recursive('{store}', 'rq_nums')"))
+                .unwrap_or_else(|e| panic!("drop_recursive('{store}', ...): {e}"));
+            let gone: i64 = Spi::get_one(&format!(
+                "SELECT count(*) FROM pg_views WHERE schemaname = '{schema}' AND viewname = 'rq_nums'"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(gone, 0, "{store}");
+        }
+    }
+
     // (pull ?e [...]) in :find called edn_pull, which reads the default
     // store: on a named store it returned the default store's values for the
     // same entity id. Entity ids overlap across stores.

@@ -28,6 +28,18 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: a role without rights on a store gets PostgreSQL's
+  "permission denied"** for the store's schema or tables, instead of
+  `:db.error/unknown-attribute` (#402). A role that has only column-level
+  grants on a store's `schema` / `idents` tables is refused; grant SELECT on
+  the tables.
+- **pg_mentat 1.19.0 upgrade and `with()`:** between installing the new
+  library and running `ALTER EXTENSION pg_mentat UPDATE`, `with()` fails with
+  "function mentat._speculative_exec does not exist" on databases that
+  never called it; run the UPDATE. The upgrade replaces a
+  `mentat._speculative_exec(...)` left by an earlier `with()` call; if a
+  user view or function depends on it, the UPDATE fails and stays on
+  1.18.0 (#403).
 - **A tempid used only as a ref value fails the transaction** (#384), on
   every backend, with `:db.error/tempid-not-an-entity` naming the tempid,
   as in Datomic. A tempid that never names the entity of an assertion and
@@ -66,6 +78,15 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: `recursive('default', ...)`, `drop_recursive('default', ...)`
+  and `list_recursive('default')` failed with "'default' is a reserved
+  name"** (#406).
+- **pg_mentat: the schema cache kept attributes a rolled-back transaction or
+  savepoint defined** (#404), so a later query in the same session could
+  still find them.
+- **pg_mentat: `with()` and `mentat_with()` failed for roles that don't own
+  the `mentat` schema** (#403). They created their helper function on every
+  call; the helper now ships with the extension and the upgrade.
 - **pg_mentat: concurrent writers could break cardinality one, `:db/cas`
   and `:db/unique` under READ COMMITTED** (#376). Two sessions replacing one
   cardinality-one value, asserting it for the first time, or running
@@ -155,6 +176,16 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **pg_mentat: `q()` / `edn_q()` reused a query plan made for another role**
+  (#402). In one session, after a privileged role had run a query, a role
+  with table grants but no `USAGE` on `mentat_<store>` could read the store.
+  Plans are now kept per role, and removing a role from a group that gave
+  it USAGE takes effect at once.
+- **pg_mentat: the session's cached store schema answered roles without
+  rights on the store** (#402): `q()` and `edn_eval`'s `(entity db :attr)`
+  told such a role whether an attribute existed and its value type. They
+  now need `USAGE` on the store's schema and `SELECT` on its `schema` and
+  `idents` tables.
 - **pg_mentat: a transaction function reaches only the store it runs on.** A
   tx-fn runs its author's code with the invoking role's privileges, so
   opening any other store is `:db.error/txfn-store-scope`: the author of a
