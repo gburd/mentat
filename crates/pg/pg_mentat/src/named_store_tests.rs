@@ -2970,4 +2970,212 @@ mod tests {
         .unwrap();
         assert_eq!(foreign, 0);
     }
+
+    /// A store's views and helper functions, each with the rows it returns
+    /// as sorted text, after a card-one replace and a retraction (#395).
+    /// Values are distinct per object so a stale row can't hide.
+    fn store_objects_read_live_values(store: &str) {
+        let schema = crate::functions::store_management::quote_ident(&format!("mentat_{store}"));
+        tx(store, SCHEMA_TX);
+        tx(
+            store,
+            "[{:db/ident :p/tag :db/valueType :db.type/string :db/cardinality :db.cardinality/many}]",
+        );
+        let r = tx(
+            store,
+            "[{:db/id \"a\" :p/name \"ann\" :p/age 1 :p/tag [\"fox jumps\" \"t2\"]} \
+              {:db/id \"b\" :p/name \"bob\" :p/age 7 :p/friend \"a\"} {:db/id \"c\" :p/name \"cy\"}]",
+        );
+        let (a, b, c) = (
+            r["tempids"]["a"].as_i64().unwrap(),
+            r["tempids"]["b"].as_i64().unwrap(),
+            r["tempids"]["c"].as_i64().unwrap(),
+        );
+        tx(
+            store,
+            &format!(
+                "[[:db/add {a} :p/name \"anna\"] [:db/add {a} :p/age 2] \
+                  [:db/retract {a} :p/tag \"fox jumps\"] [:db/add {a} :p/tag \"lazy dog\"] \
+                  [:db/retract {b} :p/age 7] [:db/retract {b} :p/friend {a}] [:db/add {b} :p/friend {c}]]"
+            ),
+        );
+        let rows = |sql: &str| -> Vec<String> {
+            let mut out: Vec<String> = Spi::connect(|client| {
+                client
+                    .select(sql, None, &[])
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                    .map(|row| row.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect()
+            });
+            out.sort();
+            out
+        };
+        let mine = format!("{a}, {b}, {c}");
+        let in_mine = |col: &str| format!("{col} IN ({mine})");
+        let s = |v: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = v.iter().map(|x| x.to_string()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || attribute || ' ' || value FROM {schema}.facts \
+                  WHERE {} AND attribute LIKE ':p/%'",
+                in_mine("entity_id")
+            )),
+            s(&[
+                &format!("{a} :p/name anna"),
+                &format!("{a} :p/age 2"),
+                &format!("{a} :p/tag t2"),
+                &format!("{a} :p/tag lazy dog"),
+                &format!("{b} :p/name bob"),
+                &format!("{b} :p/friend {c}"),
+                &format!("{c} :p/name cy"),
+            ]),
+            "facts"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || value FROM {schema}.text_values \
+                  WHERE attribute = ':p/name'"
+            )),
+            s(&[&format!("{a} anna"), &format!("{b} bob"), &format!("{c} cy")]),
+            "text_values"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || value FROM {schema}.numeric_values \
+                  WHERE attribute = ':p/age'"
+            )),
+            s(&[&format!("{a} 2")]),
+            "numeric_values"
+        );
+        for view in ["entity_references", "graph_edges"] {
+            let (src, dst) = if view == "graph_edges" {
+                ("source", "target")
+            } else {
+                ("source_entity", "target_entity")
+            };
+            assert_eq!(
+                rows(&format!(
+                    "SELECT {src} || ' ' || {dst} FROM {schema}.{view} WHERE {}",
+                    in_mine(src)
+                )),
+                s(&[&format!("{b} {c}")]),
+                "{view}"
+            );
+        }
+        assert_eq!(
+            rows(&format!(
+                "SELECT source_entity || ' ' || target_entity FROM {schema}.reverse_references \
+                  WHERE {}",
+                in_mine("target_entity")
+            )),
+            s(&[&format!("{b} {c}")]),
+            "reverse_references"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT value FROM {schema}.searchable_text \
+                  WHERE search_vector @@ plainto_tsquery('english', 'fox') \
+                     OR search_vector @@ plainto_tsquery('english', 'dog')"
+            )),
+            s(&["lazy dog"]),
+            "searchable_text"
+        );
+        assert_eq!(
+            rows(&format!("SELECT value FROM {schema}.find_text('fox')")),
+            s(&[]),
+            "find_text"
+        );
+        assert_eq!(
+            rows(&format!("SELECT value FROM {schema}.find_text('dog')")),
+            s(&["lazy dog"]),
+            "find_text"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id::TEXT FROM {schema}.entities_with_attribute(':p/age')"
+            )),
+            s(&[&a.to_string()]),
+            "entities_with_attribute"
+        );
+        for (attr, value, want) in [
+            (":p/name", "ann".to_string(), vec![]),
+            (":p/name", "anna".to_string(), vec![a.to_string()]),
+            (":p/age", "7".to_string(), vec![]),
+            (":p/age", "2".to_string(), vec![a.to_string()]),
+            (":p/friend", a.to_string(), vec![]),
+            (":p/friend", c.to_string(), vec![b.to_string()]),
+        ] {
+            assert_eq!(
+                rows(&format!(
+                    "SELECT entity_id::TEXT FROM {schema}.lookup_entity('{attr}', '{value}')"
+                )),
+                want,
+                "lookup_entity {attr} {value}"
+            );
+        }
+        for (e, attr, want) in [
+            (a, ":p/name", Some("anna".to_string())),
+            (a, ":p/age", Some("2".to_string())),
+            (b, ":p/age", None),
+            (b, ":p/friend", Some(c.to_string())),
+        ] {
+            assert_eq!(
+                Spi::get_one::<String>(&format!(
+                    "SELECT {schema}.entity_value({e}, '{attr}')"
+                ))
+                .unwrap(),
+                want,
+                "entity_value {e} {attr}"
+            );
+        }
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || attribute_count FROM {schema}.entities WHERE {}",
+                in_mine("entity_id")
+            )),
+            s(&[&format!("{a} 3"), &format!("{b} 2"), &format!("{c} 1")]),
+            "entities"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT ident || ' ' || entity_count || ' ' || datom_count FROM {schema}.schema_summary \
+                  WHERE ident IN (':p/age', ':p/tag', ':p/friend')"
+            )),
+            s(&[":p/age 1 1", ":p/friend 1 1", ":p/tag 1 2"]),
+            "schema_summary"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT attribute || ' ' || entity_count || ' ' || datom_count \
+                   FROM {schema}.count_by_attribute() WHERE attribute IN (':p/age', ':p/tag')"
+            )),
+            s(&[":p/age 1 1", ":p/tag 1 2"]),
+            "count_by_attribute"
+        );
+        // History views keep what was replaced.
+        assert_eq!(
+            rows(&format!(
+                "SELECT value FROM {schema}.recent_changes WHERE attribute = ':p/name' AND {}",
+                in_mine("entity_id")
+            )),
+            s(&["ann", "anna", "bob", "cy"]),
+            "recent_changes"
+        );
+    }
+
+    // Since 1.5.0 the log is append-only: a replaced or retracted value
+    // keeps its added = true row. A named store's views and helper functions
+    // read the log with only `added = true`, so they returned values
+    // entities no longer have (#395).
+    #[pg_test]
+    fn store_views_read_current_state() {
+        setup();
+        Spi::run("SELECT create_store('cur_views')").expect("create_store");
+        store_objects_read_live_values("cur_views");
+        Spi::run("SELECT create_store('Cur_Mixed')").expect("create_store");
+        store_objects_read_live_values("Cur_Mixed");
+    }
 }
