@@ -387,9 +387,11 @@ SELECT mentat.subscribe('acme', 'payroll', '[:find ?n :where [_ :p/name ?n]]',
 -- payload: {"tx": 1000000000105, "hash": "9a0364b9e99bb480dd25e1f0284c8555"}
 ```
 
-The payload is then `{"tx": T, "hash": H}`: `tx` is the transaction that
-changed the result (null if the write allocated none), `hash` the md5 of
-the result's JSON text. The listener re-runs the query itself, with its
+The payload is then `{"tx": T, "hash": H}`: `tx` is the id of the
+transaction's last `t()` / `edn_t()` on this store, `hash` the md5 of the
+result's JSON text. `tx` is null when the write was a plain statement on
+the store's `datoms` view in a transaction that called neither on this
+store. The listener re-runs the query itself, with its
 own privileges. The channel name, and so the subscription name, is still
 visible to every listener.
 

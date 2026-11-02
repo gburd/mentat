@@ -2409,7 +2409,8 @@ mod tests {
                current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
         );
         Spi::run(&format!(
-            "SELECT dblink_connect('tk_w', '{conn}'), dblink_connect('tk_l', '{conn}')"
+            "SELECT dblink_connect('tk_w', '{conn}'), dblink_connect('tk_l', '{conn}'), \
+                    dblink_connect('tk_w2', '{conn}')"
         ))
         .expect("connect");
         let on = |c: &str, sql: &str| {
@@ -2419,14 +2420,15 @@ mod tests {
             ))
             .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
         };
-        let write = |edn: &str| -> serde_json::Value {
+        let write_on = |c: &str, edn: &str| -> serde_json::Value {
             let sql = format!("SELECT t('tk_s', '{}')", edn.replace('\'', "''"));
             let out = text(&format!(
-                "SELECT r FROM dblink('tk_w', '{}') AS x(r TEXT)",
+                "SELECT r FROM dblink('{c}', '{}') AS x(r TEXT)",
                 sql.replace('\'', "''")
             ));
             serde_json::from_str(&out).expect("tx report")
         };
+        let write = |edn: &str| write_on("tk_w", edn);
         // (channel, payload) received by the listener, waiting up to 10 s
         // for `n` of them.
         let received = |n: usize| -> Vec<(String, serde_json::Value)> {
@@ -2470,12 +2472,13 @@ mod tests {
         );
         on("tk_l", "LISTEN mentat_tk_res");
         on("tk_l", "LISTEN mentat_tk_tok");
-        let hash = || {
+        let hash_on = |c: &str| {
             text(&format!(
-                "SELECT h FROM dblink('tk_w', $q$SELECT md5(q('tk_s', '{query}', '{{}}'::jsonb)::text)$q$) \
+                "SELECT h FROM dblink('{c}', $q$SELECT md5(q('tk_s', '{query}', '{{}}'::jsonb)::text)$q$) \
                    AS x(h TEXT)"
             ))
         };
+        let hash = || hash_on("tk_w");
 
         let tx1 = write("[{:p/name \"one\"}]")["db-after"]["basis-t"].clone();
         let got = received(2);
@@ -2512,9 +2515,72 @@ mod tests {
                 ),
             ]
         );
+
+        // "tx" came from currval of the store's tx sequence, which is the
+        // session's last t(), not this transaction's: another session writes
+        // (tx3), then tk_w changes nothing through the view, and its trigger
+        // sees a new result and sent tk_w's old tx2 with tx3's hash.
+        let tok = |tx: serde_json::Value, h: String| {
+            vec![
+                (
+                    "mentat_tk_res".to_string(),
+                    serde_json::json!({"tx": tx, "hash": h, "too_large": true}),
+                ),
+                (
+                    "mentat_tk_tok".to_string(),
+                    serde_json::json!({"tx": tx, "hash": h}),
+                ),
+            ]
+        };
+        on("tk_w2", "SET search_path TO mentat, public");
+        let tx3 = write_on("tk_w2", "[{:p/name \"three\"}]")["db-after"]["basis-t"].clone();
+        assert_eq!(received(2), tok(tx3, hash()));
+        on("tk_w", "DELETE FROM mentat_tk_s.datoms WHERE false");
+        assert_eq!(
+            received(2),
+            tok(serde_json::Value::Null, hash()),
+            "no t() in this transaction: tx is null, not the session's last"
+        );
+        // A raw statement in the same transaction as a t() reports that t().
+        on("tk_w", "BEGIN");
+        let tx4 = write("[{:p/name \"four\"}]")["db-after"]["basis-t"].clone();
+        let h4 = hash();
+        let tx5 = write_on("tk_w2", "[{:p/name \"five\"}]")["db-after"]["basis-t"].clone();
+        assert_eq!(received(2), tok(tx5, hash_on("tk_w2")), "tk_w2's own write");
+        on("tk_w", "DELETE FROM mentat_tk_s.datoms WHERE false");
+        let h5 = hash();
+        on("tk_w", "COMMIT");
+        let mut both = tok(tx4.clone(), h4);
+        both.extend(tok(tx4, h5));
+        both.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(received(4), both);
         on("tk_w", "DO $d$ BEGIN PERFORM drop_store('tk_s'); END $d$");
-        Spi::run("SELECT dblink_disconnect('tk_w'), dblink_disconnect('tk_l')")
-            .expect("disconnect");
+        Spi::run(
+            "SELECT dblink_disconnect('tk_w'), dblink_disconnect('tk_l'), \
+                    dblink_disconnect('tk_w2')",
+        )
+        .expect("disconnect");
+    }
+
+    // edn_t and t() record their transaction's tx, by schema, for the
+    // subscription trigger's token (mentat.current_tx, transaction-local).
+    #[pg_test]
+    fn transactor_records_the_current_tx() {
+        setup();
+        tx("default", SCHEMA_TX);
+        let r: serde_json::Value =
+            serde_json::from_str(&text("SELECT edn_t('[{:p/name \"ct-1\"}]')")).unwrap();
+        assert_eq!(
+            text("SELECT current_setting('mentat.current_tx', true)"),
+            format!("mentat:{}", r["db-after"]["basis-t"])
+        );
+        Spi::run("SELECT create_store('ct_s')").expect("create");
+        let r = tx("ct_s", SCHEMA_TX);
+        assert_eq!(
+            text("SELECT current_setting('mentat.current_tx', true)"),
+            format!("mentat_ct_s:{}", r["db-after"]["basis-t"])
+        );
+        Spi::run("SELECT drop_store('ct_s')").expect("drop");
     }
 
     // mentat.refresh_datalog_view could not be called on any version: its

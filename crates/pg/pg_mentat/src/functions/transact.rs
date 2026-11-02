@@ -898,6 +898,13 @@ fn execute_transaction_inner(
 
     // Allocate transaction ID with advisory lock protection
     let (basis_t_before, tx_id, tx_instant_micros) = allocate_tx_id(&qs)?;
+    // For a subscription token's "tx" (#379): transaction-local, so a later
+    // transaction never sees it; keyed by schema, since every store's tx
+    // sequence uses the same band.
+    Spi::run_with_args(
+        "SELECT pg_catalog.set_config('mentat.current_tx', $1, true)",
+        &[DatumWithOid::from(format!("{schema}:{tx_id}").as_str())],
+    )?;
 
     // --- Per-transaction context setup ---
     // (1) Check cache generation once — bypass all subsequent checks within

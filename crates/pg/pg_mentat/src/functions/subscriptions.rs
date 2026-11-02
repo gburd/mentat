@@ -192,11 +192,11 @@ fn dollar_tag(body: &str) -> String {
 /// is qualified: `q_fn` is pg_mentat's q, named through its schema (#383).
 ///
 /// The payload is the query result, or with `token_only` a token,
-/// `{"tx": T, "hash": H}`: the transaction that changed the result (its
-/// store's current tx; null if this session hasn't allocated one) and the
-/// result's md5. Anyone who can LISTEN gets the payload (#379); a token
-/// tells them only that the result changed, and they re-run the query with
-/// their own privileges. A result over PostgreSQL's NOTIFY limit is sent as
+/// `{"tx": T, "hash": H}`: the tx of the t() / edn_t() on this store in the
+/// current transaction (null for a statement in a transaction with none,
+/// see `mentat.current_tx` in transact.rs) and the result's md5. Anyone who
+/// can LISTEN gets the payload (#379); a token tells them only that the
+/// result changed, and they re-run the query with their own privileges. A result over PostgreSQL's NOTIFY limit is sent as
 /// a token with `"too_large": true`, so the write doesn't fail (#400).
 fn trigger_function_sql(
     schema: &str,
@@ -221,6 +221,7 @@ DECLARE
     old_hash TEXT;
     result_json JSONB;
     payload TEXT;
+    cur_tx TEXT;
     tx_id BIGINT;
 BEGIN
     -- The store whose datoms view fired this trigger. Looked up from the
@@ -253,11 +254,12 @@ BEGIN
         IF {token_only} OR pg_catalog.octet_length(payload) >=
                pg_catalog.current_setting('block_size')::INT
              - pg_catalog.current_setting('max_identifier_length')::INT - 129 THEN
+            -- '<schema>:<tx>' of this transaction's last t() / edn_t()
+            -- (transaction-local); null unless it wrote this view's store.
+            cur_tx := pg_catalog.current_setting('mentat.current_tx', true);
             BEGIN
-                -- The sequence t() took this transaction's id from
-                -- (allocate_tx_id), by the view's schema (rename_store).
-                tx_id := pg_catalog.currval(
-                    pg_catalog.format('%I.partition_tx_seq', TG_TABLE_SCHEMA)::pg_catalog.regclass);
+                tx_id := CASE WHEN pg_catalog.split_part(cur_tx, ':', 1) = TG_TABLE_SCHEMA
+                              THEN pg_catalog.split_part(cur_tx, ':', 2)::BIGINT END;
             EXCEPTION WHEN OTHERS THEN
                 tx_id := NULL;
             END;
