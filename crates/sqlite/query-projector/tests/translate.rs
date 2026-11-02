@@ -658,15 +658,18 @@ fn test_complex_or_join_type_projection() {
     assert_eq!(
         sql,
         "SELECT `c00`.`?y` AS `?y`, \
-         `c00`.`?y_value_type_tag` AS `?y_value_type_tag` \
+         `c00`.`?y_value_type_tag` AS `?y_value_type_tag`, \
+         typeof(`c00`.`?y`) AS `?y_typeof` \
          FROM (SELECT `datoms00`.v AS `?y`, \
-         10 AS `?y_value_type_tag` \
+         10 AS `?y_value_type_tag`, \
+         typeof(`datoms00`.v) AS `?y_typeof` \
          FROM `datoms` AS `datoms00` \
          WHERE `datoms00`.e = 6 \
          AND `datoms00`.a = 98 \
          UNION \
          SELECT `all_datoms01`.v AS `?y`, \
-         `all_datoms01`.value_type_tag AS `?y_value_type_tag` \
+         `all_datoms01`.value_type_tag AS `?y_value_type_tag`, \
+         typeof(`all_datoms01`.v) AS `?y_typeof` \
          FROM `all_datoms` AS `all_datoms01` \
          WHERE `all_datoms01`.e = 5) AS `c00` \
          LIMIT 1"
@@ -798,7 +801,8 @@ fn test_order_by() {
     assert_eq!(
         sql,
         "SELECT DISTINCT `all_datoms00`.e AS `?x`, `all_datoms00`.v AS `?y`, \
-         `all_datoms00`.value_type_tag AS `?y_value_type_tag` \
+         `all_datoms00`.value_type_tag AS `?y_value_type_tag`, \
+         typeof(`all_datoms00`.v) AS `?y_typeof` \
          FROM `all_datoms` AS `all_datoms00` \
          ORDER BY `?y_value_type_tag` ASC, `?y` ASC, `?x` ASC"
     );
@@ -1025,7 +1029,8 @@ fn test_unbound_attribute_with_ground_entity() {
         sql,
         "SELECT DISTINCT `all_datoms00`.e AS `?x`, \
          `all_datoms00`.v AS `?v`, \
-         `all_datoms00`.value_type_tag AS `?v_value_type_tag` \
+         `all_datoms00`.value_type_tag AS `?v_value_type_tag`, \
+         typeof(`all_datoms00`.v) AS `?v_typeof` \
          FROM `all_datoms` AS `all_datoms00` \
          WHERE NOT EXISTS (SELECT 1 WHERE `all_datoms00`.e = 17)"
     );
@@ -1040,7 +1045,8 @@ fn test_unbound_attribute_with_ground() {
         sql,
         "SELECT DISTINCT `all_datoms00`.e AS `?x`, \
          `all_datoms00`.v AS `?v`, \
-         `all_datoms00`.value_type_tag AS `?v_value_type_tag` \
+         `all_datoms00`.value_type_tag AS `?v_value_type_tag`, \
+         typeof(`all_datoms00`.v) AS `?v_typeof` \
          FROM `all_datoms` AS `all_datoms00` \
          WHERE NOT EXISTS (SELECT 1 WHERE `all_datoms00`.v = 17 AND \
          (`all_datoms00`.value_type_tag = 5))"
@@ -1518,6 +1524,7 @@ fn test_tx_ids() {
          `all_datoms01`.a AS `?a`, \
          `all_datoms01`.v AS `?v`, \
          `all_datoms01`.value_type_tag AS `?v_value_type_tag`, \
+         typeof(`all_datoms01`.v) AS `?v_typeof`, \
          `transactions00`.tx AS `?tx` \
          FROM `transactions` AS `transactions00`, \
          `all_datoms` AS `all_datoms01` \
@@ -1540,6 +1547,7 @@ fn test_tx_data() {
          `transactions00`.a AS `?a`, \
          `transactions00`.v AS `?v`, \
          `transactions00`.value_type_tag AS `?v_value_type_tag`, \
+         typeof(`transactions00`.v) AS `?v_typeof`, \
          `transactions00`.tx AS `?tx`, \
          `transactions00`.added AS `?added` \
          FROM `transactions` AS `transactions00` \
@@ -1556,6 +1564,7 @@ fn test_tx_data() {
         "SELECT `transactions00`.a AS `?a`, \
          `transactions00`.v AS `?v`, \
          `transactions00`.value_type_tag AS `?v_value_type_tag`, \
+         typeof(`transactions00`.v) AS `?v_typeof`, \
          `transactions00`.added AS `?added` \
          FROM `transactions` AS `transactions00` \
          WHERE `transactions00`.tx = 1000 \
@@ -1574,6 +1583,7 @@ fn test_tx_data() {
          `transactions01`.a AS `?a`, \
          `transactions01`.v AS `?v`, \
          `transactions01`.value_type_tag AS `?v_value_type_tag`, \
+         typeof(`transactions01`.v) AS `?v_typeof`, \
          `transactions00`.tx AS `?tx`, \
          `transactions01`.added AS `?added` \
          FROM `transactions` AS `transactions00`, \

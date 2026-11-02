@@ -58,6 +58,9 @@ mod tests {
     model_pg_test!(rename_and_retract_logs_one_retraction);
     model_pg_test!(list_form_ref_vector_is_one_lookup_ref);
     model_pg_test!(transaction_functions);
+    model_pg_test!(long_and_double_values_stay_distinct);
+    // untyped_long_and_double_values_stay_distinct: pg's (sum ?v) over a
+    // value of unknown type fails ("invalid input syntax for type numeric").
 
     #[pgrx::pg_test]
     fn inst_and_uuid_builders_round_trip_through_the_reader() {

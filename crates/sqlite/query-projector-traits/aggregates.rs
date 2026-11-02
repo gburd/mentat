@@ -22,6 +22,9 @@ use crate::errors::{ProjectorError, Result};
 pub enum SimpleAggregationOp {
     Avg,
     Count,
+    /// `count-distinct`: the number of distinct values, whatever else the
+    /// query projects (`:with`, other aggregates).
+    CountDistinct,
     Max,
     Min,
     Sum,
@@ -32,7 +35,7 @@ impl SimpleAggregationOp {
         use self::SimpleAggregationOp::*;
         match self {
             Avg => "avg",
-            Count => "count",
+            Count | CountDistinct => "count",
             Max => "max",
             Min => "min",
             Sum => "sum",
@@ -43,6 +46,7 @@ impl SimpleAggregationOp {
         match function.0.name() {
             "avg" => Some(SimpleAggregationOp::Avg),
             "count" => Some(SimpleAggregationOp::Count),
+            "count-distinct" => Some(SimpleAggregationOp::CountDistinct),
             "max" => Some(SimpleAggregationOp::Max),
             "min" => Some(SimpleAggregationOp::Min),
             "sum" => Some(SimpleAggregationOp::Sum),
@@ -65,7 +69,7 @@ impl SimpleAggregationOp {
 
         match self {
             // One can always count results.
-            Count => Ok(ValueType::Long),
+            Count | CountDistinct => Ok(ValueType::Long),
 
             // Only numeric types can be averaged or summed.
             Avg => {
@@ -148,15 +152,34 @@ pub struct SimpleAggregate {
 
 impl SimpleAggregate {
     pub fn column_name(&self) -> Name {
-        format!("({} {})", self.op.to_sql(), self.var.name())
+        let op = match self.op {
+            SimpleAggregationOp::CountDistinct => "count-distinct",
+            op => op.to_sql(),
+        };
+        format!("({} {})", op, self.var.name())
     }
 
     pub fn use_static_value(&self) -> bool {
         use self::SimpleAggregationOp::*;
         match self.op {
             Avg | Max | Min => true,
-            Count | Sum => false,
+            Count | CountDistinct | Sum => false,
         }
+    }
+
+    /// The aggregate's argument: `arg`, or for `count-distinct` `DISTINCT(arg)`, so
+    /// the call renders as `count(DISTINCT(arg))`.
+    pub fn distinct_arg(&self, arg: ColumnOrExpression) -> ColumnOrExpression {
+        if self.op != SimpleAggregationOp::CountDistinct {
+            return arg;
+        }
+        ColumnOrExpression::Expression(
+            Box::new(Expression::Unary {
+                sql_op: "DISTINCT",
+                arg,
+            }),
+            ValueType::Long,
+        )
     }
 
     /// Return `true` if this aggregate can be `NULL` over 0 rows.
@@ -164,7 +187,7 @@ impl SimpleAggregate {
         use self::SimpleAggregationOp::*;
         match self.op {
             Avg | Max | Min | Sum => true,
-            Count => false,
+            Count | CountDistinct => false,
         }
     }
 }
@@ -189,9 +212,13 @@ impl SimpleAggregation for Aggregate {
 /// - The `ColumnOrExpression` to use in the query. This will always refer to other
 ///   variables by name; never to a datoms column.
 /// - The known type of that value.
+///
+/// `key`: for `count-distinct` over a variable of several types, what to count the
+/// distinct values of in place of the variable's column (its value and type).
 pub fn projected_column_for_simple_aggregate(
     simple: &SimpleAggregate,
     cc: &ConjoiningClauses,
+    key: Option<ColumnOrExpression>,
 ) -> Result<(ProjectedColumn, ValueType)> {
     let known_types = cc.known_type_set(&simple.var);
     let return_type = simple.op.is_applicable_to_types(known_types)?;
@@ -204,7 +231,7 @@ pub fn projected_column_for_simple_aggregate(
         } else {
             let expression = Expression::Unary {
                 sql_op: simple.op.to_sql(),
-                arg: ColumnOrExpression::Value(value),
+                arg: simple.distinct_arg(ColumnOrExpression::Value(value)),
             };
             if simple.is_nullable() {
                 ColumnOrExpression::NullableAggregate(Box::new(expression), return_type)
@@ -217,7 +244,7 @@ pub fn projected_column_for_simple_aggregate(
         let name = VariableColumn::Variable(simple.var.clone()).column_name();
         let expression = Expression::Unary {
             sql_op: simple.op.to_sql(),
-            arg: ColumnOrExpression::ExistingColumn(name),
+            arg: simple.distinct_arg(key.unwrap_or(ColumnOrExpression::ExistingColumn(name))),
         };
         if simple.is_nullable() {
             ColumnOrExpression::NullableAggregate(Box::new(expression), return_type)

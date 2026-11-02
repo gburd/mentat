@@ -8,6 +8,33 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Embedded engine and DuckDB: `count-distinct` (#394).** It failed with "not
+  yet implemented: complex aggregates". A variable that can hold values of
+  several types counts each value and type together, so 5 and 5.0 (or a ref
+  and an equal long) are two.
+
+### Changed
+
+- **Embedded engine: `sum`, `min` and `max` over a variable that can hold both
+  longs and doubles always return a double** (#391), as DuckDB and pg_mentat
+  do. They used to be a long or a double depending on which row won.
+  All-long and all-double results are unchanged. An FFI caller that reads
+  such a result with `typed_value_into_long` must check
+  `typed_value_value_type` first.
+
+### Fixed
+
+- **DuckDB: `(count ?x)` over a double, string, keyword, uuid or bytes
+  attribute returned 0** (#392). Every release from 1.11.0 through 1.18.0 is
+  affected; 1.10.3 counted correctly. Counts over longs, refs, instants and
+  booleans were right.
+- **Embedded engine (SQLite): a set treated a long and an equal double (5 and
+  5.0) as one value** (#391), so `sum`, `count` and `[?v ...]` over an `or` of
+  a long and a double attribute, or over `[?e ?a ?v]`, dropped one. They are
+  kept apart, as in Datomic and pg_mentat. DuckDB already kept them apart.
+
 ## [1.18.0] — named stores on PostgreSQL, historical pull, DuckDB fulltext, Mozilla-era fixes
 
 Upgrading: `ALTER EXTENSION pg_mentat UPDATE` reaches 1.18.0 from 1.17.2

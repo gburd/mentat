@@ -45,6 +45,7 @@ mod fts_unicode61;
 ///
 /// Eventually we might allow different translations by providing a different `QueryBuilder`
 /// implementation for each storage backend. Passing `TypedValue`s here allows for that.
+#[derive(Clone)]
 pub enum ColumnOrExpression {
     Column(QualifiedAlias),
     ExistingColumn(Name),
@@ -56,8 +57,20 @@ pub enum ColumnOrExpression {
     // needs special treatment.
     NullableAggregate(Box<Expression>, ValueType), // Track the return type.
     Expression(Box<Expression>, ValueType),        // Track the return type.
+    /// A value's storage class, to key a set on with the value: SQLite compares a long and
+    /// a double as numbers (5 = 5.0), so DISTINCT, GROUP BY and UNION would merge them,
+    /// and Datomic keeps both (#391). DuckDB's `v` UNION compares by member already, so
+    /// there it is a constant.
+    TypeOf(Box<ColumnOrExpression>),
+    /// A value of several types as one key, for `count(DISTINCT ...)`: the inner query's
+    /// value column and, if the value can be of several type tags, its type tag column.
+    /// SQLite: `tag || ':' || quote(value)` (quote keeps storage classes apart and prints
+    /// a double exactly). DuckDB: the row `(value, tag)` (`v` is a UNION, which keeps a
+    /// long and a double apart, but not a ref and a long).
+    TypedKey(Name, Option<Name>),
 }
 
+#[derive(Clone)]
 pub enum Expression {
     Unary {
         sql_op: &'static str,
@@ -276,6 +289,34 @@ impl QueryFragment for ColumnOrExpression {
                 Ok(())
             }
             Value(ref v) => out.push_typed_value(v),
+            TypeOf(ref c) => {
+                if out.dialect() == Dialect::DuckDb {
+                    out.push_sql("0");
+                    return Ok(());
+                }
+                out.push_sql("typeof(");
+                c.push_sql(out)?;
+                out.push_sql(")");
+                Ok(())
+            }
+            TypedKey(ref value, ref tag) => {
+                let duck = out.dialect() == Dialect::DuckDb;
+                out.push_sql(if duck { "(" } else { "" });
+                if !duck {
+                    if let Some(tag) = tag {
+                        out.push_identifier(tag)?;
+                        out.push_sql(" || ':' || ");
+                    }
+                    out.push_sql("quote(");
+                }
+                out.push_identifier(value)?;
+                if let (true, Some(tag)) = (duck, tag) {
+                    out.push_sql(", ");
+                    out.push_identifier(tag)?;
+                }
+                out.push_sql(")");
+                Ok(())
+            }
             NullableAggregate(ref e, ref t) | &Expression(ref e, ref t) => {
                 if out.dialect() == Dialect::DuckDb {
                     push_duckdb_aggregate(out, e, *t)
@@ -308,6 +349,11 @@ impl QueryFragment for Expression {
 /// - doubles, and `avg` of anything: long or double, as DOUBLE;
 /// - longs, instants, booleans, refs: the `i` member; strings, keywords: `s`;
 /// - `count`, and anything else: the value as is.
+///
+/// `count(DISTINCT(x))` (the projector's rewrite of `(count ?x)`) is `count`
+/// over a `DISTINCT` expression. That DISTINCT is typed as count's Long, so
+/// it must not be unwrapped: its `i` member is NULL for a double, a string or
+/// a keyword, which `count` skips (#392).
 fn push_duckdb_aggregate(
     out: &mut dyn QueryBuilder,
     e: &Expression,
@@ -320,7 +366,7 @@ fn push_duckdb_aggregate(
     out.push_sql(sql_op);
     out.push_sql("(");
     let member = match (*sql_op, t) {
-        ("count", _) => None,
+        ("count" | "DISTINCT", _) => None,
         ("avg", _) | (_, ValueType::Double) => Some("num"),
         (_, ValueType::Long | ValueType::Instant | ValueType::Boolean | ValueType::Ref) => {
             Some("i")

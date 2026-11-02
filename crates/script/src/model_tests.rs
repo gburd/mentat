@@ -1315,3 +1315,83 @@ pub fn list_form_ref_vector_is_one_lookup_ref(it: &mut Interpreter) {
         "{report}"
     );
 }
+
+/// #391: a set of values keeps a long and an equal double apart, as Datomic does
+/// (Clojure's `(= 5 5.0)` is false). c's age is 5 and its score 5.0, so the
+/// ages and scores are 7 values, summing to 102.0; SQLite's DISTINCT merged 5
+/// and 5.0 (it compares them as numbers) and summed 97. A variable of one type
+/// is unchanged. Real engines only.
+pub fn long_and_double_values_stay_distinct(it: &mut Interpreter) {
+    seed_391(it);
+    let or = "(or [?e :n391/age ?v] [?e :n391/score ?v])";
+    assert_eq!(q_391(it, "(sum ?v) .", or), "102.0");
+    assert_eq!(q_391(it, "(sum ?v) . :with ?e", or), "102.0");
+    assert_eq!(q_391(it, "(count ?v) .", or), "7");
+    assert_eq!(q_391(it, "(count-distinct ?v) .", or), "7");
+    assert_eq!(q_391(it, "(min ?v) .", or), "2.5");
+    // The set of ?v: 7 values, 5 and 5.0 both.
+    let set = q_391(it, "[?v ...]", or);
+    assert_eq!(
+        it.eval_to_string(&format!("(vec (sort (map str '{set})))"))
+            .unwrap(),
+        "[\"12\" \"2.5\" \"30\" \"40\" \"5\" \"5.0\" \"7.5\"]",
+        "{set}"
+    );
+    // Grouped by ?v: (5 1) and (5.0 1), not (5 2).
+    let groups = q_391(it, "?v (count ?e)", or);
+    assert_eq!(
+        it.eval_to_string(&format!("(count {groups})")).unwrap(),
+        "7",
+        "{groups}"
+    );
+
+    // One type: unchanged.
+    assert_eq!(q_391(it, "(sum ?v) .", "[?e :n391/age ?v]"), "87");
+    assert_eq!(q_391(it, "(count ?v) .", "[?e :n391/age ?v]"), "4");
+    assert_eq!(q_391(it, "(max ?v) .", "[?e :n391/age ?v]"), "40");
+    assert_eq!(q_391(it, "(sum ?v) .", "[?e :n391/score ?v]"), "15.0");
+}
+
+/// #391's people: ages a 30, b 12, c 5, d 40; scores a 2.5, b 7.5, c 5.0.
+fn seed_391(it: &mut Interpreter) {
+    it.eval("(def c (mentat.store/open))").expect("open");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:db/ident :n391/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one} \
+            {:db/ident :n391/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+            {:db/ident :n391/score :db/valueType :db.type/double :db/cardinality :db.cardinality/one}])",
+    )
+    .expect("schema");
+    it.eval_to_string(
+        "(mentat.store/transact c \
+           [{:n391/name \"a\" :n391/age 30 :n391/score 2.5} \
+            {:n391/name \"b\" :n391/age 12 :n391/score 7.5} \
+            {:n391/name \"c\" :n391/age 5 :n391/score 5.0} \
+            {:n391/name \"d\" :n391/age 40}])",
+    )
+    .expect("data");
+}
+
+/// `[:find <find> :where [?e :n391/name _] <body>]` on the current db.
+fn q_391(it: &mut Interpreter, find: &str, body: &str) -> String {
+    let query = format!("[:find {find} :where [?e :n391/name _] {body}]");
+    it.eval_to_string(&format!("(mentat.store/q (mentat.store/db c) '{query})"))
+        .unwrap_or_else(|e| panic!("{query}: {e}"))
+}
+
+/// [`long_and_double_values_stay_distinct`] for a value of unknown type
+/// (`[?e ?a ?v]`). Not run on pg, where `(sum ?v)` over an untyped value
+/// fails ("invalid input syntax for type numeric").
+pub fn untyped_long_and_double_values_stay_distinct(it: &mut Interpreter) {
+    seed_391(it);
+    let any = "[?e ?a ?v] [(> ?v 1)]";
+    assert_eq!(q_391(it, "(sum ?v) .", any), "102.0");
+    assert_eq!(q_391(it, "(count ?v) .", any), "7");
+    assert_eq!(q_391(it, "(count-distinct ?v) .", any), "7");
+    let set = q_391(it, "[?v ...]", any);
+    assert_eq!(
+        it.eval_to_string(&format!("(count {set})")).unwrap(),
+        "7",
+        "{set}"
+    );
+}

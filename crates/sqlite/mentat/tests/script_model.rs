@@ -49,6 +49,8 @@ model_test!(retracting_an_absent_value_is_a_no_op);
 model_test!(rename_and_retract_logs_one_retraction);
 model_test!(list_form_ref_vector_is_one_lookup_ref);
 model_test!(transaction_functions);
+model_test!(long_and_double_values_stay_distinct);
+model_test!(untyped_long_and_double_values_stay_distinct);
 
 #[test]
 fn inst_and_uuid_builders_round_trip_through_the_reader() {

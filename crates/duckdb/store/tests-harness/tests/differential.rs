@@ -4,7 +4,7 @@
 
 use duckdb::Connection;
 use mentat_duckdb_store::{DuckStore, SqlConn};
-use mentat_duckdb_store_tests::fixtures::{norm, QUERIES, TXS};
+use mentat_duckdb_store_tests::fixtures::{norm, BOTH_ERR, QUERIES, TXS};
 use mentat_duckdb_store_tests::DuckConn;
 use mentat_query_algebrizer::TemporalBound;
 use mentat_query_projector::QueryResults;
@@ -188,7 +188,10 @@ fn duckdb_matches_sqlite() {
 
     // TXS's last four: a no-op, then a replacement and a new value, a
     // keyword, then three new refs.
-    assert_eq!(counts[TXS.len() - 4..TXS.len()], [(0, 0), (2, 1), (1, 0), (3, 0)]);
+    assert_eq!(
+        counts[TXS.len() - 4..TXS.len()],
+        [(0, 0), (2, 1), (1, 0), (3, 0)]
+    );
 
     let mut failures = Vec::new();
     let mut check = |label: &str, q: &str, temporal: Option<TemporalBound>, ordered: bool| {
@@ -211,27 +214,12 @@ fn duckdb_matches_sqlite() {
                 "{label} {q}\n  sqlite: {}\n  duckdb ERR {b}",
                 f(a.results)
             )),
-            // Both failing agrees, except for queries that must work: the
-            // get-else / missing? cases were silently "agreeing" this way
-            // while neither engine implemented them (#335).
-            (Err(a), Err(_))
-                if [
-                    "get-else",
-                    "missing?",
-                    "like",
-                    "-with?",
-                    "includes?",
-                    "?tx)",
-                    "(max ?l)",
-                    "99)]]",
-                    "(fulltext",
-                ]
-                .iter()
-                .any(|f| q.contains(f)) =>
-            {
-                failures.push(format!("{label} {q}\n  both engines ERR: {a}"))
-            }
-            (Err(_), Err(_)) => {}
+            // Both failing agrees only for the queries known to fail on both
+            // (BOTH_ERR). The get-else / missing? cases (#335) and
+            // count-distinct (#394) "agreed" this way while neither engine
+            // implemented them.
+            (Err(_), Err(_)) if BOTH_ERR.contains(&q) => {}
+            (Err(a), Err(_)) => failures.push(format!("{label} {q}\n  both engines ERR: {a}")),
         }
     };
     for q in QUERIES {

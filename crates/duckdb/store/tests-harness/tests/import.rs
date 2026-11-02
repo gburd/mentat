@@ -7,7 +7,7 @@
 use duckdb::Connection;
 use mentat::Queryable;
 use mentat_duckdb_store::{failpoints, DuckStore, SqlConn};
-use mentat_duckdb_store_tests::fixtures::{norm, QUERIES, TXS};
+use mentat_duckdb_store_tests::fixtures::{norm, BOTH_ERR, QUERIES, TXS};
 use mentat_duckdb_store_tests::DuckConn;
 use mentat_query_algebrizer::TemporalBound;
 
@@ -131,7 +131,8 @@ fn imported_store_matches_the_sqlite_store() {
                     failures.push(format!("{label} {q}\n  sqlite: {a}\n  duckdb: {b}"));
                 }
             }
-            (Err(_), Err(_)) => {}
+            // Only the queries known to fail on both engines (BOTH_ERR).
+            (Err(_), Err(_)) if BOTH_ERR.contains(&q) => {}
             (a, b) => failures.push(format!(
                 "{label} {q}\n  sqlite ok={} duckdb ok={}: {:?} / {:?}",
                 a.is_ok(),

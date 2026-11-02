@@ -52,6 +52,8 @@ pub const TXS: &[&str] = &[
     r#"[{:p/name "Alice" :p/age 31}]"#,
     r#"[{:p/name "Dan" :p/height 1.9}]"#,
     r#"[{:p/name "Eve" :p/age 25 :p/blob #bytes 010203}]"#,
+    // A long and an equal double on one entity: two values of a set (#391).
+    r#"[{:p/name "Fay" :p/age 2 :p/height 2.0}]"#,
     // No-ops, a cardinality-one replacement, a retraction of an absent value (#281).
     r#"[{:p/name "Eve" :p/age 25} [:db/retract [:p/name "Eve"] :p/age 99] [:db/retract [:p/name "Eve"] :p/nick "x"]]"#,
     r#"[{:p/name "Eve" :p/age 26} {:p/name "Bob" :p/nick ["Bobby"]}]"#,
@@ -59,6 +61,20 @@ pub const TXS: &[&str] = &[
     r#"[{:p/name "Dan" :p/role [:plain]}]"#,
     // [a v] lookup refs as entity, :db/id, cardinality-one and -many ref values (#152).
     r#"[{:db/id [:p/name "Eve"] :p/boss [:p/name "Carol"] :p/likes [[:p/name "Bob"] [:p/name "Dan"]]}]"#,
+];
+
+/// Queries in [`QUERIES`] that both engines reject today. The differential
+/// and import tests count both engines failing as agreement only for these;
+/// any other query must run. Each is a gap in the embedded engine (SQLite and
+/// DuckDB alike): remove it here when the engine learns it.
+pub const BOTH_ERR: &[&str] = &[
+    // Arithmetic functions (`*`, `+`, ...) are not implemented.
+    "[:find ?n ?x :where [?e :p/age ?a] [(* ?a 2) ?x] [?e :p/name ?n]]",
+    // `<` and `!=` take numbers and instants only, not strings.
+    "[:find ?n :where [_ :p/name ?n] [(< ?n \"Bz\")]]",
+    "[:find ?n :where [?e :p/name ?n] [?e :p/nick ?k] [(!= ?k \"Al\")]]",
+    // A lookup ref in a pattern's value place doesn't parse.
+    "[:find ?n :where [?e :p/boss [:p/name \"Alice\"]] [?e :p/name ?n]]",
 ];
 
 pub const QUERIES: &[&str] = &[
@@ -100,6 +116,50 @@ pub const QUERIES: &[&str] = &[
     "[:find (sum ?a) . :with ?e :where [?e :p/age ?a]]",
     "[:find (count-distinct ?a) . :where [_ :p/age ?a]]",
     "[:find (max ?t) . :where [_ :p/born ?t]]",
+    // count over every value type: on DuckDB it counted a double, string,
+    // keyword, uuid or bytes value as nothing (#392). Scalar, grouped, :with.
+    "[:find (count ?v) . :where [_ :p/name ?v]]",
+    "[:find (count ?v) . :where [_ :p/age ?v]]",
+    "[:find (count ?v) . :where [_ :p/height ?v]]",
+    "[:find (count ?v) . :where [_ :p/alive ?v]]",
+    "[:find (count ?v) . :where [_ :p/born ?v]]",
+    "[:find (count ?v) . :where [_ :p/id ?v]]",
+    "[:find (count ?v) . :where [_ :p/role ?v]]",
+    "[:find (count ?v) . :where [_ :p/likes ?v]]",
+    "[:find (count ?v) . :where [_ :p/nick ?v]]",
+    "[:find (count ?v) . :where [_ :p/blob ?v]]",
+    "[:find ?n (count ?r) :where [?e :p/name ?n] [?e :p/role ?r]]",
+    "[:find ?a (count ?h) :where [?e :p/age ?a] [?e :p/height ?h]]",
+    "[:find (count ?a) . :with ?e :where [?e :p/age ?a]]",
+    "[:find (count ?h) . :with ?e :where [?e :p/height ?h]]",
+    "[:find (count ?r) . :with ?e :where [?e :p/role ?r]]",
+    // count-distinct (#394): every value type, :with, grouped, beside count,
+    // and a variable of several types (a long and an equal double, a ref,
+    // a boolean and a long).
+    "[:find (count-distinct ?v) . :where [_ :p/name ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/height ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/alive ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/born ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/id ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/role ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/likes ?v]]",
+    "[:find (count-distinct ?v) . :where [_ :p/blob ?v]]",
+    "[:find (count-distinct ?a) . :with ?e :where [?e :p/age ?a]]",
+    "[:find (count-distinct ?a) (count ?a) :with ?e :where [?e :p/age ?a]]",
+    "[:find ?al (count-distinct ?a) :where [?e :p/alive ?al] [?e :p/age ?a]]",
+    "[:find (count-distinct ?v) . :where [?e :p/name _] [?e ?a ?v]]",
+    "[:find ?n (count-distinct ?v) :where [?e :p/name ?n] [?e ?a ?v]]",
+    "[:find (count-distinct ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find (count-distinct ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
+    // A variable of longs and doubles: one value per type (#391).
+    // (A sum of doubles: SQLite and DuckDB add them in different orders, so
+    // compare one that is exact in binary.)
+    "[:find (sum ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v]) [(> ?v 1.95)]]",
+    "[:find (count ?v) . :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find (count ?v) . :with ?e :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find ?v (count ?e) :where (or [?e :p/age ?v] [?e :p/height ?v])]",
+    "[:find [?v ...] :where [?e :p/name \"Fay\"] [?e ?a ?v] [(> ?v 1)]]",
+    "[:find (sum ?v) . :where [?e :p/name \"Fay\"] [?e ?a ?v] [(> ?v 1)]]",
     // Aggregates over no rows (#237): nil, and 0 for a count. Nobody is 99.
     "[:find (sum ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
     "[:find (avg ?a) . :where [_ :p/age ?a] [(> ?a 99)]]",
