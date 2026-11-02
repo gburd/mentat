@@ -101,9 +101,9 @@ mod tests {
 
         let r = t(r#"[[:db/add "datomic.tx" :v/src "list"] [:db/add "c" :v/id "c"]]"#);
         assert_eq!(r["tempids"]["datomic.tx"].as_i64(), Some(tx(&r)), "{r}");
-        // Through the log.
+        // Through the log (its range is (start, end]).
         let log = Spi::get_one_with_args::<pgrx::JsonB>(
-            "SELECT log('default', $1, $1)",
+            "SELECT log('default', $1 - 1, $1)",
             &[DatumWithOid::from(tx(&r))],
         )
         .expect("log")
@@ -168,7 +168,7 @@ mod tests {
             .filter(|d| d[1].as_i64() == Some(50))
             .collect();
         assert_eq!(inst.len(), 1, "{r}");
-        assert!(inst[0][2].to_string().contains("2017-06-16"), "{r}");
+        assert_eq!(inst[0][2]["v"].as_i64(), Some(micros), "{r}");
         let one = |sql: &str| {
             Spi::get_one_with_args::<i64>(sql, &[DatumWithOid::from(t_)])
                 .expect(sql)
@@ -260,7 +260,7 @@ mod tests {
         // Not on the default store.
         assert_eq!(
             q("[:find (count ?s) . :where [_ :v/src ?s]]"),
-            serde_json::Value::Null
+            serde_json::json!(0)
         );
     }
 
