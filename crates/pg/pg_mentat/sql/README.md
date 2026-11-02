@@ -185,9 +185,6 @@ ORDER BY e, a, tx DESC;
 ### Recommended PostgreSQL Settings
 
 ```sql
--- Transaction isolation for consistency
-SET default_transaction_isolation = 'serializable';
-
 -- Durability
 SET synchronous_commit = on;
 SET wal_level = replica;
@@ -203,6 +200,35 @@ ALTER TABLE mentat.datoms SET (
     autovacuum_analyze_scale_factor = 0.005
 );
 ```
+
+### Transaction isolation
+
+`edn_t` runs in the caller's transaction, at the caller's isolation level.
+Use READ COMMITTED (PostgreSQL's default) or SERIALIZABLE. Under both,
+concurrent transactions can't leave a cardinality-one attribute with two
+live values, `:db/cas` compares and swaps atomically, a `:db/unique` value
+ends up on one entity, and a schema alteration to `:db.cardinality/one` or
+`:db/unique` can't race a write to the attribute. The transactor takes
+transaction-scoped advisory locks before it reads (`pg_locks` shows them as
+`locktype = 'advisory'`, `objsubid = 2`, `classid` 1299084337 to 1299084339);
+a second writer of the same value waits for the first to commit. Under READ
+COMMITTED it then sees the first writer's value: it replaces it, or its cas
+fails. Under SERIALIZABLE, PostgreSQL may abort it with a serialization
+failure instead (SQLSTATE 40001); retry the transaction.
+
+Avoid REPEATABLE READ. There a transaction reads from its first snapshot,
+so a lock can't show it a value committed while it waited. A replacement or
+cas that races another fails with "could not serialize access" (retry). But
+two first assertions of one attribute on one entity, two new entities
+claiming one unique value, or a write racing a many-to-one alteration can
+both commit, and leave two live values.
+
+Each locked value takes a slot in PostgreSQL's shared lock table. Past
+`max_locks_per_transaction` values in one transaction (64 by default), the
+transactor locks the whole attribute instead: other writers of that
+attribute then wait until the transaction ends. Raise
+`max_locks_per_transaction` if large transactions run alongside other
+writers.
 
 ### Fulltext Search Configuration
 

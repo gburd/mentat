@@ -63,6 +63,24 @@ cargo pgrx test pg16 -- --test query_tests
 cargo pgrx test pg16 -- --test query_tests::test_basic_query
 ```
 
+### Concurrency Tests
+
+A pgrx test runs in one backend. The races between two writers (#376) are
+covered twice: `src/concurrent_write_tests.rs` drives two `dblink` sessions
+(skipped when contrib's dblink isn't installed), and
+`crates/pg/pg_mentat/test/concurrent_writes.sh` drives two `psql` sessions
+against any server with pg_mentat installed, at READ COMMITTED, REPEATABLE
+READ and SERIALIZABLE:
+
+```bash
+PGHOST=/tmp PGPORT=5432 crates/pg/pg_mentat/test/concurrent_writes.sh
+PGHOST=/tmp PGPORT=5432 crates/pg/pg_mentat/test/concurrent_writes.sh "read committed"
+```
+
+It recreates the database `pg_mentat_race` (set `RACE_DB` to change it),
+prints one line per race and exits non-zero on a FAIL. REPEATABLE READ
+races that no lock can fix are labelled KNOWN.
+
 ### Running Interactively
 
 Start a PostgreSQL instance with the extension pre-loaded:
