@@ -3795,6 +3795,9 @@ mod tests {
                          "[{:test/dangling {:test/many 11}}]",
                          Err("not yet implemented: Cannot explode nested map value that would lead to dangling entity for attribute 444"));
 
+        // An empty nested map has no datoms of its own (#384).
+        assert_transact!(conn, "[{:test/component {}}]", Err(":db.error/tempid-not-an-entity an entity map without :db/id asserts nothing about its own entity, which is used only as value in transaction"));
+
         // Verify that we can explode map notation with nested maps, even if the inner map would be
         // dangling, if we give a :db/id explicitly.
         assert_transact!(conn, "[{:test/dangling {:db/id \"t\" :test/many 12}}]");
@@ -3872,7 +3875,7 @@ mod tests {
         assert_transact!(
             conn,
             "[{:test/_dangling 501}]",
-            Err(":db.error/tempid-not-an-entity an entity map without :db/id is used only as value in transaction (it has only reverse attributes)")
+            Err(":db.error/tempid-not-an-entity an entity map without :db/id asserts nothing about its own entity, which is used only as value in transaction")
         );
         let report = assert_transact!(
             conn,

@@ -155,11 +155,14 @@ fn tempid_not_an_entity(t: &TempId) -> String {
              (mentat has no reserved tempids; use (transaction-tx) for the current transaction)"
         ),
         TempId::External(s) => {
-            format!(":db.error/tempid-not-an-entity tempid \"{s}\" used only as value in transaction")
+            format!(
+                ":db.error/tempid-not-an-entity tempid \"{s}\" used only as value in transaction"
+            )
         }
         // An entity map without :db/id gets an internal tempid.
         TempId::Internal(_) => ":db.error/tempid-not-an-entity an entity map without :db/id \
-                                is used only as value in transaction (it has only reverse attributes)"
+                                asserts nothing about its own entity, which is used only as value \
+                                in transaction"
             .to_string(),
     }
 }
