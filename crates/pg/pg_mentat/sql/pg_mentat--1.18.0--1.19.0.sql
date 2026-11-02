@@ -1393,6 +1393,13 @@ BEGIN
                 END IF;
             EXCEPTION WHEN invalid_table_definition OR invalid_function_definition
                            OR object_not_in_prerequisite_state THEN
+                -- object_not_in_prerequisite_state is the class code 55000, so
+                -- it also catches the rest of class 55: 55P03 (lock_timeout)
+                -- and 55006 must abort the upgrade, not leave a view behind.
+                -- 55000 itself: "already a member of extension".
+                IF SQLSTATE NOT IN ('42P16', '42P13', '55000') THEN
+                    RAISE;
+                END IF;
                 RAISE WARNING 'pg_mentat upgrade: % % of store "%" not replaced (%: %). It still reads the '
                               'log and returns replaced and retracted values.',
                               pg_catalog.lower(obj.kind), ident, st.store_name, SQLSTATE, SQLERRM;

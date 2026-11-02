@@ -3638,6 +3638,70 @@ mod tests {
         );
     }
 
+    // The upgrade caught SQLSTATE 55000 by its condition name, which is a
+    // class code: it caught all of class 55, so a lock timeout (55P03) on a
+    // store view became a WARNING, the extension reached 1.19.0 and that view
+    // kept reading the log. A lock timeout must abort the upgrade. Two real
+    // sessions (dblink): one creates a store and commits, the other holds a
+    // lock on one of its views.
+    #[pg_test]
+    fn upgrade_aborts_on_a_lock_timeout() {
+        crate::ensure_extension_loaded();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run(
+            "CREATE EXTENSION IF NOT EXISTS dblink; \
+             CREATE OR REPLACE FUNCTION pg_temp.try_rollback(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RAISE EXCEPTION 'ran'; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        Spi::run(&format!(
+            "SELECT dblink_connect('lk_a', '{conn}'), dblink_connect('lk_b', '{conn}')"
+        ))
+        .expect("connect");
+        let drop =
+            "DO $d$ BEGIN PERFORM drop_store('lk_s'); EXCEPTION WHEN OTHERS THEN NULL; END $d$";
+        on("lk_a", "SET search_path TO mentat, public");
+        on("lk_a", drop);
+        on("lk_a", "DO $d$ BEGIN PERFORM create_store('lk_s'); END $d$");
+        on("lk_b", "BEGIN");
+        on(
+            "lk_b",
+            "LOCK TABLE mentat_lk_s.\"references\" IN ACCESS SHARE MODE",
+        );
+        Spi::run("SET LOCAL lock_timeout = '200ms'").expect("lock_timeout");
+        // Rolled back either way, so its locks don't block the cleanup.
+        let msg = text(&format!(
+            "SELECT pg_temp.try_rollback($cap${}$cap$)",
+            upgrade_119_block("views")
+        ));
+        Spi::run("RESET lock_timeout").expect("reset");
+        on("lk_b", "ROLLBACK");
+        on("lk_a", drop);
+        Spi::run("SELECT dblink_disconnect('lk_a'), dblink_disconnect('lk_b')").expect("close");
+        assert!(
+            msg.contains("lock timeout"),
+            "the upgrade must fail: {msg:?}"
+        );
+    }
+
     fn names_of(store: &str) -> Vec<String> {
         sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
     }
