@@ -1246,6 +1246,14 @@ extension_sql_file!(
     ],
 );
 
+// with() / mentat_with()'s helper (#403): runs the transaction in a
+// subtransaction and rolls it back. Calls edn_t and t.
+extension_sql_file!(
+    "../sql/31_speculative_exec.sql",
+    name = "speculative_exec",
+    requires = [mentat_transact, t],
+);
+
 // Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /
 // mentat_pull) as thin SQL wrappers over edn_t / edn_q / edn_pull. The
 // deprecated mentat_eval wrapper lives next to edn_eval in

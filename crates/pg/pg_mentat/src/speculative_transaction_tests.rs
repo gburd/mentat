@@ -577,4 +577,55 @@ mod tests {
         let retract_fn = arr.iter().find(|f| f["name"] == ":db.fn/retractEntity");
         assert!(retract_fn.is_some(), "should list :db.fn/retractEntity");
     }
+
+    /// #403: with() ran CREATE OR REPLACE FUNCTION mentat._speculative_exec
+    /// on every call, so a role that doesn't own the mentat schema got
+    /// "permission denied for schema mentat". A role with the rights a real
+    /// transaction needs (docs/src/multi-tenancy.md) can call with() and
+    /// mentat_with(); the helper is the extension's, not SECURITY DEFINER.
+    #[pg_test]
+    fn with_works_for_a_role_that_does_not_own_the_schema() {
+        setup();
+        setup_schema();
+        Spi::run("SELECT create_store('spec_s')").expect("create_store");
+        Spi::run(
+            "SELECT t('spec_s', '[{:db/ident :spec/name :db/valueType :db.type/string \
+             :db/cardinality :db.cardinality/one}]')",
+        )
+        .expect("store schema");
+        Spi::run(
+            "CREATE ROLE spec_app; \
+             GRANT USAGE ON SCHEMA mentat, mentat_spec_s TO spec_app; \
+             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA mentat, mentat_spec_s \
+               TO spec_app; \
+             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA mentat, mentat_spec_s TO spec_app",
+        )
+        .expect("role");
+        Spi::run("SET LOCAL ROLE spec_app").expect("set role");
+        for sql in [
+            "SELECT \"with\"('spec_s', '[{:spec/name \"what-if\"}]')",
+            "SELECT mentat_with('[{:spec/name \"what-if\"}]')",
+        ] {
+            let report = Spi::get_one::<String>(sql)
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .unwrap_or_default();
+            assert!(report.contains("what-if"), "{sql}: {report}");
+        }
+        Spi::run("RESET ROLE").expect("reset");
+        let kept: i64 = Spi::get_one(
+            "SELECT (SELECT count(*) FROM mentat.current_text WHERE v = 'what-if') \
+                  + (SELECT count(*) FROM mentat_spec_s.current_text WHERE v = 'what-if')",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(kept, 0, "speculative: nothing kept");
+        let (secdef, member): (Option<bool>, Option<bool>) = Spi::get_two(
+            "SELECT p.prosecdef, EXISTS (SELECT 1 FROM pg_depend d \
+               JOIN pg_extension e ON e.oid = d.refobjid \
+              WHERE d.objid = p.oid AND d.deptype = 'e' AND e.extname = 'pg_mentat') \
+             FROM pg_proc p WHERE p.oid = 'mentat._speculative_exec(text, text)'::regprocedure",
+        )
+        .expect("helper");
+        assert_eq!((secdef, member), (Some(false), Some(true)));
+    }
 }
