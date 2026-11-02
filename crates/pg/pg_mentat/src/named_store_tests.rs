@@ -2370,6 +2370,117 @@ mod tests {
         .expect("clean up");
     }
 
+    // Anyone who can connect can LISTEN, so a subscription's payload (its
+    // query result) reached roles with no access to the store (#379):
+    // subscribe(..., token_only => true) sends {"tx", "hash"} instead.
+    // Real sessions (dblink): a NOTIFY is delivered on commit.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_token_payloads() {
+        crate::ensure_extension_loaded();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run("CREATE EXTENSION IF NOT EXISTS dblink").expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        Spi::run(&format!(
+            "SELECT dblink_connect('tk_w', '{conn}'), dblink_connect('tk_l', '{conn}')"
+        ))
+        .expect("connect");
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        let write = |edn: &str| -> serde_json::Value {
+            let sql = format!("SELECT t('tk_s', '{}')", edn.replace('\'', "''"));
+            let out = text(&format!(
+                "SELECT r FROM dblink('tk_w', '{}') AS x(r TEXT)",
+                sql.replace('\'', "''")
+            ));
+            serde_json::from_str(&out).expect("tx report")
+        };
+        // (channel, payload) received by the listener, waiting up to 10 s
+        // for `n` of them.
+        let received = |n: usize| -> Vec<(String, serde_json::Value)> {
+            let mut got = Vec::new();
+            for _ in 0..200 {
+                let v = json(
+                    "SELECT coalesce(jsonb_agg(jsonb_build_array(notify_name, extra)), '[]') \
+                       FROM dblink_get_notify('tk_l')",
+                );
+                for p in v.as_array().unwrap() {
+                    got.push((
+                        p[0].as_str().unwrap().to_string(),
+                        serde_json::from_str(p[1].as_str().unwrap()).expect("JSON payload"),
+                    ));
+                }
+                if got.len() >= n {
+                    break;
+                }
+                Spi::run("SELECT pg_sleep(0.05)").unwrap();
+            }
+            got.sort_by(|a, b| a.0.cmp(&b.0));
+            got
+        };
+        on("tk_w", "SET search_path TO mentat, public");
+        on(
+            "tk_w",
+            "DO $d$ BEGIN PERFORM drop_store('tk_s'); EXCEPTION WHEN OTHERS THEN NULL; END $d$",
+        );
+        on("tk_w", "DO $d$ BEGIN PERFORM create_store('tk_s'); END $d$");
+        write(SCHEMA_TX);
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        on(
+            "tk_w",
+            &format!("DO $d$ BEGIN PERFORM subscribe('tk_s', 'tk_res', '{query}'); END $d$"),
+        );
+        on(
+            "tk_w",
+            &format!(
+                "DO $d$ BEGIN PERFORM subscribe('tk_s', 'tk_tok', '{query}', token_only => true); END $d$"
+            ),
+        );
+        on("tk_l", "LISTEN mentat_tk_res");
+        on("tk_l", "LISTEN mentat_tk_tok");
+        let hash = || {
+            text(&format!(
+                "SELECT h FROM dblink('tk_w', $q$SELECT md5(q('tk_s', '{query}', '{{}}'::jsonb)::text)$q$) \
+                   AS x(h TEXT)"
+            ))
+        };
+
+        let tx1 = write("[{:p/name \"one\"}]")["db-after"]["basis-t"].clone();
+        let got = received(2);
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "mentat_tk_res".into(),
+                    serde_json::json!({"result": ["one"]})
+                ),
+                (
+                    "mentat_tk_tok".into(),
+                    serde_json::json!({"tx": tx1, "hash": hash()})
+                ),
+            ],
+            "the default payload is the result; token_only sends tx and hash"
+        );
+
+        on("tk_w", "DO $d$ BEGIN PERFORM drop_store('tk_s'); END $d$");
+        Spi::run("SELECT dblink_disconnect('tk_w'), dblink_disconnect('tk_l')")
+            .expect("disconnect");
+    }
+
     // A 1.17 subscription or materialized view on a named store stays with
     // the old tables, under _pre118, and stops working. The upgrade said
     // nothing about them; now it names each one. (A WARNING can't be caught,

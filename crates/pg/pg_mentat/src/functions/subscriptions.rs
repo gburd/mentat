@@ -190,12 +190,20 @@ fn dollar_tag(body: &str) -> String {
 ///
 /// It runs as the writer, so its search_path is pinned and every call in it
 /// is qualified: `q_fn` is pg_mentat's q, named through its schema (#383).
+///
+/// The payload is the query result, or with `token_only` a token,
+/// `{"tx": T, "hash": H}`: the transaction that changed the result (its
+/// store's current tx; null if this session hasn't allocated one) and the
+/// result's md5. Anyone who can LISTEN gets the payload (#379); a token
+/// tells them only that the result changed, and they re-run the query with
+/// their own privileges.
 fn trigger_function_sql(
     schema: &str,
     subscription_name: &str,
     channel: &str,
     query: &str,
     q_fn: &str,
+    token_only: bool,
 ) -> String {
     let func_name = format!("{}.mentat_sub_{}", schema, subscription_name);
 
@@ -203,6 +211,7 @@ fn trigger_function_sql(
     // We use a custom GUC-like approach with current_setting / set_config.
     let var_name = format!("mentat.sub_hash_{}", subscription_name);
 
+    let token_only = if token_only { "true" } else { "false" };
     let body = format!(
         r"
 DECLARE
@@ -210,6 +219,8 @@ DECLARE
     new_hash TEXT;
     old_hash TEXT;
     result_json JSONB;
+    payload TEXT;
+    tx_id BIGINT;
 BEGIN
     -- The store whose datoms view fired this trigger. Looked up from the
     -- view's schema on every call, not baked in, so rename_store doesn't
@@ -235,7 +246,19 @@ BEGIN
     -- If results changed, notify and update the stored hash
     IF old_hash IS DISTINCT FROM new_hash THEN
         PERFORM pg_catalog.set_config('{var_name}', new_hash, false);
-        PERFORM pg_catalog.pg_notify('{channel}', result_json::TEXT);
+        payload := result_json::TEXT;
+        IF {token_only} THEN
+            BEGIN
+                -- The sequence t() took this transaction's id from
+                -- (allocate_tx_id), by the view's schema (rename_store).
+                tx_id := pg_catalog.currval(
+                    pg_catalog.format('%I.partition_tx_seq', TG_TABLE_SCHEMA)::pg_catalog.regclass);
+            EXCEPTION WHEN OTHERS THEN
+                tx_id := NULL;
+            END;
+            payload := pg_catalog.jsonb_build_object('tx', tx_id, 'hash', new_hash);
+        END IF;
+        PERFORM pg_catalog.pg_notify('{channel}', payload);
     END IF;
 
     RETURN NULL;
@@ -320,6 +343,30 @@ pub fn subscribe(
     subscription_name: &str,
     query: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    subscribe_impl(store_name, subscription_name, query, false)
+}
+
+/// `subscribe(store, name, query, token_only)`: with `token_only` true the
+/// NOTIFY payload is `{"tx": T, "hash": H}` instead of the query result, so
+/// a listener learns only that the result changed and re-runs the query with
+/// its own privileges (any role that can connect can LISTEN, #379). An
+/// overload, not a default, so the three-argument form is unchanged.
+#[pg_extern(name = "subscribe")]
+pub fn subscribe_token_only(
+    store_name: &str,
+    subscription_name: &str,
+    query: &str,
+    token_only: bool,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    subscribe_impl(store_name, subscription_name, query, token_only)
+}
+
+fn subscribe_impl(
+    store_name: &str,
+    subscription_name: &str,
+    query: &str,
+    token_only: bool,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     validate_view_store(store_name)?;
     validate_subscription_name(subscription_name)?;
 
@@ -371,7 +418,14 @@ pub fn subscribe(
 
     // Create the trigger function
     let q_fn = crate::functions::query::ext_qualified("pg_mentat", "q");
-    let func_sql = trigger_function_sql(&quoted_schema, subscription_name, &channel, query, &q_fn);
+    let func_sql = trigger_function_sql(
+        &quoted_schema,
+        subscription_name,
+        &channel,
+        query,
+        &q_fn,
+        token_only,
+    );
     Spi::run(&func_sql)?;
 
     // Create the trigger on the datoms table.
@@ -556,6 +610,7 @@ mod tests {
             "mentat_test_sub",
             "[:find ?e :where [?e :person/name]]",
             "public.q",
+            false,
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
         assert!(sql.contains("q(sub_store, '[:find"));
@@ -572,6 +627,7 @@ mod tests {
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
             "public.q",
+            false,
         );
         // Single quotes are doubled once for the q('...') string
         // literal embedded inside the $$-quoted function body. The function
@@ -592,6 +648,7 @@ mod tests {
             "mentat_s",
             "[:find ?n :where [_ :p/name ?n]]",
             "public.q",
+            false,
         );
         assert!(sql.contains("q(sub_store, '[:find ?n"), "{sql}");
         assert!(sql.contains("schema_name = TG_TABLE_SCHEMA"), "{sql}");
@@ -604,7 +661,14 @@ mod tests {
     // one called (#383).
     #[test]
     fn test_trigger_function_sql_pins_the_path() {
-        let sql = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "\"my ext\".q");
+        let sql = trigger_function_sql(
+            "mentat",
+            "s",
+            "mentat_s",
+            "[:find ?e]",
+            "\"my ext\".q",
+            false,
+        );
         assert!(
             sql.contains("SET search_path = pg_catalog, pg_temp"),
             "{sql}"
@@ -624,7 +688,7 @@ mod tests {
     #[test]
     fn test_trigger_function_sql_quotes_any_query() {
         let query = "[:find ?e :where [?e :p/name \"$$ $mentat_sub0$ \\ '\"]]";
-        let sql = trigger_function_sql("mentat", "s", "mentat_s", query, "public.q");
+        let sql = trigger_function_sql("mentat", "s", "mentat_s", query, "public.q", false);
         assert!(sql.contains("AS $mentat_sub1$"), "{sql}");
         assert_eq!(sql.matches("$mentat_sub1$").count(), 2, "{sql}");
         assert!(
@@ -633,6 +697,25 @@ mod tests {
         );
         assert_eq!(sql_literal("it's"), "'it''s'");
         assert_eq!(sql_literal("a\\b"), "E'a\\\\b'");
+    }
+
+    // Token mode (#379).
+    #[test]
+    fn test_trigger_function_sql_token_payload() {
+        let res = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "public.q", false);
+        let tok = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "public.q", true);
+        assert!(res.contains("IF false THEN"), "{res}");
+        assert!(tok.contains("IF true THEN"), "{tok}");
+        for sql in [&res, &tok] {
+            assert!(
+                sql.contains("jsonb_build_object('tx', tx_id, 'hash', new_hash)"),
+                "{sql}"
+            );
+            assert!(
+                sql.contains("pg_catalog.pg_notify('mentat_s', payload)"),
+                "{sql}"
+            );
+        }
     }
 
     #[test]

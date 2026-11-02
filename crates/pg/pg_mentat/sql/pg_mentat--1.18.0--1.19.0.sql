@@ -125,3 +125,16 @@ BEGIN
     PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
 $oldidx$;
+
+-- ---------------------------------------------------------------------------
+-- subscribe(store, name, query, token_only) (#379): with token_only the
+-- NOTIFY payload is {"tx": T, "hash": H} instead of the query result, so a
+-- listener (any role that can connect can LISTEN) learns only that the
+-- result changed and re-runs the query with its own privileges. A new
+-- overload; the three-argument subscribe is unchanged. Same shape as the
+-- pgrx-generated install SQL.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION "subscribe"("store_name" TEXT, "subscription_name" TEXT, "query" TEXT, "token_only" bool)
+RETURNS TEXT
+STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', 'subscribe_token_only_wrapper';
