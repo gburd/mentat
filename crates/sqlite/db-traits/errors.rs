@@ -150,10 +150,6 @@ impl ::std::fmt::Display for InputError {
 
 fn tempid_not_an_entity(t: &TempId) -> String {
     match t {
-        TempId::External(s) if s.starts_with("datomic") => format!(
-            ":db.error/tempid-not-an-entity tempid \"{s}\" used only as value in transaction \
-             (mentat has no reserved tempids; use (transaction-tx) for the current transaction)"
-        ),
         TempId::External(s) => {
             format!(
                 ":db.error/tempid-not-an-entity tempid \"{s}\" used only as value in transaction"
@@ -332,6 +328,22 @@ pub enum DbErrorKind {
     /// would name a new entity with no datoms (Datomic's `:db.error/tempid-not-an-entity`).
     #[error("{}", tempid_not_an_entity(.0))]
     TempIdNotAnEntity(TempId),
+
+    /// A `:db/unique` value asserted for entity `e` that entity `holder` already has
+    /// (pg_mentat's message, word for word).
+    #[error(
+        ":db.error/unique-conflict Unique constraint violation for attribute '{attr}' \
+         (unique type: :db.unique/{unique}). The asserted value {value} already exists on \
+         entity {holder} but is being asserted for entity {e}. To reassign the value, first \
+         retract it from entity {holder}."
+    )]
+    UniqueConflict {
+        attr: String,
+        unique: &'static str,
+        value: String,
+        holder: Entid,
+        e: Entid,
+    },
 
     // It would be better to capture the underlying `rusqlite::Error`, but that type doesn't
     // implement many useful traits, including `Clone`, `Eq`, and `PartialEq`.

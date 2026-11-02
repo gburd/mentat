@@ -74,7 +74,7 @@ use crate::types::{AVMap, AVPair, PartitionMap, TransactableValue};
 use crate::upsert_resolution::{FinalPopulations, Generation};
 use crate::watcher::TransactWatcher;
 use edn::entities as entmod;
-use edn::entities::{AttributePlace, BuiltinTxFn, Entity, OpType, TempId, ValuePlace};
+use edn::entities::{AttributePlace, BuiltinTxFn, Entity, OpType, TempId, ValuePlace, TX_TEMPID};
 
 /// Defines transactor's high level behaviour.
 pub(crate) enum TransactorAction {
@@ -450,6 +450,70 @@ where
             self.expand_retract_entity(target, visited, terms)?;
         }
         Ok(())
+    }
+
+    /// A :db/unique value asserted on the transaction entity (by "datomic.tx" or
+    /// `(transaction-tx)`) that another entity holds, or asserts in this transaction, is a
+    /// unique conflict: the transaction is a known entity, so it never upserts (#414).
+    fn check_tx_entity_unique_values(&self, trie: &AEVTrie) -> Result<()> {
+        let tx = self.tx_id;
+        let mut held: Vec<(AVPair, &Attribute)> = vec![];
+        for ((a, attribute), evs) in trie {
+            let Some(ars) = evs.get(&tx).filter(|_| attribute.unique.is_some()) else {
+                continue;
+            };
+            for v in &ars.add {
+                if let Some((&e, _)) = evs.iter().find(|(&e, o)| e != tx && o.add.contains(v)) {
+                    bail!(self.unique_conflict(*a, attribute, v, e));
+                }
+                held.push(((*a, v.clone()), attribute));
+            }
+        }
+        if held.is_empty() {
+            return Ok(());
+        }
+        let avs: Vec<&AVPair> = held.iter().map(|(av, _)| av).collect();
+        let holders = self.store.resolve_avs(&avs[..])?;
+        for (av @ (a, v), attribute) in &held {
+            let Some(&holder) = holders.get(av) else {
+                continue;
+            };
+            // Unless the holder lets the value go in this transaction.
+            let released = trie
+                .get(&(*a, *attribute))
+                .and_then(|evs| evs.get(&holder))
+                .is_some_and(|o| {
+                    o.retract.contains(v)
+                        || (!attribute.multival && !o.add.is_empty() && !o.add.contains(v))
+                });
+            if holder != tx && !released {
+                bail!(self.unique_conflict(*a, attribute, v, holder));
+            }
+        }
+        Ok(())
+    }
+
+    fn unique_conflict(
+        &self,
+        a: Entid,
+        attribute: &Attribute,
+        v: &TypedValue,
+        holder: Entid,
+    ) -> DbErrorKind {
+        use crate::db::TypedSQLValue;
+        DbErrorKind::UniqueConflict {
+            attr: self
+                .schema
+                .get_ident(a)
+                .map_or_else(|| a.to_string(), |k| k.to_string()),
+            unique: match attribute.unique {
+                Some(attribute::Unique::Identity) => "identity",
+                _ => "value",
+            },
+            value: v.to_edn_value_pair().0.to_string(),
+            holder,
+            e: self.tx_id,
+        }
     }
 
     /// Pipeline stage 1: convert `Entity` instances into `Term` instances, ready for term
@@ -1103,6 +1167,31 @@ where
         // TODO: push these into an internal transaction report?
         let mut tempids: BTreeMap<TempId, KnownEntid> = BTreeMap::default();
 
+        // Datomic's reserved tempid "datomic.tx" names this transaction, like
+        // `(transaction-tx)`; it is reported in the tempids only if it was used (#414).
+        let tx_tempid = TempId::External(TX_TEMPID.to_string());
+        let terms: Vec<TermWithTempIds> = if tempid_set.contains(&tx_tempid) {
+            tempids.insert(tx_tempid, KnownEntid(self.tx_id));
+            let tx = self.tx_id;
+            let is_tx = |t: &TempIdHandle| matches!(&**t, TempId::External(s) if s == TX_TEMPID);
+            terms
+                .into_iter()
+                .map(|Term::AddOrRetract(op, e, a, v)| {
+                    let e = match e {
+                        Either::Right(ref t) if is_tx(t) => Either::Left(KnownEntid(tx)),
+                        e => e,
+                    };
+                    let v = match v {
+                        Either::Right(ref t) if is_tx(t) => Either::Left(TypedValue::Ref(tx)),
+                        v => v,
+                    };
+                    Term::AddOrRetract(op, e, a, v)
+                })
+                .collect()
+        } else {
+            terms.into_iter().collect()
+        };
+
         // Pipeline stage 3: upsert tempids -> terms without tempids or lookup refs.
         // Now we can collect upsert populations.
         let (mut generation, inert_terms) = Generation::from(terms, self.schema)?;
@@ -1239,6 +1328,8 @@ where
                     errors::SchemaConstraintViolation::CardinalityConflicts { conflicts: errors }
                 ));
             }
+
+            self.check_tx_entity_unique_values(&aev_trie)?;
 
             // Pipeline stage 4: final terms (after rewriting) -> DB insertions.
             // Collect into non_fts_*.
