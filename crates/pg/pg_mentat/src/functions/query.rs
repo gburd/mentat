@@ -8583,6 +8583,20 @@ fn untyped_comparison_sql(
         None if all_numbers || ordering => "num",
         None => "other",
     };
+    if kind == "num" {
+        if let Some(sql) = untyped_long_comparison_sql(
+            pred,
+            sql_op,
+            &untyped,
+            var_to_alias,
+            var_to_type,
+            computed,
+            input_bindings,
+            builder,
+        )? {
+            return Ok(Some(sql));
+        }
+    }
     let mut sides = Vec::with_capacity(2);
     for arg in &pred.args {
         sides.push(match (untyped(arg), arg) {
@@ -8618,6 +8632,85 @@ fn untyped_comparison_sql(
         });
     }
     Ok(Some(format!("({} {sql_op} {})", sides[0], sides[1])))
+}
+
+/// A numeric comparison of a value of unknown type (alias `u`) with a long,
+/// or of two values of unknown type: a long compares with a long exactly, as
+/// BIGINT, and only a long with a double through DOUBLE PRECISION. Reading
+/// every long as a double lost the low bits above 2^53, so `[(= ?v
+/// 9007199254740992)]` matched the long 9007199254740993 and `>` missed it
+/// (#388). None when the typed side is a double (the caller's double
+/// comparison is then right).
+///
+///   u op X     ->  COALESCE(u.v_long op X, u.v_double op X::DOUBLE PRECISION)
+///   u op w     ->  COALESCE(u.v_long op w.v_long, <both as DOUBLE PRECISION>)
+///
+/// A side that isn't a number is NULL in both arms and doesn't match.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "untyped_comparison_sql's context"
+)]
+fn untyped_long_comparison_sql<'u>(
+    pred: &Predicate,
+    sql_op: &str,
+    untyped: &dyn Fn(&FnArg) -> Option<&'u str>,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
+    input_bindings: &HashMap<String, serde_json::Value>,
+    builder: &mut SqlBuilder<'_>,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let is_long = |a: &FnArg| match a {
+        FnArg::EntidOrInteger(_) => true,
+        FnArg::Variable(v) => {
+            let name = format!("{v}");
+            if let Some((_, "e" | "a" | "tx")) = var_to_alias.get(&name) {
+                return true;
+            }
+            match var_to_type.get(&name).cloned().flatten().as_deref() {
+                Some(t) => matches!(t, "long" | "ref"),
+                None => input_bindings
+                    .get(&name)
+                    .is_some_and(|j| j.is_i64() || j.is_u64()),
+            }
+        }
+        _ => false,
+    };
+    let (a, b) = (&pred.args[0], &pred.args[1]);
+    let double = |u: &str| format!("COALESCE({u}.v_long::DOUBLE PRECISION, {u}.v_double)");
+    Ok(match (untyped(a), untyped(b)) {
+        (Some(u), Some(w)) => Some(format!(
+            "COALESCE({u}.v_long {sql_op} {w}.v_long, {} {sql_op} {})",
+            double(u),
+            double(w)
+        )),
+        (Some(u), None) | (None, Some(u)) => {
+            let (other, untyped_first) = if untyped(a).is_some() {
+                (b, true)
+            } else {
+                (a, false)
+            };
+            if !is_long(other) {
+                return Ok(None);
+            }
+            let x = pred_arg_to_sql(
+                other,
+                var_to_alias,
+                var_to_type,
+                computed,
+                input_bindings,
+                builder,
+            )?;
+            let (long_side, double_side) = (format!("{u}.v_long"), format!("{u}.v_double"));
+            let xd = format!("({x})::DOUBLE PRECISION");
+            Some(if untyped_first {
+                format!("COALESCE({long_side} {sql_op} {x}, {double_side} {sql_op} {xd})")
+            } else {
+                format!("COALESCE({x} {sql_op} {long_side}, {xd} {sql_op} {double_side})")
+            })
+        }
+        (None, None) => None,
+    })
 }
 
 // ============================================================================

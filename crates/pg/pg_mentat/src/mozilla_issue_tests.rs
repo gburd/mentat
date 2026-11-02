@@ -942,4 +942,137 @@ mod tests {
             serde_json::json!([5, 1])
         );
     }
+
+    // #388: a comparison of a value of unknown type with a long read the long
+    // as DOUBLE PRECISION, which drops the low bits above 2^53:
+    // [(= ?v 9007199254740992)] matched the stored long 9007199254740993 and
+    // [(> ?v 9007199254740992)] missed it. A long compares with a long as
+    // BIGINT; only a long with a double goes through double precision. With
+    // a constant, an :in input, a long variable, a function result and a
+    // rule column of longs and doubles, on the default store and a named one.
+    #[pg_test]
+    fn untyped_long_comparison_is_exact_above_2_pow_53() {
+        setup();
+        Spi::run("SELECT create_store('big_s')").expect("create_store");
+        for store in ["default", "big_s"] {
+            let t = |edn: &str| {
+                Spi::run(&format!(
+                    "SELECT t('{store}', '{}')",
+                    edn.replace('\'', "''")
+                ))
+                .unwrap_or_else(|e| panic!("{store} {edn}: {e}"))
+            };
+            let ns = |query: &str, inputs: &str| -> Vec<String> {
+                let r = Spi::get_one::<pgrx::JsonB>(&format!(
+                    "SELECT q('{store}', '{}', '{inputs}'::jsonb)",
+                    query.replace('\'', "''")
+                ))
+                .unwrap_or_else(|e| panic!("{store} {query}: {e}"))
+                .expect("NULL")
+                .0;
+                let mut out: Vec<String> = r["result"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{store} {query}: {r}"))
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect();
+                out.sort();
+                out
+            };
+            t("[{:db/ident :bg/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one} \
+                {:db/ident :bg/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one} \
+                {:db/ident :bg/d :db/valueType :db.type/double :db/cardinality :db.cardinality/one} \
+                {:db/ident :bg/k :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]");
+            t(
+                "[{:bg/id \"big\" :bg/n 9007199254740993 :bg/d 9007199254740992.0} \
+                {:bg/id \"key\" :bg/k 9007199254740992}]",
+            );
+            let big = "[?e :bg/id \"big\"] [?e ?a ?v]";
+            let n = || vec!["9007199254740993".to_string()];
+            // Constant.
+            let c =
+                |op: &str| format!("[:find [?v ...] :where {big} [({op} ?v 9007199254740992)]]");
+            assert_eq!(
+                ns(&c("="), "{}"),
+                vec!["9007199254740992.0"],
+                "{store}: = long"
+            );
+            assert_eq!(ns(&c(">"), "{}"), n(), "{store}: > long");
+            assert_eq!(ns(&c(">="), "{}").len(), 2, "{store}: >= long");
+            assert_eq!(ns(&c("!="), "{}"), n(), "{store}: != long");
+            let c3 = format!("[:find [?v ...] :where {big} [(= ?v 9007199254740993)]]");
+            // The long matches exactly; the double 2^53 matches too, since a
+            // long against a double compares in double precision, where
+            // 2^53 + 1 rounds to 2^53.
+            assert_eq!(
+                ns(&c3, "{}"),
+                vec!["9007199254740992.0", "9007199254740993"],
+                "{store}: = exact long"
+            );
+            // Constant on the left.
+            let l = format!("[:find [?v ...] :where {big} [(< 9007199254740992 ?v)]]");
+            assert_eq!(ns(&l, "{}"), n(), "{store}: long < ?v");
+            // A double constant still compares as a double.
+            let d = format!("[:find [?v ...] :where {big} [(= ?v 9007199254740992.0)]]");
+            assert_eq!(ns(&d, "{}").len(), 2, "{store}: = double");
+            // :in input.
+            let i = format!("[:find [?v ...] :in $ ?x :where {big} [(= ?v ?x)]]");
+            assert_eq!(
+                ns(&i, r#"{"inputs": [9007199254740992]}"#),
+                vec!["9007199254740992.0"]
+            );
+            assert_eq!(
+                ns(&i, r#"{"inputs": [9007199254740993]}"#),
+                vec![
+                    "9007199254740992.0".to_string(),
+                    "9007199254740993".to_string()
+                ],
+                "{store}: input"
+            );
+            // A long-typed variable.
+            let w = format!("[:find [?v ...] :where {big} [?k :bg/k ?w] [(= ?v ?w)]]");
+            assert_eq!(
+                ns(&w, "{}"),
+                vec!["9007199254740992.0"],
+                "{store}: long var"
+            );
+            let wg = format!("[:find [?v ...] :where {big} [?k :bg/k ?w] [(> ?v ?w)]]");
+            assert_eq!(ns(&wg, "{}"), n(), "{store}: > long var");
+            // A function result.
+            let f =
+                format!("[:find [?v ...] :where {big} [(+ 9007199254740992 1) ?x] [(= ?v ?x)]]");
+            // The long 2^53 + 1 matches, the double 2^53 too (see above).
+            assert_eq!(
+                ns(&f, "{}"),
+                vec![
+                    "9007199254740992.0".to_string(),
+                    "9007199254740993".to_string()
+                ],
+                "{store}: fn result"
+            );
+            // A rule column of longs and doubles, against a constant.
+            let rules = "[[(num ?e ?v) [?e :bg/n ?v]] [(num ?e ?v) [?e :bg/d ?v]]]";
+            let r = |op: &str| {
+                format!(
+                    "[:find [?v ...] :rules {rules} :where [?e :bg/id \"big\"] (num ?e ?v) \
+                     [({op} ?v 9007199254740992)]]"
+                )
+            };
+            assert_eq!(
+                ns(&r("="), "{}"),
+                vec!["9007199254740992.0"],
+                "{store}: rule ="
+            );
+            assert_eq!(ns(&r(">"), "{}"), n(), "{store}: rule >");
+            // Two values of unknown type, ordered: long against long exactly.
+            let two = "[:find ?v ?u :where [?e :bg/id \"big\"] [?e ?a ?v] \
+                       [?k :bg/id \"key\"] [?k ?b ?u] [(> ?v ?u)]]";
+            assert_eq!(
+                ns(two, "{}"),
+                vec!["[9007199254740993,9007199254740992]"],
+                "{store}: untyped > untyped"
+            );
+        }
+        Spi::run("SELECT drop_store('big_s')").expect("drop_store");
+    }
 }
