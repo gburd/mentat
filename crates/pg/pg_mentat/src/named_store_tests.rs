@@ -2372,8 +2372,10 @@ mod tests {
 
     // Anyone who can connect can LISTEN, so a subscription's payload (its
     // query result) reached roles with no access to the store (#379):
-    // subscribe(..., token_only => true) sends {"tx", "hash"} instead.
-    // Real sessions (dblink): a NOTIFY is delivered on commit.
+    // subscribe(..., token_only => true) sends {"tx", "hash"} instead. And a
+    // result over the NOTIFY limit made pg_notify raise in the trigger, so
+    // every t() on the store failed (#400): it is sent as a token with
+    // "too_large". Real sessions (dblink): a NOTIFY is delivered on commit.
     #[cfg(not(feature = "pg13"))]
     #[pg_test]
     fn subscription_token_payloads() {
@@ -2476,6 +2478,24 @@ mod tests {
             "the default payload is the result; token_only sends tx and hash"
         );
 
+        // A result over the limit: the write succeeds, both send a token.
+        let tx2 = write(&format!("[{{:p/name \"{}\"}}]", "x".repeat(9000)))["db-after"]["basis-t"]
+            .clone();
+        assert!(tx2.as_i64().is_some(), "the write must not fail");
+        let h = hash();
+        assert_eq!(
+            received(2),
+            vec![
+                (
+                    "mentat_tk_res".into(),
+                    serde_json::json!({"tx": tx2, "hash": h, "too_large": true})
+                ),
+                (
+                    "mentat_tk_tok".into(),
+                    serde_json::json!({"tx": tx2, "hash": h})
+                ),
+            ]
+        );
         on("tk_w", "DO $d$ BEGIN PERFORM drop_store('tk_s'); END $d$");
         Spi::run("SELECT dblink_disconnect('tk_w'), dblink_disconnect('tk_l')")
             .expect("disconnect");

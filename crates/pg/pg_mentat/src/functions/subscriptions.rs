@@ -196,7 +196,8 @@ fn dollar_tag(body: &str) -> String {
 /// store's current tx; null if this session hasn't allocated one) and the
 /// result's md5. Anyone who can LISTEN gets the payload (#379); a token
 /// tells them only that the result changed, and they re-run the query with
-/// their own privileges.
+/// their own privileges. A result over PostgreSQL's NOTIFY limit is sent as
+/// a token with `"too_large": true`, so the write doesn't fail (#400).
 fn trigger_function_sql(
     schema: &str,
     subscription_name: &str,
@@ -247,7 +248,11 @@ BEGIN
     IF old_hash IS DISTINCT FROM new_hash THEN
         PERFORM pg_catalog.set_config('{var_name}', new_hash, false);
         payload := result_json::TEXT;
-        IF {token_only} THEN
+        -- PostgreSQL's NOTIFY payload limit (NOTIFY_PAYLOAD_MAX_LENGTH): over
+        -- it pg_notify raises, and the write would fail with it (#400).
+        IF {token_only} OR pg_catalog.octet_length(payload) >=
+               pg_catalog.current_setting('block_size')::INT
+             - pg_catalog.current_setting('max_identifier_length')::INT - 129 THEN
             BEGIN
                 -- The sequence t() took this transaction's id from
                 -- (allocate_tx_id), by the view's schema (rename_store).
@@ -256,7 +261,9 @@ BEGIN
             EXCEPTION WHEN OTHERS THEN
                 tx_id := NULL;
             END;
-            payload := pg_catalog.jsonb_build_object('tx', tx_id, 'hash', new_hash);
+            payload := pg_catalog.jsonb_build_object('tx', tx_id, 'hash', new_hash)
+                || CASE WHEN {token_only} THEN '{{}}'::JSONB
+                        ELSE pg_catalog.jsonb_build_object('too_large', true) END;
         END IF;
         PERFORM pg_catalog.pg_notify('{channel}', payload);
     END IF;
@@ -699,16 +706,26 @@ mod tests {
         assert_eq!(sql_literal("a\\b"), "E'a\\\\b'");
     }
 
-    // Token mode (#379).
+    // Token mode, and the too-large fallback in result mode (#379, #400).
     #[test]
     fn test_trigger_function_sql_token_payload() {
         let res = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "public.q", false);
         let tok = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "public.q", true);
-        assert!(res.contains("IF false THEN"), "{res}");
-        assert!(tok.contains("IF true THEN"), "{tok}");
+        assert!(
+            res.contains("IF false OR pg_catalog.octet_length(payload) >="),
+            "{res}"
+        );
+        assert!(
+            tok.contains("IF true OR pg_catalog.octet_length(payload) >="),
+            "{tok}"
+        );
         for sql in [&res, &tok] {
             assert!(
                 sql.contains("jsonb_build_object('tx', tx_id, 'hash', new_hash)"),
+                "{sql}"
+            );
+            assert!(
+                sql.contains("jsonb_build_object('too_large', true)"),
                 "{sql}"
             );
             assert!(

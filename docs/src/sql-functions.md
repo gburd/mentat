@@ -362,7 +362,10 @@ next transaction on the store sends a new one.
 Subscribe to changes matching a Datalog query pattern. Uses PostgreSQL `LISTEN`/`NOTIFY`:
 the channel is `mentat_<name>`. After each write to the store whose result
 differs from the last one this session sent, the payload is the query
-result as JSON.
+result as JSON. PostgreSQL limits a payload to just under 8000 bytes; a
+larger result is sent as a token instead (`{"tx": T, "hash": H,
+"too_large": true}`, see below), so the write still succeeds and the
+listener re-runs the query.
 
 ```sql
 SELECT mentat.subscribe('default', 'new_people',
