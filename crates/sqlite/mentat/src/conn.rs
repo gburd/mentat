@@ -545,8 +545,8 @@ mod tests {
             x => panic!("expected db error, got {:?}", x),
         }
 
-        // Transact two more tempids.
-        let t = "[[:db/add \"one\" :db.schema/attribute \"more\"]]";
+        // Transact two more tempids.  "more" needs a datom of its own (#384).
+        let t = "[[:db/add \"one\" :db.schema/attribute \"more\"] [:db/add \"more\" :db/doc \"more\"]]";
         let report = conn.transact(&mut sqlite, t).expect("transact succeeded");
         assert_eq!(report.tempids["more"], next);
         assert_eq!(report.tempids["one"], next + 1);
@@ -578,7 +578,7 @@ mod tests {
 
         // And if we subsequently transact in a way that allocates one ID, we _will_ use that one.
         // Note that `10` is a bootstrapped entid; we use it here as a known-good value.
-        let t = "[[:db/add 10 :db.schema/attribute \"temp\"]]";
+        let t = "[[:db/add 10 :db.schema/attribute \"temp\"] [:db/add \"temp\" :db/doc \"temp\"]]";
         let report = conn.transact(&mut sqlite, t).expect("transact succeeded");
         assert_eq!(report.tempids["temp"], next);
     }
@@ -600,7 +600,7 @@ mod tests {
                  [:db/add \"two\" :db/ident :a/keyword2]]";
 
         // This can refer to `t`, 'cos they occur in separate txes.
-        let t2 = "[{:db.schema/attribute \"three\", :db/ident :a/keyword1}]";
+        let t2 = "[{:db.schema/attribute \"three\", :db/ident :a/keyword1} {:db/id \"three\" :db/doc \"3\"}]";
 
         // Scoped borrow of `conn`.
         {
