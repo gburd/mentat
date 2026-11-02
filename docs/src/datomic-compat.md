@@ -18,10 +18,10 @@ pg_mentat provides Datomic-compatible schema, transactions, and Datalog queries 
 | `:db.fn/cas` | Yes | Yes | **Complete** -- compare-and-swap; accepts a lookup ref |
 | `with` (speculative) | Yes | Yes | **Complete** -- `mentat_with()` |
 | Map notation | Yes | Yes | **Complete** |
-| Tempids | Yes | Yes | **Complete** -- a tempid used only as a ref value, never as the entity of a datom and not upserting, fails with `:db.error/tempid-not-an-entity` naming it, as in Datomic (1.19.0; it used to make an entity with no datoms). The reserved tempid `"datomic.tx"` is not supported (it is an ordinary tempid); the embedded engine and DuckDB have `(transaction-tx)` |
+| Tempids | Yes | Yes | **Complete** -- a tempid used only as a ref value, never as the entity of a datom and not upserting, fails with `:db.error/tempid-not-an-entity` naming it, as in Datomic (1.19.0; it used to make an entity with no datoms). The reserved tempid `"datomic.tx"` names the transaction being committed (1.19.0); see [The transaction tempid](#the-transaction-tempid-datomictx) |
 | Lookup refs | Yes | Yes | **Complete** -- `[:unique/attr v]` (or `(lookup-ref a v)`) in entity position, `:db/id`, and as the value of a ref attribute; in map form, for a cardinality-many ref, `[[:a/id 1] [:a/id 2]]` is a list of lookup refs (see [Lookup refs in a list of values](#lookup-refs-in-a-list-of-values)). The embedded engine and DuckDB accept the vector form since 1.18.0 |
 | Upsert (unique/identity) | Yes | Yes | **Complete** |
-| Tx metadata (:db/txInstant) | Yes | Yes | **Complete** |
+| Tx metadata (:db/txInstant) | Yes | Yes | **Complete** -- annotate the transaction with `"datomic.tx"` (1.19.0) |
 | Negative tempids | Yes | No | N/A -- use string tempids |
 | `:db/fn` (database functions) | Yes (Clojure) | Yes (mino) | pg_mentat 1.14.0 (`script` builds); embedded SQLite (`mino` feature) and the DuckDB extension in 1.15.0 -- sandboxed mino `(fn [db & args] ...)` returning tx-data; see [Transaction functions](#transaction-functions) |
 
@@ -73,6 +73,35 @@ attribute. To write two refs in that case, make the first one a lookup ref
 ```clojure
 {:form/fields [[:db/ident :user/id] :user/name]} ; two refs: :user/id and :user/name
 ```
+
+### The transaction tempid "datomic.tx"
+
+The reserved tempid `"datomic.tx"` names the transaction being committed, as
+in Datomic, on every backend (since 1.19.0; before, it was an ordinary tempid
+and made a new entity). Use it to put metadata on the transaction, in map or
+list form, or as a ref value:
+
+```clojure
+[{:db/id "datomic.tx" :audit/user "bob"}
+ [:db/add "datomic.tx" :audit/source "import"]
+ {:person/name "Alice" :person/import "datomic.tx"}]
+
+;; read it back with the data it wrote
+[:find ?user :where [?e :person/name "Alice" ?tx] [?tx :audit/user ?user]]
+```
+
+The tempids map has `"datomic.tx"` (the tx id) only when the transaction used
+it. The embedded engine and DuckDB also accept `(transaction-tx)` for the same
+entity. A tx-function may return `{:db/id "datomic.tx" ...}`.
+
+The transaction is a new entity and never upserts: asserting a
+`:db.unique/identity` or `:db.unique/value` value another entity holds is
+`:db.error/unique-conflict`, naming the attribute and value. An explicit
+`:db/txInstant` on it replaces the transaction's time (on pg_mentat in the
+log, the current state and `mentat.transactions`); neither backend checks it
+against earlier transactions or the clock, which Datomic does. On pg_mentat,
+`mentat.entid_collision_report()` does not count a transaction's own
+annotations as entid collisions (see [Operations](operations.md#pre-156-stores-overflow-and-collisions)).
 
 ### Transaction functions
 
