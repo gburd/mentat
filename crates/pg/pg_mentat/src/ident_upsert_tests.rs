@@ -279,6 +279,55 @@ mod tests {
         assert_eq!(ident_entid(s, ":r/old"), None, "the old name is gone");
     }
 
+    /// Datomic's documented rename form names the entity by its old ident
+    /// ([{:db/id :old :db/ident :new}]); the old ident resolves for the rest
+    /// of the transaction, as against the database before it.
+    fn rename_by_old_ident(s: &str) {
+        tx(
+            s,
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+              {:db/ident :c/n :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        tx(s, "[{:db/ident :color/blue} {:db/ident :color/red}]");
+        let blue = ident_entid(s, ":color/blue").unwrap();
+        let red = ident_entid(s, ":color/red").unwrap();
+        let n = ident_entid(s, ":c/n").unwrap();
+        tx(
+            s,
+            r#"[{:db/id :color/blue :db/ident :color/azure} {:db/id "sea" :c/color :color/blue}]"#,
+        );
+        assert_eq!(ident_entid(s, ":color/azure"), Some(blue));
+        assert_eq!(ident_entity(s, ":color/azure"), blue);
+        assert_eq!(ident_entid(s, ":color/blue"), None);
+        assert_eq!(
+            q(s, "[:find ?c . :where [_ :c/color ?c]]"),
+            blue,
+            "the old ident named the entity in its own transaction"
+        );
+        tx(s, "[[:db/add :color/red :db/ident :color/scarlet]]");
+        assert_eq!(ident_entid(s, ":color/scarlet"), Some(red));
+        // An attribute: its schema row is renamed with it.
+        tx(s, "[{:db/id :c/n :db/ident :c/num}]");
+        assert_eq!(ident_entid(s, ":c/num"), Some(n));
+        tx(s, r#"[{:db/id "x" :c/num 1}]"#);
+        assert_eq!(q(s, "[:find ?v . :where [_ :c/num ?v]]"), 1);
+        // In a later transaction the old ident is gone (no alias).
+        let err = tx_err(s, r#"[{:db/id :color/blue :db/doc "b"}]"#);
+        assert!(err.contains(":color/blue"), "{err}");
+    }
+
+    #[pg_test]
+    fn ident_rename_by_old_ident() {
+        setup("default");
+        rename_by_old_ident("default");
+    }
+
+    #[pg_test]
+    fn ident_rename_by_old_ident_named_store() {
+        setup("id415n");
+        rename_by_old_ident("id415n");
+    }
+
     /// Moving an ident: retract it from its entity, then assert it on another
     /// in a later transaction (master's behavior, kept).
     #[pg_test]

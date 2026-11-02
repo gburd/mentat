@@ -6,7 +6,7 @@ use edn::entities::{BuiltinTxFn, OpType, TX_TEMPID};
 use edn::parse;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 thread_local! {
@@ -24,6 +24,19 @@ thread_local! {
     /// Attribute and ident resolution must read the target store's schema,
     /// not the default store's.
     static TX_CACHE: Cell<Option<&'static crate::cache::SchemaCache>> = const { Cell::new(None) };
+
+    /// Idents this transaction renamed, old ident -> entid. Datomic's rename
+    /// ([{:db/id :old :db/ident :new}]) names the entity by its old ident, so
+    /// the old one resolves for the rest of the transaction.
+    static TX_RENAMED: RefCell<BTreeMap<String, i64>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// The entid `ident` names in the transacted store, or named before this
+/// transaction renamed it.
+fn resolve_ident(ident: &str) -> Option<i64> {
+    store_cache()
+        .resolve_ident(ident)
+        .or_else(|| TX_RENAMED.with(|r| r.borrow().get(ident).copied()))
 }
 
 /// The schema cache of the store being transacted (the default store outside
@@ -46,6 +59,7 @@ impl Drop for TxContextGuard {
     fn drop(&mut self) {
         TX_STORE_ID.with(|f| f.set(None));
         TX_CACHE.with(|c| c.set(None));
+        TX_RENAMED.with(|r| r.borrow_mut().clear());
         crate::cache::end_tx_cache_bypass();
     }
 }
@@ -2002,10 +2016,17 @@ fn write_ident(
     schema: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = [DatumWithOid::from(ident), DatumWithOid::from(entid)];
-    Spi::run_with_args(
-        &format!("DELETE FROM {schema}.idents WHERE entid = $2 AND ident <> $1"),
+    // An entity's other ident is removed (a rename); the old one still names
+    // it for the rest of this transaction.
+    if let Some(old) = Spi::get_one_with_args::<String>(
+        &format!(
+            "WITH d AS (DELETE FROM {schema}.idents WHERE entid = $2 AND ident <> $1 \
+             RETURNING ident) SELECT min(ident) FROM d"
+        ),
         &args,
-    )?;
+    )? {
+        TX_RENAMED.with(|r| r.borrow_mut().insert(old, entid));
+    }
     Spi::run_with_args(
         &format!(
             "INSERT INTO {schema}.idents (ident, entid) VALUES ($1, $2) \
@@ -2375,8 +2396,7 @@ fn resolve_entity_place(
             let ident_str = format!("{}", kw);
             // Try the cache first, then fall back to direct DB lookup in the
             // store's idents table.
-            let entid = store_cache()
-                .resolve_ident(&ident_str)
+            let entid = resolve_ident(&ident_str)
                 .or_else(|| {
                     Spi::get_one_with_args::<i64>(
                         &format!("SELECT entid FROM {}.idents WHERE ident = $1", schema),
@@ -2462,11 +2482,9 @@ fn resolve_attribute(value: &edn::Value) -> Result<i64, Box<dyn std::error::Erro
         edn::Value::Keyword(kw) => {
             // Use Display format (:namespace/name) to match schema ident storage
             let ident_str = format!("{}", kw);
-            store_cache().resolve_ident(&ident_str).ok_or_else(
-                || -> Box<dyn std::error::Error + Send + Sync> {
-                    error::attribute_not_found(&ident_str, store_cache().db_schema()).into()
-                },
-            )
+            resolve_ident(&ident_str).ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                error::attribute_not_found(&ident_str, store_cache().db_schema()).into()
+            })
         }
         other => Err(MentatError::InvalidAttribute {
             got_type: value_type_name(other).to_string(),
@@ -2484,7 +2502,7 @@ fn try_resolve_attribute(value: &edn::Value) -> Option<i64> {
         edn::Value::Integer(i) => Some(*i),
         edn::Value::Keyword(kw) => {
             let ident_str = format!("{}", kw);
-            store_cache().resolve_ident(&ident_str)
+            resolve_ident(&ident_str)
         }
         _ => None,
     }
