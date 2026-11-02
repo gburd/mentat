@@ -1,5 +1,6 @@
 use crate::error::{self, MentatError};
 use crate::functions::store_management;
+use crate::functions::write_locks;
 use crate::types::instant::{sql_instant_from_micros, sql_micros_from_instant};
 use edn::entities::{BuiltinTxFn, OpType};
 use edn::parse;
@@ -592,17 +593,15 @@ fn execute_retract_entity_recursive(
     Ok(())
 }
 
-/// Execute the `:db.fn/cas` (compare-and-swap) transaction function.
+/// Queue a `:db.fn/cas` (compare-and-swap): `[:db/cas e a old new]` sets attribute `a`
+/// on entity `e` to `new` if and only if its current value is `old` (no value, for
+/// `nil`). This encodes the values and queues the datoms; `check_cas` compares with
+/// the current value once the transaction's write locks are held (#376).
 ///
-/// Atomically sets attribute `a` on entity `e` to `new_edn` if and only if
-/// the current value equals `old_edn`. If `old_edn` is `nil`, the attribute
-/// must not currently have a value.
-///
-/// On success, pushes a retraction of the old value (if not nil) and an
+/// Pushes a retraction of the old value (unless nil, or equal to the new one: `[:db/cas
+/// e a v v]` is a no-op, as in Datomic, whose cas expands to the assertion alone) and an
 /// assertion of the new value into `pending_datoms`.
-///
-/// On failure, returns a `CasFailed` error describing the mismatch.
-fn execute_cas_fn(
+fn queue_cas(
     e: i64,
     a: i64,
     old_edn: &edn::Value,
@@ -610,8 +609,46 @@ fn execute_cas_fn(
     qs: &str,
     tempid_map: &mut BTreeMap<String, i64>,
     pending_datoms: &mut Vec<PendingDatom>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let is_ref = lookup_value_type(a).as_deref() == Some("ref");
+) -> Result<PendingCas, Box<dyn std::error::Error + Send + Sync>> {
+    let old = match old_edn {
+        edn::Value::Nil => None,
+        v => Some(encode_attr_value(a, v, tempid_map, qs)?),
+    };
+    let new = encode_attr_value(a, new_edn, tempid_map, qs)?;
+    if let Some(old_val) = old.clone().filter(|old_val| *old_val != new) {
+        pending_datoms.push(PendingDatom {
+            e,
+            a,
+            v: old_val,
+            added: false,
+        });
+    }
+    pending_datoms.push(PendingDatom {
+        e,
+        a,
+        v: new,
+        added: true,
+    });
+    Ok(PendingCas {
+        e,
+        a,
+        old,
+        old_edn: old_edn.clone(),
+    })
+}
+
+/// A queued `:db/cas`: what `(e, a)` must hold for it to apply.
+struct PendingCas {
+    e: i64,
+    a: i64,
+    old: Option<TypedValue>,
+    old_edn: edn::Value,
+}
+
+/// Check a queued `:db/cas` against the current value: fails with `CasFailed` if
+/// `(e, a)` does not hold exactly the expected old value (none, for nil).
+fn check_cas(cas: &PendingCas, qs: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (e, a) = (cas.e, cas.a);
 
     // Get current value(s) for this (e, a) pair from the current-state
     // projection. Append-only model: the log retains historical assertions,
@@ -659,26 +696,11 @@ fn execute_cas_fn(
         }
     }
 
-    let old_is_nil = matches!(old_edn, edn::Value::Nil);
-
-    // Encode old value for comparison (unless nil)
-    let old_encoded: Option<TypedValue> = if old_is_nil {
-        None
-    } else if is_ref {
-        Some(encode_ref_value(old_edn, tempid_map, qs)?)
-    } else {
-        Some(encode_value(old_edn)?)
-    };
-
-    // Compare current database state with expected old value
-    let cas_matches = if old_is_nil {
-        // old-value is nil: expect no current value
-        current_values.is_empty()
-    } else if let Some(ref old_val) = old_encoded {
-        // old-value is not nil: expect exactly one matching value
-        current_values.len() == 1 && current_values[0] == *old_val
-    } else {
-        false
+    // Compare current database state with expected old value: none for nil,
+    // otherwise exactly one matching value.
+    let cas_matches = match &cas.old {
+        None => current_values.is_empty(),
+        Some(old_val) => current_values.len() == 1 && current_values[0] == *old_val,
     };
 
     if !cas_matches {
@@ -698,36 +720,11 @@ fn execute_cas_fn(
         return Err(MentatError::CasFailed {
             entity: e,
             attr: attr_name,
-            expected: format!("{:?}", old_edn),
+            expected: format!("{:?}", cas.old_edn),
             actual: current_desc,
         }
         .into());
     }
-
-    let new_val = if is_ref {
-        encode_ref_value(new_edn, tempid_map, qs)?
-    } else {
-        encode_value(new_edn)?
-    };
-
-    // CAS matched -- retract old value (if not nil) and assert new value. [:db/cas e a v v]
-    // is a no-op, as in Datomic (whose cas expands to the assertion alone): retracting v
-    // would conflict with the add.
-    if let Some(old_val) = old_encoded.filter(|old_val| *old_val != new_val) {
-        pending_datoms.push(PendingDatom {
-            e,
-            a,
-            v: old_val,
-            added: false,
-        });
-    }
-    pending_datoms.push(PendingDatom {
-        e,
-        a,
-        v: new_val,
-        added: true,
-    });
-
     Ok(())
 }
 
@@ -1052,6 +1049,26 @@ fn execute_transaction_inner(
     // without corresponding data.
     let has_schema_changes = !schema_builders.is_empty();
 
+    // An alteration that existing data can violate (many -> one, adding
+    // :db/unique) checks that data: it locks the attribute exclusively first, so
+    // no writer of it is in flight or can start until this transaction ends
+    // (#376). Writers take the same key shared (`lock_for_writes`). Then reload
+    // the schema cache if another backend committed a schema change meanwhile.
+    let altered: Vec<(u32, u32)> = schema_builders
+        .iter()
+        .filter(|(&entid, b)| {
+            store_cache().get_attribute(entid).is_some_and(|old| {
+                (old.cardinality == "many" && b.cardinality.as_deref() == Some("one"))
+                    || (old.unique_constraint.is_none() && b.unique.is_some())
+            })
+        })
+        .map(|(&entid, _)| write_locks::attr_key(tx_store_id, entid))
+        .collect();
+    if !altered.is_empty() {
+        write_locks::lock_all(altered, Vec::new());
+        store_cache().refresh_if_stale();
+    }
+
     // Install schema attributes (if any). In pgrx tests, we rely on the
     // outer transaction for atomicity. In production, the extension function
     // call is already wrapped in a transaction by PostgreSQL.
@@ -1060,6 +1077,8 @@ fn execute_transaction_inner(
     // --- Pass 2: Parse ALL assertions and insert datoms ---
     // Now all idents (both bootstrap and newly-defined) are resolvable.
     let mut pending_datoms: Vec<PendingDatom> = Vec::new();
+    // :db/cas calls, checked once the transaction's write locks are held.
+    let mut pending_cas: Vec<PendingCas> = Vec::new();
 
     for (entity_idx, entity_value) in entities.iter().enumerate() {
         match entity_value {
@@ -1108,7 +1127,7 @@ fn execute_transaction_inner(
                         }
                         let e = resolve_entity_place(&entity_vec[1], &mut tempid_map, &qs)?;
                         let a = resolve_attribute(&entity_vec[2])?;
-                        execute_cas_fn(
+                        pending_cas.push(queue_cas(
                             e,
                             a,
                             &entity_vec[3],
@@ -1116,7 +1135,7 @@ fn execute_transaction_inner(
                             &qs,
                             &mut tempid_map,
                             &mut pending_datoms,
-                        )?;
+                        )?);
                     }
                 }
             }
@@ -1220,6 +1239,12 @@ fn execute_transaction_inner(
             _ => {}
         }
     }
+
+    // Concurrent writers (#376), part 1: before any read of current data, take
+    // each written attribute's key shared (an alteration of it takes it
+    // exclusive) and each asserted :db/unique value's key, so two transactions
+    // can't both find a unique value free. See write_locks.rs.
+    let locked_whole = lock_for_writes(&pending_datoms, &pending_cas, tx_store_id);
 
     // --- Upsert resolution for :db.unique/identity attributes ---
     // In Datomic, when a tempid-allocated entity asserts a value for a
@@ -1395,6 +1420,18 @@ fn execute_transaction_inner(
         for &idx in dedup_indices.iter().rev() {
             pending_datoms.remove(idx);
         }
+    }
+
+    // Concurrent writers (#376), part 2: with the entities now fixed, lock every
+    // cardinality-one (e, a) the transaction writes and every (e, a) a :db/cas
+    // reads, then check each cas. A second writer of one (e, a) waits here for the
+    // first to commit, and (under READ COMMITTED) then reads the first's value.
+    for cas in &mut pending_cas {
+        cas.e = upsert_remaps.get(&cas.e).copied().unwrap_or(cas.e);
+    }
+    lock_values(&pending_datoms, &pending_cas, &locked_whole, tx_store_id);
+    for cas in &pending_cas {
+        check_cas(cas, &qs)?;
     }
 
     // A transaction is a set of datoms: asserting and retracting the same one is a
@@ -2416,14 +2453,9 @@ fn validate_datom_constraints(
             .into());
         }
 
-        // Check existing datoms in database (use advisory lock to prevent races)
-        let lock_key = (datom.a as i64) ^ (compute_typed_value_hash(&datom.v) as i64);
-
-        Spi::run_with_args(
-            "SELECT pg_advisory_xact_lock($1)",
-            &[DatumWithOid::from(lock_key)],
-        )?;
-
+        // Check existing datoms in database. The value's advisory lock was taken
+        // before upsert resolution (lock_for_writes), so no concurrent writer can
+        // claim it between this check and our commit.
         let existing_entity = check_unique_typed_value(datom.a, &datom.v, schema)?;
 
         if let Some(existing_e) = existing_entity {
@@ -2807,51 +2839,108 @@ fn value_type_to_tag(value_type: &str) -> i16 {
     }
 }
 
-/// Compute a simple hash of a TypedValue for advisory lock keys.
-fn compute_typed_value_hash(v: &TypedValue) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
+/// The bytes a :db/unique value's lock key hashes (with its type tag).
+fn typed_value_key_bytes(v: &TypedValue) -> Vec<u8> {
     match v {
-        TypedValue::Ref(i) => {
-            0i16.hash(&mut hasher);
-            i.hash(&mut hasher);
+        TypedValue::Ref(i) | TypedValue::Long(i) | TypedValue::Instant(i) => {
+            i.to_le_bytes().to_vec()
         }
-        TypedValue::Boolean(b) => {
-            1i16.hash(&mut hasher);
-            b.hash(&mut hasher);
+        TypedValue::Boolean(b) => vec![u8::from(*b)],
+        // -0.0 = 0.0 in SQL: one key for both.
+        TypedValue::Double(f) => (if *f == 0.0 { 0.0f64 } else { *f })
+            .to_bits()
+            .to_le_bytes()
+            .to_vec(),
+        TypedValue::Text(s) | TypedValue::Keyword(s) => s.as_bytes().to_vec(),
+        TypedValue::Uuid(u) => u.as_bytes().to_vec(),
+        TypedValue::Bytes(b) => b.clone(),
+    }
+}
+
+/// Part 1 of the write locks (see write_locks.rs), taken before the
+/// transaction reads current data: every written attribute's key shared, and
+/// every asserted :db/unique value's key. If the per-value keys of both parts
+/// would exceed the budget, every attribute that needs them is locked
+/// exclusive instead, and returned: part 2 takes no keys for those.
+///
+/// The schema cache was loaded before these locks were held, so it can
+/// predate an alteration of an attribute written here that committed in
+/// between (one in progress holds the attribute's key exclusive, so none can
+/// commit once the key is held). So reload the cache if the schema moved, and
+/// lock again for what the new schema asks.
+fn lock_for_writes(
+    datoms: &[PendingDatom],
+    cas: &[PendingCas],
+    store_id: i64,
+) -> std::collections::BTreeSet<i64> {
+    loop {
+        let mut shared = Vec::new();
+        let mut unique: BTreeMap<i64, Vec<(u32, u32)>> = BTreeMap::new();
+        let mut ea: BTreeMap<i64, usize> = BTreeMap::new();
+        for d in datoms {
+            shared.push(write_locks::attr_key(store_id, d.a));
+            let Some(info) = lookup_attribute_info(d.a) else {
+                continue;
+            };
+            if d.added && info.unique_constraint.is_some() {
+                let bytes = typed_value_key_bytes(&d.v);
+                unique.entry(d.a).or_default().push(write_locks::unique_key(
+                    store_id,
+                    d.a,
+                    d.v.type_tag(),
+                    &bytes,
+                ));
+            }
+            if info.cardinality == "one" {
+                *ea.entry(d.a).or_default() += 1;
+            }
         }
-        TypedValue::Long(i) => {
-            2i16.hash(&mut hasher);
-            i.hash(&mut hasher);
+        for c in cas {
+            *ea.entry(c.a).or_default() += 1;
         }
-        TypedValue::Double(f) => {
-            3i16.hash(&mut hasher);
-            f.to_bits().hash(&mut hasher);
-        }
-        TypedValue::Text(s) => {
-            7i16.hash(&mut hasher);
-            s.hash(&mut hasher);
-        }
-        TypedValue::Keyword(s) => {
-            8i16.hash(&mut hasher);
-            s.hash(&mut hasher);
-        }
-        TypedValue::Instant(i) => {
-            4i16.hash(&mut hasher);
-            i.hash(&mut hasher);
-        }
-        TypedValue::Uuid(u) => {
-            10i16.hash(&mut hasher);
-            u.as_bytes().hash(&mut hasher);
-        }
-        TypedValue::Bytes(b) => {
-            11i16.hash(&mut hasher);
-            b.hash(&mut hasher);
+        // An upper bound on part 2's keys: upsert resolution only merges entities.
+        let n = unique.values().map(Vec::len).sum::<usize>() + ea.values().sum::<usize>();
+        let (exclusive, whole) = if write_locks::within_budget(n) {
+            let keys = unique.into_values().flatten().collect();
+            (keys, std::collections::BTreeSet::new())
+        } else {
+            let whole: std::collections::BTreeSet<i64> =
+                unique.into_keys().chain(ea.into_keys()).collect();
+            let keys = whole
+                .iter()
+                .map(|&a| write_locks::attr_key(store_id, a))
+                .collect();
+            (keys, whole)
+        };
+        write_locks::lock_all(exclusive, shared);
+        if !store_cache().refresh_if_stale() {
+            return whole;
         }
     }
-    hasher.finish()
+}
+
+/// Part 2 of the write locks, once upsert resolution has fixed the entities:
+/// the (e, a) key of every cardinality-one datom the transaction asserts or
+/// retracts, and of every (e, a) a :db/cas reads, except on the attributes
+/// part 1 locked whole.
+fn lock_values(
+    datoms: &[PendingDatom],
+    cas: &[PendingCas],
+    whole: &std::collections::BTreeSet<i64>,
+    store_id: i64,
+) {
+    let card_one = |a: i64| lookup_attribute_info(a).is_some_and(|info| info.cardinality == "one");
+    let keys: Vec<(u32, u32)> = datoms
+        .iter()
+        .filter(|d| card_one(d.a))
+        .map(|d| (d.e, d.a))
+        .chain(cas.iter().map(|c| (c.e, c.a)))
+        .filter(|(_, a)| !whole.contains(a))
+        .map(|(e, a)| write_locks::ea_key(store_id, e, a))
+        .collect();
+    if !keys.is_empty() {
+        write_locks::lock_all(keys, Vec::new());
+    }
 }
 
 /// Format a TypedValue into a JSON-compatible representation for tx-data.

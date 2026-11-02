@@ -745,6 +745,8 @@ mod comprehensive_upsert_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod concurrency_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod concurrent_write_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod cross_entity_tests;
 #[cfg(any(test, feature = "pg_test"))]
 pub mod current_projection_tests;

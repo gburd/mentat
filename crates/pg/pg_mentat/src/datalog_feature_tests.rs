@@ -5,7 +5,7 @@
 // These tests target the specific code paths added in Tasks #4 and #5:
 // - Phase A (DB-level upsert) and Phase B (in-transaction tempid merging)
 // - recognize_tx_fn() dispatch framework
-// - execute_retract_entity_fn() and execute_cas_fn()
+// - execute_retract_entity_fn() and queue_cas()/check_cas()
 
 #[cfg(any(test, feature = "pg_test"))]
 #[pgrx::pg_schema]
