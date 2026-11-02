@@ -3914,10 +3914,7 @@ mod tests {
         assert_matches!(tempids(&report), "{}");
 
         // Check that we can explode reversed notation in map notation with :db/id, tempid.
-        let report = assert_transact!(
-            conn,
-            "[{:db/id \"s\" :test/_dangling \"t\" :test/many 4}]"
-        );
+        let report = assert_transact!(conn, "[{:db/id \"s\" :test/_dangling \"t\" :test/many 4}]");
         assert_matches!(
             conn.last_transaction(),
             "[[65542 :test/many 4 ?tx true]

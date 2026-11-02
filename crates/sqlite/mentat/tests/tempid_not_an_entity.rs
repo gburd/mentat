@@ -27,9 +27,7 @@ fn setup() -> Store {
                 {:db/ident :v/tx :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]"#,
         )
         .expect("schema");
-    store
-        .transact(r#"[{:v/id "a" :v/uv "ua"}]"#)
-        .expect("data");
+    store.transact(r#"[{:v/id "a" :v/uv "ua"}]"#).expect("data");
     store
 }
 

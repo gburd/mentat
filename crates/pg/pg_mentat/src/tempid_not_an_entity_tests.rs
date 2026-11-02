@@ -16,13 +16,15 @@ mod tests {
              EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
         )
         .expect("capture helper");
-        t(r#"[{:db/ident :v/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+        t(
+            r#"[{:db/ident :v/id :db/valueType :db.type/string :db/cardinality :db.cardinality/one
                :db/unique :db.unique/identity :db/index true}
               {:db/ident :v/uv :db/valueType :db.type/string :db/cardinality :db.cardinality/one
                :db/unique :db.unique/value :db/index true}
               {:db/ident :v/likes :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
               {:db/ident :v/part :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
-               :db/isComponent true}]"#);
+               :db/isComponent true}]"#,
+        );
         t(r#"[{:v/id "a" :v/uv "ua"}]"#);
     }
 
@@ -34,12 +36,9 @@ mod tests {
     }
 
     fn err(edn: &str) -> String {
-        Spi::get_one_with_args::<String>(
-            "SELECT pg_temp.capture($1)",
-            &[DatumWithOid::from(edn)],
-        )
-        .expect("capture ran")
-        .unwrap_or_default()
+        Spi::get_one_with_args::<String>("SELECT pg_temp.capture($1)", &[DatumWithOid::from(edn)])
+            .expect("capture ran")
+            .unwrap_or_default()
     }
 
     fn rejects(edn: &str, tempid: &str) {
@@ -67,7 +66,10 @@ mod tests {
         // Map form, cardinality-many: `[:v/uv "ua"]` is a list (DataScript's identity-only
         // rule), so "ua" is a tempid used only as a value.
         rejects(r#"[{:v/id "e3" :v/likes [:v/uv "ua"]}]"#, "ua");
-        rejects(r#"[[:db/add "l" :v/id "l"] [:db/add "l" :v/likes "t3"]]"#, "t3");
+        rejects(
+            r#"[[:db/add "l" :v/id "l"] [:db/add "l" :v/likes "t3"]]"#,
+            "t3",
+        );
         // Only the value of a component attribute: still an entity with no datoms.
         rejects(r#"[{:v/id "c" :v/part "p"}]"#, "p");
         // A cas whose new value is a fresh tempid.
@@ -85,7 +87,8 @@ mod tests {
         let r = t(r#"[{:v/id "d" :v/likes ["t1"]} {:db/id "t1" :v/id "t1"}]"#);
         assert!(r["tempids"]["t1"].as_i64().is_some());
         // Upserts to the existing :v/id "a" and is used as a value.
-        let r = t(r#"[[:db/add "u" :v/id "a"] [:db/add "e" :v/id "e"] [:db/add "e" :v/likes "u"]]"#);
+        let r =
+            t(r#"[[:db/add "u" :v/id "a"] [:db/add "e" :v/id "e"] [:db/add "e" :v/likes "u"]]"#);
         let a = Spi::get_one::<pgrx::JsonB>(
             r#"SELECT edn_q('[:find ?e . :where [?e :v/id "a"]]', '{}'::jsonb)"#,
         )
@@ -101,8 +104,10 @@ mod tests {
     #[pg_test]
     fn tx_fn_expansion_is_checked() {
         setup();
-        t(r#"[{:db/ident :v/like-new :db/fn "(fn [db who] [[:db/add [:v/id who] :v/likes \"n\"]])"}
-              {:db/ident :v/like-made :db/fn "(fn [db who] [[:db/add [:v/id who] :v/likes \"n\"] {:db/id \"n\" :v/id \"n\"}])"}]"#);
+        t(
+            r#"[{:db/ident :v/like-new :db/fn "(fn [db who] [[:db/add [:v/id who] :v/likes \"n\"]])"}
+              {:db/ident :v/like-made :db/fn "(fn [db who] [[:db/add [:v/id who] :v/likes \"n\"] {:db/id \"n\" :v/id \"n\"}])"}]"#,
+        );
         rejects(r#"[[:v/like-new "a"]]"#, "n");
         t(r#"[[:v/like-made "a"]]"#);
     }

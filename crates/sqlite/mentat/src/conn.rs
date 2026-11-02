@@ -546,7 +546,8 @@ mod tests {
         }
 
         // Transact two more tempids.  "more" needs a datom of its own (#384).
-        let t = "[[:db/add \"one\" :db.schema/attribute \"more\"] [:db/add \"more\" :db/doc \"more\"]]";
+        let t =
+            "[[:db/add \"one\" :db.schema/attribute \"more\"] [:db/add \"more\" :db/doc \"more\"]]";
         let report = conn.transact(&mut sqlite, t).expect("transact succeeded");
         assert_eq!(report.tempids["more"], next);
         assert_eq!(report.tempids["one"], next + 1);
