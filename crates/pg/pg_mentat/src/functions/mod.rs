@@ -21,3 +21,4 @@ pub mod transact;
 #[cfg(feature = "script")]
 pub mod txfn;
 pub mod virtual_tables;
+pub mod write_locks;

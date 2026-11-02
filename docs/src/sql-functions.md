@@ -65,6 +65,28 @@ leaving out its `:db/txInstant`; both are 0 when the transaction changed
 nothing (e.g. it re-asserted values already there). The embedded engine's
 `TxReport` and the DuckDB extension's `edn_t` report the same counts.
 
+`edn_t` runs in the caller's transaction, at its isolation level. Under READ
+COMMITTED (the default) and SERIALIZABLE, concurrent transactions keep a
+cardinality-one attribute to one live value, `:db/cas` is atomic, a
+`:db/unique` value stays on one entity, and a schema alteration to
+`:db.cardinality/one` or `:db/unique` can't race a write: a second writer of
+the same value waits for the first to commit, then replaces its value (or its
+cas fails). Under SERIALIZABLE it may get a serialization failure instead;
+retry. Avoid REPEATABLE READ. There a racing replacement or cas fails with a
+serialization error, but two first assertions of one attribute on one entity,
+two new entities claiming one unique value, or a write racing a many-to-one
+alteration can both commit and leave two live values. See "Transaction
+isolation" in `crates/pg/pg_mentat/sql/README.md`.
+
+Three things read the database before those locks are taken: a transaction
+function (`:db/fn`) while it builds its tx-data, `:db/retractEntity` when it
+lists the entity's datoms, and a lookup ref (`[:attr value]`) when it
+resolves. Under READ COMMITTED they can act on a value another transaction
+is changing: a tx-function increment that returns a plain assertion loses
+updates, and a write that races a `retractEntity` can survive it. Run
+read-modify-write through them at SERIALIZABLE (and retry on 40001), or
+have the tx-function return a `:db/cas`, which is compared after the locks.
+
 ```sql
 SELECT mentat.t('[
   {:db/id "tempid-1"

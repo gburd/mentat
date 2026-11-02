@@ -21,6 +21,9 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: a new entity asserting a `:db.unique/identity` value that a
+  concurrent transaction is asserting upserts into that entity** once the
+  other commits (#376). It used to fail with a unique conflict.
 - **pg_mentat: subscriptions and `on_write` materialized views created
   before 1.19.0 keep their old trigger bodies**, which don't pin
   `search_path` (#383). The upgrade doesn't regenerate them (their query
@@ -43,6 +46,29 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: concurrent writers could break cardinality one, `:db/cas`
+  and `:db/unique` under READ COMMITTED** (#376). Two sessions replacing one
+  cardinality-one value, asserting it for the first time, or running
+  `:db/cas` from the same old value could both commit and leave two live
+  values; so could a write racing a `:db.cardinality/many` → `one`
+  alteration. `edn_t` now takes transaction-scoped advisory locks before it
+  reads: a second writer of the same value waits for the first to commit,
+  then replaces its value, or its cas fails. Under SERIALIZABLE the second
+  writer may get a serialization failure instead; retry it. REPEATABLE READ
+  is still not safe for first assertions, unique values or alterations; use
+  READ COMMITTED or SERIALIZABLE. A transaction that writes more than
+  `max_locks_per_transaction` such values locks those attributes whole until
+  it commits (see Operations). Transaction functions, `:db/retractEntity`
+  and lookup refs read before these locks, so a read-modify-write through
+  them needs SERIALIZABLE or a `:db/cas` (#410).
+- **pg_mentat: two transactions that each changed schema and then wrote data
+  could deadlock** (#413). A schema-changing `edn_t` call now waits for the
+  store's other schema changes to commit before it installs anything:
+  schema changes on one store run one transaction at a time. In a
+  transaction with several `edn_t` calls, put the schema first.
+- **pg_mentat: concurrent writers adding the same cardinality-many values to
+  one entity could deadlock** (40P01, about 1 in 400 transactions with 8
+  clients) (#411). Current-state rows are written in a fixed order.
 - **pg_mentat: a subscription result over PostgreSQL's NOTIFY limit made
   every write to the store fail** (#400). It is sent as a token with
   `"too_large": true`.

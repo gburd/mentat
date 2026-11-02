@@ -53,6 +53,13 @@ The larger the batch, the closer you get to the per-datom floor. There
 is no fixed upper bound other than statement memory; batches of several
 thousand facts are routinely fine.
 
+A transaction locks each cardinality-one value and `:db/unique` value it
+writes, so concurrent writers can't break those rules (see "Transaction
+isolation" in `crates/pg/pg_mentat/sql/README.md`). Past
+`max_locks_per_transaction` such values (64 by default) it locks those
+attributes whole instead, so a big backfill makes other writers of them
+wait until it commits.
+
 ### Idempotent re-assertion is already a no-op for the data
 
 If your sync re-asserts a cardinality-one fact whose value already

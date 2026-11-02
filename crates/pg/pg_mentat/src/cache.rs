@@ -42,23 +42,7 @@ thread_local! {
 /// Must be paired with `end_tx_cache_bypass()`. Use `TxContextGuard` in
 /// `transact.rs` to ensure the pairing via RAII.
 pub fn begin_tx_cache_bypass(store_name: &str) {
-    let cache = get_cache_for_store(store_name);
-    if cache.warmed.load(Ordering::Acquire) {
-        // Cache is warm — do exactly one generation check to detect changes
-        // from other backends before we arm the bypass.
-        let remote_gen = select_one_i64(&format!(
-            "SELECT gen FROM mentat.cache_generation WHERE store_name = '{}'",
-            store_name
-        ))
-        .unwrap_or(1);
-        if remote_gen > cache.local_gen.load(Ordering::Acquire) {
-            cache.invalidate();
-            cache.warm();
-        }
-    } else {
-        // Not warm yet — `warm()` reads the generation internally.
-        cache.warm();
-    }
+    get_cache_for_store(store_name).refresh_if_stale();
     TX_GEN_BYPASS.with(|f| f.set(true));
 }
 
@@ -134,6 +118,14 @@ impl SchemaCache {
         }
 
         let schema = &self.db_schema;
+
+        // Record the generation first: a schema change committed while this
+        // loads then makes the cache look stale (reloaded), never fresh.
+        let gen = select_one_i64(&format!(
+            "SELECT gen FROM mentat.cache_generation WHERE store_name = '{}'",
+            self.store_name
+        ))
+        .unwrap_or(1);
 
         // Load all attributes from <schema>.schema in a single query
         let _ = Spi::connect(|client| {
@@ -219,15 +211,29 @@ impl SchemaCache {
             Ok::<_, pgrx::spi::SpiError>(())
         });
 
-        // Record the current generation so we can detect future bumps
-        let gen = select_one_i64(&format!(
-            "SELECT gen FROM mentat.cache_generation WHERE store_name = '{}'",
-            self.store_name
-        ))
-        .unwrap_or(1);
         self.local_gen.store(gen, Ordering::Release);
 
         self.warmed.store(true, Ordering::Release);
+    }
+
+    /// Reload the cache if another backend committed a schema change since it was
+    /// loaded (the generation moved), even inside a transaction's bypass. Returns
+    /// true if it (re)loaded.
+    pub fn refresh_if_stale(&self) -> bool {
+        if self.warmed.load(Ordering::Acquire) {
+            let remote_gen = select_one_i64(&format!(
+                "SELECT gen FROM mentat.cache_generation WHERE store_name = '{}'",
+                self.store_name
+            ))
+            .unwrap_or(1);
+            if remote_gen <= self.local_gen.load(Ordering::Acquire) {
+                return false;
+            }
+            self.invalidate();
+        }
+        // `warm()` reads the generation internally.
+        self.warm();
+        true
     }
 
     /// Ensure the cache is fresh: warm it if never loaded, or reload if a
@@ -412,6 +418,17 @@ pub fn invalidate_store_cache(store_name: &str) {
 #[expect(dead_code, reason = "Public API for future multi-store invalidation")]
 pub fn invalidate_all_caches() {
     STORE_CACHES.invalidate_all();
+}
+
+/// Lock the store's `cache_generation` row in the mode `bump_store_generation`'s
+/// UPDATE takes, until the transaction ends. A schema-changing `edn_t` call takes
+/// it before it installs an ident or takes a write lock, so two schema-changing
+/// transactions queue here, not in a cycle through each other's idents (#413).
+pub fn lock_store_generation(store_name: &str) -> Result<(), pgrx::spi::SpiError> {
+    Spi::run_with_args(
+        "SELECT 1 FROM mentat.cache_generation WHERE store_name = $1 FOR NO KEY UPDATE",
+        &[pgrx::datum::DatumWithOid::from(store_name)],
+    )
 }
 
 /// Bump the generation counter for a store in the shared `cache_generation` table.
