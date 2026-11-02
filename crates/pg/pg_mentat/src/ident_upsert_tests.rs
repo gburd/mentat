@@ -574,6 +574,175 @@ mod tests {
         repair_same_tx_pair("id415p");
     }
 
+    /// Rows of the store's current_<type> tables that the log's latest-tx-wins
+    /// rule disagrees with (mentat.verify_current_projection reads only the
+    /// default store's tables).
+    fn projection_drift(s: &str) -> i64 {
+        let sch = schema_of(s);
+        [
+            "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
+        ]
+        .iter()
+        .map(|ty| {
+            Spi::get_one::<i64>(&format!(
+                "WITH l AS (SELECT store_id, e, a, v FROM (SELECT DISTINCT ON (store_id, e, a, v) \
+                   store_id, e, a, v, added FROM {sch}.datoms_{ty}_new \
+                   ORDER BY store_id, e, a, v, tx DESC) x WHERE added), \
+                 c AS (SELECT store_id, e, a, v FROM {sch}.current_{ty}) \
+                 SELECT count(*) FROM ((SELECT * FROM l EXCEPT SELECT * FROM c) \
+                   UNION ALL (SELECT * FROM c EXCEPT SELECT * FROM l)) d"
+            ))
+            .unwrap()
+            .unwrap()
+        })
+        .sum()
+    }
+
+    /// `query`'s result now and as of `t`.
+    fn now_and_as_of(s: &str, query: &str, t: i64) -> (serde_json::Value, serde_json::Value) {
+        let r = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT q('{s}', '{query}', '{{\"asOf\": {t}}}'::jsonb)"
+        ))
+        .unwrap()
+        .unwrap();
+        (q(s, query), r.0["result"].clone())
+    }
+
+    fn sorted(v: serde_json::Value) -> Vec<String> {
+        let mut r: Vec<String> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.to_string())
+            .collect();
+        r.sort();
+        r
+    }
+
+    fn history_schema(s: &str) {
+        tx(
+            s,
+            "[{:db/ident :c/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/identity}
+              {:db/ident :c/tags :db/valueType :db.type/ref :db/cardinality :db.cardinality/many}
+              {:db/ident :c/label :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        );
+        tx(s, "[{:db/ident :color/red} {:db/ident :color/blue}]");
+    }
+
+    /// Values asserted and retracted through N after the move: in the merged
+    /// history they are retracted, so the current state the repair leaves
+    /// matches the log (as of the latest transaction), with no ghost of a
+    /// value retracted through N. The ref side is also what the documented
+    /// hand fix of a blocker does (retract the value written through N).
+    fn repair_history_on_moved(s: &str) {
+        history_schema(s);
+        let t1 = last_tx(&tx(
+            s,
+            r#"[{:c/name "x" :c/tags [:color/red]} [:db/add :color/blue :c/label "a"]]"#,
+        ));
+        let (red, _) = break_like_118(s, ":color/red");
+        let (blue, _) = break_like_118(s, ":color/blue");
+        tx(s, r#"[{:c/name "x" :c/tags [:color/red]}]"#);
+        let t3 = last_tx(&tx(
+            s,
+            r#"[[:db/retract [:c/name "x"] :c/tags :color/red]]"#,
+        ));
+        tx(s, r#"[[:db/add :color/red :c/label "warm"]]"#);
+        tx(s, r#"[[:db/retract :color/red :c/label "warm"]]"#);
+        tx(s, r#"[[:db/add :color/red :c/label "hot"]]"#);
+        // Two labels for blue: the documented hand fix is to retract one.
+        tx(s, r#"[[:db/add :color/blue :c/label "b"]]"#);
+        let found = moved_idents(s);
+        assert!(
+            found[0]["blocker"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("attribute"),
+            "{found:?}"
+        );
+        let last = last_tx(&tx(s, r#"[[:db/retract :color/blue :c/label "b"]]"#));
+        assert_eq!(projection_drift(s), 0, "before");
+        let found = moved_idents(s);
+        assert!(found.iter().all(|m| m["blocker"].is_null()), "{found:?}");
+
+        let done = repair(s, false);
+        assert!(done.iter().all(|d| d["action"] == "repaired"), "{done:?}");
+        assert!(moved_idents(s).is_empty());
+        assert_eq!(projection_drift(s), 0, "the current state is the log's");
+        let tags = "[:find ?n ?c :where [?e :c/tags ?c] [?e :c/name ?n]]";
+        let (now, then) = now_and_as_of(s, tags, last);
+        assert_eq!(now, serde_json::json!([]), "x's red was retracted");
+        assert_eq!(now, then);
+        let labels = "[:find ?c ?l :where [?c :c/label ?l]]";
+        let (now, then) = now_and_as_of(s, labels, last);
+        assert_eq!(
+            sorted(now.clone()),
+            sorted(serde_json::json!([[red, "hot"], [blue, "a"]])),
+            "{now}"
+        );
+        assert_eq!(sorted(now), sorted(then));
+        // The re-load asserted a value x had: no row is left for it, and
+        // x's red is retracted when it was.
+        let x = q(s, r#"[:find ?e . :where [?e :c/name "x"]]"#)
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            history(s, ":c/tags"),
+            [(x, red, t1, true), (x, red, t3, false)]
+        );
+    }
+
+    /// One entity refers to both through a cardinality-many attribute: the
+    /// two values are one once N is O.
+    fn repair_refers_to_both(s: &str) {
+        history_schema(s);
+        let t1 = last_tx(&tx(s, r#"[{:c/name "y" :c/tags [:color/red]}]"#));
+        let (red, _) = break_like_118(s, ":color/red");
+        tx(s, r#"[{:c/name "y" :c/tags [:color/red]}]"#);
+        let found = moved_idents(s);
+        assert_eq!(found[0]["blocker"], serde_json::Value::Null, "{found:?}");
+        let done = repair(s, false);
+        assert_eq!(done[0]["action"], "repaired", "{done:?}");
+        assert_eq!(projection_drift(s), 0);
+        let y = q(s, r#"[:find ?e . :where [?e :c/name "y"]]"#)
+            .as_i64()
+            .unwrap();
+        assert_eq!(history(s, ":c/tags"), [(y, red, t1, true)]);
+        assert_eq!(
+            q(s, "[:find ?n ?c :where [?e :c/tags ?c] [?e :c/name ?n]]"),
+            serde_json::json!([["y", red]])
+        );
+    }
+
+    #[pg_test]
+    fn ident_repair_refers_to_both() {
+        setup("default");
+        repair_refers_to_both("default");
+    }
+
+    #[pg_test]
+    fn ident_repair_refers_to_both_named_store() {
+        setup("id415b");
+        repair_refers_to_both("id415b");
+    }
+
+    #[pg_test]
+    fn ident_repair_history_on_moved() {
+        setup("default");
+        repair_history_on_moved("default");
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT mentat.verify_current_projection()").unwrap(),
+            Some(0)
+        );
+    }
+
+    #[pg_test]
+    fn ident_repair_history_on_moved_named_store() {
+        setup("id415h");
+        repair_history_on_moved("id415h");
+    }
+
     #[pg_test]
     fn ident_repair_moved_idents() {
         setup("default");

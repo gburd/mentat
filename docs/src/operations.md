@@ -433,19 +433,29 @@ the two (NULL if it can).
 
 `mentat.repair_moved_idents(store TEXT DEFAULT 'default', dry_run BOOLEAN
 DEFAULT true)` points each ident with no blocker back at its owner, and
-moves what was written to `moved_to` onto the owner: datoms whose entity
-is `moved_to`, and ref values that point at it, in the log and the current
-state. Transaction ids stay as they are. When one transaction wrote the
-same datom on both (re-loading `{:c/name "car" :c/color :color/red}` after
-the move retracted the ref to the owner and asserted one to `moved_to`),
-the two rows become one datom: the repair keeps the transaction's net
-effect, or no row if the datom already had it (car's color stays the
-owner, asserted when it was first written). An ident whose repair fails
-is rolled back on its own and reported as `failed: <error>`. It skips
-(and reports) an ident when both entities have a value of one attribute, when one entity refers
-to both through one attribute, or when `moved_to` was used as an
-attribute; those need a decision about which value to keep. Fix them by
-hand (retract one value), then run the repair again.
+moves what was written to `moved_to` onto the owner in the log: datoms
+whose entity is `moved_to`, and ref values that point at it. Transaction
+ids stay as they are. A datom written through both entities becomes one
+datom with one history, and the latest row wins as for any datom: a ref
+asserted to the owner and later retracted through `moved_to` is
+retracted. Rows that only repeat the state the datom already had are
+dropped, which changes no as-of answer: re-loading
+`{:c/name "car" :c/color :color/red}` after the move retracted the ref to
+the owner and asserted one to `moved_to` in one transaction, and after
+the repair car's color is the owner, asserted when it was first written.
+The repair then recomputes the current state of the merged datoms from
+the log, so current queries and as-of the latest transaction agree, and
+checks it. An ident whose repair fails that check, or fails at all, is
+rolled back on its own and reported as `failed: <error>`.
+
+It skips (and reports) an ident when both entities have a different
+value of one cardinality-one attribute, or when `moved_to` was used as
+an attribute; those need a decision about which value to keep. Fix them
+by hand (retract one value), then run the repair again. Values through
+each entity that overlapped only in the past are not a blocker (history
+can't be changed by hand); as of that time the merged entity shows both.
+The repair scans the store's ref log a few times per ident, so on a
+large store run it in a maintenance window.
 
 ```sql
 SELECT * FROM mentat.repair_moved_idents('default');           -- dry run

@@ -77,17 +77,22 @@ BEGIN
                            s, 'current_' || ty)
                 INTO n USING sid, rec.moved_to;
             n_datoms := n_datoms + n;
-            -- An attribute on both entities: one entity would hold both
-            -- values, two of a cardinality-one attribute.
+            -- A cardinality-one attribute with a different value on each:
+            -- the merged entity would hold two. (Two sets of a
+            -- cardinality-many attribute merge into one.)
             EXECUTE format(
                 'SELECT min(x.a) FROM %1$I.%2$I x
+                   JOIN %1$I.schema sc ON sc.entid = x.a AND sc.cardinality = ''one''
                   WHERE x.store_id = $1 AND x.e = $2
                     AND EXISTS (SELECT 1 FROM %1$I.%2$I y
-                                 WHERE y.store_id = $1 AND y.e = $3 AND y.a = x.a)',
-                s, 'current_' || ty)
+                                 WHERE y.store_id = $1 AND y.e = $3 AND y.a = x.a
+                                   AND %3$s IS DISTINCT FROM %4$s)',
+                s, 'current_' || ty,
+                CASE WHEN ty = 'ref' THEN 'CASE WHEN y.v = $2 THEN $3 ELSE y.v END' ELSE 'y.v' END,
+                CASE WHEN ty = 'ref' THEN 'CASE WHEN x.v = $2 THEN $3 ELSE x.v END' ELSE 'x.v' END)
                 INTO hit USING sid, rec.moved_to, rec.owner;
             IF hit IS NOT NULL AND blocker IS NULL THEN
-                blocker := format('both entities have a value of attribute %s', hit);
+                blocker := format('both entities have a different value of attribute %s', hit);
             END IF;
             -- N as an attribute: its datoms would need N's schema row.
             EXECUTE format('SELECT count(*) FROM %I.%I WHERE store_id = $1 AND a = $2',
@@ -97,17 +102,6 @@ BEGIN
                 blocker := format('entity %s is used as an attribute', rec.moved_to);
             END IF;
         END LOOP;
-        -- One entity refers to both through one attribute: two values merge
-        -- into one.
-        EXECUTE format(
-            'SELECT min(x.e) FROM %1$I.current_ref x
-               JOIN %1$I.current_ref y
-                 ON y.store_id = x.store_id AND y.e = x.e AND y.a = x.a
-              WHERE x.store_id = $1 AND x.v = $2 AND y.v = $3', s)
-            INTO hit USING sid, rec.moved_to, rec.owner;
-        IF hit IS NOT NULL AND blocker IS NULL THEN
-            blocker := format('entity %s refers to both through one attribute', hit);
-        END IF;
         EXECUTE format('SELECT count(*) FROM %I.idents WHERE entid = $1', s)
             INTO hit USING rec.owner;
         IF hit > 0 AND blocker IS NULL THEN
@@ -123,19 +117,25 @@ $fn$;
 --                            dry_run BOOLEAN DEFAULT true)
 --
 -- For each row of moved_idents(store) with no blocker: point the idents row
--- back at O, and move what was written to N onto O, in the log and the
--- current state: datoms with N as entity get O, ref values that point at N
--- point at O. Transaction ids stay as they are, so the history keeps when
--- each value was written; as-of a time after the move now shows the value on
--- O. One transaction can have written a datom on both: re-loading
--- [car :c/color :color/red] after the move retracted [car :c/color O] and
--- asserted [car :c/color N]. Those rows become one datom; the repair keeps
--- one row with the transaction's net effect (asserted if either row is), or
--- none if the datom already had that state (the pair above: car's color
--- stays O, asserted when it was first written). A row with a blocker is
--- skipped and left as it is; an ident whose repair fails is rolled back on
--- its own. Returns one row per ident with what was done ('repaired',
--- 'would repair', 'skipped: why', or 'failed: error').
+-- back at O, and move what was written to N onto O in the log: datoms with
+-- N as entity get O, ref values that point at N point at O. Transaction ids
+-- stay as they are, so the history keeps when each value was written; as-of
+-- a time after the move now shows the value on O.
+--
+-- A datom written through both entities becomes one datom with one merged
+-- history. A row that only repeats the state the datom already had is
+-- dropped (no as-of answer changes): re-loading {:c/name "car" :c/color
+-- :color/red} after the move, in one transaction, retracted [car :c/color O]
+-- and asserted [car :c/color N]; the repair keeps neither row, and car's
+-- color stays O, asserted when it was first written. The latest row wins,
+-- as for any datom: a value asserted through O and retracted through N is
+-- retracted. The current state of the merged datoms is then recomputed from
+-- the log, so it equals as-of the latest transaction, and checked: a
+-- mismatch, or two values of a cardinality-one attribute, fails the ident.
+--
+-- A row with a blocker is skipped and left as it is; an ident whose repair
+-- fails is rolled back on its own. Returns one row per ident with what was
+-- done ('repaired', 'would repair', 'skipped: why', or 'failed: error').
 --
 -- Run it with nothing writing to the store: a writer that resolved the ident
 -- before the repair committed can still write a ref to N. Back up first; run
@@ -156,7 +156,9 @@ DECLARE
     rec RECORD;
     ty TEXT;
     vmap TEXT;
-    vhit TEXT;
+    moved TEXT;
+    scope TEXT;
+    bad TEXT;
     repaired BOOLEAN := false;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant',
                           'text', 'keyword', 'uuid', 'bytes'];
@@ -184,46 +186,87 @@ BEGIN
             EXECUTE format('UPDATE %I.idents SET entid = $1 WHERE ident = $2', s)
                 USING rec.owner, rec.ident;
             FOREACH ty IN ARRAY types LOOP
-                -- $2 is N, $3 is O. A ref's value moves too.
-                vmap := CASE WHEN ty = 'ref' THEN 'CASE WHEN v = $2 THEN $3 ELSE v END' ELSE 'v' END;
-                vhit := CASE WHEN ty = 'ref' THEN ' OR v IN ($2, $3)' ELSE '' END;
-                -- Rows that become one datom in one transaction: keep the one
-                -- with the net effect, or none if the datom had it already.
+                -- $2 is N, $3 is O.
+                IF ty = 'ref' THEN
+                    vmap := 'CASE WHEN v = $2 THEN $3 ELSE v END';
+                    moved := 'e = $2 OR v = $2';
+                    scope := 'e IN ($2, $3) OR v IN ($2, $3)';
+                ELSE
+                    vmap := 'v';
+                    moved := 'e = $2';
+                    scope := 'e IN ($2, $3)';
+                END IF;
+                -- In each datom that has a row through N, drop the rows that
+                -- repeat its state, and keep one row per transaction (its net
+                -- effect: asserted if any row of it is).
                 EXECUTE format($q$
                     WITH m AS (
-                        SELECT e, a, v, tx, added,
+                        SELECT e, a, v, tx, added, (%4$s) AS moved,
                                CASE WHEN e = $2 THEN $3 ELSE e END AS me, %3$s AS mv
                           FROM %1$I.%2$I
-                         WHERE store_id = $1 AND (e IN ($2, $3)%4$s)
+                         WHERE store_id = $1 AND (%5$s)
                     ), k AS (
-                        SELECT me, a, mv, tx, bool_or(added) AS st, count(*) AS n
+                        SELECT me, a, mv, tx, bool_or(added) AS st, bool_or(moved) AS hit
                           FROM m GROUP BY me, a, mv, tx
                     ), p AS (
-                        SELECT k.*, lag(st) OVER (PARTITION BY me, a, mv ORDER BY tx) AS prev
-                          FROM k
+                        SELECT k.*, lag(st) OVER w AS prev, bool_or(hit) OVER (PARTITION BY me, a, mv) AS mixed
+                          FROM k WINDOW w AS (PARTITION BY me, a, mv ORDER BY tx)
                     ), r AS (
                         SELECT m.e, m.a, m.v, m.tx, p.st = coalesce(p.prev, false) AS noop,
                                row_number() OVER (PARTITION BY m.me, m.a, m.mv, m.tx
                                                   ORDER BY m.added = p.st DESC) AS rn
                           FROM m JOIN p USING (me, a, mv, tx)
-                         WHERE p.n > 1
+                         WHERE p.mixed
                     )
                     DELETE FROM %1$I.%2$I d USING r
                      WHERE d.store_id = $1 AND d.e = r.e AND d.a = r.a AND d.v = r.v
                        AND d.tx = r.tx AND (r.noop OR r.rn > 1)$q$,
-                    s, 'datoms_' || ty || '_new', vmap, vhit)
+                    s, 'datoms_' || ty || '_new', vmap, moved, scope)
                     USING sid, rec.moved_to, rec.owner;
                 EXECUTE format('UPDATE %1$I.%2$I SET e = CASE WHEN e = $2 THEN $3 ELSE e END, v = %3$s
-                                 WHERE store_id = $1 AND (e = $2%4$s)',
-                               s, 'datoms_' || ty || '_new', vmap,
-                               CASE WHEN ty = 'ref' THEN ' OR v = $2' ELSE '' END)
+                                 WHERE store_id = $1 AND (%4$s)',
+                               s, 'datoms_' || ty || '_new', vmap, moved)
                     USING sid, rec.moved_to, rec.owner;
-                EXECUTE format('UPDATE %I.%I SET e = $1 WHERE store_id = $2 AND e = $3',
-                               s, 'current_' || ty)
-                    USING rec.owner, sid, rec.moved_to;
+                -- The current state of those datoms, from the log: the latest
+                -- row of each wins (mentat.rebuild_current_projection's rule).
+                EXECUTE format('DELETE FROM %1$I.%2$I WHERE store_id = $1 AND (%3$s)',
+                               s, 'current_' || ty, scope)
+                    USING sid, rec.moved_to, rec.owner;
+                EXECUTE format($q$
+                    INSERT INTO %1$I.%2$I (store_id, e, a, v, tx)
+                    SELECT store_id, e, a, v, tx
+                      FROM (SELECT DISTINCT ON (e, a, v) store_id, e, a, v, tx, added
+                              FROM %1$I.%3$I
+                             WHERE store_id = $1 AND (%4$s)
+                             ORDER BY e, a, v, tx DESC) l
+                     WHERE added$q$,
+                    s, 'current_' || ty, 'datoms_' || ty || '_new', scope)
+                    USING sid, rec.moved_to, rec.owner;
+                -- Check what the repair wrote: current == log, and one value
+                -- per cardinality-one attribute.
+                EXECUTE format($q$
+                    WITH l AS (
+                        SELECT e, a, v FROM (SELECT DISTINCT ON (e, a, v) e, a, v, added
+                                               FROM %1$I.%3$I
+                                              WHERE store_id = $1 AND (%4$s)
+                                              ORDER BY e, a, v, tx DESC) x
+                         WHERE added
+                    ), c AS (
+                        SELECT e, a, v FROM %1$I.%2$I WHERE store_id = $1 AND (%4$s)
+                    )
+                    SELECT coalesce(
+                        (SELECT format('the current state of entity %%s differs from its log', e)
+                           FROM ((SELECT * FROM l EXCEPT SELECT * FROM c)
+                                 UNION ALL (SELECT * FROM c EXCEPT SELECT * FROM l)) d LIMIT 1),
+                        (SELECT format('entity %%s has two values of attribute %%s', c.e, c.a)
+                           FROM c JOIN %1$I.schema sc ON sc.entid = c.a AND sc.cardinality = 'one'
+                          GROUP BY c.e, c.a HAVING count(*) > 1 LIMIT 1))$q$,
+                    s, 'current_' || ty, 'datoms_' || ty || '_new', scope)
+                    INTO bad USING sid, rec.moved_to, rec.owner;
+                IF bad IS NOT NULL THEN
+                    RAISE EXCEPTION '%', bad;
+                END IF;
             END LOOP;
-            EXECUTE format('UPDATE %I.current_ref SET v = $1 WHERE store_id = $2 AND v = $3', s)
-                USING rec.owner, sid, rec.moved_to;
             repaired := true;
             action := 'repaired';
           EXCEPTION WHEN OTHERS THEN
