@@ -733,6 +733,8 @@ mod bootstrap_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod boundary_value_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod cache_role_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod cache_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod cardinality_tests;

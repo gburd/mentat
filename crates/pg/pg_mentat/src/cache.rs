@@ -1,9 +1,12 @@
 use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use parking_lot::RwLock;
+use pgrx::pg_sys;
+use pgrx::prelude::*;
 use pgrx::spi::Spi;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::ffi::CString;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 /// Run a single-column `SELECT` through *read-only* SPI and return the first
 /// `i64`, or `None`.
@@ -33,6 +36,59 @@ thread_local! {
     /// by `begin_tx_cache_bypass`. Suppressing the repeated DB query saves
     /// ~17,870 round-trips per typical `mentat.t()` call.
     static TX_GEN_BYPASS: Cell<bool> = const { Cell::new(false) };
+
+    /// Bumped by every change to a schema, table or role (syscache
+    /// callbacks): a cached access check older than this is redone.
+    static ACL_GEN: Cell<u32> = const { Cell::new(0) };
+    /// Like ACL_GEN, but only roles. A kept plan's schema USAGE was checked
+    /// when it was parsed; PostgreSQL re-parses kept plans after a schema
+    /// change (a REVOKE USAGE), and checks table privileges each time a plan
+    /// runs, but a role's membership can change under a kept plan.
+    static ROLE_GEN: Cell<u32> = const { Cell::new(0) };
+    static CALLBACKS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Register, once per backend, the callbacks the caches depend on: syscache
+/// invalidations of schemas, tables and roles (#402).
+fn register_callbacks() {
+    if CALLBACKS.with(|c| c.replace(true)) {
+        return;
+    }
+    #[pg_guard]
+    unsafe extern "C-unwind" fn acl_changed(_arg: pg_sys::Datum, cacheid: i32, _hash: u32) {
+        ACL_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+        if cacheid == pg_sys::SysCacheIdentifier::AUTHOID as i32
+            || cacheid == pg_sys::SysCacheIdentifier::AUTHMEMROLEMEM as i32
+        {
+            ROLE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+        }
+    }
+    // SAFETY: a plain C callback with no captured state, registered once per
+    // backend; it only bumps thread-local counters.
+    unsafe {
+        for id in [
+            pg_sys::SysCacheIdentifier::NAMESPACEOID,
+            pg_sys::SysCacheIdentifier::RELOID,
+            pg_sys::SysCacheIdentifier::AUTHOID,
+            pg_sys::SysCacheIdentifier::AUTHMEMROLEMEM,
+        ] {
+            pg_sys::CacheRegisterSyscacheCallback(
+                id as _,
+                Some(acl_changed),
+                pg_sys::Datum::from(0),
+            );
+        }
+    }
+}
+
+/// The current user and the role generation, for the plan cache: a plan is
+/// reused only by the user it was prepared for, and only while no role
+/// changed since (#402).
+pub(crate) fn plan_cache_scope() -> (u32, u32) {
+    register_callbacks();
+    // SAFETY: reads backend-local state.
+    let user = unsafe { pg_sys::GetUserId() }.to_u32();
+    (user, ROLE_GEN.with(Cell::get))
 }
 
 /// Perform **one** generation check for `store_name`, reload the cache if
@@ -74,6 +130,11 @@ pub struct AttributeInfo {
 pub struct SchemaCache {
     /// The PostgreSQL schema name this cache loads from (e.g. "mentat", "mentat_my_store").
     db_schema: String,
+    /// The same schema name, unquoted, for the access check.
+    nsp_name: CString,
+    /// (ACL_GEN << 32) | user of the last user whose access was checked (or
+    /// who loaded the cache); 0 = none.
+    access_ok: AtomicU64,
     /// The logical store name (e.g. "default", "my_store") for generation lookups.
     store_name: String,
     /// True once the initial bulk load has completed.
@@ -91,9 +152,11 @@ pub struct SchemaCache {
 }
 
 impl SchemaCache {
-    pub fn new(db_schema: String, store_name: String) -> Self {
+    pub fn new(db_schema: String, nsp_name: &str, store_name: String) -> Self {
         Self {
             db_schema,
+            nsp_name: CString::new(nsp_name).unwrap_or_default(),
+            access_ok: AtomicU64::new(0),
             store_name,
             warmed: AtomicBool::new(false),
             local_gen: AtomicI64::new(0),
@@ -118,6 +181,7 @@ impl SchemaCache {
         }
 
         let schema = &self.db_schema;
+        let access_key = access_key();
 
         // Record the generation first: a schema change committed while this
         // loads then makes the cache look stale (reloaded), never fresh.
@@ -213,7 +277,52 @@ impl SchemaCache {
 
         self.local_gen.store(gen, Ordering::Release);
 
+        // The two SELECTs above ran as this user: they checked its access.
+        self.access_ok.store(access_key, Ordering::Release);
         self.warmed.store(true, Ordering::Release);
+    }
+
+    /// Before answering from the cache: the current user may read this
+    /// store's schema (USAGE on its schema, SELECT on its schema and idents
+    /// tables), as loading it would have required. Otherwise a role without
+    /// those rights learned from another role's cache whether an attribute
+    /// exists and its type (#402). Raises PostgreSQL's own permission error.
+    /// Checked once per user until a schema, table or role changes.
+    fn check_access(&self) {
+        let key = access_key();
+        if self.access_ok.load(Ordering::Acquire) == key {
+            return;
+        }
+        // SAFETY: C strings outlive the calls; the checks raise an ERROR
+        // (a Rust panic here) on a missing privilege, as a query would.
+        unsafe {
+            // Checks USAGE ("permission denied for schema ...").
+            let nsp = pg_sys::LookupExplicitNamespace(self.nsp_name.as_ptr(), true);
+            if nsp == pg_sys::InvalidOid {
+                // The schema is gone: let the reload's SQL report it.
+                self.invalidate();
+                return;
+            }
+            // shortcut: needs table-level SELECT; column-level grants on all
+            // the columns would also do for the load, upgrade if anyone uses them.
+            for rel in [c"schema", c"idents"] {
+                let relid = pg_sys::get_relname_relid(rel.as_ptr(), nsp);
+                if relid != pg_sys::InvalidOid
+                    && pg_sys::pg_class_aclcheck(
+                        relid,
+                        pg_sys::GetUserId(),
+                        pg_sys::ACL_SELECT as _,
+                    ) != pg_sys::AclResult::ACLCHECK_OK
+                {
+                    pg_sys::aclcheck_error(
+                        pg_sys::AclResult::ACLCHECK_NO_PRIV,
+                        pg_sys::ObjectType::OBJECT_TABLE,
+                        rel.as_ptr(),
+                    );
+                }
+            }
+        }
+        self.access_ok.store(key, Ordering::Release);
     }
 
     /// Reload the cache if another backend committed a schema change since it was
@@ -240,6 +349,9 @@ impl SchemaCache {
     /// remote backend has bumped the generation counter (cross-backend
     /// invalidation).
     fn ensure_fresh(&self) {
+        if self.warmed.load(Ordering::Acquire) {
+            self.check_access();
+        }
         // If never warmed, warm unconditionally.
         if !self.warmed.load(Ordering::Acquire) {
             self.warm();
@@ -360,9 +472,10 @@ impl StoreCacheMap {
             return cache;
         }
 
-        let db_schema = quote_ident(&get_schema_for_store(store_name));
+        let nsp_name = get_schema_for_store(store_name);
         let cache = Box::leak(Box::new(SchemaCache::new(
-            db_schema,
+            quote_ident(&nsp_name),
+            &nsp_name,
             store_name.to_string(),
         )));
         caches.insert(store_name.to_string(), cache);
@@ -402,6 +515,7 @@ pub fn get_cache() -> &'static SchemaCache {
 /// Creates the cache on first access; subsequent calls return the same instance.
 /// The cache is lazily warmed on first attribute/ident lookup.
 pub fn get_cache_for_store(store_name: &str) -> &'static SchemaCache {
+    register_callbacks();
     STORE_CACHES.get_or_create(store_name)
 }
 
@@ -418,6 +532,14 @@ pub fn invalidate_store_cache(store_name: &str) {
 #[expect(dead_code, reason = "Public API for future multi-store invalidation")]
 pub fn invalidate_all_caches() {
     STORE_CACHES.invalidate_all();
+}
+
+/// The access-check memo key for the current user: (ACL_GEN << 32) | user.
+/// A user oid is never 0, so 0 matches no key.
+fn access_key() -> u64 {
+    // SAFETY: reads backend-local state.
+    let user = unsafe { pg_sys::GetUserId() }.to_u32();
+    (u64::from(ACL_GEN.with(Cell::get)) << 32) | u64::from(user)
 }
 
 /// Lock the store's `cache_generation` row in the mode `bump_store_generation`'s

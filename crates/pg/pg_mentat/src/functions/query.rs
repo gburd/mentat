@@ -37,7 +37,11 @@ const STMT_CACHE_CAPACITY: usize = 256;
 // prepared for its parameter types, and one SQL text can be bound with
 // different types (`[(= ?v ?x)]` with a string, then an integer input). A
 // plan run with another type's Datum crashed the backend or compared the
-// wrong column. Since PostgreSQL backends
+// wrong column. And by the current user: PostgreSQL checks schema USAGE only
+// when a query is parsed (table privileges each time a plan runs), so another
+// user's plan let a role without USAGE on mentat_<store> read it (#402). The
+// cache is emptied when a role changes: a REVOKE of a role membership does
+// not invalidate a kept plan. Since PostgreSQL backends
 // are single-threaded, a `RefCell` is sufficient (no `Mutex` needed).
 // `OwnedPreparedStatement` uses `SPI_keepplan` to persist the plan in
 // `TopMemoryContext`, so it survives across SPI connection lifetimes.
@@ -50,6 +54,8 @@ thread_local! {
             // SAFETY: constant is non-zero
             NonZeroUsize::new(STMT_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN)
         ));
+    /// The role generation the cached plans were made under.
+    static STMT_CACHE_GEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Clear the prepared statement cache.
@@ -90,7 +96,11 @@ fn execute_cached_query<'a>(
         .iter()
         .map(|p| PgOid::from_untagged(p.oid()))
         .collect();
-    let key = stmt_cache_key(sql, &arg_types);
+    let (user, gen) = crate::cache::plan_cache_scope();
+    if STMT_CACHE_GEN.with(|g| g.replace(gen)) != gen {
+        clear_stmt_cache();
+    }
+    let key = stmt_cache_key(sql, &arg_types, user);
     let cached_result: Option<Result<pgrx::spi::SpiTupleTable<'a>, _>> = STMT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(entry) = cache.get_mut(&key) {
@@ -132,11 +142,12 @@ fn execute_cached_query<'a>(
     Ok(result)
 }
 
-/// The plan cache key: the SQL text, then a NUL and the parameter type OIDs
-/// (SQL text holds no NUL, so the stats' SQL prefix is the text itself).
-fn stmt_cache_key(sql: &str, arg_types: &[PgOid]) -> String {
+/// The plan cache key: the SQL text, then a NUL, the parameter type OIDs, a
+/// NUL and the user's OID (SQL text holds no NUL, so the stats' SQL prefix is
+/// the text itself).
+fn stmt_cache_key(sql: &str, arg_types: &[PgOid], user: u32) -> String {
     let oids: Vec<String> = arg_types.iter().map(|t| t.value().to_string()).collect();
-    format!("{sql}\0{}", oids.join(","))
+    format!("{sql}\0{}\0{user}", oids.join(","))
 }
 
 use crate::types::constants::type_tag;
