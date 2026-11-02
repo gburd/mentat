@@ -1795,8 +1795,6 @@ mod tests {
             "SELECT mentat.create_datalog_materialized_view('mvp_d', '{pull_q}')"
         ))
         .expect("create_datalog_materialized_view");
-        // (mentat.refresh_datalog_view doesn't compile: `concurrently` is a
-        // keyword in its IF.)
         Spi::run("REFRESH MATERIALIZED VIEW mvp_d").expect("refresh mvp_d");
         Spi::run("SELECT mentat.drop_datalog_view('mvp_d', false, true)")
             .expect("drop_datalog_view");
@@ -2499,6 +2497,64 @@ mod tests {
         on("tk_w", "DO $d$ BEGIN PERFORM drop_store('tk_s'); END $d$");
         Spi::run("SELECT dblink_disconnect('tk_w'), dblink_disconnect('tk_l')")
             .expect("disconnect");
+    }
+
+    // mentat.refresh_datalog_view could not be called on any version: its
+    // parameter `concurrently` is a keyword in a PL/pgSQL IF, so the body
+    // failed with "syntax error at end of input" (#398). Without and with
+    // concurrently (a unique index on the view), and through the 1.19.0
+    // upgrade's definition.
+    #[pg_test]
+    fn refresh_datalog_view_with_and_without_concurrently() {
+        setup();
+        tx("default", SCHEMA_TX);
+        tx("default", "[{:p/name \"rv-1\"}]");
+        let rows =
+            || -> Vec<String> { sorted(json("SELECT coalesce(jsonb_agg(n), '[]') FROM rv_names")) };
+        let script = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = &script[script
+            .find("DROP FUNCTION IF EXISTS mentat.refresh_datalog_view")
+            .expect("upgrade section")..];
+        let upgrade = &upgrade[..upgrade.find("$$ LANGUAGE plpgsql;").unwrap() + 20];
+        for (round, install) in [("fresh install", None), ("upgrade", Some(upgrade))] {
+            if let Some(sql) = install {
+                // Outside the extension script a member can't be dropped.
+                Spi::run(
+                    "ALTER EXTENSION pg_mentat DROP FUNCTION mentat.refresh_datalog_view(TEXT, BOOLEAN)",
+                )
+                .expect("detach");
+                Spi::run(sql).unwrap_or_else(|e| panic!("{round}: {e}"));
+            }
+            Spi::run(
+                "SELECT mentat.create_datalog_materialized_view('rv_names', \
+                   '[:find ?n :where [_ :p/name ?n]]')",
+            )
+            .expect("create_datalog_materialized_view");
+            assert_eq!(rows(), vec!["rv-1"], "{round}");
+            tx("default", &format!("[{{:p/name \"rv-{round}\"}}]"));
+            Spi::run("SELECT mentat.refresh_datalog_view('rv_names')")
+                .unwrap_or_else(|e| panic!("{round}: refresh: {e}"));
+            assert_eq!(
+                rows(),
+                vec!["rv-1".to_string(), format!("rv-{round}")],
+                "{round}"
+            );
+            Spi::run("CREATE UNIQUE INDEX ON rv_names (n)").expect("unique index");
+            tx("default", &format!("[{{:p/name \"rv-{round}-c\"}}]"));
+            Spi::run("SELECT mentat.refresh_datalog_view('rv_names', true)")
+                .unwrap_or_else(|e| panic!("{round}: refresh concurrently: {e}"));
+            Spi::run("SELECT mentat.refresh_datalog_view('rv_names', p_concurrently => false)")
+                .unwrap_or_else(|e| panic!("{round}: named argument: {e}"));
+            assert_eq!(rows().len(), 3, "{round}");
+            Spi::run("SELECT mentat.drop_datalog_view('rv_names', false, true)").expect("drop");
+            tx(
+                "default",
+                &format!(
+                    "[[:db/retract [:p/name \"rv-{round}\"] :p/name \"rv-{round}\"] \
+                          [:db/retract [:p/name \"rv-{round}-c\"] :p/name \"rv-{round}-c\"]]"
+                ),
+            );
+        }
     }
 
     // A 1.17 subscription or materialized view on a named store stays with

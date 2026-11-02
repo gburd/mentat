@@ -138,3 +138,38 @@ CREATE FUNCTION "subscribe"("store_name" TEXT, "subscription_name" TEXT, "query"
 RETURNS TEXT
 STRICT LANGUAGE c
 AS 'MODULE_PATHNAME', 'subscribe_token_only_wrapper';
+
+-- ---------------------------------------------------------------------------
+-- mentat.refresh_datalog_view(view_name, concurrently) could not be called
+-- on any PostgreSQL version (#398): `concurrently` is a keyword in a PL/pgSQL
+-- IF, so its body failed to compile ("syntax error at end of input"). The
+-- parameter is now p_concurrently. CREATE OR REPLACE can't rename a
+-- parameter, so the function is dropped and made again (nothing can depend
+-- on a function that never compiled). Same body as src/lib.rs.
+-- ---------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS mentat.refresh_datalog_view(TEXT, BOOLEAN);
+CREATE FUNCTION mentat.refresh_datalog_view(
+    view_name TEXT,
+    p_concurrently BOOLEAN DEFAULT FALSE
+)
+RETURNS TEXT AS $$
+DECLARE
+    refresh_sql TEXT;
+    safe_view_name TEXT;
+BEGIN
+    IF view_name !~ '^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$' THEN
+        RAISE EXCEPTION 'Invalid view name: %. Use only alphanumeric characters and underscores.', view_name;
+    END IF;
+    safe_view_name := view_name;
+
+    IF p_concurrently THEN
+        refresh_sql := format('REFRESH MATERIALIZED VIEW CONCURRENTLY %s', safe_view_name);
+    ELSE
+        refresh_sql := format('REFRESH MATERIALIZED VIEW %s', safe_view_name);
+    END IF;
+
+    EXECUTE refresh_sql;
+
+    RETURN format('MATERIALIZED VIEW %s refreshed', safe_view_name);
+END;
+$$ LANGUAGE plpgsql;
