@@ -89,10 +89,10 @@ fn red() -> TypedValue {
 }
 
 // The three cases below return nothing on the embedded engine today (pg_mentat
-// resolves them): a keyword :in value or ground is typed Keyword before the
-// pattern makes the variable a ref.
+// resolves them; issue #420): a keyword :in value or ground is typed Keyword
+// before the pattern makes the variable a ref.
 #[test]
-#[ignore = "embedded :in keyword into a ref position, see issue"]
+#[ignore = "embedded :in keyword into a ref position, issue #420"]
 fn enum_ident_scalar_input() {
     let s = setup();
     let q = "[:find [?n ...] :in ?c :where [?e :c/color ?c] [?e :c/name ?n]]";
@@ -101,7 +101,7 @@ fn enum_ident_scalar_input() {
 }
 
 #[test]
-#[ignore = "embedded :in keyword into a ref position, see issue"]
+#[ignore = "embedded :in keyword into a ref position, issue #420"]
 fn enum_ident_collection_input() {
     let s = setup();
     let q = "[:find [?n ...] :in [?c ...] :where [?e :c/color ?c] [?e :c/name ?n]]";
@@ -111,7 +111,7 @@ fn enum_ident_collection_input() {
 }
 
 #[test]
-#[ignore = "embedded :in keyword into a ref position, see issue"]
+#[ignore = "embedded ground keyword into a ref position, issue #420"]
 fn enum_ident_ground() {
     let s = setup();
     let q = "[:find [?n ...] :where [(ground :color/red) ?c] [?e :c/color ?c] [?e :c/name ?n]]";
