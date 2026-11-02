@@ -374,7 +374,12 @@ SELECT * FROM mentat.entid_collision_report();   -- one row per colliding entid
 
 `entid_collision_report()` lists each colliding entid, how many non-tx
 datoms it carries, whether it is used as an attribute, and its incoming ref
-count.
+count. A transaction id counts only if `partition_user_seq` or
+`partition_db_seq` could have issued it (it is at most one of their
+`last_value`s): a transaction's own annotations (`"datomic.tx"`, 1.19.0) are
+datoms on its id and are not collisions. On a store whose user sequence
+overflowed past a transaction id, the data can't tell an annotation from a
+collision, and both are reported; check the rows before repairing.
 
 ### Repairing collisions
 

@@ -10,6 +10,16 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The reserved tempid `"datomic.tx"` names the transaction being
+  committed** (#414), as in Datomic, on pg_mentat, the embedded engine and
+  DuckDB: `[{:db/id "datomic.tx" :audit/user "bob"} ...]` annotates the
+  transaction. It works in map form, list form, as a ref value, and in
+  tx-data a transaction function returns. The tempids report includes it
+  only when the transaction used it. A `:db.unique/identity` or
+  `:db.unique/value` value asserted on it that another entity holds fails
+  with `:db.error/unique-conflict`. On pg_mentat, an explicit `:db/txInstant`
+  on it sets the transaction's time (it is not checked against earlier
+  transactions or the clock).
 - **pg_mentat: user transaction functions and `edn_eval` work on named
   stores** (#389). A tx-fn invoked with `t('acme', ...)` or `with('acme',
   ...)` runs `acme`'s own `:db/fn`, and its `db` reads `acme`. In
@@ -78,6 +88,15 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: `mentat.entid_collision_report()` counted a transaction's
+  own annotations as entid collisions** (#414), so
+  `repair_entid_collisions(false)` would have moved them onto a new entity.
+  A transaction id now counts only if `partition_user_seq` or
+  `partition_db_seq` could have issued it.
+- **Embedded engine: asserting a unique value another entity holds on the
+  transaction entity fails with `:db.error/unique-conflict`** naming the
+  attribute and value, instead of "failed to add datoms not already
+  present". pg_mentat's unique-conflict message now includes the value.
 - **pg_mentat: `recursive('default', ...)`, `drop_recursive('default', ...)`
   and `list_recursive('default')` failed with "'default' is a reserved
   name"** (#406).

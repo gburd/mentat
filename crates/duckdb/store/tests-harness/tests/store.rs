@@ -895,3 +895,147 @@ fn pre_1_18_views_work_attached() {
         s.last_tx().unwrap();
     }
 }
+
+/// #414: the reserved tempid "datomic.tx" names the transaction being committed.
+#[test]
+fn datomic_tx_tempid_names_the_transaction() {
+    // 'static, for the tx-function (script::transact) at the end.
+    let c: &'static Connection = Box::leak(Box::new(Connection::open_in_memory().unwrap()));
+    let s = seeded(c);
+    s.transact(
+        r#"[{:db/ident :tx/src :db/valueType :db.type/string :db/cardinality :db.cardinality/one}
+            {:db/ident :person/tx :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+            {:db/ident :person/code :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+             :db/unique :db.unique/value :db/index true}]"#,
+    )
+    .expect("schema");
+    s.transact(r#"[{:person/name "Alice" :person/code "c1"}]"#)
+        .expect("code");
+    let before = s.last_tx().unwrap();
+    let src = |tx: i64| q(&s, &format!("[:find ?s . :where [{tx} :tx/src ?s]]"));
+
+    // Map form, read back joined to the data.
+    let r = s
+        .transact(r#"[{:db/id "datomic.tx" :tx/src "import"} {:person/name "Carol"}]"#)
+        .expect("map form");
+    assert_eq!(r.tempids.get("datomic.tx"), Some(&r.tx_id));
+    assert_eq!(src(r.tx_id), vec![vec!["import".to_string()]]);
+    assert_eq!(
+        q(
+            &s,
+            "[:find ?s . :where [?e :person/name \"Carol\" ?tx] [?tx :tx/src ?s]]"
+        ),
+        vec![vec!["import".to_string()]]
+    );
+    // List form, as a ref value, and through tx-data.
+    let r2 = s
+        .transact(
+            r#"[[:db/add "datomic.tx" :tx/src "list"] [:db/add "d" :person/name "Dan"]
+                [:db/add "d" :person/tx "datomic.tx"]]"#,
+        )
+        .expect("list form");
+    assert_eq!(r2.tempids.get("datomic.tx"), Some(&r2.tx_id));
+    assert_eq!(
+        q(
+            &s,
+            "[:find ?s . :where [?e :person/name \"Dan\"] [?e :person/tx ?t] [?t :tx/src ?s]]"
+        ),
+        vec![vec!["list".to_string()]]
+    );
+    assert_eq!(
+        q(
+            &s,
+            &format!(
+                "[:find ?v . :where [(tx-data $ {}) [[?e ?a ?v]]] [?a :db/ident :tx/src]]",
+                r2.tx_id
+            )
+        ),
+        vec![vec!["list".to_string()]]
+    );
+    // Not used: not reported.
+    let r3 = s.transact(r#"[{:person/name "Eve"}]"#).unwrap();
+    assert!(!r3.tempids.contains_key("datomic.tx"), "{:?}", r3.tempids);
+
+    // As of a transaction before the annotation, it isn't there.
+    let as_of = |t| {
+        rows(
+            s.q(
+                "[:find ?s . :where [?e :person/name \"Carol\" ?tx] [?tx :tx/src ?s]]",
+                None,
+                Some(TemporalBound::AsOf(t)),
+            )
+            .unwrap()
+            .results,
+        )
+    };
+    assert!(as_of(before).is_empty());
+    assert_eq!(as_of(r.tx_id), vec![vec!["import".to_string()]]);
+
+    // A value-only tempid beside it still fails (#384).
+    let err = s
+        .transact(r#"[{:db/id "datomic.tx" :person/friend ["t9"]}]"#)
+        .expect_err("t9")
+        .to_string();
+    assert!(
+        err.contains(":db.error/tempid-not-an-entity") && err.contains("\"t9\""),
+        "{err}"
+    );
+
+    // An explicit :db/txInstant.
+    let r4 = s
+        .transact(r#"[{:db/id "datomic.tx" :db/txInstant #inst "2017-06-16T00:56:41.257Z"}]"#)
+        .expect("txInstant");
+    assert_eq!(r4.tx_instant.to_rfc3339(), "2017-06-16T00:56:41.257+00:00");
+
+    // A tx-function returning {:db/id "datomic.tx" ...}.
+    let conn: &'static dyn SqlConn = Box::leak(Box::new(DuckConn::new(c)));
+    mentat_duckdb_store::script::transact(
+        conn,
+        "default",
+        r#"[{:db/ident :tx/stamp :db/fn "(fn [db who] [{:db/id \"datomic.tx\" :tx/src who}])"}]"#,
+    )
+    .expect("install");
+    let r5 = mentat_duckdb_store::script::transact(conn, "default", r#"[[:tx/stamp "bob"]]"#)
+        .expect("tx-fn");
+    assert_eq!(src(r5.tx_id), vec![vec!["bob".to_string()]]);
+}
+
+/// #414: "datomic.tx" asserting a :db/unique value another entity holds is a unique
+/// conflict, as on SQLite and pg_mentat.
+#[test]
+fn datomic_tx_tempid_unique_conflict() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    s.transact(
+        r#"[{:db/ident :person/code :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+             :db/unique :db.unique/value :db/index true}]"#,
+    )
+    .expect("schema");
+    s.transact(r#"[{:person/name "Alice" :person/code "c1"}]"#)
+        .expect("code");
+    for (tx, attr, value) in [
+        (
+            r#"[{:db/id "datomic.tx" :person/name "Alice"}]"#,
+            ":person/name",
+            "\"Alice\"",
+        ),
+        (
+            r#"[{:db/id "datomic.tx" :person/code "c1"}]"#,
+            ":person/code",
+            "\"c1\"",
+        ),
+        (
+            r#"[{:db/id "datomic.tx" :person/code "n"} {:person/name "P" :person/code "n"}]"#,
+            ":person/code",
+            "\"n\"",
+        ),
+    ] {
+        let err = s.transact(tx).expect_err(tx).to_string();
+        assert!(
+            err.contains(":db.error/unique-conflict")
+                && err.contains(&format!("'{attr}'"))
+                && err.contains(value),
+            "{tx}: {err}"
+        );
+    }
+}

@@ -29,6 +29,9 @@ pub trait TransactableValueMarker {}
 /// `ValueAndSpan` is the value type coming out of the entity parser.
 impl TransactableValueMarker for ValueAndSpan {}
 
+/// Datomic's reserved tempid: it names the transaction being committed (#414).
+pub const TX_TEMPID: &str = "datomic.tx";
+
 /// A tempid, either an external tempid given in a transaction (usually as an `Value::Text`),
 /// or an internal tempid allocated by Mentat itself.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]

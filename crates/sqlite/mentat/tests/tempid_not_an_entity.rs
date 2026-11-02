@@ -63,12 +63,6 @@ fn value_only_tempids_are_rejected() {
     );
     // Only the value of a component attribute: still an entity with no datoms.
     rejects(&mut store, r#"[{:v/id "c" :v/part "p"}]"#, "p");
-    // "datomic.tx" is an ordinary tempid here; the error says so.
-    let err = store
-        .transact(r#"[{:v/id "x" :v/tx "datomic.tx"}]"#)
-        .expect_err("datomic.tx")
-        .to_string();
-    assert!(err.contains("no reserved tempids"), "{err}");
     assert_eq!(refs(&store), before, "nothing committed");
 }
 

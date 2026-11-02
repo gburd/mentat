@@ -240,3 +240,46 @@ EXCEPTION
         RAISE;
 END;
 $fn$;
+
+-- === txtempid ===
+-- ---------------------------------------------------------------------------
+-- mentat.entid_collision_report (#414): a transaction's own annotations, made
+-- with the reserved tempid "datomic.tx", are datoms on its entid, and the
+-- report flagged every such entid as a collision (so repair_entid_collisions
+-- would have moved the annotations to a new entity). A transaction entid is
+-- now a collision only if a non-tx sequence could have issued it: at most
+-- partition_user_seq's or partition_db_seq's last_value. Same body as
+-- sql/25_entid_collision_repair.sql; entid_collision_count and
+-- repair_entid_collisions read this function and pick up the change.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.entid_collision_report(store BIGINT DEFAULT 0)
+RETURNS TABLE (
+    entid          BIGINT,
+    non_tx_datoms  BIGINT,
+    is_attribute   BOOLEAN,
+    ref_incoming   BIGINT
+)
+LANGUAGE sql STABLE
+AS $$
+    WITH tx_entids AS (
+        SELECT tx AS e FROM mentat.transactions
+         WHERE tx <= GREATEST((SELECT last_value FROM mentat.partition_user_seq),
+                              (SELECT last_value FROM mentat.partition_db_seq))
+    ),
+    non_tx AS (
+        -- entids that carry a real (non-txInstant) datom as an entity
+        SELECT d.e, count(*) AS n
+        FROM mentat.datoms d
+        WHERE d.added AND d.a <> 50   -- 50 = :db/txInstant
+        GROUP BY d.e
+    )
+    SELECT
+        t.e AS entid,
+        nt.n AS non_tx_datoms,
+        EXISTS (SELECT 1 FROM mentat.datoms a WHERE a.a = t.e) AS is_attribute,
+        (SELECT count(*) FROM mentat.datoms r
+          WHERE r.value_type_tag = 0 AND r.v_ref = t.e AND r.added) AS ref_incoming
+    FROM tx_entids t
+    JOIN non_tx nt ON nt.e = t.e
+    ORDER BY t.e
+$$;
