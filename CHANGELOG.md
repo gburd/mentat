@@ -10,6 +10,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **pg_mentat: user transaction functions and `edn_eval` work on named
+  stores** (#389). A tx-fn invoked with `t('acme', ...)` or `with('acme',
+  ...)` runs `acme`'s own `:db/fn`, and its `db` reads `acme`. In
+  `edn_eval`, `(mentat.store/open "acme")` opens a named store; every read
+  and write through that conn goes to `acme`. An unknown name is
+  `:db.error/store-not-found`; a role without `USAGE` on `mentat_acme` gets
+  a permission error at the open. In 1.18.0 both were `:db.error/unsupported`.
 - **pg_mentat: `subscribe(store, name, query, token_only => true)`** (#379)
   sends `{"tx": T, "hash": H}` instead of the result, so listeners re-run
   the query with their own privileges. `tx` is the current transaction's
@@ -21,6 +28,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: a transaction function can't call `mentat.store/transact` or
+  `mentat.store/with`** (`:db.error/txfn-transact`): it returns tx-data, as
+  in Datomic. A tx-fn that transacted its own store used to re-run itself
+  until "stack depth limit exceeded" (#405).
 - **pg_mentat: a new entity asserting a `:db.unique/identity` value that a
   concurrent transaction is asserting upserts into that entity** once the
   other commits (#376). It used to fail with a unique conflict.
@@ -135,6 +146,12 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **pg_mentat: a transaction function reaches only the store it runs on.** A
+  tx-fn runs its author's code with the invoking role's privileges, so
+  opening any other store is `:db.error/txfn-store-scope`: the author of a
+  `:db/fn` on one store can't use an invoker's rights to read or change
+  another store. `edn_eval`, where callers run their own code, may open
+  every store the caller can reach.
 - **pg_mentat: generated subscription and `on_write` view trigger functions
   pin `search_path` and qualify every call** (#383), so a function of the
   same name in a schema earlier on the writer's path is not called instead.

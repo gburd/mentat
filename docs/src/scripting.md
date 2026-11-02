@@ -10,11 +10,12 @@ The same surface is available on both backends:
 - **Embedded** — `mentat::ScriptInterpreter` (in the `mentat` crate) runs mino
   scripts against SQLite-backed `Store`s.
 - **PostgreSQL** — the SQL function `edn_eval(TEXT)` runs a script against the
-  current database's default store. It is behind the optional `script` cargo
-  feature (off by default). `mentat_eval(TEXT)` is its deprecated pre-1.9.0
-  name. `(mentat.store/open)` and `(mentat.store/open "default")` open the
-  default store; any other name is `:db.error/unsupported` in 1.18.0 (named
-  stores in scripts: issue #389).
+  current database. It is behind the optional `script` cargo feature (off by
+  default). `mentat_eval(TEXT)` is its deprecated pre-1.9.0 name.
+  `(mentat.store/open)` and `(mentat.store/open "default")` open the default
+  store; `(mentat.store/open "acme")` opens the named store `acme` (one made
+  with `create_store`), and every read and write through that conn goes to
+  `acme`. An unknown name is `:db.error/store-not-found`.
 
 ## The Datomic-style model
 
@@ -122,8 +123,17 @@ just a careless one.
   `pg_cancel_backend()` and `stack_is_too_deep()`.
 - **No privilege gain.** A script runs through SPI as the calling role, so it
   reaches only the stores that role can already query with
-  `edn_q`/`edn_t`. It must **not** be made `SECURITY DEFINER` —
-  that would turn it into a privilege escalation.
+  `edn_q`/`edn_t` or `q`/`t`: opening a named store the role has no `USAGE`
+  on (schema `mentat_<name>`) fails with a permission error. It must **not**
+  be made `SECURITY DEFINER` — that would turn it into a privilege escalation.
+- **Transaction functions reach one store.** A `:db/fn` runs its author's
+  code with the privileges of the role that invokes it, so on PostgreSQL it
+  reads only the store it runs on (the store being transacted):
+  `(mentat.store/open)` and `(mentat.store/open "<that store>")` open it, and
+  any other name is `:db.error/txfn-store-scope`. It can't transact or call
+  `with` (`:db.error/txfn-transact`): it returns tx-data, which joins the
+  invoking transaction. An `edn_eval` script runs the caller's own code, so it
+  may open every store the caller can reach.
 
 The embedded `ScriptInterpreter` uses the same sandboxed interpreter with
 step/heap/depth limits set by the host.

@@ -41,16 +41,20 @@ functions (`lookup_entity`, `entity_value`, `find_text`, ...). The default
 store (`mentat`) cannot be dropped or renamed.
 
 The extension-wide functions that have no store argument (`edn_t`, `edn_q`,
-`edn_pull`, `edn_eval`, `mentat_tune_indexes`, the `mentat.attach_*`
+`edn_pull`, `mentat_tune_indexes`, the `mentat.attach_*`
 per-attribute index helpers) work on the default store only. So the
 where-fns backed by the per-attribute tables those helpers make
 (`vector-near`, `turbovec-near`, `geom-near`, `geom-within`,
 `geom-contains`, `geom-intersects`) raise `:db.error/unsupported` on a named
-store. User transaction functions (an ident with `:db/fn`) run on the
-default store only: invoking one in `t('acme', ...)` or `with('acme', ...)`
-is `:db.error/unsupported`, because the function's `db` would read the
-default store (issue #389). The built-in `:db/cas` and `:db/retractEntity`
-work on every store.
+store. A user transaction function (an ident with `:db/fn`) invoked in
+`t('acme', ...)` or `with('acme', ...)` is `acme`'s own definition, and its
+`db` reads `acme`. It reads only `acme`, with the invoker's privileges:
+opening any other store is `:db.error/txfn-store-scope`, and it can't
+transact, so a role that can write `acme`'s `:db/fn` values can't use another
+role's rights to reach a second store. An `edn_eval` script opens a named
+store with `(mentat.store/open "acme")` and may open every store the caller
+can reach; it runs as the calling role, so it needs the same privileges on
+`mentat_acme` that `q('acme', ...)` does.
 `fulltext`, `fuzzy`, the trigram where-fns and `bm25-match` read the
 store's own tables; `mentat.create_fts_index` indexes the default store's
 table only. `subscribe('acme', ...)` re-runs its query against `acme`, and

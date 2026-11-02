@@ -16,7 +16,7 @@
 #[cfg(any(test, feature = "pg_test"))]
 #[pgrx::pg_schema]
 mod tests {
-    use crate::functions::script::build_interpreter;
+    use crate::functions::script::{build_interpreter, build_interpreter_for};
     use mentat_script::model_tests as m;
 
     macro_rules! model_pg_test {
@@ -26,6 +26,34 @@ mod tests {
                 let mut it = build_interpreter();
                 m::$name(&mut it);
             }
+        };
+    }
+
+    /// The suite on a named store (issue #389): a no-argument
+    /// `(mentat.store/open)` is the store, so every read, write and tx-fn
+    /// goes through it. The default store stays empty of the suite's data.
+    macro_rules! model_pg_test_named {
+        ($($test:ident = $name:ident),* $(,)?) => {
+            $(
+                #[pgrx::pg_test]
+                fn $test() {
+                    crate::functions::store_management::create_store("model_nz", None)
+                        .expect("create_store");
+                    let mut it = build_interpreter_for("model_nz", false);
+                    m::$name(&mut it);
+                    let default_people = crate::functions::query::mentat_query(
+                        "[:find (count ?e) . :where [?e :db/ident :person/name]]",
+                        pgrx::JsonB(serde_json::json!({})),
+                    )
+                    .expect("edn_q");
+                    let n = &default_people.0["result"];
+                    assert!(
+                        n.is_null() || n.as_i64() == Some(0),
+                        "the default store got the suite's schema: {}",
+                        default_people.0
+                    );
+                }
+            )*
         };
     }
 
@@ -61,6 +89,37 @@ mod tests {
     model_pg_test!(long_and_double_values_stay_distinct);
     // untyped_long_and_double_values_stay_distinct: pg's (sum ?v) over a
     // value of unknown type fails ("invalid input syntax for type numeric").
+
+    model_pg_test_named!(
+        nz_db_is_an_immutable_value_not_the_conn = db_is_an_immutable_value_not_the_conn,
+        nz_q_takes_a_db_value = q_takes_a_db_value,
+        nz_pull_returns_a_map = pull_returns_a_map,
+        nz_entity_returns_an_entity_map = entity_returns_an_entity_map,
+        nz_read_returns_the_scalar = read_returns_the_scalar,
+        nz_datoms_returns_tuples = datoms_returns_tuples,
+        nz_with_is_speculative_and_does_not_commit = with_is_speculative_and_does_not_commit,
+        nz_as_of_and_since_reflect_the_basis = as_of_and_since_reflect_the_basis,
+        nz_q_runs_against_as_of_and_since = q_runs_against_as_of_and_since,
+        nz_pull_reads_the_as_of_and_since_basis = pull_reads_the_as_of_and_since_basis,
+        nz_pull_nested_map_specs = pull_nested_map_specs,
+        nz_as_of_hides_retracted_values = as_of_hides_retracted_values,
+        nz_as_of_sees_a_value_reasserted_after_retraction =
+            as_of_sees_a_value_reasserted_after_retraction,
+        nz_since_reads_current_datoms_added_after_t = since_reads_current_datoms_added_after_t,
+        nz_as_of_and_since_together = as_of_and_since_together,
+        nz_missing_and_get_else_read_the_basis = missing_and_get_else_read_the_basis,
+        nz_or_reads_the_basis = or_reads_the_basis,
+        nz_pull_of_an_unknown_attribute_is_empty = pull_of_an_unknown_attribute_is_empty,
+        nz_tx_report_has_the_datomic_shape = tx_report_has_the_datomic_shape,
+        nz_q_takes_in_inputs = q_takes_in_inputs,
+        nz_q_mixed_inputs = q_mixed_inputs,
+        nz_history_patterns_see_added = history_patterns_see_added,
+        nz_cas_and_retract_entity = cas_and_retract_entity,
+        nz_retracting_an_absent_value_is_a_no_op = retracting_an_absent_value_is_a_no_op,
+        nz_rename_and_retract_logs_one_retraction = rename_and_retract_logs_one_retraction,
+        nz_list_form_ref_vector_is_one_lookup_ref = list_form_ref_vector_is_one_lookup_ref,
+        nz_transaction_functions = transaction_functions,
+    );
 
     #[pgrx::pg_test]
     fn inst_and_uuid_builders_round_trip_through_the_reader() {

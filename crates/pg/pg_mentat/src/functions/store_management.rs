@@ -96,7 +96,7 @@ pub fn get_schema_for_store(store_name: &str) -> String {
 // Helper: check if a store exists in the metadata table
 // ---------------------------------------------------------------------------
 
-fn store_exists(store_name: &str) -> Result<bool, pgrx::spi::SpiError> {
+pub(crate) fn store_exists(store_name: &str) -> Result<bool, pgrx::spi::SpiError> {
     Spi::connect(|client| {
         let exists = client
             .select(
