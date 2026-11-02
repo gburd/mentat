@@ -435,8 +435,14 @@ the two (NULL if it can).
 DEFAULT true)` points each ident with no blocker back at its owner, and
 moves what was written to `moved_to` onto the owner: datoms whose entity
 is `moved_to`, and ref values that point at it, in the log and the current
-state. Transaction ids stay as they are. It skips (and reports) an ident
-when both entities have a value of one attribute, when one entity refers
+state. Transaction ids stay as they are. When one transaction wrote the
+same datom on both (re-loading `{:c/name "car" :c/color :color/red}` after
+the move retracted the ref to the owner and asserted one to `moved_to`),
+the two rows become one datom: the repair keeps the transaction's net
+effect, or no row if the datom already had it (car's color stays the
+owner, asserted when it was first written). An ident whose repair fails
+is rolled back on its own and reported as `failed: <error>`. It skips
+(and reports) an ident when both entities have a value of one attribute, when one entity refers
 to both through one attribute, or when `moved_to` was used as an
 attribute; those need a decision about which value to keep. Fix them by
 hand (retract one value), then run the repair again.

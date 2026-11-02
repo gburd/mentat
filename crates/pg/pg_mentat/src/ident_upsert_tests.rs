@@ -486,6 +486,94 @@ mod tests {
         assert_eq!(moved_idents(s).len(), 1);
     }
 
+    /// `[?e <attr> ?v ?tx ?added]` over the whole history, sorted.
+    fn history(s: &str, attr: &str) -> Vec<(i64, i64, i64, bool)> {
+        let h = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT q('{s}', '[:find ?e ?v ?tx ?added :where [?e {attr} ?v ?tx ?added]]', \
+             '{{\"history\": true}}'::jsonb)"
+        ))
+        .unwrap()
+        .unwrap();
+        let mut rows: Vec<(i64, i64, i64, bool)> = h.0["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r[0].as_i64().unwrap(),
+                    r[1].as_i64().unwrap(),
+                    r[2].as_i64().unwrap(),
+                    r[3].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    fn last_tx(report: &serde_json::Value) -> i64 {
+        report["db-after"]["basis-t"].as_i64().expect("basis-t")
+    }
+
+    /// Re-running a data load after the move wrote, in one transaction, a
+    /// retraction of [car :c/color O] and an assertion of [car :c/color N]:
+    /// one datom once N is O. The repair keeps neither, so car's color is O,
+    /// asserted in its first transaction and never retracted.
+    fn repair_same_tx_pair(s: &str) {
+        tx(
+            s,
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}
+              {:db/ident :c/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/identity}]",
+        );
+        tx(s, "[{:db/ident :color/red}]");
+        let first = last_tx(&tx(s, r#"[{:c/name "car" :c/color :color/red}]"#));
+        let (red, red2) = break_like_118(s, ":color/red");
+        let reload = last_tx(&tx(s, r#"[{:c/name "car" :c/color :color/red}]"#));
+        let car = q(s, r#"[:find ?e . :where [?e :c/name "car"]]"#)
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            history(s, ":c/color"),
+            [
+                (car, red, first, true),
+                (car, red, reload, false),
+                (car, red2, reload, true)
+            ]
+        );
+        let found = moved_idents(s);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0]["blocker"], serde_json::Value::Null, "{found:?}");
+
+        let done = repair(s, false);
+        assert_eq!(done[0]["action"], "repaired", "{done:?}");
+        assert!(moved_idents(s).is_empty());
+        assert_eq!(history(s, ":c/color"), [(car, red, first, true)]);
+        let q1 =
+            "[:find [?n ...] :where [?c :db/ident :color/red] [?e :c/color ?c] [?e :c/name ?n]]";
+        assert_eq!(q(s, q1), serde_json::json!(["car"]));
+        for t in [first, reload] {
+            let r = Spi::get_one::<pgrx::JsonB>(&format!(
+                "SELECT q('{s}', '{q1}', '{{\"asOf\": {t}}}'::jsonb)"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(r.0["result"], serde_json::json!(["car"]), "as of {t}");
+        }
+    }
+
+    #[pg_test]
+    fn ident_repair_same_tx_pair() {
+        setup("default");
+        repair_same_tx_pair("default");
+    }
+
+    #[pg_test]
+    fn ident_repair_same_tx_pair_named_store() {
+        setup("id415p");
+        repair_same_tx_pair("id415p");
+    }
+
     #[pg_test]
     fn ident_repair_moved_idents() {
         setup("default");

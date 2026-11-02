@@ -409,8 +409,15 @@ $fn$;
 -- current state: datoms with N as entity get O, ref values that point at N
 -- point at O. Transaction ids stay as they are, so the history keeps when
 -- each value was written; as-of a time after the move now shows the value on
--- O. A row with a blocker is skipped and left as it is. Returns one row per
--- ident with what was done ('repaired', 'would repair', or 'skipped: why').
+-- O. One transaction can have written a datom on both: re-loading
+-- [car :c/color :color/red] after the move retracted [car :c/color O] and
+-- asserted [car :c/color N]. Those rows become one datom; the repair keeps
+-- one row with the transaction's net effect (asserted if either row is), or
+-- none if the datom already had that state (the pair above: car's color
+-- stays O, asserted when it was first written). A row with a blocker is
+-- skipped and left as it is; an ident whose repair fails is rolled back on
+-- its own. Returns one row per ident with what was done ('repaired',
+-- 'would repair', 'skipped: why', or 'failed: error').
 --
 -- Run it with nothing writing to the store: a writer that resolved the ident
 -- before the repair committed can still write a ref to N. Back up first; run
@@ -430,6 +437,8 @@ DECLARE
     sid BIGINT;
     rec RECORD;
     ty TEXT;
+    vmap TEXT;
+    vhit TEXT;
     repaired BOOLEAN := false;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant',
                           'text', 'keyword', 'uuid', 'bytes'];
@@ -453,22 +462,55 @@ BEGIN
         ELSIF dry_run THEN
             action := 'would repair';
         ELSE
+          BEGIN
             EXECUTE format('UPDATE %I.idents SET entid = $1 WHERE ident = $2', s)
                 USING rec.owner, rec.ident;
             FOREACH ty IN ARRAY types LOOP
-                EXECUTE format('UPDATE %I.%I SET e = $1 WHERE store_id = $2 AND e = $3',
-                               s, 'datoms_' || ty || '_new')
-                    USING rec.owner, sid, rec.moved_to;
+                -- $2 is N, $3 is O. A ref's value moves too.
+                vmap := CASE WHEN ty = 'ref' THEN 'CASE WHEN v = $2 THEN $3 ELSE v END' ELSE 'v' END;
+                vhit := CASE WHEN ty = 'ref' THEN ' OR v IN ($2, $3)' ELSE '' END;
+                -- Rows that become one datom in one transaction: keep the one
+                -- with the net effect, or none if the datom had it already.
+                EXECUTE format($q$
+                    WITH m AS (
+                        SELECT e, a, v, tx, added,
+                               CASE WHEN e = $2 THEN $3 ELSE e END AS me, %3$s AS mv
+                          FROM %1$I.%2$I
+                         WHERE store_id = $1 AND (e IN ($2, $3)%4$s)
+                    ), k AS (
+                        SELECT me, a, mv, tx, bool_or(added) AS st, count(*) AS n
+                          FROM m GROUP BY me, a, mv, tx
+                    ), p AS (
+                        SELECT k.*, lag(st) OVER (PARTITION BY me, a, mv ORDER BY tx) AS prev
+                          FROM k
+                    ), r AS (
+                        SELECT m.e, m.a, m.v, m.tx, p.st = coalesce(p.prev, false) AS noop,
+                               row_number() OVER (PARTITION BY m.me, m.a, m.mv, m.tx
+                                                  ORDER BY m.added = p.st DESC) AS rn
+                          FROM m JOIN p USING (me, a, mv, tx)
+                         WHERE p.n > 1
+                    )
+                    DELETE FROM %1$I.%2$I d USING r
+                     WHERE d.store_id = $1 AND d.e = r.e AND d.a = r.a AND d.v = r.v
+                       AND d.tx = r.tx AND (r.noop OR r.rn > 1)$q$,
+                    s, 'datoms_' || ty || '_new', vmap, vhit)
+                    USING sid, rec.moved_to, rec.owner;
+                EXECUTE format('UPDATE %1$I.%2$I SET e = CASE WHEN e = $2 THEN $3 ELSE e END, v = %3$s
+                                 WHERE store_id = $1 AND (e = $2%4$s)',
+                               s, 'datoms_' || ty || '_new', vmap,
+                               CASE WHEN ty = 'ref' THEN ' OR v = $2' ELSE '' END)
+                    USING sid, rec.moved_to, rec.owner;
                 EXECUTE format('UPDATE %I.%I SET e = $1 WHERE store_id = $2 AND e = $3',
                                s, 'current_' || ty)
                     USING rec.owner, sid, rec.moved_to;
             END LOOP;
-            EXECUTE format('UPDATE %I.datoms_ref_new SET v = $1 WHERE store_id = $2 AND v = $3', s)
-                USING rec.owner, sid, rec.moved_to;
             EXECUTE format('UPDATE %I.current_ref SET v = $1 WHERE store_id = $2 AND v = $3', s)
                 USING rec.owner, sid, rec.moved_to;
             repaired := true;
             action := 'repaired';
+          EXCEPTION WHEN OTHERS THEN
+            action := 'failed: ' || SQLERRM;
+          END;
         END IF;
         RETURN NEXT;
     END LOOP;
