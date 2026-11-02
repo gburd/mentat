@@ -3593,6 +3593,51 @@ mod tests {
         );
     }
 
+    fn viewdef(view: &str) -> String {
+        text(&format!("SELECT pg_get_viewdef('{view}'::regclass)"))
+    }
+
+    // A 1.17 store the 1.18.0 upgrade skipped (it WARNs and goes on, e.g.
+    // when mentat_<name>_pre118 already exists) keeps the wide layout. The
+    // 1.19.0 upgrade's CREATE OR REPLACE VIEW ... FROM mentat_<name>.current_ref
+    // then failed with "relation does not exist" and aborted the whole
+    // upgrade. Such a store is skipped with a WARNING; the others are done.
+    #[pg_test]
+    fn upgrade_skips_a_store_without_the_1_18_layout() {
+        setup();
+        make_1_18_store("lay_ok", false);
+        Spi::run(
+            "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('lay_old', 'mentat_lay_old'); \
+             CREATE SCHEMA mentat_lay_old; \
+             CREATE TABLE mentat_lay_old.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+               value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL); \
+             CREATE TABLE mentat_lay_old.schema (entid BIGINT, ident TEXT); \
+             CREATE VIEW mentat_lay_old.facts AS SELECT e AS entity_id, v_text AS value \
+               FROM mentat_lay_old.datoms WHERE added",
+        )
+        .expect("1.17 store");
+        let old = viewdef("mentat_lay_old.facts");
+        let block = upgrade_119_block("views");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.starts_with(
+                "pg_mentat upgrade: views of named store \"lay_old\" not replaced: schema mentat_lay_old \
+                 does not have the 1.18 layout (no current_boolean, current_bytes,"
+            ),
+            "{msg:?}"
+        );
+        assert!(msg.contains("idents, transactions)"), "{msg:?}");
+        Spi::run(&block).expect("the upgrade goes on");
+        assert_eq!(viewdef("mentat_lay_old.facts"), old);
+        assert!(
+            viewdef("mentat_lay_ok.facts").contains("current_text"),
+            "the other store's views are replaced"
+        );
+    }
+
     fn names_of(store: &str) -> Vec<String> {
         sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
     }

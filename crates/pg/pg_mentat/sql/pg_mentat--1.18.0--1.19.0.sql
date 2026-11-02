@@ -1320,7 +1320,8 @@ AS 'MODULE_PATHNAME', 'store_virtual_tables_wrapper';
 --
 -- Stores are the ones the 1.18.0 upgrade would rebuild: mentat.stores is
 -- writable by the installing role, so a row that create_store() would not
--- have made is skipped. Nothing here reads a store's tables or calls a
+-- have made is skipped. So is a store without the 1.18 layout (one the
+-- 1.18.0 upgrade skipped), with a WARNING. Nothing here reads a store's tables or calls a
 -- function in a store's schema.
 -- ---------------------------------------------------------------------------
 DO $views$
@@ -1332,6 +1333,8 @@ DECLARE
     ident TEXT;
     member BOOLEAN;
     ext OID;
+    missing TEXT;
+    types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
     old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
     PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
@@ -1347,6 +1350,21 @@ BEGIN
            AND pg_catalog.lower(s.store_name) NOT LIKE 'pg\_%'
          ORDER BY s.store_id
     LOOP
+        -- The tables the new definitions name. A 1.17 store the 1.18.0
+        -- upgrade skipped (mentat_<name>_pre118 already existed, ...) still
+        -- has the old wide layout.
+        SELECT pg_catalog.string_agg(t, ', ' ORDER BY t) INTO missing
+          FROM pg_catalog.unnest(ARRAY['schema', 'idents', 'transactions']
+                 || ARRAY(SELECT 'current_' || ty FROM pg_catalog.unnest(types) AS ty)
+                 || ARRAY(SELECT 'datoms_' || ty || '_new' FROM pg_catalog.unnest(types) AS ty)) AS t
+         WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = st.ns AND c.relname = t);
+        IF missing IS NOT NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: views of named store "%" not replaced: schema % does not have the '
+                          '1.18 layout (no %), so the 1.18.0 upgrade did not rebuild it. See "A store the upgrade '
+                          'skipped" under "Upgrading from 1.17" in docs/src/multi-tenancy.md.',
+                          st.store_name, st.nspname, missing;
+            CONTINUE;
+        END IF;
         FOR obj IN SELECT * FROM mentat._store_virtual_tables(st.store_name) LOOP
             IF obj.kind = 'VIEW' THEN
                 oid_ := (SELECT c.oid FROM pg_class c
