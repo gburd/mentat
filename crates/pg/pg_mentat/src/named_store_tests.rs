@@ -3423,4 +3423,177 @@ mod tests {
         // An upgraded store's objects return only live values.
         store_objects_read_live_values("vt_live");
     }
+
+    /// Excise `ids` from `store` as 1.5.0 - 1.18.0 did (#396): delete the log
+    /// rows and log the excision; the projection, fulltext text and idents
+    /// stay.
+    fn excise_as_1_18(store: &str, ids: &[i64]) {
+        let sch = if store == "default" {
+            "mentat".to_string()
+        } else {
+            format!("mentat_{store}")
+        };
+        let list = ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        for ty in [
+            "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
+        ] {
+            Spi::run(&format!(
+                "DELETE FROM \"{sch}\".datoms_{ty}_new WHERE e IN ({list})"
+            ))
+            .expect("log rows");
+        }
+        Spi::run(&format!(
+            "INSERT INTO mentat.excision_log (store_name, entity_ids) VALUES ('{store}', ARRAY[{list}])"
+        ))
+        .expect("excision_log");
+    }
+
+    // 1.5.0 - 1.18.0's mentat_excise left the projection rows of the
+    // entities it excised (#396). The 1.18 store views read the log, which
+    // hid them; the 1.19 views read the projection, so the upgrade deletes
+    // them first: they don't come back in facts, text_values, datom_text_like,
+    // current() or q(). A value asserted for the same id after the excision
+    // stays, another entity is untouched, and a store the log names that is
+    // gone gets a WARNING.
+    #[pg_test]
+    fn upgrade_deletes_what_old_excisions_left() {
+        setup();
+        make_1_18_store("ex_old", false);
+        let mut eve = std::collections::HashMap::new();
+        for store in ["default", "ex_old"] {
+            tx(
+                store,
+                "[{:db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+                   :db/unique :db.unique/identity :db/fulltext true} \
+                  {:db/ident :ex/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+            );
+            let r = tx(
+                store,
+                "[{:db/id \"e\" :ex/name \"eve secret\" :ex/age 50} {:db/id \"f\" :ex/name \"fay\" :ex/age 3} \
+                  {:db/id \"g\" :ex/name \"gus\"} {:db/id \"k\" :db/ident :ex/kmauve}]",
+            );
+            let id = |t: &str| r["tempids"][t].as_i64().unwrap();
+            // g: excised, then given a value again under the same id.
+            excise_as_1_18(store, &[id("e"), id("g"), id("k")]);
+            tx(
+                store,
+                &format!("[[:db/add {} :ex/name \"gus again\"]]", id("g")),
+            );
+            eve.insert(store, (id("e"), id("f"), id("g")));
+        }
+        Spi::run("INSERT INTO mentat.excision_log (store_name, entity_ids) VALUES ('ex_gone', ARRAY[1000001])")
+            .expect("gone store");
+        let (e, _, _) = eve["ex_old"];
+        let shows = || -> i64 {
+            Spi::get_one::<i64>(&format!(
+                "SELECT (SELECT count(*) FROM mentat_ex_old.facts WHERE entity_id = {e}) \
+                      + (SELECT count(*) FROM mentat_ex_old.text_values WHERE value = 'eve secret')"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(shows(), 0, "1.18 views read the log");
+
+        let block = upgrade_119_block("excised");
+        Spi::run(&block).expect("excised");
+        Spi::run(&upgrade_119_block("views")).expect("views");
+        assert_eq!(shows(), 0, "facts / text_values after the upgrade");
+
+        for store in ["default", "ex_old"] {
+            let (e, f, g) = eve[store];
+            let sch = if store == "default" {
+                "mentat"
+            } else {
+                "mentat_ex_old"
+            };
+            let left = Spi::get_one::<i64>(&format!(
+                "SELECT (SELECT count(*) FROM {sch}.current_datoms WHERE e = {e}) \
+                      + (SELECT count(*) FROM {sch}.fulltext WHERE text_value = 'eve secret') \
+                      + (SELECT count(*) FROM {sch}.idents WHERE ident = ':ex/kmauve')"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(left, 0, "{store}: rows of excised entities");
+            assert_eq!(
+                q(store, &format!("[:find ?a ?v :where [{e} ?a ?v]]"), "{}")["result"],
+                serde_json::json!([]),
+                "{store}: q"
+            );
+            assert_eq!(
+                names_of(store),
+                vec!["fay".to_string(), "gus again".to_string()],
+                "{store}: q, the others"
+            );
+        }
+        // current() reads the default store.
+        let (e, f, g) = eve["default"];
+        for (id, attr, want) in [
+            (e, ":ex/name", "-"),
+            (e, ":ex/age", "-"),
+            (f, ":ex/age", "3"),
+            (g, ":ex/name", "gus again"),
+        ] {
+            assert_eq!(
+                text(&format!(
+                    "SELECT coalesce(mentat.current({id}, '{attr}'), '-')"
+                )),
+                want,
+                "current({id}, {attr})"
+            );
+        }
+        assert_eq!(
+            Spi::get_one::<i64>(
+                "SELECT count(*) FROM mentat.datom_text_like(':ex/name', '%secret%')"
+            )
+            .unwrap()
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT mentat.verify_current_projection(0)")
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("mentat.excision_log lists entities excised from 'ex_gone'"),
+            "{msg:?}"
+        );
+        // A table the store's owner gave a DELETE trigger: the store is
+        // skipped, the trigger doesn't run.
+        Spi::run(
+            "CREATE TABLE public.ex_ran (x TEXT); \
+             CREATE FUNCTION public.ex_trg() RETURNS trigger LANGUAGE plpgsql AS \
+               $$ BEGIN INSERT INTO public.ex_ran VALUES ('ran'); RETURN OLD; END $$; \
+             CREATE TRIGGER ex_trg BEFORE DELETE ON mentat_ex_old.current_long \
+               FOR EACH ROW EXECUTE FUNCTION public.ex_trg()",
+        )
+        .expect("trigger");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_old\" before 1.19.0 were not looked at: current_long"),
+            "{msg:?}"
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM public.ex_ran")
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    fn names_of(store: &str) -> Vec<String> {
+        sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
+    }
 }

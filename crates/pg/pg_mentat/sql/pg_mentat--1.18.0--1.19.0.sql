@@ -781,6 +781,149 @@ $movedidents$;
 
 -- === pg-views ===
 -- ---------------------------------------------------------------------------
+-- Entities excised before 1.19.0 (#396). From 1.5.0 to 1.18.0 mentat_excise
+-- deleted only the entities' log rows. Their current_<type> rows, which
+-- every current-time read serves from, stayed, and so did their text in the
+-- store's fulltext table, an enum entity's idents row and the default
+-- store's attr_<n>_{vector,geom,tvec} rows. The 1.18 store views read the
+-- log and hid them; the views below read the projection, so this runs
+-- first. For each store mentat.excision_log names, it deletes what
+-- mentat_excise deletes now:
+--   * the excised entities' current_<type> rows that no log row backs (one
+--     with the same e, a and tx): a value asserted for the same entity id
+--     after the excision has its log row and stays;
+--   * for an excised entity with no log row left, its idents rows and, in
+--     the default store, its attr_<n>_* rows;
+--   * text in the store's fulltext table that no assertion in the store's
+--     log holds (the table has no entity column, and the excised entities'
+--     log rows are gone).
+-- An installed attribute is left alone (excising one is refused since
+-- 1.19.0). This runs as superuser over tables a store's owner owns, so a
+-- store is skipped, with a WARNING, unless every table it touches is a
+-- plain table with built-in column types, and the ones it deletes from have
+-- no DELETE trigger or rule and no foreign key pointing at them; every
+-- statement names its table with ONLY. Nothing here runs code a store's
+-- owner (or, on the default store, the installing role) wrote. A store_name that
+-- names no store now (dropped or renamed) is skipped too; one WARNING lists
+-- them.
+-- ---------------------------------------------------------------------------
+DO $excised$
+DECLARE
+    st RECORD;
+    ty TEXT;
+    tabs TEXT[];
+    bad TEXT;
+    ids BIGINT[];
+    gone BIGINT[];
+    done TEXT[] := '{}';
+    n BIGINT;
+    types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
+    srr TEXT := pg_catalog.current_setting('session_replication_role');
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOR st IN
+        SELECT s.store_id, s.store_name, n.oid AS ns, n.nspname,
+               pg_catalog.array_agg(DISTINCT xe) AS ids
+          FROM mentat.excision_log l
+          CROSS JOIN LATERAL pg_catalog.unnest(l.entity_ids) AS xe
+          JOIN mentat.stores s ON s.store_name = l.store_name
+          JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE xe >= 10000
+           AND ((s.store_name = 'default' AND s.schema_name = 'mentat')
+                OR (s.schema_name = 'mentat_' || s.store_name
+                    AND s.store_name ~ '^[A-Za-z_][A-Za-z0-9_]*$'
+                    AND pg_catalog.length(s.store_name) <= 56
+                    AND pg_catalog.lower(s.store_name) NOT IN ('default', 'information_schema')
+                    AND pg_catalog.lower(s.store_name) NOT LIKE 'pg\_%'))
+         GROUP BY s.store_id, s.store_name, n.oid, n.nspname
+         ORDER BY s.store_id
+    LOOP
+        done := done || st.store_name;
+        tabs := ARRAY['schema', 'idents', 'fulltext']
+                || ARRAY(SELECT 'current_' || t FROM pg_catalog.unnest(types) AS t)
+                || ARRAY(SELECT 'datoms_' || t || '_new' FROM pg_catalog.unnest(types) AS t);
+        IF st.nspname = 'mentat' THEN
+            tabs := tabs || ARRAY(SELECT c.relname::TEXT FROM pg_class c
+                                   WHERE c.relnamespace = st.ns AND c.relkind = 'r'
+                                     AND c.relname ~ '^attr_[0-9]+_(vector|geom|tvec)$');
+        END IF;
+        SELECT pg_catalog.string_agg(tname, ', ' ORDER BY tname) INTO bad
+          FROM pg_catalog.unnest(tabs) AS tname
+          LEFT JOIN pg_class c ON c.relnamespace = st.ns AND c.relname = tname
+         WHERE c.oid IS NULL OR c.relkind <> 'r'
+            -- On the tables it deletes from: no DELETE trigger or rule, and no
+            -- foreign key whose ON DELETE action would reach another table.
+            OR (tname NOT LIKE 'datoms\_%' AND tname <> 'schema'
+                AND (EXISTS (SELECT 1 FROM pg_trigger g
+                              WHERE g.tgrelid = c.oid AND NOT g.tgisinternal AND (g.tgtype & 8) <> 0)
+                     OR EXISTS (SELECT 1 FROM pg_rewrite r WHERE r.ev_class = c.oid AND r.ev_type = '4')
+                     OR EXISTS (SELECT 1 FROM pg_constraint k WHERE k.confrelid = c.oid)))
+            OR EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type y ON y.oid = a.atttypid
+                        WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                          AND a.attname IN ('store_id', 'e', 'a', 'v', 'tx', 'added', 'entid', 'text_value')
+                          AND NOT (a.attname = 'v' AND tname LIKE 'attr\_%')
+                          AND y.typnamespace <> 'pg_catalog'::regnamespace);
+        IF bad IS NOT NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: entities excised from store "%" before 1.19.0 were not looked '
+                          'at: % in schema % (missing, not a plain table, a DELETE trigger or rule, or a '
+                          'column type of its own). Their current values may still show. After the '
+                          'upgrade, run mentat_excise again on the ids mentat.excision_log lists.',
+                          st.store_name, bad, st.nspname;
+            CONTINUE;
+        END IF;
+
+        -- Installed attributes stay.
+        EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
+                                  'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.schema s WHERE s.entid = x)', st.nspname)
+           INTO ids USING st.ids;
+        CONTINUE WHEN ids IS NULL;
+        gone := ids;
+        FOREACH ty IN ARRAY types LOOP
+            EXECUTE pg_catalog.format(
+                'DELETE FROM ONLY %1$I.%2$I c WHERE c.store_id = $1 AND c.e = ANY($2) '
+                'AND NOT EXISTS (SELECT 1 FROM ONLY %1$I.%3$I d WHERE d.store_id = c.store_id '
+                'AND d.e = c.e AND d.a = c.a AND d.v = c.v AND d.tx = c.tx)',
+                st.nspname, 'current_' || ty, 'datoms_' || ty || '_new') USING st.store_id, ids;
+            EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
+                                      'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.%I d WHERE d.store_id = $2 AND d.e = x)',
+                                      st.nspname, 'datoms_' || ty || '_new')
+               INTO gone USING gone, st.store_id;
+        END LOOP;
+        IF gone IS NOT NULL THEN
+            FOREACH ty IN ARRAY tabs LOOP
+                IF ty LIKE 'attr\_%' THEN
+                    EXECUTE pg_catalog.format('DELETE FROM ONLY %I.%I WHERE e = ANY($1)', st.nspname, ty) USING gone;
+                END IF;
+            END LOOP;
+            EXECUTE pg_catalog.format('DELETE FROM ONLY %I.idents WHERE entid = ANY($1)', st.nspname) USING gone;
+            GET DIAGNOSTICS n = ROW_COUNT;
+            IF n > 0 THEN
+                -- Other sessions reload the store's idents. In replica mode: the
+                -- installing role holds TRIGGER on this table.
+                PERFORM pg_catalog.set_config('session_replication_role', 'replica', true);
+                UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = st.store_name;
+                PERFORM pg_catalog.set_config('session_replication_role', srr, true);
+            END IF;
+        END IF;
+        EXECUTE pg_catalog.format('DELETE FROM ONLY %1$I.fulltext f WHERE NOT EXISTS (SELECT 1 FROM ONLY %1$I.datoms_text_new d '
+                                  'WHERE d.store_id = $1 AND d.v = f.text_value AND d.added)', st.nspname)
+           USING st.store_id;
+    END LOOP;
+    SELECT pg_catalog.string_agg(DISTINCT pg_catalog.quote_literal(l.store_name), ', ') INTO bad
+      FROM mentat.excision_log l
+     WHERE l.store_name <> ALL (done);
+    IF bad IS NOT NULL THEN
+        RAISE WARNING 'pg_mentat upgrade: mentat.excision_log lists entities excised from %, which name no '
+                      'store now (dropped, renamed, or a mentat.stores row edited by hand). For a renamed '
+                      'store, run mentat_excise on those ids again under its new name after the upgrade.',
+                      bad;
+    END IF;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$excised$;
+
+-- ---------------------------------------------------------------------------
 -- SQL objects that answer for the current state read the current_<type>
 -- projections (#395). Since 1.5.0 the datoms_<type>_new log is append-only:
 -- a replacement or retraction appends a retraction row and leaves the old
