@@ -59,15 +59,18 @@
 //! [`NS_ATTR`] keys and the [`NS_UNIQUE`] keys; then the [`NS_EA`] keys.
 //! Writers that alter no schema and stay within the budget can't deadlock on
 //! these advisory locks: the only exclusive keys they hold while waiting sort
-//! below the key they wait for. (They can still deadlock on PostgreSQL's own
-//! row and index locks; see #411.) Transactions whose first schema-changing
-//! call comes before any data call ("install schema, then write") can't
-//! deadlock with each other through schema: the second waits for the store's
-//! row before it has installed or locked anything (#413). A schema
-//! alteration, a call over the budget, a transaction that writes data and
-//! then changes schema, or one that runs several `edn_t` calls (or takes its
-//! own locks) can deadlock with another; PostgreSQL detects it and aborts one
-//! transaction (SQLSTATE 40P01), and the client retries.
+//! below the key they wait for. That claim covers the advisory locks only,
+//! not PostgreSQL's row and index locks, though the transactor writes each
+//! projection table's rows in key order so writers of the same
+//! cardinality-many values don't deadlock on them (#411). Transactions whose
+//! first schema-changing call comes before any data call ("install schema,
+//! then write") can't deadlock with each other through schema: the second
+//! waits for the store's row before it has installed or locked anything
+//! (#413). A schema alteration, a call over the budget, a transaction that
+//! writes data and then changes schema, or one that runs several `edn_t`
+//! calls (or takes its own locks) can deadlock with another; PostgreSQL
+//! detects it and aborts one transaction (SQLSTATE 40P01), and the client
+//! retries.
 //!
 //! # Isolation levels
 //!

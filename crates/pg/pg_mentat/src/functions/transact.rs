@@ -3407,11 +3407,15 @@ fn maintain_current_projection(
     // command cannot affect row a second time"). The last write in the
     // batch for a given conflict key wins (highest tx, since rows are in
     // assertion order).
-    use std::collections::HashMap;
+    //
+    // Ordered maps: every transaction writes the tables, and the rows within
+    // each, in one order, so two writers of the same cardinality-many values
+    // wait for each other instead of deadlocking on the primary key (#411).
+    use std::collections::BTreeMap;
     // table -> ( (e,a,v_sql) -> values_row )
-    let mut upserts: HashMap<&'static str, HashMap<(i64, i64, String), String>> = HashMap::new();
+    let mut upserts: BTreeMap<&'static str, BTreeMap<(i64, i64, String), String>> = BTreeMap::new();
     // table -> set of (e,a,v_sql) delete tuples (dedup via map key)
-    let mut deletes: HashMap<&'static str, HashMap<(i64, i64, String), String>> = HashMap::new();
+    let mut deletes: BTreeMap<&'static str, BTreeMap<(i64, i64, String), String>> = BTreeMap::new();
 
     for (e, a, v, tx, added) in rows {
         let table = current_projection_table(v);
