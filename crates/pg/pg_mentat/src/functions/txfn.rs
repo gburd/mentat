@@ -15,6 +15,10 @@
 //!   same step / heap / depth GUC limits and interrupt hook.
 //! * The fn's reads go through SPI as the calling role; never
 //!   `SECURITY DEFINER`.
+//! * The fn reaches only the store being transacted: it runs its author's
+//!   code with the invoker's privileges, so opening any other store is
+//!   `:db.error/txfn-store-scope`, and transact/with are
+//!   `:db.error/txfn-transact` (it returns tx-data instead).
 //! * `mentat.txfn_max_depth` bounds tx-fn recursion; a tx-fn that errors
 //!   aborts the whole transaction.
 //!
@@ -39,7 +43,8 @@ pub use mentat_script::txfn::DB_FN_IDENT;
 /// embedded SQLite and DuckDB backends run). One sandboxed interpreter per
 /// transaction, built only when an invocation is found. `qs` is the quoted
 /// schema of `store`, the store being transacted: the fn's
-/// `(mentat.store/open)` opens it, so its `db` reads that store.
+/// `(mentat.store/open)` opens it, so its `db` reads that store, and it can
+/// open no other store.
 pub fn expand_user_tx_fns(value: edn::Value, qs: &str, store: &str) -> Result<edn::Value, BoxErr> {
     let mut it: Option<mino_rs::Interpreter> = None;
     mentat_script::txfn::expand(
@@ -47,7 +52,7 @@ pub fn expand_user_tx_fns(value: edn::Value, qs: &str, store: &str) -> Result<ed
         TXFN_MAX_DEPTH.get().max(1) as usize,
         |ident| lookup_db_fn(qs, ident).map_err(|e| e.to_string()),
         |form| {
-            it.get_or_insert_with(|| crate::functions::script::build_interpreter_for(store))
+            it.get_or_insert_with(|| crate::functions::script::build_interpreter_for(store, true))
                 .eval_to_string(form)
         },
     )

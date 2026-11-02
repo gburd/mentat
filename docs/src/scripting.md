@@ -126,6 +126,14 @@ just a careless one.
   `edn_q`/`edn_t` or `q`/`t`: opening a named store the role has no `USAGE`
   on (schema `mentat_<name>`) fails with a permission error. It must **not**
   be made `SECURITY DEFINER` — that would turn it into a privilege escalation.
+- **Transaction functions reach one store.** A `:db/fn` runs its author's
+  code with the privileges of the role that invokes it, so on PostgreSQL it
+  reads only the store it runs on (the store being transacted):
+  `(mentat.store/open)` and `(mentat.store/open "<that store>")` open it, and
+  any other name is `:db.error/txfn-store-scope`. It can't transact or call
+  `with` (`:db.error/txfn-transact`): it returns tx-data, which joins the
+  invoking transaction. An `edn_eval` script runs the caller's own code, so it
+  may open every store the caller can reach.
 
 The embedded `ScriptInterpreter` uses the same sandboxed interpreter with
 step/heap/depth limits set by the host.

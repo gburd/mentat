@@ -39,7 +39,7 @@ mod tests {
                 fn $test() {
                     crate::functions::store_management::create_store("model_nz", None)
                         .expect("create_store");
-                    let mut it = build_interpreter_for("model_nz");
+                    let mut it = build_interpreter_for("model_nz", false);
                     m::$name(&mut it);
                     let default_people = crate::functions::query::mentat_query(
                         "[:find (count ?e) . :where [?e :db/ident :person/name]]",

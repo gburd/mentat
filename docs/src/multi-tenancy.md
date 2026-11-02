@@ -48,9 +48,13 @@ where-fns backed by the per-attribute tables those helpers make
 `geom-contains`, `geom-intersects`) raise `:db.error/unsupported` on a named
 store. A user transaction function (an ident with `:db/fn`) invoked in
 `t('acme', ...)` or `with('acme', ...)` is `acme`'s own definition, and its
-`db` reads `acme`. An `edn_eval` script opens a named store with
-`(mentat.store/open "acme")`; it runs as the calling role, so it needs the
-same privileges on `mentat_acme` that `q('acme', ...)` does.
+`db` reads `acme`. It reads only `acme`, with the invoker's privileges:
+opening any other store is `:db.error/txfn-store-scope`, and it can't
+transact, so a role that can write `acme`'s `:db/fn` values can't use another
+role's rights to reach a second store. An `edn_eval` script opens a named
+store with `(mentat.store/open "acme")` and may open every store the caller
+can reach; it runs as the calling role, so it needs the same privileges on
+`mentat_acme` that `q('acme', ...)` does.
 `fulltext`, `fuzzy`, the trigram where-fns and `bm25-match` read the
 store's own tables; `mentat.create_fts_index` indexes the default store's
 table only. `subscribe('acme', ...)` re-runs its query against `acme`, and

@@ -126,6 +126,18 @@ tx-fn calls amortizes one interpreter.
   access to the schema — same trust boundary as defining any attribute. (A
   future hardening GUC could gate `:db/fn` installation to a role; noted, not
   built — YAGNI until asked.)
+- A tx-fn reaches only the store being transacted (1.19.0, pg_mentat). It
+  runs its author's code with the invoker's privileges, so if it could open
+  other stores, an author with rights on store A could read or change store
+  B through any invoker with rights on B. So the fn's backend is pinned:
+  `(mentat.store/open)` and `(mentat.store/open "<its store>")` are its
+  store, any other name is `:db.error/txfn-store-scope` (the same error
+  whether or not the name is a store), and handles and db values can name
+  no other store. It can't transact or call `with` either
+  (`:db.error/txfn-transact`): as in Datomic it returns tx-data. That also
+  ends a tx-fn transacting its own store and re-running itself until the
+  stack depth limit (#405). `edn_eval` is not pinned: there the caller runs
+  their own code and may open every store they can reach.
 
 ## What shipped (1.14.0)
 

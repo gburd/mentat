@@ -99,7 +99,9 @@ attribute the first time a transaction installs a function; pg_mentat
 bootstraps it. Use `:db.fn/cas` in the returned tx-data for an
 atomic read-modify-write, as above. On pg_mentat a tx-function invoked on a
 named store (`t('acme', ...)`, `with('acme', ...)`) is looked up in that
-store, and its `db` reads that store (since 1.19.0; 1.18.0 refused it).
+store, and its `db` reads that store (since 1.19.0; 1.18.0 refused it). On
+pg_mentat a tx-function can't open any other store or transact; see
+[Scripting](scripting.md#security--edn_eval).
 
 ---
 

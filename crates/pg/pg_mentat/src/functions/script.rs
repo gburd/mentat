@@ -50,13 +50,14 @@ use mentat_script::{DbRef, ScriptBackend, TxReport};
 /// preserved: the shared `install()` only adds the store surface; the sandbox
 /// and limits stay here.)
 pub fn build_interpreter() -> mino_rs::Interpreter {
-    build_interpreter_for("default")
+    build_interpreter_for("default", false)
 }
 
 /// [`build_interpreter`] where a no-argument `(mentat.store/open)` opens
-/// `store` (a name in `mentat.stores`): a transaction function reads the
-/// store being transacted.
-pub fn build_interpreter_for(store: &str) -> mino_rs::Interpreter {
+/// `store` (a name in `mentat.stores`). `pinned` is for a transaction
+/// function: it runs its author's code with the invoker's privileges, so it
+/// may open only `store`, the store being transacted, and can't transact.
+pub fn build_interpreter_for(store: &str, pinned: bool) -> mino_rs::Interpreter {
     use crate::functions::script_gucs::{
         SCRIPT_MAX_DEPTH, SCRIPT_MAX_HEAP_BYTES, SCRIPT_MAX_STEPS,
     };
@@ -64,6 +65,7 @@ pub fn build_interpreter_for(store: &str) -> mino_rs::Interpreter {
     let backend: std::rc::Rc<std::cell::RefCell<dyn ScriptBackend>> =
         std::rc::Rc::new(std::cell::RefCell::new(PgBackend {
             stores: vec![store.to_string()],
+            pinned,
         }));
     mentat_script::install(&mut it, backend);
     it.set_limits(mino_rs::Limits {
@@ -124,6 +126,10 @@ COMMENT ON FUNCTION public.mentat_eval(TEXT) IS 'Deprecated since 1.9.0: use edn
 /// `stores[n - 1]`; conn 1 is the store a no-argument `open` returns.
 struct PgBackend {
     stores: Vec<String>,
+    /// A transaction function's backend: `stores` stays `[its store]`, so
+    /// every handle and db value reaches that store or none, and
+    /// transact/with are refused (it returns tx-data instead).
+    pinned: bool,
 }
 
 impl PgBackend {
@@ -136,6 +142,20 @@ impl PgBackend {
             .map(String::as_str)
             .ok_or_else(|| format!("no open store for handle {conn}"))
     }
+
+    /// Issue #405: a tx-fn transacting its own store re-ran itself until the
+    /// stack depth limit. Datomic's tx-fns can't transact either.
+    fn refuse_if_pinned(&self) -> Result<(), String> {
+        if self.pinned {
+            return Err(
+                ":db.error/txfn-transact a transaction function can't transact or \
+                        call with: return the tx-data, and it is added to the transaction \
+                        that invoked the function"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl ScriptBackend for PgBackend {
@@ -147,6 +167,14 @@ impl ScriptBackend for PgBackend {
         };
         if let Some(i) = self.stores.iter().position(|s| s == name) {
             return Ok(i as i64 + 1);
+        }
+        // Before any lookup, so a tx-fn can't tell which names are stores.
+        if self.pinned {
+            return Err(format!(
+                ":db.error/txfn-store-scope a transaction function can only open the store \
+                 it runs on ('{}'); '{name}' is out of its scope",
+                self.stores[0]
+            ));
         }
         if name != "default" {
             validate_store_name(name).map_err(|e| e.to_string())?;
@@ -173,11 +201,13 @@ impl ScriptBackend for PgBackend {
     }
 
     fn transact(&mut self, conn: i64, edn: &str) -> Result<TxReport, String> {
+        self.refuse_if_pinned()?;
         let report = super::transact::t(self.store(conn)?, edn).map_err(|e| e.to_string())?;
         json_to_tx_report(&report)
     }
 
     fn with(&mut self, db: &DbRef, edn: &str) -> Result<(i64, TxReport), String> {
+        self.refuse_if_pinned()?;
         let report = super::transact::mentat_with_store(self.store(db.conn)?, edn)
             .map_err(|e| e.to_string())?;
         let j: J = serde_json::from_str(&report).map_err(|e| format!("bad engine JSON: {e}"))?;
