@@ -2879,8 +2879,8 @@ mod tests {
             sorted(v)
         };
         let expected = vec![
-            "datoms_keyword_new:idx_datoms_keyword_new_trgm".to_string(),
-            "datoms_text_new:idx_datoms_text_new_trgm".to_string(),
+            "current_keyword:idx_current_keyword_trgm".to_string(),
+            "current_text:idx_current_text_trgm".to_string(),
         ];
         let long = "k".repeat(56);
         Spi::run(&format!("SELECT create_store('{long}')")).expect("create");
@@ -2892,16 +2892,16 @@ mod tests {
         // A trigram index the store already has, under any name, is kept and
         // not doubled.
         Spi::run(
-            "DROP INDEX mentat_tg_rn3.idx_datoms_text_new_trgm; \
-             CREATE INDEX mine ON mentat_tg_rn3.datoms_text_new USING GIN (v ns_trgm7.gin_trgm_ops)",
+            "DROP INDEX mentat_tg_rn3.idx_current_text_trgm; \
+             CREATE INDEX mine ON mentat_tg_rn3.current_text USING GIN (v ns_trgm7.gin_trgm_ops)",
         )
         .expect("own index");
         Spi::run("SELECT rename_store('tg_rn3', 'tg_rn4')").expect("rename");
         assert_eq!(
             per_table("mentat_tg_rn4"),
             vec![
-                "datoms_keyword_new:idx_datoms_keyword_new_trgm".to_string(),
-                "datoms_text_new:mine".to_string()
+                "current_keyword:idx_current_keyword_trgm".to_string(),
+                "current_text:mine".to_string()
             ]
         );
     }
