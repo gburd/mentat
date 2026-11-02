@@ -100,6 +100,18 @@ struct SchemaBuilder {
 }
 
 impl SchemaBuilder {
+    /// Does it assert an attribute property? A bare :db/ident only names an
+    /// entity (an enum value like :status/open, or a partition).
+    fn defines_attribute(&self) -> bool {
+        self.value_type.is_some()
+            || self.cardinality.is_some()
+            || self.unique.is_some()
+            || self.indexed.is_some()
+            || self.fulltext.is_some()
+            || self.component.is_some()
+            || self.no_history.is_some()
+    }
+
     /// Fold `other`'s properties into this one; this one's win where both are
     /// set (two values of one cardinality-one attribute are rejected later, as
     /// datoms).
@@ -1072,10 +1084,12 @@ fn execute_transaction_inner(
     // that names an existing ident is that ident's entity, and two that name one
     // new ident are one entity. Resolved under the generation lock, so the
     // idents read here are the committed ones.
+    // The transaction ("datomic.tx") is never remapped (see Phase A).
     let fresh: std::collections::BTreeSet<i64> = tempid_map
         .values()
         .chain(map_entity_ids.values())
         .copied()
+        .filter(|&e| e != tx_id)
         .collect();
     // The datoms follow through upsert_remaps, below.
     let ident_remaps = resolve_ident_upserts(&ident_claims, &fresh, &qs)?;
@@ -1426,6 +1440,36 @@ fn execute_transaction_inner(
                 upsert_remaps.insert(k, root);
             }
         }
+    }
+
+    // An ident claimed by an entity that upserted into another through a
+    // :db.unique/identity attribute ({:db/ident :color/new :c/name "sea"}) is
+    // that entity's, with the rest of the map (#415).
+    let mut moved_claim = false;
+    for (ident, e) in &ident_claims {
+        let Some(&to) = upsert_remaps.get(e) else {
+            continue;
+        };
+        if ident_row(ident, &qs) == Some(to) {
+            continue;
+        }
+        if schema_builders
+            .get(e)
+            .is_some_and(SchemaBuilder::defines_attribute)
+        {
+            return Err(MentatError::InvalidTransaction {
+                message: format!(
+                    "the attribute definition of {ident} upserts into entity {to} through \
+                     a :db.unique/identity attribute; define the attribute on its own entity"
+                ),
+            }
+            .into());
+        }
+        install_ident(ident, to, &qs)?;
+        moved_claim = true;
+    }
+    if moved_claim {
+        store_cache().invalidate();
     }
 
     // Apply upsert remaps to all pending datoms and the tempid map
@@ -2166,13 +2210,7 @@ fn install_schema_attributes(
         // value like :status/open, or a partition) -- a legitimate Datomic
         // pattern, NOT an incomplete attribute. For those we install the
         // ident mapping and move on.
-        let is_attribute_definition = builder.value_type.is_some()
-            || builder.cardinality.is_some()
-            || builder.unique.is_some()
-            || builder.indexed.is_some()
-            || builder.fulltext.is_some()
-            || builder.component.is_some()
-            || builder.no_history.is_some();
+        let is_attribute_definition = builder.defines_attribute();
         // The schema as it was before this transaction: an attribute that
         // already exists is being altered, and keeps what this transaction
         // does not change (#286). Its ident may come from an earlier one.

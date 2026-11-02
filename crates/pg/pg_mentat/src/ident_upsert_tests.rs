@@ -352,6 +352,62 @@ mod tests {
         assert_eq!(ident_entity(s, ":r/m"), b);
     }
 
+    /// A map that names a new ident and upserts through another
+    /// :db.unique/identity attribute: the ident goes to the entity the map
+    /// upserts into, with the rest of the map.
+    fn new_ident_on_an_upserted_entity(s: &str) {
+        tx(
+            s,
+            "[{:db/ident :c/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/identity}
+              {:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one}]",
+        );
+        tx(s, r#"[{:c/name "sea"}]"#);
+        let sea = q(s, r#"[:find ?e . :where [?e :c/name "sea"]]"#)
+            .as_i64()
+            .unwrap();
+        let r = tx(s, r#"[{:db/ident :color/brand-new :c/name "sea"}]"#);
+        assert_eq!(ident_entid(s, ":color/brand-new"), Some(sea), "{r}");
+        assert_eq!(ident_entity(s, ":color/brand-new"), sea);
+        assert!(moved_idents(s).is_empty());
+        tx(s, r#"[{:c/name "car" :c/color :color/brand-new}]"#);
+        assert_eq!(
+            q(
+                s,
+                "[:find ?n . :where [?c :db/ident :color/brand-new] [?e :c/color ?c] [?e :c/name ?n]]"
+            ),
+            "car"
+        );
+        // Through a tempid, and an existing ident upserting the same way.
+        tx(s, r#"[{:db/id "t" :db/ident :color/other :c/name "lake"}]"#);
+        tx(s, r#"[{:db/id "u" :db/ident :color/third :c/name "lake"}]"#);
+        let lake = q(s, r#"[:find ?e . :where [?e :c/name "lake"]]"#)
+            .as_i64()
+            .unwrap();
+        assert_eq!(ident_entid(s, ":color/third"), Some(lake));
+        assert_eq!(ident_entid(s, ":color/other"), None, "renamed");
+        // An ident another entity holds still can't be taken this way.
+        let err = tx_err(s, r#"[{:db/ident :color/third :c/name "sea"}]"#);
+        assert!(err.contains("Conflicting upsert"), "{err}");
+        assert_eq!(ident_entid(s, ":color/third"), Some(lake));
+        // The transaction never upserts, through :db/ident either.
+        let err = tx_err(s, r#"[{:db/id "datomic.tx" :db/ident :color/third}]"#);
+        assert!(err.contains(":db/ident of entity"), "{err}");
+        assert_eq!(ident_entid(s, ":color/third"), Some(lake));
+    }
+
+    #[pg_test]
+    fn ident_new_ident_on_an_upserted_entity() {
+        setup("default");
+        new_ident_on_an_upserted_entity("default");
+    }
+
+    #[pg_test]
+    fn ident_new_ident_on_an_upserted_entity_named_store() {
+        setup("id415u");
+        new_ident_on_an_upserted_entity("id415u");
+    }
+
     /// Two maps that name one new ident are one entity.
     #[pg_test]
     fn ident_new_ident_twice_in_one_transaction() {
