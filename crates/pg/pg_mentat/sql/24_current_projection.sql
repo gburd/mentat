@@ -139,6 +139,30 @@ CREATE INDEX IF NOT EXISTS idx_current_uuid_tx    ON mentat.current_uuid    (sto
 CREATE INDEX IF NOT EXISTS idx_current_bytes_tx   ON mentat.current_bytes   (store_id, tx);
 CREATE INDEX IF NOT EXISTS idx_current_boolean_tx ON mentat.current_boolean (store_id, tx);
 
+-- Multi-tenant Row-Level Security, as on the nine log tables
+-- (sql/10_narrow_storage.sql): the same policy on each projection table,
+-- inert until mentat.enable_multi_tenant_rls(true) enables RLS on all
+-- eighteen. Current-time reads (edn_q, current(), the datom_* helpers) read
+-- these tables, so without it a tenant saw every store's current values.
+DO $rls$
+DECLARE
+    ty TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');  -- see sql/10_narrow_storage.sql
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOREACH ty IN ARRAY ARRAY['ref', 'long', 'text', 'double', 'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP
+        EXECUTE pg_catalog.format('DROP POLICY IF EXISTS %I ON mentat.%I', 'store_isolation_current_' || ty,
+                                  'current_' || ty);
+        EXECUTE pg_catalog.format(
+            'CREATE POLICY %I ON mentat.%I '
+            'USING (store_id = mentat.current_store_id()) '
+            'WITH CHECK (store_id = mentat.current_store_id())',
+            'store_isolation_current_' || ty, 'current_' || ty);
+        EXECUTE pg_catalog.format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', 'current_' || ty);
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END $rls$;
+
 -- These tables take in-place upserts; keep autovacuum aggressive so the
 -- HOT-pruning + dead-tuple reclaim keeps pace with churn.
 DO $$

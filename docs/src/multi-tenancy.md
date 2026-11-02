@@ -205,7 +205,8 @@ look up its truncated schema with
 ## Row-Level Security over `store_id` (shared `mentat` tables)
 
 pg_mentat also ships with optional per-store Row-Level Security (RLS) for the
-nine narrow datom tables (`mentat.datoms_<type>_new`). When armed, every
+nine narrow datom tables (`mentat.datoms_<type>_new`) and their nine
+current-state projections (`mentat.current_<type>`, since 1.19.0). When armed, every
 SELECT, INSERT, UPDATE, and DELETE against those tables is automatically
 filtered by `store_id = mentat.current_store_id()`, where
 `mentat.current_store_id()` reads the session GUC
@@ -254,13 +255,18 @@ overhead. Two steps arm it:
    SELECT mentat.enable_multi_tenant_rls(true);
    ```
 
-   This calls `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on all nine
-   narrow tables in one transaction and returns `9`.
+   This calls `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on the nine
+   narrow tables and the nine `current_<type>` tables in one transaction
+   and returns `18`. Before 1.19.0 it armed only the nine log tables
+   (and returned `9`), and current-time reads (`edn_q`, `mentat.current()`,
+   the `datom_*` helpers), which read the projections, were not filtered;
+   `ALTER EXTENSION pg_mentat UPDATE` arms the projections wherever the log
+   tables are armed.
 
 To disarm:
 
 ```sql
-SELECT mentat.enable_multi_tenant_rls(false);  -- DISABLE ROW LEVEL SECURITY on all nine tables
+SELECT mentat.enable_multi_tenant_rls(false);  -- DISABLE ROW LEVEL SECURITY on all eighteen tables
 ALTER SYSTEM SET mentat.enable_multi_tenant_rls = off;
 SELECT pg_reload_conf();
 ```
@@ -391,7 +397,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE
    ON mentat.datoms_ref_new, mentat.datoms_long_new, mentat.datoms_text_new,
       mentat.datoms_double_new, mentat.datoms_instant_new,
       mentat.datoms_keyword_new, mentat.datoms_uuid_new,
-      mentat.datoms_bytes_new, mentat.datoms_boolean_new
+      mentat.datoms_bytes_new, mentat.datoms_boolean_new,
+      mentat.current_ref, mentat.current_long, mentat.current_text,
+      mentat.current_double, mentat.current_instant,
+      mentat.current_keyword, mentat.current_uuid,
+      mentat.current_bytes, mentat.current_boolean
    TO tenant_alice, tenant_bob;
 
 ALTER ROLE tenant_alice

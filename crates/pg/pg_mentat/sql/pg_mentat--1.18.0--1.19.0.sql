@@ -1338,6 +1338,75 @@ END
 $graphviews$;
 
 -- ---------------------------------------------------------------------------
+-- Multi-tenant Row-Level Security on the current_<type> projections. Since
+-- 1.18.0 edn_q's current-time reads, and now current() and the datom_*
+-- helpers too, read these tables, which had no policy: with
+-- enable_multi_tenant_rls(true) armed, a tenant read every store's current
+-- values. They get the policy the log tables have (sql/24_current_projection.sql),
+-- enable_multi_tenant_rls toggles all eighteen tables (sql/10_narrow_storage.sql),
+-- and where the log has RLS enabled now, so does the projection. Enabling
+-- it takes an ACCESS EXCLUSIVE lock on each table, briefly.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.enable_multi_tenant_rls(enable BOOLEAN)
+RETURNS INT AS $$
+DECLARE
+    t TEXT;
+    n INT := 0;
+    narrow_tables TEXT[] := ARRAY[
+        'datoms_ref_new', 'datoms_long_new', 'datoms_text_new',
+        'datoms_double_new', 'datoms_instant_new', 'datoms_keyword_new',
+        'datoms_uuid_new', 'datoms_bytes_new', 'datoms_boolean_new',
+        'current_ref', 'current_long', 'current_text',
+        'current_double', 'current_instant', 'current_keyword',
+        'current_uuid', 'current_bytes', 'current_boolean'
+    ];
+BEGIN
+    FOREACH t IN ARRAY narrow_tables LOOP
+        IF enable THEN
+            EXECUTE format('ALTER TABLE mentat.%I ENABLE ROW LEVEL SECURITY', t);
+        ELSE
+            EXECUTE format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', t);
+        END IF;
+        n := n + 1;
+    END LOOP;
+    RETURN n;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION mentat.enable_multi_tenant_rls(boolean) IS
+  'Toggle Row-Level Security on the nine narrow datom tables and the nine '
+  'current_<type> projection tables. '
+  'Pass true to enforce per-store isolation (queries are filtered by '
+  'store_id = mentat.current_store_id()); pass false to disable enforcement '
+  'and revert to single-store behaviour. Returns the number of tables '
+  'affected (always 18 on success; 9 before 1.19.0). Pair with the mentat.enable_multi_tenant_rls '
+  'GUC, which signals operator intent at the session/role level.';
+
+DO $rls$
+DECLARE
+    ty TEXT;
+    armed BOOLEAN;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOREACH ty IN ARRAY ARRAY['ref', 'long', 'text', 'double', 'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP
+        EXECUTE pg_catalog.format('DROP POLICY IF EXISTS %I ON mentat.%I', 'store_isolation_current_' || ty,
+                                  'current_' || ty);
+        EXECUTE pg_catalog.format(
+            'CREATE POLICY %I ON mentat.%I '
+            'USING (store_id = mentat.current_store_id()) '
+            'WITH CHECK (store_id = mentat.current_store_id())',
+            'store_isolation_current_' || ty, 'current_' || ty);
+        armed := (SELECT c.relrowsecurity FROM pg_class c
+                   WHERE c.oid = pg_catalog.format('mentat.%I', 'datoms_' || ty || '_new')::regclass);
+        EXECUTE pg_catalog.format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', 'current_' || ty,
+                                  CASE WHEN armed THEN 'ENABLE' ELSE 'DISABLE' END);
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$rls$;
+
+-- ---------------------------------------------------------------------------
 -- bm25-match reads the default store's current_text (#395), so
 -- create_fts_index builds its pg_fts index there, and the indexes it built
 -- on datoms_text_new (named mentat_fts_<entid>, partial on a = <entid> AND

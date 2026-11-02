@@ -647,4 +647,93 @@ mod tests {
         }
         verify_clean();
     }
+
+    // With enable_multi_tenant_rls(true) the log tables were filtered by
+    // store_id but the current_<type> projections were not, and current-time
+    // reads (edn_q, current(), datom_text_like) read the projections: a
+    // tenant saw another store's current values. Each read now shows a
+    // tenant what the log shows it. Also the 1.19.0 upgrade's block, which
+    // arms the projections where the log is armed.
+    #[pg_test]
+    fn pg_test_proj_rls_covers_the_projection() {
+        setup();
+        schema();
+        Spi::run("SELECT edn_t('[{:p/email \"zed@x.io\" :p/name \"Zed\"}]'::TEXT)").expect("tx");
+        let z = email_eid("zed@x.io");
+        let name = Spi::get_one::<i64>("SELECT mentat.attr_id(':p/name')")
+            .unwrap()
+            .unwrap();
+        Spi::run(
+            "CREATE ROLE proj_tenant NOSUPERUSER NOBYPASSRLS; \
+             GRANT USAGE ON SCHEMA mentat TO proj_tenant; \
+             GRANT SELECT ON ALL TABLES IN SCHEMA mentat TO proj_tenant",
+        )
+        .expect("role");
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let block = &upgrade[upgrade.find("DO $rls$").unwrap()..];
+        let block = &block[..block.find("$rls$;").unwrap() + "$rls$;".len()];
+        for round in ["install", "upgrade"] {
+            if round == "upgrade" {
+                // What 1.18.0 had: the log armed, the projections without a policy.
+                Spi::run("SELECT mentat.enable_multi_tenant_rls(false)").expect("off");
+                Spi::run(
+                    "DO $d$ DECLARE t TEXT; BEGIN FOREACH t IN ARRAY ARRAY['ref', 'long', 'text', 'double', \
+                       'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP \
+                       EXECUTE format('DROP POLICY store_isolation_current_%s ON mentat.current_%s', t, t); \
+                       EXECUTE format('ALTER TABLE mentat.datoms_%s_new ENABLE ROW LEVEL SECURITY', t); \
+                     END LOOP; END $d$",
+                )
+                .expect("1.18 state");
+                Spi::run(block).expect("upgrade");
+            } else {
+                assert_eq!(
+                    Spi::get_one::<i32>("SELECT mentat.enable_multi_tenant_rls(true)")
+                        .unwrap()
+                        .unwrap(),
+                    18
+                );
+            }
+            for (tenant, sees) in [("0", true), ("1", false)] {
+                Spi::run(&format!(
+                    "SET LOCAL ROLE proj_tenant; SET LOCAL mentat.current_store_id = '{tenant}'"
+                ))
+                .expect("tenant");
+                let log = Spi::get_one::<i64>(&format!(
+                    "SELECT count(*) FROM mentat.datoms_text_new WHERE e = {z}"
+                ))
+                .unwrap()
+                .unwrap();
+                let current =
+                    Spi::get_one::<String>(&format!("SELECT mentat.current({z}, {name})")).unwrap();
+                let proj = Spi::get_one::<i64>(&format!(
+                    "SELECT count(*) FROM mentat.current_text WHERE e = {z}"
+                ))
+                .unwrap()
+                .unwrap();
+                let like = Spi::get_one::<i64>(
+                    "SELECT count(*) FROM mentat.datom_text_like(':p/name', 'Zed')",
+                )
+                .unwrap()
+                .unwrap();
+                let q = Spi::get_one::<pgrx::JsonB>(
+                    "SELECT edn_q('[:find ?n :where [?e :p/name ?n]]', '{}'::jsonb)",
+                )
+                .unwrap()
+                .map(|j| j.0.to_string())
+                .unwrap_or_default();
+                Spi::run("RESET ROLE; RESET mentat.current_store_id").expect("reset");
+                assert_eq!(log > 0, sees, "{round} {tenant}: log");
+                assert_eq!(current.is_some(), sees, "{round} {tenant}: current()");
+                assert_eq!(proj > 0, sees, "{round} {tenant}: current_text");
+                assert_eq!(like > 0, sees, "{round} {tenant}: datom_text_like");
+                assert_eq!(q.contains("Zed"), sees, "{round} {tenant}: edn_q {q}");
+            }
+        }
+        assert_eq!(
+            Spi::get_one::<i32>("SELECT mentat.enable_multi_tenant_rls(false)")
+                .unwrap()
+                .unwrap(),
+            18
+        );
+    }
 }
