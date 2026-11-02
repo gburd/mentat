@@ -768,6 +768,8 @@ mod entid_collision_tests;
 mod entity_lifecycle_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod entity_tests;
+#[cfg(any(test, feature = "pg_test"))]
+mod enum_ident_tests;
 pub mod error;
 #[cfg(any(test, feature = "pg_test"))]
 mod error_handling_tests;
