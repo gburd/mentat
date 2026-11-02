@@ -1189,6 +1189,155 @@ FROM mentat.stores s
 ORDER BY s.store_name;
 
 -- ---------------------------------------------------------------------------
+-- create_vertex_view / create_edge_view (sql/19_pg19_graph_helpers.sql)
+-- make views over the current_<type> projection, like the views above: a
+-- vertex or edge is what an entity has now. Same bodies as the install
+-- source. The views they made before (mentat.v_<attr> / mentat.e_<attr>, over
+-- the log with `AND added`) are made again with them, keeping their owner,
+-- grants and options: only a view whose definition is exactly what 1.18 made
+-- for the attribute its name is for, so a view of that name the installing
+-- role wrote itself is left alone. Columns are unchanged.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.create_vertex_view(attr_ident TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_entid BIGINT;
+    v_view TEXT;
+    v_type TEXT;
+    v_table TEXT;
+BEGIN
+    SELECT entid, value_type::text INTO v_entid, v_type
+        FROM mentat.schema WHERE ident = attr_ident;
+    IF v_entid IS NULL THEN
+        RAISE EXCEPTION ':db.error/unknown-attribute Attribute % is not registered.', attr_ident;
+    END IF;
+    v_view := mentat._pg19_vertex_view_name(attr_ident);
+
+    -- Map value_type to the current-state projection table.
+    v_table := CASE v_type
+        WHEN 'string'  THEN 'current_text'
+        WHEN 'keyword' THEN 'current_keyword'
+        WHEN 'long'    THEN 'current_long'
+        WHEN 'ref'     THEN 'current_ref'
+        WHEN 'double'  THEN 'current_double'
+        WHEN 'boolean' THEN 'current_boolean'
+        WHEN 'instant' THEN 'current_instant'
+        WHEN 'uuid'    THEN 'current_uuid'
+        WHEN 'bytes'   THEN 'current_bytes'
+        ELSE NULL
+    END;
+    IF v_table IS NULL THEN
+        RAISE EXCEPTION ':db.error/fn-arg attribute % has unsupported value_type %.',
+            attr_ident, v_type;
+    END IF;
+
+    EXECUTE format(
+        'CREATE OR REPLACE VIEW mentat.%I AS ' ||
+        'SELECT e, v::TEXT AS label FROM mentat.%I WHERE store_id = 0 AND a = %s',
+        v_view, v_table, v_entid
+    );
+    RETURN 'mentat.' || v_view;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mentat.create_edge_view(attr_ident TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_entid BIGINT;
+    v_view TEXT;
+    v_type TEXT;
+BEGIN
+    SELECT entid, value_type::text INTO v_entid, v_type
+        FROM mentat.schema WHERE ident = attr_ident;
+    IF v_entid IS NULL THEN
+        RAISE EXCEPTION ':db.error/unknown-attribute Attribute % is not registered.', attr_ident;
+    END IF;
+    IF v_type <> 'ref' THEN
+        RAISE EXCEPTION ':db.error/fn-arg attribute % must be :db.type/ref to be used as an edge (got type %).',
+            attr_ident, v_type;
+    END IF;
+    v_view := mentat._pg19_edge_view_name(attr_ident);
+
+    EXECUTE format(
+        'CREATE OR REPLACE VIEW mentat.%I AS ' ||
+        'SELECT (e * 100000 + v) AS id, e AS src, v AS dst, %L AS label ' ||
+        'FROM mentat.current_ref WHERE store_id = 0 AND a = %s',
+        v_view, attr_ident, v_entid
+    );
+    RETURN 'mentat.' || v_view;
+END;
+$$;
+
+DO $graphviews$
+DECLARE
+    v RECORD;
+    old_sql TEXT;
+    same BOOLEAN;
+    member BOOLEAN;
+    ext OID;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    ext := (SELECT e.oid FROM pg_extension e WHERE e.extname = 'pg_mentat');
+    FOR v IN
+        SELECT c.oid, c.relname, c.reloptions, s.entid, s.ident, s.value_type::TEXT AS vt,
+               c.relname = mentat._pg19_edge_view_name(s.ident) AS edge
+          FROM pg_class c
+          JOIN mentat.schema s ON c.relname IN (mentat._pg19_vertex_view_name(s.ident),
+                                                mentat._pg19_edge_view_name(s.ident))
+         WHERE c.relnamespace = 'mentat'::regnamespace AND c.relkind = 'v'
+         ORDER BY c.relname
+    LOOP
+        CONTINUE WHEN v.edge AND v.vt <> 'ref';
+        CONTINUE WHEN v.vt NOT IN ('string', 'keyword', 'long', 'ref', 'double', 'boolean', 'instant',
+                                   'uuid', 'bytes');
+        -- The statement 1.18 ran, made again as a temporary view: the two
+        -- deparse alike only if the view is what 1.18 made.
+        old_sql := CASE WHEN v.edge THEN
+                pg_catalog.format('SELECT (e * 100000 + v) AS id, e AS src, v AS dst, %L AS label '
+                                  'FROM mentat.datoms_ref_new WHERE a = %s AND added', v.ident, v.entid)
+            ELSE
+                pg_catalog.format('SELECT e, v::TEXT AS label FROM mentat.%I WHERE a = %s AND added',
+                                  'datoms_' || CASE v.vt WHEN 'string' THEN 'text' ELSE v.vt END || '_new',
+                                  v.entid)
+            END;
+        EXECUTE 'CREATE TEMPORARY VIEW pg_mentat_upgrade_graph_view AS ' || old_sql;
+        same := pg_catalog.pg_get_viewdef(v.oid)
+                = pg_catalog.pg_get_viewdef('pg_temp.pg_mentat_upgrade_graph_view'::regclass);
+        DROP VIEW pg_temp.pg_mentat_upgrade_graph_view;
+        CONTINUE WHEN NOT same;
+        member := EXISTS (SELECT 1 FROM pg_depend d
+                           WHERE d.classid = 'pg_class'::regclass AND d.objid = v.oid
+                             AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext
+                             AND d.deptype = 'e');
+        IF NOT member THEN
+            EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat ADD VIEW mentat.%I', v.relname);
+        END IF;
+        IF v.edge THEN
+            PERFORM mentat.create_edge_view(v.ident);
+        ELSE
+            PERFORM mentat.create_vertex_view(v.ident);
+        END IF;
+        -- CREATE OR REPLACE VIEW resets the view's options (security_invoker, ...).
+        IF v.reloptions IS NOT NULL THEN
+            EXECUTE pg_catalog.format('ALTER VIEW mentat.%I SET (%s)', v.relname,
+                (SELECT pg_catalog.string_agg(pg_catalog.format('%I = %L', pg_catalog.split_part(o, '=', 1),
+                                                                pg_catalog.substr(o, pg_catalog.strpos(o, '=') + 1)), ', ')
+                   FROM pg_catalog.unnest(v.reloptions) AS o));
+        END IF;
+        IF NOT member THEN
+            EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat DROP VIEW mentat.%I', v.relname);
+        END IF;
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$graphviews$;
+
+-- ---------------------------------------------------------------------------
 -- bm25-match reads the default store's current_text (#395), so
 -- create_fts_index builds its pg_fts index there, and the indexes it built
 -- on datoms_text_new (named mentat_fts_<entid>, partial on a = <entid> AND

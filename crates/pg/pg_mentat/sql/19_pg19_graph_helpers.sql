@@ -49,9 +49,12 @@ $$;
 -- as the vertex key and the value as a vertex property.
 --
 -- Example: mentat.create_vertex_view(':person/name')
--- creates view mentat.v_person_name AS
---   SELECT e, v AS label FROM mentat.datoms_text_new
---   WHERE a = <entid for :person/name> AND added.
+-- creates view mentat.v__person_name AS
+--   SELECT e, v::TEXT AS label FROM mentat.current_text
+--   WHERE store_id = 0 AND a = <entid for :person/name>
+-- over the current-state projection: the values entities have now, not a
+-- replaced or retracted one (the log keeps those). Views made before
+-- 1.19.0 read the log; the 1.19.0 upgrade replaces them.
 CREATE OR REPLACE FUNCTION mentat.create_vertex_view(attr_ident TEXT)
 RETURNS TEXT
 LANGUAGE plpgsql
@@ -69,17 +72,17 @@ BEGIN
     END IF;
     v_view := mentat._pg19_vertex_view_name(attr_ident);
 
-    -- Map value_type to the narrow storage table.
+    -- Map value_type to the current-state projection table.
     v_table := CASE v_type
-        WHEN 'string'  THEN 'datoms_text_new'
-        WHEN 'keyword' THEN 'datoms_keyword_new'
-        WHEN 'long'    THEN 'datoms_long_new'
-        WHEN 'ref'     THEN 'datoms_ref_new'
-        WHEN 'double'  THEN 'datoms_double_new'
-        WHEN 'boolean' THEN 'datoms_boolean_new'
-        WHEN 'instant' THEN 'datoms_instant_new'
-        WHEN 'uuid'    THEN 'datoms_uuid_new'
-        WHEN 'bytes'   THEN 'datoms_bytes_new'
+        WHEN 'string'  THEN 'current_text'
+        WHEN 'keyword' THEN 'current_keyword'
+        WHEN 'long'    THEN 'current_long'
+        WHEN 'ref'     THEN 'current_ref'
+        WHEN 'double'  THEN 'current_double'
+        WHEN 'boolean' THEN 'current_boolean'
+        WHEN 'instant' THEN 'current_instant'
+        WHEN 'uuid'    THEN 'current_uuid'
+        WHEN 'bytes'   THEN 'current_bytes'
         ELSE NULL
     END;
     IF v_table IS NULL THEN
@@ -89,7 +92,7 @@ BEGIN
 
     EXECUTE format(
         'CREATE OR REPLACE VIEW mentat.%I AS ' ||
-        'SELECT e, v::TEXT AS label FROM mentat.%I WHERE a = %s AND added',
+        'SELECT e, v::TEXT AS label FROM mentat.%I WHERE store_id = 0 AND a = %s',
         v_view, v_table, v_entid
     );
     RETURN 'mentat.' || v_view;
@@ -97,9 +100,9 @@ END;
 $$;
 
 -- Materialize an edge view for a ref-type attribute. Edges connect
--- entity (e) to entity (v_ref) via the named attribute. The view
--- exposes (id BIGSERIAL, src BIGINT, dst BIGINT, label TEXT) so
--- SQL/PGQ can use it as an edge table.
+-- entity (e) to entity (v_ref) via the named attribute, as they are now
+-- (mentat.current_ref). The view exposes (id BIGSERIAL, src BIGINT,
+-- dst BIGINT, label TEXT) so SQL/PGQ can use it as an edge table.
 CREATE OR REPLACE FUNCTION mentat.create_edge_view(attr_ident TEXT)
 RETURNS TEXT
 LANGUAGE plpgsql
@@ -123,7 +126,7 @@ BEGIN
     EXECUTE format(
         'CREATE OR REPLACE VIEW mentat.%I AS ' ||
         'SELECT (e * 100000 + v) AS id, e AS src, v AS dst, %L AS label ' ||
-        'FROM mentat.datoms_ref_new WHERE a = %s AND added',
+        'FROM mentat.current_ref WHERE store_id = 0 AND a = %s',
         v_view, attr_ident, v_entid
     );
     RETURN 'mentat.' || v_view;
