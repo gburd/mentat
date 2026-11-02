@@ -23,7 +23,8 @@ const MAX_VIEW_NAME_LEN: usize = 58;
 /// A view's store: "default" (the default store, schema `mentat`) or a
 /// name create_store() accepts. validate_store_name alone refuses
 /// "default", so before 1.19.0 materialize('default', ...) always failed.
-fn validate_view_store(store_name: &str) -> Result<(), MentatError> {
+/// subscribe / unsubscribe take the same.
+pub(crate) fn validate_view_store(store_name: &str) -> Result<(), MentatError> {
     if store_name == "default" {
         return Ok(());
     }
@@ -125,16 +126,17 @@ fn matview_exists(store_name: &str, view_name: &str) -> Result<bool, pgrx::spi::
 ///
 /// The view sits in the same schema as the datoms view that fires the
 /// trigger. The schema is taken from TG_TABLE_SCHEMA at run time, not baked
-/// in, so rename_store doesn't break it.
+/// in, so rename_store doesn't break it. It runs as the writer, so its path
+/// is pinned and format() qualified (#383).
 fn refresh_trigger_function_sql(schema: &str, view_name: &str) -> String {
     let func_name = format!("{}.mentat_matview_refresh_{}", schema, view_name);
 
     format!(
         r"
 CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    EXECUTE format('REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, '{view_name}');
+    EXECUTE pg_catalog.format('REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, '{view_name}');
     RETURN NULL;
 END;
 $$;
@@ -598,6 +600,12 @@ mod tests {
         assert!(sql.contains("mentat.mentat_matview_refresh_people_cache"));
         assert!(sql.contains("REFRESH MATERIALIZED VIEW %I.%I', TG_TABLE_SCHEMA, 'people_cache'"));
         assert!(sql.contains("RETURNS trigger"));
+        // Runs as the writer: a pinned path, format() qualified (#383).
+        assert!(
+            sql.contains("SET search_path = pg_catalog, pg_temp"),
+            "{sql}"
+        );
+        assert!(sql.contains("EXECUTE pg_catalog.format("), "{sql}");
     }
 
     #[test]

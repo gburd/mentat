@@ -357,17 +357,43 @@ next transaction on the store sends a new one.
 
 ## Subscription Functions
 
-### `mentat.subscribe(store, name, query)`
+### `mentat.subscribe(store, name, query [, token_only])`
 
-Subscribe to changes matching a Datalog query pattern. Uses PostgreSQL `LISTEN`/`NOTIFY`.
+Subscribe to changes matching a Datalog query pattern. Uses PostgreSQL `LISTEN`/`NOTIFY`:
+the channel is `mentat_<name>`. After each write to the store whose result
+differs from the last one this session sent, the payload is the query
+result as JSON. PostgreSQL limits a payload to just under 8000 bytes; a
+larger result is sent as a token instead (`{"tx": T, "hash": H,
+"too_large": true}`, see below), so the write still succeeds and the
+listener re-runs the query.
 
 ```sql
 SELECT mentat.subscribe('default', 'new_people',
   '[:find ?e :where [?e :person/name]]');
 
 -- In another session:
-LISTEN mentat_subscription_new_people;
+LISTEN mentat_new_people;
 ```
+
+**Who receives it.** PostgreSQL has no access control on `LISTEN`: every
+role that can connect to the database can `LISTEN mentat_<name>` and gets
+every payload, whatever its privileges on the store. So the query result
+reaches roles that have no `USAGE` on the store's schema. To keep it to
+the roles that can read the store, subscribe with `token_only => true`:
+
+```sql
+SELECT mentat.subscribe('acme', 'payroll', '[:find ?n :where [_ :p/name ?n]]',
+  token_only => true);
+-- payload: {"tx": 1000000000105, "hash": "9a0364b9e99bb480dd25e1f0284c8555"}
+```
+
+The payload is then `{"tx": T, "hash": H}`: `tx` is the id of the
+transaction's last `t()` / `edn_t()` on this store, `hash` the md5 of the
+result's JSON text. `tx` is null when the write was a plain statement on
+the store's `datoms` view in a transaction that called neither on this
+store. The listener re-runs the query itself, with its
+own privileges. The channel name, and so the subscription name, is still
+visible to every listener.
 
 ### `mentat.unsubscribe(store, name)`
 

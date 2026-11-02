@@ -61,6 +61,14 @@ case, because its channel (`mentat_<name>`) does: `subscribe` refuses a
 name that any store already uses in any case (a unique index on
 `lower(name)` in `mentat.subscriptions` enforces it).
 
+Schema privileges do not cover subscription payloads. PostgreSQL has no
+access control on `LISTEN`, so every role that can connect to the database
+can `LISTEN mentat_<name>` and receive every payload, which by default is
+the query result: a role with no `USAGE` on `mentat_acme` still gets the
+results of `subscribe('acme', ...)`. Subscribe with `token_only => true` to
+send only `{"tx": T, "hash": H}`, and have listeners re-run the query with
+their own privileges (see `subscribe` in [SQL functions](sql-functions.md)).
+
 **Permissions.** The role that calls `create_store` owns the new schema and
 everything in it. Every role with a privilege on the default store's
 `mentat` schema or its tables gets the same privilege on the new store's,

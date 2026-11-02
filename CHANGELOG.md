@@ -10,6 +10,10 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **pg_mentat: `subscribe(store, name, query, token_only => true)`** (#379)
+  sends `{"tx": T, "hash": H}` instead of the result, so listeners re-run
+  the query with their own privileges. `tx` is the current transaction's
+  `t()` / `edn_t()` on that store, or null when it called neither.
 - **Embedded engine and DuckDB: `count-distinct` (#394).** It failed with "not
   yet implemented: complex aggregates". A variable that can hold values of
   several types counts each value and type together, so 5 and 5.0 (or a ref
@@ -17,6 +21,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: subscriptions and `on_write` materialized views created
+  before 1.19.0 keep their old trigger bodies**, which don't pin
+  `search_path` (#383). The upgrade doesn't regenerate them (their query
+  text is in a table the installing role can write); it raises a WARNING
+  naming each such trigger function. To pick up the fix, run `unsubscribe`
+  then `subscribe` again, or `drop_matview` then `materialize(...,
+  'on_write')`.
 - **pg_mentat: an `:in` value that identifies no entity matches nothing.**
   A lookup ref nobody holds, an unknown ident, or a string in an entity
   input used to drop its constraint, so the query matched every entity.
@@ -32,6 +43,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: a subscription result over PostgreSQL's NOTIFY limit made
+  every write to the store fail** (#400). It is sent as a token with
+  `"too_large": true`.
+- **pg_mentat: a subscription query containing `$$` couldn't be subscribed**
+  (#383).
+- **pg_mentat: `subscribe('default', …)` and `unsubscribe('default', …)`
+  were refused** as a reserved store name.
+- **pg_mentat: the 1.19.0 upgrade deletes subscription and materialized-view
+  rows left by 1.17's `drop_store`** (#380), and `rename_store` explains
+  such rows instead of a raw duplicate-key error.
+- **pg_mentat: the 1.19.0 upgrade drops the fulltext and trigram indexes 1.17
+  named stores created on the default store's tables** (#381).
+- **pg_mentat: `mentat.refresh_datalog_view` couldn't be called on any
+  PostgreSQL version** (#398). Its second parameter is now `p_concurrently`.
+- **Docs: a subscription's channel is `mentat_<name>`**, not
+  `mentat_subscription_<name>`.
 - **pg_mentat: `entity(store, eid)` showed every value ever asserted** (#374):
   replaced, retracted and all cardinality-one history. It shows the current
   values. A lookup ref in `:in` inputs resolved to an entity that had given
@@ -82,6 +109,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **pg_mentat: generated subscription and `on_write` view trigger functions
+  pin `search_path` and qualify every call** (#383), so a function of the
+  same name in a schema earlier on the writer's path is not called instead.
+  See Changed for existing subscriptions and views.
+- **pg_mentat: NOTIFY payloads reach every role that can connect and
+  LISTEN**, whatever its privileges on the store; this is now documented,
+  and `token_only` subscriptions avoid sending results (#379).
 - **pg_mentat: any role that could call `edn_q` could crash the backend, and
   restart every session, through the plan cache** (#399).
 - **pg_mentat: excised data stayed readable through queries** (#396).

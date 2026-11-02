@@ -608,7 +608,15 @@ mod tests {
 
     /// The upgrade's `DO $tag$ ... $tag$;` block, @extschema@ resolved.
     fn upgrade_block(tag: &str) -> String {
-        let script = include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql");
+        script_block(include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql"), tag)
+    }
+
+    /// The 1.18.0 -> 1.19.0 upgrade's `DO $tag$ ... $tag$;` block.
+    fn upgrade_119_block(tag: &str) -> String {
+        script_block(include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql"), tag)
+    }
+
+    fn script_block(script: &str, tag: &str) -> String {
         let (open, close) = (format!("DO ${tag}$"), format!("${tag}$;"));
         let start = script.find(&open).expect("DO block");
         let end = script[start..].find(&close).expect("DO block end") + start;
@@ -1787,8 +1795,6 @@ mod tests {
             "SELECT mentat.create_datalog_materialized_view('mvp_d', '{pull_q}')"
         ))
         .expect("create_datalog_materialized_view");
-        // (mentat.refresh_datalog_view doesn't compile: `concurrently` is a
-        // keyword in its IF.)
         Spi::run("REFRESH MATERIALIZED VIEW mvp_d").expect("refresh mvp_d");
         Spi::run("SELECT mentat.drop_datalog_view('mvp_d', false, true)")
             .expect("drop_datalog_view");
@@ -2017,6 +2023,624 @@ mod tests {
         Spi::run("SELECT drop_store('fp_s')").expect("drop");
     }
 
+    // The trigger functions subscribe() and materialize(..., 'on_write')
+    // generate run as the writer, and had no pinned search_path: a q(), md5()
+    // or format() in a schema ahead of pg_mentat's (or of pg_catalog, when
+    // the path names it) on the writer's path was called instead of
+    // pg_mentat's / pg_catalog's (#383).
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn generated_triggers_pin_the_search_path() {
+        setup();
+        Spi::run("SELECT create_store('sp_s')").expect("create");
+        tx("sp_s", SCHEMA_TX);
+        tx("sp_s", "[{:p/name \"one\"}]");
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        Spi::run(&format!("SELECT subscribe('sp_s', 'sp_names', '{query}')")).expect("subscribe");
+        Spi::run(
+            "SELECT materialize('sp_s', 'sp_mv', '[:find ?n :where [_ :p/name ?n]]', 'on_write')",
+        )
+        .expect("materialize");
+        Spi::run(
+            "CREATE TABLE public.sp_hits (f TEXT); CREATE SCHEMA sp_other; \
+             CREATE FUNCTION sp_other.q(TEXT, TEXT, JSONB) RETURNS JSONB LANGUAGE sql AS \
+               $$ INSERT INTO public.sp_hits VALUES ('q') RETURNING '{}'::jsonb $$; \
+             CREATE FUNCTION sp_other.md5(TEXT) RETURNS TEXT LANGUAGE sql AS \
+               $$ INSERT INTO public.sp_hits VALUES ('md5') RETURNING 'x' $$; \
+             CREATE FUNCTION sp_other.format(TEXT, NAME, TEXT) RETURNS TEXT LANGUAGE sql AS \
+               $$ INSERT INTO public.sp_hits VALUES ('format') RETURNING 'SELECT 1' $$",
+        )
+        .expect("functions in another schema");
+        Spi::run("SET search_path TO sp_other, pg_catalog, mentat, public").expect("path");
+        tx("sp_s", "[{:p/name \"two\"}]");
+        Spi::run("SET search_path TO mentat, public").expect("path back");
+        let hits = json("SELECT coalesce(jsonb_agg(f), '[]') FROM public.sp_hits");
+        assert_eq!(hits, serde_json::json!([]), "called from the triggers");
+        let sent = text("SELECT current_setting('mentat.sub_hash_sp_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('sp_s', '{query}', '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        let rows = sorted(json(
+            "SELECT coalesce(jsonb_agg(n), '[]') FROM mentat_sp_s.sp_mv",
+        ));
+        assert_eq!(rows, vec!["one", "two"]);
+        for (f, store) in [
+            ("mentat_sub_sp_names", "sp_s"),
+            ("mentat_matview_refresh_sp_mv", "sp_s"),
+        ] {
+            let cfg = text(&format!(
+                "SELECT array_to_string(proconfig, ',') FROM pg_proc \
+                 WHERE proname = '{f}' AND pronamespace = 'mentat_{store}'::regnamespace"
+            ));
+            assert_eq!(cfg, "search_path=pg_catalog, pg_temp", "{f}");
+        }
+        Spi::run("SELECT drop_store('sp_s')").expect("drop");
+    }
+
+    // subscribe() put the query into a $$-quoted function body with only '
+    // doubled: a query containing $$ ended the body early, so subscribe
+    // failed with a syntax error (or ran the rest as SQL) (#383).
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_query_with_dollar_quotes() {
+        setup();
+        Spi::run("SELECT create_store('dq_s')").expect("create");
+        tx("dq_s", SCHEMA_TX);
+        let query =
+            r#"[:find [?n ...] :where [_ :p/name ?n] [(!= ?n "it's $$ a \"$mentat_sub0$\" \\")]]"#;
+        Spi::run(&format!(
+            "SELECT subscribe('dq_s', 'dq_names', $q${query}$q$)"
+        ))
+        .expect("subscribe a query containing $$");
+        tx("dq_s", "[{:p/name \"one\"}]");
+        let sent = text("SELECT current_setting('mentat.sub_hash_dq_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('dq_s', $q${query}$q$, '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        assert_eq!(
+            text("SELECT query FROM mentat.subscriptions WHERE name = 'dq_names'"),
+            query
+        );
+        Spi::run("SELECT drop_store('dq_s')").expect("drop");
+    }
+
+    // With the trigger functions' path pinned to pg_catalog, pg_temp, a
+    // find-pull subscription and a find-pull on_write view still fire on t():
+    // the generated pull() / edn_pull() call is qualified (#382, #383). The
+    // view on the default store (edn_pull) and on a named store (pull); the
+    // subscription on the named store (subscribe refuses 'default').
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn find_pull_triggers_fire_under_the_pinned_path() {
+        // Before setup(), as in default_store_view_triggers_fire_after_the_data:
+        // a default-store view's trigger goes on mentat.datoms.
+        Spi::run("LOCK TABLE mentat.datoms IN SHARE ROW EXCLUSIVE MODE").expect("lock");
+        setup();
+        Spi::run("SELECT create_store('fpt_s')").expect("create");
+        let pull_q = "[:find (pull ?e [:p/name]) :where [?e :p/name _]]";
+        tx("fpt_s", SCHEMA_TX);
+        tx("default", SCHEMA_TX);
+        Spi::run(&format!(
+            "SELECT subscribe('fpt_s', 'fpt_names', '{pull_q}')"
+        ))
+        .expect("subscribe");
+        for (store, schema) in [("default", "mentat"), ("fpt_s", "mentat_fpt_s")] {
+            Spi::run(&format!(
+                "SELECT materialize('{store}', 'fpt_mv', '{pull_q}', 'on_write')"
+            ))
+            .unwrap_or_else(|e| panic!("{store}: materialize: {e}"));
+            tx(store, &format!("[{{:p/name \"{store}-1\"}}]"));
+            let rows = sorted(json(&format!(
+                "SELECT coalesce(jsonb_agg(p), '[]') FROM \
+                 (SELECT (\"(pull ?e [ :p_name ])\")::jsonb->>':p/name' AS p FROM {schema}.fpt_mv) s"
+            )));
+            assert_eq!(rows, vec![format!("{store}-1")], "{store}");
+            Spi::run(&format!("SELECT drop_matview('{store}', 'fpt_mv')")).expect("drop_matview");
+        }
+        let sent = text("SELECT current_setting('mentat.sub_hash_fpt_names', true)");
+        let now = text(&format!(
+            "SELECT md5(q('fpt_s', '{pull_q}', '{{}}'::jsonb)::text)"
+        ));
+        assert_eq!(sent, now);
+        assert_eq!(
+            q("fpt_s", pull_q, "{}")["results"][0][0][":p/name"],
+            serde_json::json!("fpt_s-1")
+        );
+        Spi::run("SELECT drop_store('fpt_s')").expect("drop");
+    }
+
+    // subscribe / unsubscribe validated the store name as create_store does,
+    // which refuses "default": subscribe('default', ...) (the form
+    // docs/src/sql-functions.md shows) always failed with
+    // ":db.error/invalid-store-name ... 'default' is a reserved name". A
+    // default-store subscription fires on edn_t, also a find-pull one under
+    // the pinned path (#383).
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscribe_on_the_default_store() {
+        // Before setup(): the trigger goes on mentat.datoms (see
+        // default_store_view_triggers_fire_after_the_data).
+        Spi::run("LOCK TABLE mentat.datoms IN SHARE ROW EXCLUSIVE MODE").expect("lock");
+        setup();
+        tx("default", SCHEMA_TX);
+        let names_q = "[:find [?n ...] :where [_ :p/name ?n]]";
+        let pull_q = "[:find (pull ?e [:p/name]) :where [?e :p/name _]]";
+        for (sub, query) in [("sd_names", names_q), ("sd_pull", pull_q)] {
+            Spi::run(&format!("SELECT subscribe('default', '{sub}', '{query}')"))
+                .unwrap_or_else(|e| panic!("{sub}: subscribe('default', ...): {e}"));
+        }
+        Spi::run("SELECT edn_t('[{:p/name \"sd-1\"}]')").expect("edn_t");
+        for (sub, query) in [("sd_names", names_q), ("sd_pull", pull_q)] {
+            let sent = text(&format!(
+                "SELECT current_setting('mentat.sub_hash_{sub}', true)"
+            ));
+            let now = text(&format!(
+                "SELECT md5(edn_q('{query}', '{{}}'::jsonb)::text)"
+            ));
+            assert_eq!(sent, now, "{sub}");
+        }
+        let listed = json("SELECT list_subscriptions('default')");
+        assert_eq!(listed.as_array().map(|a| a.len()), Some(2), "{listed}");
+        for sub in ["sd_names", "sd_pull"] {
+            Spi::run(&format!("SELECT unsubscribe('default', '{sub}')"))
+                .unwrap_or_else(|e| panic!("{sub}: unsubscribe('default', ...): {e}"));
+        }
+        let left: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'mentat\\_sub\\_trg\\_sd\\_%'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    // 1.17's drop_store kept the store's subscription and materialized-view
+    // rows. A leftover row blocked a later store of that name: rename_store
+    // to it failed with a raw duplicate-key error, and subscribe() said
+    // "already exists" (#380). The 1.19.0 upgrade deletes rows of stores that
+    // no longer exist; rename_store explains what is in the way.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn upgrade_deletes_rows_of_dropped_stores() {
+        setup();
+        Spi::run(
+            "CREATE TABLE public.or_ran (n INT); \
+             CREATE FUNCTION public.or_trg() RETURNS trigger LANGUAGE plpgsql AS \
+               $$ BEGIN INSERT INTO public.or_ran VALUES (1); RETURN NULL; END $$; \
+             CREATE TRIGGER or_trg AFTER DELETE ON mentat.subscriptions \
+               FOR EACH STATEMENT EXECUTE FUNCTION public.or_trg(); \
+             INSERT INTO mentat.subscriptions (store_name, name, query) \
+               VALUES ('or_gone', 'or_sub1', '[:find ?e :where [?e :db/ident _]]'); \
+             INSERT INTO mentat.materialized_views (store_name, view_name, datalog_query) \
+               VALUES ('or_gone', 'or_mv', '[:find ?e :where [?e :db/ident _]]')",
+        )
+        .expect("rows a 1.17 drop_store left");
+        Spi::run("SELECT create_store('or_live')").expect("create");
+        Spi::run(
+            "SELECT subscribe('or_live', 'or_live_sub', '[:find ?e :where [?e :db/ident _]]')",
+        )
+        .expect("a live store's subscription");
+        // Same view name as the leftover: rename_store's UPDATE hit
+        // materialized_views_store_name_view_name_key.
+        Spi::run("SELECT materialize('or_live', 'or_mv', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("a live store's view");
+        Spi::run("SELECT materialize('default', 'or_dmv', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("a default-store view");
+
+        // Before the upgrade: rename_store says what is in the way.
+        let err = text("SELECT pg_temp.capture($$SELECT rename_store('or_live', 'or_gone')$$)");
+        assert!(
+            err.contains("subscriptions (or_sub1)")
+                && err.contains("materialized views (or_mv)")
+                && err.contains("left by a dropped store"),
+            "{err:?}"
+        );
+        assert_eq!(
+            text("SELECT schema_name FROM mentat.stores WHERE store_name = 'or_live'"),
+            "mentat_or_live",
+            "nothing renamed"
+        );
+
+        let block = upgrade_119_block("orphans");
+        Spi::run(&block).expect("the upgrade DO block");
+        Spi::run(&block).expect("again");
+        let left = |table: &str, store: &str| -> i64 {
+            Spi::get_one(&format!(
+                "SELECT count(*) FROM mentat.{table} WHERE store_name = '{store}'"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(left("subscriptions", "or_gone"), 0);
+        assert_eq!(left("materialized_views", "or_gone"), 0);
+        assert_eq!(
+            left("subscriptions", "or_live"),
+            1,
+            "a live store's row stays"
+        );
+        assert_eq!(
+            left("materialized_views", "default"),
+            1,
+            "the default store's row stays"
+        );
+        let ran: i64 = Spi::get_one("SELECT count(*) FROM public.or_ran")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ran, 0,
+            "a trigger on mentat.subscriptions ran during the upgrade"
+        );
+        Spi::run("DROP TRIGGER or_trg ON mentat.subscriptions").expect("drop trigger");
+        assert_eq!(
+            text("SELECT current_setting('session_replication_role')"),
+            "origin"
+        );
+
+        // A new store of that name subscribes and materializes.
+        Spi::run("SELECT create_store('or_gone')").expect("create or_gone");
+        tx("or_gone", SCHEMA_TX);
+        Spi::run("SELECT subscribe('or_gone', 'or_sub1', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("subscribe under the freed name");
+        Spi::run("SELECT materialize('or_gone', 'or_mv', '[:find ?e :where [?e :db/ident _]]')")
+            .expect("materialize under the freed name");
+        Spi::run("SELECT drop_store('or_gone')").expect("drop");
+        Spi::run("SELECT rename_store('or_live', 'or_gone')").expect("rename to the freed name");
+        assert_eq!(
+            left("subscriptions", "or_gone"),
+            1,
+            "the row followed the rename"
+        );
+        Spi::run("SELECT drop_store('or_gone')").expect("drop");
+        Spi::run("SELECT drop_matview('default', 'or_dmv')").expect("drop_matview");
+    }
+
+    // 1.17's create_store('x') made idx_x_fts_text (and with pg_trgm
+    // idx_x_trgm_text / idx_x_trgm_keyword) on the default store's
+    // mentat.datoms_text_new / datoms_keyword_new; the 1.18.0 upgrade kept
+    // them, so every default-store write kept paying for them (#381). The
+    // 1.19.0 upgrade drops them, and only them.
+    //
+    // The planted indexes go on stand-in tables (the block's two table names
+    // swapped): CREATE / DROP INDEX on the shared tables would lock them
+    // against every other test. The unchanged block then runs on the real
+    // tables, which hold no such index, and must leave them as they are.
+    #[pg_test]
+    fn upgrade_drops_old_store_indexes_on_the_default_tables() {
+        setup();
+        let indexes = |tables: &[&str]| -> Vec<String> {
+            let list = tables
+                .iter()
+                .map(|t| format!("'mentat.{t}'::regclass"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sorted(json(&format!(
+                "SELECT coalesce(jsonb_agg(c.relname::text), '[]') \
+                   FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
+                  WHERE i.indrelid IN ({list})"
+            )))
+        };
+        let real = ["datoms_text_new", "datoms_keyword_new", "datoms_long_new"];
+        let own = indexes(&real);
+        assert!(
+            own.contains(&"idx_datoms_text_new_fts".to_string()),
+            "{own:?}"
+        );
+        let long = "Ix_".to_string() + &"l".repeat(53);
+        Spi::run(&format!(
+            "INSERT INTO mentat.stores (store_name, schema_name) VALUES \
+               ('Ix_S', 'mentat_Ix_S'), ('{long}', 'mentat_{long}'); \
+             CREATE SCHEMA mentat_ix_old_pre118; \
+             CREATE TABLE mentat.ix_text (v TEXT, added BOOLEAN); \
+             CREATE TABLE mentat.ix_keyword (v TEXT, added BOOLEAN); \
+             CREATE TABLE mentat.ix_long (v BIGINT); \
+             CREATE INDEX ix_text_own ON mentat.ix_text (v); \
+             CREATE INDEX idx_ix_s_fts_text ON mentat.ix_text \
+               USING GIN (to_tsvector('english', COALESCE(v, ''))) WHERE added = true; \
+             CREATE INDEX idx_ix_s_trgm_text ON mentat.ix_text (v) WHERE added = true; \
+             CREATE INDEX idx_ix_old_trgm_keyword ON mentat.ix_keyword (v) WHERE added = true; \
+             CREATE INDEX idx_{long}_trgm_keyword ON mentat.ix_keyword (v) WHERE added = true; \
+             CREATE INDEX idx_ix_s_trgm_keyword ON mentat.ix_long (v); \
+             CREATE INDEX idx_ix_gone_fts_text ON mentat.ix_text (v) WHERE added = true"
+        ))
+        .expect("1.17-style indexes");
+        let real_block = upgrade_119_block("oldidx");
+        let mut block = real_block.clone();
+        for (from, to) in [
+            ("datoms_text_new", "ix_text"),
+            ("datoms_keyword_new", "ix_keyword"),
+        ] {
+            let from = format!("'mentat.{from}'::regclass");
+            assert_eq!(block.matches(&from).count(), 2, "{from}");
+            block = block.replace(&from, &format!("'mentat.{to}'::regclass"));
+        }
+        let warned = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace(
+                "RAISE WARNING 'pg_mentat upgrade: indexes",
+                "RAISE EXCEPTION 'pg_mentat upgrade: indexes"
+            )
+        ));
+        assert!(
+            warned.contains("indexes mentat.idx_ix_gone_fts_text on") && !warned.contains("ix_s"),
+            "{warned:?}"
+        );
+        Spi::run(&block).expect("the upgrade DO block");
+        Spi::run(&block).expect("again");
+        // An index on another table, or with a name no store gives, stays.
+        assert_eq!(
+            indexes(&["ix_text", "ix_keyword", "ix_long"]),
+            vec![
+                "idx_ix_gone_fts_text",
+                "idx_ix_s_trgm_keyword",
+                "ix_text_own"
+            ]
+        );
+        Spi::run(&real_block).expect("the upgrade DO block, as shipped");
+        assert_eq!(indexes(&real), own, "the default store's own indexes");
+        Spi::run(
+            "DROP TABLE mentat.ix_text, mentat.ix_keyword, mentat.ix_long; \
+             DROP SCHEMA mentat_ix_old_pre118; \
+             DELETE FROM mentat.stores WHERE store_name LIKE 'Ix\\_%'",
+        )
+        .expect("clean up");
+    }
+
+    // Anyone who can connect can LISTEN, so a subscription's payload (its
+    // query result) reached roles with no access to the store (#379):
+    // subscribe(..., token_only => true) sends {"tx", "hash"} instead. And a
+    // result over the NOTIFY limit made pg_notify raise in the trigger, so
+    // every t() on the store failed (#400): it is sent as a token with
+    // "too_large". Real sessions (dblink): a NOTIFY is delivered on commit.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn subscription_token_payloads() {
+        crate::ensure_extension_loaded();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run("CREATE EXTENSION IF NOT EXISTS dblink").expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        Spi::run(&format!(
+            "SELECT dblink_connect('tk_w', '{conn}'), dblink_connect('tk_l', '{conn}'), \
+                    dblink_connect('tk_w2', '{conn}')"
+        ))
+        .expect("connect");
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        let write_on = |c: &str, edn: &str| -> serde_json::Value {
+            let sql = format!("SELECT t('tk_s', '{}')", edn.replace('\'', "''"));
+            let out = text(&format!(
+                "SELECT r FROM dblink('{c}', '{}') AS x(r TEXT)",
+                sql.replace('\'', "''")
+            ));
+            serde_json::from_str(&out).expect("tx report")
+        };
+        let write = |edn: &str| write_on("tk_w", edn);
+        // (channel, payload) received by the listener, waiting up to 10 s
+        // for `n` of them.
+        let received = |n: usize| -> Vec<(String, serde_json::Value)> {
+            let mut got = Vec::new();
+            for _ in 0..200 {
+                let v = json(
+                    "SELECT coalesce(jsonb_agg(jsonb_build_array(notify_name, extra)), '[]') \
+                       FROM dblink_get_notify('tk_l')",
+                );
+                for p in v.as_array().unwrap() {
+                    got.push((
+                        p[0].as_str().unwrap().to_string(),
+                        serde_json::from_str(p[1].as_str().unwrap()).expect("JSON payload"),
+                    ));
+                }
+                if got.len() >= n {
+                    break;
+                }
+                Spi::run("SELECT pg_sleep(0.05)").unwrap();
+            }
+            got.sort_by(|a, b| a.0.cmp(&b.0));
+            got
+        };
+        on("tk_w", "SET search_path TO mentat, public");
+        on(
+            "tk_w",
+            "DO $d$ BEGIN PERFORM drop_store('tk_s'); EXCEPTION WHEN OTHERS THEN NULL; END $d$",
+        );
+        on("tk_w", "DO $d$ BEGIN PERFORM create_store('tk_s'); END $d$");
+        write(SCHEMA_TX);
+        let query = "[:find [?n ...] :where [_ :p/name ?n]]";
+        on(
+            "tk_w",
+            &format!("DO $d$ BEGIN PERFORM subscribe('tk_s', 'tk_res', '{query}'); END $d$"),
+        );
+        on(
+            "tk_w",
+            &format!(
+                "DO $d$ BEGIN PERFORM subscribe('tk_s', 'tk_tok', '{query}', token_only => true); END $d$"
+            ),
+        );
+        on("tk_l", "LISTEN mentat_tk_res");
+        on("tk_l", "LISTEN mentat_tk_tok");
+        let hash_on = |c: &str| {
+            text(&format!(
+                "SELECT h FROM dblink('{c}', $q$SELECT md5(q('tk_s', '{query}', '{{}}'::jsonb)::text)$q$) \
+                   AS x(h TEXT)"
+            ))
+        };
+        let hash = || hash_on("tk_w");
+
+        let tx1 = write("[{:p/name \"one\"}]")["db-after"]["basis-t"].clone();
+        let got = received(2);
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "mentat_tk_res".into(),
+                    serde_json::json!({"result": ["one"]})
+                ),
+                (
+                    "mentat_tk_tok".into(),
+                    serde_json::json!({"tx": tx1, "hash": hash()})
+                ),
+            ],
+            "the default payload is the result; token_only sends tx and hash"
+        );
+
+        // A result over the limit: the write succeeds, both send a token.
+        let tx2 = write(&format!("[{{:p/name \"{}\"}}]", "x".repeat(9000)))["db-after"]["basis-t"]
+            .clone();
+        assert!(tx2.as_i64().is_some(), "the write must not fail");
+        let h = hash();
+        assert_eq!(
+            received(2),
+            vec![
+                (
+                    "mentat_tk_res".into(),
+                    serde_json::json!({"tx": tx2, "hash": h, "too_large": true})
+                ),
+                (
+                    "mentat_tk_tok".into(),
+                    serde_json::json!({"tx": tx2, "hash": h})
+                ),
+            ]
+        );
+
+        // "tx" came from currval of the store's tx sequence, which is the
+        // session's last t(), not this transaction's: another session writes
+        // (tx3), then tk_w changes nothing through the view, and its trigger
+        // sees a new result and sent tk_w's old tx2 with tx3's hash.
+        let tok = |tx: serde_json::Value, h: String| {
+            vec![
+                (
+                    "mentat_tk_res".to_string(),
+                    serde_json::json!({"tx": tx, "hash": h, "too_large": true}),
+                ),
+                (
+                    "mentat_tk_tok".to_string(),
+                    serde_json::json!({"tx": tx, "hash": h}),
+                ),
+            ]
+        };
+        on("tk_w2", "SET search_path TO mentat, public");
+        let tx3 = write_on("tk_w2", "[{:p/name \"three\"}]")["db-after"]["basis-t"].clone();
+        assert_eq!(received(2), tok(tx3, hash()));
+        on("tk_w", "DELETE FROM mentat_tk_s.datoms WHERE false");
+        assert_eq!(
+            received(2),
+            tok(serde_json::Value::Null, hash()),
+            "no t() in this transaction: tx is null, not the session's last"
+        );
+        // A raw statement in the same transaction as a t() reports that t().
+        on("tk_w", "BEGIN");
+        let tx4 = write("[{:p/name \"four\"}]")["db-after"]["basis-t"].clone();
+        let h4 = hash();
+        let tx5 = write_on("tk_w2", "[{:p/name \"five\"}]")["db-after"]["basis-t"].clone();
+        assert_eq!(received(2), tok(tx5, hash_on("tk_w2")), "tk_w2's own write");
+        on("tk_w", "DELETE FROM mentat_tk_s.datoms WHERE false");
+        let h5 = hash();
+        on("tk_w", "COMMIT");
+        let mut both = tok(tx4.clone(), h4);
+        both.extend(tok(tx4, h5));
+        both.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(received(4), both);
+        on("tk_w", "DO $d$ BEGIN PERFORM drop_store('tk_s'); END $d$");
+        Spi::run(
+            "SELECT dblink_disconnect('tk_w'), dblink_disconnect('tk_l'), \
+                    dblink_disconnect('tk_w2')",
+        )
+        .expect("disconnect");
+    }
+
+    // edn_t and t() record their transaction's tx, by schema, for the
+    // subscription trigger's token (mentat.current_tx, transaction-local).
+    #[pg_test]
+    fn transactor_records_the_current_tx() {
+        setup();
+        tx("default", SCHEMA_TX);
+        let r: serde_json::Value =
+            serde_json::from_str(&text("SELECT edn_t('[{:p/name \"ct-1\"}]')")).unwrap();
+        assert_eq!(
+            text("SELECT current_setting('mentat.current_tx', true)"),
+            format!("mentat:{}", r["db-after"]["basis-t"])
+        );
+        Spi::run("SELECT create_store('ct_s')").expect("create");
+        let r = tx("ct_s", SCHEMA_TX);
+        assert_eq!(
+            text("SELECT current_setting('mentat.current_tx', true)"),
+            format!("mentat_ct_s:{}", r["db-after"]["basis-t"])
+        );
+        Spi::run("SELECT drop_store('ct_s')").expect("drop");
+    }
+
+    // mentat.refresh_datalog_view could not be called on any version: its
+    // parameter `concurrently` is a keyword in a PL/pgSQL IF, so the body
+    // failed with "syntax error at end of input" (#398). Without and with
+    // concurrently (a unique index on the view), and through the 1.19.0
+    // upgrade's definition.
+    #[pg_test]
+    fn refresh_datalog_view_with_and_without_concurrently() {
+        setup();
+        tx("default", SCHEMA_TX);
+        tx("default", "[{:p/name \"rv-1\"}]");
+        let rows =
+            || -> Vec<String> { sorted(json("SELECT coalesce(jsonb_agg(n), '[]') FROM rv_names")) };
+        let script = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = &script[script
+            .find("DROP FUNCTION IF EXISTS mentat.refresh_datalog_view")
+            .expect("upgrade section")..];
+        let upgrade = &upgrade[..upgrade.find("$$ LANGUAGE plpgsql;").unwrap() + 20];
+        for (round, install) in [("fresh install", None), ("upgrade", Some(upgrade))] {
+            if let Some(sql) = install {
+                // Outside the extension script a member can't be dropped.
+                Spi::run(
+                    "ALTER EXTENSION pg_mentat DROP FUNCTION mentat.refresh_datalog_view(TEXT, BOOLEAN)",
+                )
+                .expect("detach");
+                Spi::run(sql).unwrap_or_else(|e| panic!("{round}: {e}"));
+            }
+            Spi::run(
+                "SELECT mentat.create_datalog_materialized_view('rv_names', \
+                   '[:find ?n :where [_ :p/name ?n]]')",
+            )
+            .expect("create_datalog_materialized_view");
+            assert_eq!(rows(), vec!["rv-1"], "{round}");
+            tx("default", &format!("[{{:p/name \"rv-{round}\"}}]"));
+            Spi::run("SELECT mentat.refresh_datalog_view('rv_names')")
+                .unwrap_or_else(|e| panic!("{round}: refresh: {e}"));
+            assert_eq!(
+                rows(),
+                vec!["rv-1".to_string(), format!("rv-{round}")],
+                "{round}"
+            );
+            Spi::run("CREATE UNIQUE INDEX ON rv_names (n)").expect("unique index");
+            tx("default", &format!("[{{:p/name \"rv-{round}-c\"}}]"));
+            Spi::run("SELECT mentat.refresh_datalog_view('rv_names', true)")
+                .unwrap_or_else(|e| panic!("{round}: refresh concurrently: {e}"));
+            Spi::run("SELECT mentat.refresh_datalog_view('rv_names', p_concurrently => false)")
+                .unwrap_or_else(|e| panic!("{round}: named argument: {e}"));
+            assert_eq!(rows().len(), 3, "{round}");
+            Spi::run("SELECT mentat.drop_datalog_view('rv_names', false, true)").expect("drop");
+            tx(
+                "default",
+                &format!(
+                    "[[:db/retract [:p/name \"rv-{round}\"] :p/name \"rv-{round}\"] \
+                          [:db/retract [:p/name \"rv-{round}-c\"] :p/name \"rv-{round}-c\"]]"
+                ),
+            );
+        }
+    }
+
     // A 1.17 subscription or materialized view on a named store stays with
     // the old tables, under _pre118, and stops working. The upgrade said
     // nothing about them; now it names each one. (A WARNING can't be caught,
@@ -2059,6 +2683,48 @@ mod tests {
             text("SELECT nspname::text FROM pg_namespace WHERE nspname = 'mentat_up_sv_pre118'"),
             "mentat_up_sv_pre118"
         );
+    }
+
+    // Trigger functions made before 1.19.0 have no pinned search_path (#383),
+    // and the upgrade doesn't regenerate them: it names them in a WARNING.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn upgrade_names_unpinned_trigger_functions() {
+        setup();
+        Spi::run("SELECT create_store('up_pin')").expect("create");
+        tx("up_pin", SCHEMA_TX);
+        let query = "[:find ?n :where [_ :p/name ?n]]";
+        Spi::run(&format!(
+            "SELECT subscribe('up_pin', 'up_pin_old', '{query}')"
+        ))
+        .expect("subscribe");
+        Spi::run(&format!(
+            "SELECT subscribe('up_pin', 'up_pin_new', '{query}')"
+        ))
+        .expect("subscribe");
+        Spi::run(&format!(
+            "SELECT materialize('up_pin', 'up_pin_mv', '{query}', 'on_write')"
+        ))
+        .expect("materialize");
+        // What a 1.18.0 subscribe / materialize made: no SET search_path.
+        Spi::run(
+            "ALTER FUNCTION mentat_up_pin.mentat_sub_up_pin_old() RESET search_path; \
+             ALTER FUNCTION mentat_up_pin.mentat_matview_refresh_up_pin_mv() RESET search_path",
+        )
+        .expect("unpin");
+        let block = upgrade_119_block("unpinned").replace("RAISE WARNING", "RAISE EXCEPTION");
+        let msg = text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"));
+        assert!(
+            msg.contains(
+                "trigger functions mentat_up_pin.mentat_matview_refresh_up_pin_mv(), \
+                 mentat_up_pin.mentat_sub_up_pin_old() were made before 1.19.0"
+            ),
+            "{msg:?}"
+        );
+        assert!(!msg.contains("up_pin_new"), "{msg:?}");
+        Spi::run("SELECT drop_store('up_pin')").expect("drop");
+        let none = text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"));
+        assert!(!none.contains("up_pin"), "{none:?}");
     }
 
     // A find-pull on a named store under asOf / since called the 3-argument

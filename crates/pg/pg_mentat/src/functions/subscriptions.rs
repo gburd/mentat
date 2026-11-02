@@ -1,5 +1,6 @@
 use crate::error::MentatError;
-use crate::functions::store_management::{get_schema_for_store, quote_ident, validate_store_name};
+use crate::functions::materialized_views::validate_view_store;
+use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::JsonB;
@@ -158,6 +159,26 @@ fn name_taken(
 // Trigger function SQL generators
 // ---------------------------------------------------------------------------
 
+/// `s` as an SQL string literal, written as quote_literal() writes it: E''
+/// when it has a backslash, so standard_conforming_strings doesn't matter.
+fn sql_literal(s: &str) -> String {
+    let doubled = s.replace('\'', "''");
+    if s.contains('\\') {
+        format!("E'{}'", doubled.replace('\\', "\\\\"))
+    } else {
+        format!("'{doubled}'")
+    }
+}
+
+/// A dollar-quote tag that `body` doesn't contain, so no text in the body
+/// (the subscribed query) can end it early.
+fn dollar_tag(body: &str) -> String {
+    (0..)
+        .map(|n| format!("$mentat_sub{n}$"))
+        .find(|tag| !body.contains(tag.as_str()))
+        .expect("some tag is free")
+}
+
 /// Generate the SQL for the trigger function that re-evaluates a Datalog query
 /// on datom changes and issues NOTIFY if results differ.
 ///
@@ -166,29 +187,42 @@ fn name_taken(
 /// 2. Computes an MD5 hash of the result
 /// 3. Compares with the last known hash (stored in a session variable)
 /// 4. Sends NOTIFY on the subscription channel if the hash changed
+///
+/// It runs as the writer, so its search_path is pinned and every call in it
+/// is qualified: `q_fn` is pg_mentat's q, named through its schema (#383).
+///
+/// The payload is the query result, or with `token_only` a token,
+/// `{"tx": T, "hash": H}`: the tx of the t() / edn_t() on this store in the
+/// current transaction (null for a statement in a transaction with none,
+/// see `mentat.current_tx` in transact.rs) and the result's md5. Anyone who
+/// can LISTEN gets the payload (#379); a token tells them only that the
+/// result changed, and they re-run the query with their own privileges. A result over PostgreSQL's NOTIFY limit is sent as
+/// a token with `"too_large": true`, so the write doesn't fail (#400).
 fn trigger_function_sql(
     schema: &str,
     subscription_name: &str,
     channel: &str,
     query: &str,
+    q_fn: &str,
+    token_only: bool,
 ) -> String {
-    // Escape single quotes in the query for embedding in PL/pgSQL
-    let escaped_query = query.replace('\'', "''");
     let func_name = format!("{}.mentat_sub_{}", schema, subscription_name);
 
     // The session variable key stores the last known hash for this subscription.
     // We use a custom GUC-like approach with current_setting / set_config.
     let var_name = format!("mentat.sub_hash_{}", subscription_name);
 
-    format!(
+    let token_only = if token_only { "true" } else { "false" };
+    let body = format!(
         r"
-CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
-LANGUAGE plpgsql AS $$
 DECLARE
     sub_store TEXT;
     new_hash TEXT;
     old_hash TEXT;
     result_json JSONB;
+    payload TEXT;
+    cur_tx TEXT;
+    tx_id BIGINT;
 BEGIN
     -- The store whose datoms view fired this trigger. Looked up from the
     -- view's schema on every call, not baked in, so rename_store doesn't
@@ -199,33 +233,55 @@ BEGIN
     END IF;
 
     -- Re-evaluate the subscribed Datalog query
-    SELECT q(sub_store, '{escaped_query}', '{{}}'::jsonb) INTO result_json;
+    SELECT {q_fn}(sub_store, {query_literal}, '{{}}'::jsonb) INTO result_json;
 
     -- Compute hash of current results
-    new_hash := md5(result_json::TEXT);
+    new_hash := pg_catalog.md5(result_json::TEXT);
 
     -- Get last known hash from session state (returns empty string if unset)
     BEGIN
-        old_hash := current_setting('{var_name}', true);
+        old_hash := pg_catalog.current_setting('{var_name}', true);
     EXCEPTION WHEN OTHERS THEN
         old_hash := '';
     END;
 
     -- If results changed, notify and update the stored hash
     IF old_hash IS DISTINCT FROM new_hash THEN
-        PERFORM set_config('{var_name}', new_hash, false);
-        PERFORM pg_notify('{channel}', result_json::TEXT);
+        PERFORM pg_catalog.set_config('{var_name}', new_hash, false);
+        payload := result_json::TEXT;
+        -- PostgreSQL's NOTIFY payload limit (NOTIFY_PAYLOAD_MAX_LENGTH): over
+        -- it pg_notify raises, and the write would fail with it (#400).
+        IF {token_only} OR pg_catalog.octet_length(payload) >=
+               pg_catalog.current_setting('block_size')::INT
+             - pg_catalog.current_setting('max_identifier_length')::INT - 129 THEN
+            -- '<schema>:<tx>' of this transaction's last t() / edn_t()
+            -- (transaction-local); null unless it wrote this view's store.
+            cur_tx := pg_catalog.current_setting('mentat.current_tx', true);
+            BEGIN
+                tx_id := CASE WHEN pg_catalog.split_part(cur_tx, ':', 1) = TG_TABLE_SCHEMA
+                              THEN pg_catalog.split_part(cur_tx, ':', 2)::BIGINT END;
+            EXCEPTION WHEN OTHERS THEN
+                tx_id := NULL;
+            END;
+            payload := pg_catalog.jsonb_build_object('tx', tx_id, 'hash', new_hash)
+                || CASE WHEN {token_only} THEN '{{}}'::JSONB
+                        ELSE pg_catalog.jsonb_build_object('too_large', true) END;
+        END IF;
+        PERFORM pg_catalog.pg_notify('{channel}', payload);
     END IF;
 
     RETURN NULL;
 END;
-$$;
 ",
-        func_name = func_name,
-        subscription_name = subscription_name,
-        escaped_query = escaped_query,
-        var_name = var_name,
-        channel = channel,
+        query_literal = sql_literal(query),
+    );
+    let tag = dollar_tag(&body);
+
+    format!(
+        r"
+CREATE OR REPLACE FUNCTION {func_name}() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS {tag}{body}{tag};
+"
     )
 }
 
@@ -296,7 +352,31 @@ pub fn subscribe(
     subscription_name: &str,
     query: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    subscribe_impl(store_name, subscription_name, query, false)
+}
+
+/// `subscribe(store, name, query, token_only)`: with `token_only` true the
+/// NOTIFY payload is `{"tx": T, "hash": H}` instead of the query result, so
+/// a listener learns only that the result changed and re-runs the query with
+/// its own privileges (any role that can connect can LISTEN, #379). An
+/// overload, not a default, so the three-argument form is unchanged.
+#[pg_extern(name = "subscribe")]
+pub fn subscribe_token_only(
+    store_name: &str,
+    subscription_name: &str,
+    query: &str,
+    token_only: bool,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    subscribe_impl(store_name, subscription_name, query, token_only)
+}
+
+fn subscribe_impl(
+    store_name: &str,
+    subscription_name: &str,
+    query: &str,
+    token_only: bool,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    validate_view_store(store_name)?;
     validate_subscription_name(subscription_name)?;
 
     if query.trim().is_empty() {
@@ -346,7 +426,15 @@ pub fn subscribe(
     let channel = channel_name(subscription_name);
 
     // Create the trigger function
-    let func_sql = trigger_function_sql(&quoted_schema, subscription_name, &channel, query);
+    let q_fn = crate::functions::query::ext_qualified("pg_mentat", "q");
+    let func_sql = trigger_function_sql(
+        &quoted_schema,
+        subscription_name,
+        &channel,
+        query,
+        &q_fn,
+        token_only,
+    );
     Spi::run(&func_sql)?;
 
     // Create the trigger on the datoms table.
@@ -384,7 +472,7 @@ pub fn unsubscribe(
     store_name: &str,
     subscription_name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_subscription_name_chars(subscription_name)?;
 
     // Verify subscription exists
@@ -530,6 +618,8 @@ mod tests {
             "test_sub",
             "mentat_test_sub",
             "[:find ?e :where [?e :person/name]]",
+            "public.q",
+            false,
         );
         assert!(sql.contains("mentat.mentat_sub_test_sub"));
         assert!(sql.contains("q(sub_store, '[:find"));
@@ -545,6 +635,8 @@ mod tests {
             "test_sub",
             "mentat_test_sub",
             "[:find ?name :where [?e :person/name ?name] [(= ?name \"O'Brien\")]]",
+            "public.q",
+            false,
         );
         // Single quotes are doubled once for the q('...') string
         // literal embedded inside the $$-quoted function body. The function
@@ -564,11 +656,85 @@ mod tests {
             "s",
             "mentat_s",
             "[:find ?n :where [_ :p/name ?n]]",
+            "public.q",
+            false,
         );
         assert!(sql.contains("q(sub_store, '[:find ?n"), "{sql}");
         assert!(sql.contains("schema_name = TG_TABLE_SCHEMA"), "{sql}");
         assert!(!sql.contains("acme'"), "{sql}");
         assert!(!sql.contains("edn_q"), "{sql}");
+    }
+
+    // The function runs as the writer: a pinned path, every call qualified,
+    // so a function of the same name earlier on the writer's path isn't the
+    // one called (#383).
+    #[test]
+    fn test_trigger_function_sql_pins_the_path() {
+        let sql = trigger_function_sql(
+            "mentat",
+            "s",
+            "mentat_s",
+            "[:find ?e]",
+            "\"my ext\".q",
+            false,
+        );
+        assert!(
+            sql.contains("SET search_path = pg_catalog, pg_temp"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("\"my ext\".q(sub_store, '[:find ?e]'"),
+            "{sql}"
+        );
+        for f in ["md5", "current_setting", "set_config", "pg_notify"] {
+            assert!(sql.contains(&format!("pg_catalog.{f}(")), "{f}: {sql}");
+            assert!(!sql.contains(&format!(" {f}(")), "{f}: {sql}");
+        }
+    }
+
+    // The body was $$-quoted with only ' doubled: a query containing $$
+    // ended it early (#383).
+    #[test]
+    fn test_trigger_function_sql_quotes_any_query() {
+        let query = "[:find ?e :where [?e :p/name \"$$ $mentat_sub0$ \\ '\"]]";
+        let sql = trigger_function_sql("mentat", "s", "mentat_s", query, "public.q", false);
+        assert!(sql.contains("AS $mentat_sub1$"), "{sql}");
+        assert_eq!(sql.matches("$mentat_sub1$").count(), 2, "{sql}");
+        assert!(
+            sql.contains("E'[:find ?e :where [?e :p/name \"$$ $mentat_sub0$ \\\\ ''\"]]'"),
+            "{sql}"
+        );
+        assert_eq!(sql_literal("it's"), "'it''s'");
+        assert_eq!(sql_literal("a\\b"), "E'a\\\\b'");
+    }
+
+    // Token mode, and the too-large fallback in result mode (#379, #400).
+    #[test]
+    fn test_trigger_function_sql_token_payload() {
+        let res = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "public.q", false);
+        let tok = trigger_function_sql("mentat", "s", "mentat_s", "[:find ?e]", "public.q", true);
+        assert!(
+            res.contains("IF false OR pg_catalog.octet_length(payload) >="),
+            "{res}"
+        );
+        assert!(
+            tok.contains("IF true OR pg_catalog.octet_length(payload) >="),
+            "{tok}"
+        );
+        for sql in [&res, &tok] {
+            assert!(
+                sql.contains("jsonb_build_object('tx', tx_id, 'hash', new_hash)"),
+                "{sql}"
+            );
+            assert!(
+                sql.contains("jsonb_build_object('too_large', true)"),
+                "{sql}"
+            );
+            assert!(
+                sql.contains("pg_catalog.pg_notify('mentat_s', payload)"),
+                "{sql}"
+            );
+        }
     }
 
     #[test]

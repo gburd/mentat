@@ -224,11 +224,12 @@ $$ LANGUAGE plpgsql;
 --
 -- Parameters:
 --   view_name   - Name of the materialized view to refresh
---   concurrently - Whether to refresh concurrently (requires unique index, default: false)
+--   p_concurrently - Whether to refresh concurrently (requires unique index, default: false).
+--     Not `concurrently`: that is a keyword in a PL/pgSQL IF (#398).
 --
 CREATE OR REPLACE FUNCTION mentat.refresh_datalog_view(
     view_name TEXT,
-    concurrently BOOLEAN DEFAULT FALSE
+    p_concurrently BOOLEAN DEFAULT FALSE
 )
 RETURNS TEXT AS $$
 DECLARE
@@ -240,7 +241,7 @@ BEGIN
     END IF;
     safe_view_name := view_name;
 
-    IF concurrently THEN
+    IF p_concurrently THEN
         refresh_sql := format('REFRESH MATERIALIZED VIEW CONCURRENTLY %s', safe_view_name);
     ELSE
         refresh_sql := format('REFRESH MATERIALIZED VIEW %s', safe_view_name);
