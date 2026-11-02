@@ -64,6 +64,37 @@ END
 $orphans$;
 
 -- ---------------------------------------------------------------------------
+-- Name the subscription and on_write view trigger functions made before
+-- 1.19.0 (#383): they have no pinned search_path (see above). A WARNING only;
+-- they work as before.
+-- ---------------------------------------------------------------------------
+DO $unpinned$
+DECLARE
+    fns TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    SELECT pg_catalog.string_agg(pg_catalog.format('%I.%I()', n.nspname, p.proname), ', '
+                                 ORDER BY n.nspname, p.proname)
+      INTO fns
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      JOIN mentat.stores s ON s.schema_name = n.nspname
+     WHERE p.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+       AND (p.proname LIKE 'mentat\_sub\_%' OR p.proname LIKE 'mentat\_matview\_refresh\_%')
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.unnest(p.proconfig) AS setting
+                        WHERE setting LIKE 'search\_path=%');
+    IF fns IS NOT NULL THEN
+        RAISE WARNING 'pg_mentat upgrade: trigger functions % were made before 1.19.0 and run with the '
+                      'writer''s search_path. To pin it, unsubscribe and subscribe again '
+                      '(mentat_sub_<name>), or drop_matview and materialize (mentat_matview_refresh_<name>).',
+                      fns;
+    END IF;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$unpinned$;
+
+-- ---------------------------------------------------------------------------
 -- Indexes 1.17 named stores made on the default store's tables (#381).
 -- 1.17's create_store('x') made idx_x_fts_text on mentat.datoms_text_new and,
 -- with pg_trgm, idx_x_trgm_text / idx_x_trgm_keyword on

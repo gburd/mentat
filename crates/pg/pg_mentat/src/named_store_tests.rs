@@ -2685,6 +2685,48 @@ mod tests {
         );
     }
 
+    // Trigger functions made before 1.19.0 have no pinned search_path (#383),
+    // and the upgrade doesn't regenerate them: it names them in a WARNING.
+    #[cfg(not(feature = "pg13"))]
+    #[pg_test]
+    fn upgrade_names_unpinned_trigger_functions() {
+        setup();
+        Spi::run("SELECT create_store('up_pin')").expect("create");
+        tx("up_pin", SCHEMA_TX);
+        let query = "[:find ?n :where [_ :p/name ?n]]";
+        Spi::run(&format!(
+            "SELECT subscribe('up_pin', 'up_pin_old', '{query}')"
+        ))
+        .expect("subscribe");
+        Spi::run(&format!(
+            "SELECT subscribe('up_pin', 'up_pin_new', '{query}')"
+        ))
+        .expect("subscribe");
+        Spi::run(&format!(
+            "SELECT materialize('up_pin', 'up_pin_mv', '{query}', 'on_write')"
+        ))
+        .expect("materialize");
+        // What a 1.18.0 subscribe / materialize made: no SET search_path.
+        Spi::run(
+            "ALTER FUNCTION mentat_up_pin.mentat_sub_up_pin_old() RESET search_path; \
+             ALTER FUNCTION mentat_up_pin.mentat_matview_refresh_up_pin_mv() RESET search_path",
+        )
+        .expect("unpin");
+        let block = upgrade_119_block("unpinned").replace("RAISE WARNING", "RAISE EXCEPTION");
+        let msg = text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"));
+        assert!(
+            msg.contains(
+                "trigger functions mentat_up_pin.mentat_matview_refresh_up_pin_mv(), \
+                 mentat_up_pin.mentat_sub_up_pin_old() were made before 1.19.0"
+            ),
+            "{msg:?}"
+        );
+        assert!(!msg.contains("up_pin_new"), "{msg:?}");
+        Spi::run("SELECT drop_store('up_pin')").expect("drop");
+        let none = text(&format!("SELECT pg_temp.capture($cap${block}$cap$)"));
+        assert!(!none.contains("up_pin"), "{none:?}");
+    }
+
     // A find-pull on a named store under asOf / since called the 3-argument
     // pull(store, ...), which reads current state: an as-of query returned
     // the entity's current value (#364's bug, on named stores).
