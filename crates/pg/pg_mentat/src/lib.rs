@@ -895,6 +895,8 @@ mod stress_scale_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod tempid_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod tempid_not_an_entity_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod temporal_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod transact_unit_tests;
