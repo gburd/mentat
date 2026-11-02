@@ -420,6 +420,17 @@ pub fn invalidate_all_caches() {
     STORE_CACHES.invalidate_all();
 }
 
+/// Lock the store's `cache_generation` row in the mode `bump_store_generation`'s
+/// UPDATE takes, until the transaction ends. A schema-changing `edn_t` call takes
+/// it before it installs an ident or takes a write lock, so two schema-changing
+/// transactions queue here, not in a cycle through each other's idents (#413).
+pub fn lock_store_generation(store_name: &str) -> Result<(), pgrx::spi::SpiError> {
+    Spi::run_with_args(
+        "SELECT 1 FROM mentat.cache_generation WHERE store_name = $1 FOR NO KEY UPDATE",
+        &[pgrx::datum::DatumWithOid::from(store_name)],
+    )
+}
+
 /// Bump the generation counter for a store in the shared `cache_generation` table.
 ///
 /// Called after a transaction modifies schema-defining attributes (`:db/valueType`,

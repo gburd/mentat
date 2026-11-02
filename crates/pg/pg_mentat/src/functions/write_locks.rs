@@ -51,15 +51,23 @@
 //!
 //! # Deadlocks
 //!
-//! An `edn_t` call takes its keys in three steps, each in ascending
-//! (namespace, hash) order: an alteration's [`NS_ATTR`] keys; then the
-//! written attributes' [`NS_ATTR`] keys and the [`NS_UNIQUE`] keys; then the
-//! [`NS_EA`] keys. Writers that alter no schema and stay within the budget
-//! can't deadlock on these locks: the only exclusive keys they hold while
-//! waiting sort below the key they wait for. A schema alteration, a call
-//! over the budget, or a transaction that runs several `edn_t` calls (or
-//! takes its own locks) can deadlock with another; PostgreSQL detects it and
-//! aborts one transaction (SQLSTATE 40P01), and the client retries.
+//! An `edn_t` call that changes schema first locks its store's row in
+//! `mentat.cache_generation` (which it bumps when it ends; see
+//! `cache::lock_store_generation`), held until the transaction ends. Then a
+//! call takes its keys in three steps, each in ascending (namespace, hash)
+//! order: an alteration's [`NS_ATTR`] keys; then the written attributes'
+//! [`NS_ATTR`] keys and the [`NS_UNIQUE`] keys; then the [`NS_EA`] keys.
+//! Writers that alter no schema and stay within the budget can't deadlock on
+//! these advisory locks: the only exclusive keys they hold while waiting sort
+//! below the key they wait for. (They can still deadlock on PostgreSQL's own
+//! row and index locks; see #411.) Transactions whose first schema-changing
+//! call comes before any data call ("install schema, then write") can't
+//! deadlock with each other through schema: the second waits for the store's
+//! row before it has installed or locked anything (#413). A schema
+//! alteration, a call over the budget, a transaction that writes data and
+//! then changes schema, or one that runs several `edn_t` calls (or takes its
+//! own locks) can deadlock with another; PostgreSQL detects it and aborts one
+//! transaction (SQLSTATE 40P01), and the client retries.
 //!
 //! # Isolation levels
 //!

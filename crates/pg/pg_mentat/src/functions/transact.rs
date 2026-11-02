@@ -1049,11 +1049,21 @@ fn execute_transaction_inner(
     // without corresponding data.
     let has_schema_changes = !schema_builders.is_empty();
 
+    // A schema change bumps the store's generation row when the call ends, and
+    // holds that row lock until commit. Take it first, before installing an
+    // ident or taking any write lock: schema-changing transactions then wait
+    // for each other here, holding nothing the other needs (#413). Then reload
+    // the schema cache if the one we waited for committed a change. No other
+    // schema change can commit while we hold the row.
+    if has_schema_changes {
+        crate::cache::lock_store_generation(store_name_raw)?;
+        store_cache().refresh_if_stale();
+    }
+
     // An alteration that existing data can violate (many -> one, adding
     // :db/unique) checks that data: it locks the attribute exclusively first, so
     // no writer of it is in flight or can start until this transaction ends
-    // (#376). Writers take the same key shared (`lock_for_writes`). Then reload
-    // the schema cache if another backend committed a schema change meanwhile.
+    // (#376). Writers take the same key shared (`lock_for_writes`).
     let altered: Vec<(u32, u32)> = schema_builders
         .iter()
         .filter(|(&entid, b)| {
@@ -1066,7 +1076,6 @@ fn execute_transaction_inner(
         .collect();
     if !altered.is_empty() {
         write_locks::lock_all(altered, Vec::new());
-        store_cache().refresh_if_stale();
     }
 
     // Install schema attributes (if any). In pgrx tests, we rely on the

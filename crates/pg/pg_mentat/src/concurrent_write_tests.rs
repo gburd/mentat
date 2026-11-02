@@ -325,6 +325,74 @@ mod tests {
         assert!(waited, "B waited for A");
     }
 
+    /// Two transactions that each install schema, then write (#413). A's first
+    /// call takes the store's generation row before it installs anything; B's
+    /// first schema call waits for it there, holding nothing A needs, so A's
+    /// later install of B's ident and its data go through. Without that order
+    /// B held its uncommitted ident and waited for the row at the end of its
+    /// call, A waited for B's ident, and PostgreSQL aborted one (40P01).
+    #[pg_test]
+    fn schema_then_data_transactions_do_not_deadlock() {
+        let Some(r) = Race::new("cw_schema") else {
+            return;
+        };
+        let st = &r.store;
+        let schema = |ident: &str| {
+            format!(
+                "[{{:db/ident :cs/{ident} :db/valueType :db.type/long \
+                 :db/cardinality :db.cardinality/one}}]"
+            )
+        };
+        // Session c's t(edn), with its error ("" if none).
+        let try_t = |c: &str, edn: &str| {
+            let sql = format!("DO $d$ BEGIN PERFORM t('{st}', '{edn}'); END $d$");
+            text(&format!(
+                "SELECT pg_temp.capture($q$SELECT dblink_exec('{c}', {}) $q$)",
+                pgrx::spi::quote_literal(&sql)
+            ))
+        };
+        on("cw_a", "BEGIN");
+        on("cw_b", "BEGIN");
+        let a1 = try_t("cw_a", &schema("x"));
+        let pid_b = get("cw_b", "pg_backend_pid()");
+        Spi::run(&format!(
+            "SELECT dblink_send_query('cw_b', $q$SELECT t('{st}', '{}')::text$q$)",
+            schema("y")
+        ))
+        .expect("send");
+        let mut waited = false;
+        for _ in 0..100 {
+            waited = text(&format!(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = {pid_b}"
+            )) == "Lock";
+            let busy: i32 = Spi::get_one("SELECT dblink_is_busy('cw_b')")
+                .unwrap()
+                .unwrap();
+            if waited || busy == 0 {
+                break;
+            }
+            Spi::run("SELECT pg_sleep(0.05)").unwrap();
+        }
+        let a2 = try_t("cw_a", &schema("y"));
+        let a3 = try_t("cw_a", "[{:cs/x 1 :cs/y 2}]");
+        on("cw_a", "ROLLBACK");
+        let b1 = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_b') AS t(r text)$q$)",
+        );
+        let _ = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_b') AS t(r text)$q$)",
+        );
+        let b2 = try_t("cw_b", "[{:cs/y 3}]");
+        on("cw_b", "ROLLBACK");
+        r.finish();
+        assert_eq!(
+            [a1, a2, a3, b1, b2],
+            ["", "", "", "", ""].map(String::from),
+            "no call fails (A: schema x, schema y, data; B: schema y, data)"
+        );
+        assert!(waited, "B's schema call waited for A's");
+    }
+
     /// Writers of different (e, a) don't wait for each other.
     #[pg_test]
     fn writers_of_different_values_do_not_wait() {
