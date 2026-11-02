@@ -3235,9 +3235,10 @@ mod tests {
         Spi::run(&old).expect("1.18.0 definitions");
         Spi::run(&format!(
             "DROP INDEX IF EXISTS mentat_{store}.idx_current_text_trgm; \
-             DROP INDEX IF EXISTS mentat_{store}.idx_current_keyword_trgm"
+             DROP INDEX IF EXISTS mentat_{store}.idx_current_keyword_trgm; \
+             DROP INDEX IF EXISTS mentat_{store}.idx_current_text_fts"
         ))
-        .expect("drop 1.19 trigram indexes");
+        .expect("drop 1.19 indexes");
         if trgm {
             Spi::run(&format!(
                 "CREATE INDEX idx_datoms_text_new_trgm ON mentat_{store}.datoms_text_new \
@@ -3813,6 +3814,64 @@ mod tests {
             "SELECT prosrc FROM pg_proc WHERE oid = 'mentat_proc_s.lookup_entity(TEXT, TEXT)'::regprocedure"
         )
         .contains("current_"));
+    }
+
+    // On 1.18 a store's find_text and searchable_text used the log's GIN
+    // index on to_tsvector('english', v); current_text had none, so on the
+    // projection they scanned every live string. The store layout has the
+    // index now and the upgrade builds it for existing stores.
+    #[pg_test]
+    fn store_full_text_reads_use_an_index() {
+        setup();
+        Spi::run("SELECT create_store('fts_new')").expect("create_store");
+        make_1_18_store("fts_old", false);
+        let has = |store: &str| -> bool {
+            Spi::get_one::<bool>(&format!(
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'mentat_{store}' \
+                   AND indexname = 'idx_current_text_fts' AND indexdef LIKE '%USING gin (to_tsvector(%')"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        assert!(has("fts_new"), "a new store");
+        assert!(
+            Spi::get_one::<bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'mentat' \
+                   AND indexname = 'idx_current_text_fts')"
+            )
+            .unwrap()
+            .unwrap(),
+            "the default store"
+        );
+        assert!(!has("fts_old"));
+        Spi::run(&upgrade_119_block("views")).expect("upgrade");
+        assert!(has("fts_old"), "an upgraded store");
+        for store in ["fts_new", "fts_old"] {
+            Spi::run(&format!(
+                "INSERT INTO mentat_{store}.current_text (store_id, e, a, v, tx) \
+                 SELECT (SELECT store_id FROM mentat.stores WHERE store_name = '{store}'), \
+                        1000000 + i, 100, CASE WHEN i % 1000 = 0 THEN 'a fox' ELSE 'word ' || i END, 1 \
+                   FROM generate_series(1, 5000) i; \
+                 ANALYZE mentat_{store}.current_text"
+            ))
+            .expect("rows");
+            let plan: String = Spi::connect(|client| {
+                client
+                    .select(
+                        &format!(
+                            "EXPLAIN SELECT * FROM mentat_{store}.searchable_text \
+                              WHERE search_vector @@ plainto_tsquery('english', 'fox')"
+                        ),
+                        None,
+                        &[],
+                    )
+                    .unwrap()
+                    .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+            assert!(plan.contains("idx_current_text_fts"), "{store}: {plan}");
+        }
     }
 
     fn names_of(store: &str) -> Vec<String> {

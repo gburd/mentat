@@ -95,6 +95,13 @@ CREATE INDEX IF NOT EXISTS idx_current_uuid_aev    ON mentat.current_uuid    (st
 CREATE INDEX IF NOT EXISTS idx_current_bytes_aev   ON mentat.current_bytes   (store_id, a, e) INCLUDE (v, tx);
 CREATE INDEX IF NOT EXISTS idx_current_boolean_aev ON mentat.current_boolean (store_id, a, e) INCLUDE (v, tx);
 
+-- Full-text GIN index on the text projection: a store's searchable_text
+-- view and find_text() filter on to_tsvector('english', v), and so does
+-- q()'s (fulltext ...) for an attribute in English (the default). Named
+-- stores get a copy (sql/30_store_layout.sql).
+CREATE INDEX IF NOT EXISTS idx_current_text_fts
+    ON mentat.current_text USING gin (pg_catalog.to_tsvector('english'::pg_catalog.regconfig, v));
+
 -- VAET index on the ref projection: reverse-reference traversal
 -- [?e :attr <target>] -> find entities pointing at target. Mirrors the
 -- datoms_ref_new VAET index but over current state only.

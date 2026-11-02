@@ -1287,6 +1287,18 @@ END
 $ftsidx$;
 
 -- ---------------------------------------------------------------------------
+-- A full-text GIN index on current_text (sql/24_current_projection.sql),
+-- here and below on each named store's. A store's find_text() and
+-- searchable_text, and q()'s (fulltext ...) in English, filter on
+-- to_tsvector('english', v): on the log that was idx_datoms_text_new_fts,
+-- which the projection had no counterpart for. The log's index stays (a
+-- query of your own over the log may use it). Building it reads every live
+-- string value.
+-- ---------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_current_text_fts
+    ON mentat.current_text USING gin (pg_catalog.to_tsvector('english'::pg_catalog.regconfig, v));
+
+-- ---------------------------------------------------------------------------
 -- A named store's views and helper functions (facts, text_values, ...,
 -- lookup_entity, entity_value, find_text) read the store's current_<type>
 -- projections too; tx_log, entity_history and recent_changes are history
@@ -1372,6 +1384,16 @@ BEGIN
                           'skipped" under "Upgrading from 1.17" in docs/src/multi-tenancy.md.',
                           st.store_name, st.nspname, missing;
             CONTINUE;
+        END IF;
+        -- The full-text index find_text and searchable_text use (see above),
+        -- if v is still text.
+        IF EXISTS (SELECT 1 FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
+                    WHERE t.relnamespace = st.ns AND t.relname = 'current_text' AND t.relkind = 'r'
+                      AND a.attname = 'v' AND a.atttypid = 'pg_catalog.text'::regtype
+                      AND NOT a.attisdropped) THEN
+            EXECUTE pg_catalog.format('CREATE INDEX IF NOT EXISTS idx_current_text_fts ON %I.current_text '
+                                      'USING gin (pg_catalog.to_tsvector(''english''::pg_catalog.regconfig, v))',
+                                      st.nspname);
         END IF;
         FOR obj IN SELECT * FROM mentat._store_virtual_tables(st.store_name) LOOP
             IF obj.kind = 'VIEW' THEN
