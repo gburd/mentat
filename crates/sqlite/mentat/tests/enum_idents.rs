@@ -5,7 +5,7 @@
 
 extern crate mentat;
 
-use mentat::{Queryable, Store};
+use mentat::{Keyword, QueryInputs, Queryable, Store, TypedValue, Variable};
 
 fn setup() -> Store {
     let mut s = Store::open("").expect("opened");
@@ -27,8 +27,12 @@ fn setup() -> Store {
 }
 
 fn coll(s: &Store, q: &str) -> Vec<String> {
+    coll_in(s, q, None)
+}
+
+fn coll_in(s: &Store, q: &str, inputs: Option<QueryInputs>) -> Vec<String> {
     let mut v: Vec<String> = s
-        .q_once(q, None)
+        .q_once(q, inputs)
         .unwrap_or_else(|e| panic!("{q}: {e:?}"))
         .results
         .into_coll()
@@ -78,4 +82,38 @@ fn enum_ident_untyped_value_place_is_keyword() {
     let hits = coll(&s, "[:find [?e ...] :where [?e ?a :color/red]]");
     assert_eq!(hits.len(), 2, "{hits:?}");
     assert!(!hits.contains(&car[0]), "{hits:?}");
+}
+
+fn red() -> TypedValue {
+    TypedValue::Keyword(Keyword::namespaced("color", "red").into())
+}
+
+// The three cases below return nothing on the embedded engine today (pg_mentat
+// resolves them): a keyword :in value or ground is typed Keyword before the
+// pattern makes the variable a ref.
+#[test]
+#[ignore = "embedded :in keyword into a ref position, see issue"]
+fn enum_ident_scalar_input() {
+    let s = setup();
+    let q = "[:find [?n ...] :in ?c :where [?e :c/color ?c] [?e :c/name ?n]]";
+    let inputs = QueryInputs::with_value_sequence(vec![(Variable::from_valid_name("?c"), red())]);
+    assert_eq!(coll_in(&s, q, Some(inputs)), ["car"]);
+}
+
+#[test]
+#[ignore = "embedded :in keyword into a ref position, see issue"]
+fn enum_ident_collection_input() {
+    let s = setup();
+    let q = "[:find [?n ...] :in [?c ...] :where [?e :c/color ?c] [?e :c/name ?n]]";
+    let blue = TypedValue::Keyword(Keyword::namespaced("color", "blue").into());
+    let inputs = QueryInputs::with_collection(Variable::from_valid_name("?c"), vec![red(), blue]);
+    assert_eq!(coll_in(&s, q, Some(inputs)), ["car", "sky"]);
+}
+
+#[test]
+#[ignore = "embedded :in keyword into a ref position, see issue"]
+fn enum_ident_ground() {
+    let s = setup();
+    let q = "[:find [?n ...] :where [(ground :color/red) ?c] [?e :c/color ?c] [?e :c/name ?n]]";
+    assert_eq!(coll(&s, q), ["car"]);
 }
