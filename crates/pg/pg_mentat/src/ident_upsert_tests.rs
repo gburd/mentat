@@ -182,12 +182,8 @@ mod tests {
         reassert_enum_ident("id415e");
     }
 
-    /// Redefining a tx-fn's :db/fn twice: the newest body runs. (Tx-fns run on
-    /// the default store only, #389.)
-    #[pg_test]
-    fn ident_redefine_tx_fn() {
-        setup("default");
-        let s = "default";
+    /// Redefining a tx-fn's :db/fn twice: the newest body runs.
+    fn redefine_tx_fn(s: &str) {
         tx(
             s,
             "[{:db/ident :tf/v :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
@@ -209,6 +205,18 @@ mod tests {
             q(s, &format!("[:find ?v . :where [{e} :tf/v ?v]]")),
             serde_json::json!(3)
         );
+    }
+
+    #[pg_test]
+    fn ident_redefine_tx_fn() {
+        setup("default");
+        redefine_tx_fn("default");
+    }
+
+    #[pg_test]
+    fn ident_redefine_tx_fn_named_store() {
+        setup("id415f");
+        redefine_tx_fn("id415f");
     }
 
     fn idempotent_schema_install(s: &str) {
