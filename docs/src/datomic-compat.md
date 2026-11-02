@@ -74,6 +74,35 @@ attribute. To write two refs in that case, make the first one a lookup ref
 {:form/fields [[:db/ident :user/id] :user/name]} ; two refs: :user/id and :user/name
 ```
 
+### Re-asserting and renaming an ident
+
+`:db/ident` is `:db.unique/identity`, so a map or list entity that names an
+existing ident upserts into that ident's entity (since 1.19.0 on pg_mentat;
+1.18.0 and earlier moved the ident to a new entity, see
+[Operations](operations.md#idents-moved-by-1180-and-earlier-415)). Re-running
+a schema install or `[{:db/ident :color/red :db/doc "red"}]` changes
+nothing but the asserted values.
+
+Rename an ident by asserting a new one on the same entity, by entid or by the
+old ident, as Datomic documents:
+
+```clojure
+[{:db/id :color/blue :db/ident :color/azure}]
+[[:db/add :color/red :db/ident :color/scarlet]]
+```
+
+An attribute's schema is renamed with it. Unlike Datomic, the old ident is
+not kept: in Datomic "both the new ident and the old ident will refer to the
+entity" until the old one is given to another entity. On pg_mentat and the
+embedded engine the old ident is gone once the renaming transaction commits:
+a write that uses it fails with `ident-not-found`, and a query that uses it
+as a constant matches nothing. Move readers and writers to the new ident
+when you rename.
+
+An ident another entity holds can't be asserted on a second entity in the
+same transaction that retracts it; retract it in one transaction, then
+assert it on the other.
+
 ### The transaction tempid "datomic.tx"
 
 The reserved tempid `"datomic.tx"` names the transaction being committed, as
