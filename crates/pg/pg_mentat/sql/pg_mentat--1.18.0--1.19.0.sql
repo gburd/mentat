@@ -1302,10 +1302,11 @@ AS 'MODULE_PATHNAME', 'store_virtual_tables_wrapper';
 -- Replace each of these objects a named store has, and only those: a store
 -- may lack one (dropped by its owner), and nothing is created here. CREATE
 -- OR REPLACE keeps the object's owner, grants and the user views built on
--- it (a view is never dropped). An object that can't be replaced (its
--- owner changed a view's columns or a function's return type, or another
--- extension owns it) keeps its old definition, with a WARNING; any other
--- error aborts the upgrade.
+-- it (a view is never dropped), and the options and function attributes
+-- its owner set. An object that can't be replaced (its owner changed a
+-- view's columns or a function's return type, or another extension owns it)
+-- keeps its old definition, with a WARNING; any other error aborts the
+-- upgrade.
 --
 -- In an extension script CREATE OR REPLACE refuses an object the extension
 -- doesn't own (CVE-2022-2625), and a store's objects are not members (the
@@ -1335,6 +1336,13 @@ DECLARE
     ext OID;
     missing TEXT;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
+    opts TEXT[];
+    old_fn RECORD;
+    new_fn RECORD;
+    alter_ TEXT;
+    cfg TEXT;
+    cfg_name TEXT;
+    cfg_val TEXT;
     old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
     PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
@@ -1383,11 +1391,77 @@ BEGIN
                                      AND d.deptype = 'e');
             END IF;
             CONTINUE WHEN oid_ IS NULL;
+            -- CREATE OR REPLACE resets what its statement doesn't say: a
+            -- view's options, a function's SECURITY DEFINER, SET, COST, ROWS,
+            -- LEAKPROOF, PARALLEL, STRICT and volatility. Both 1.18.0 and
+            -- this release make them with the defaults (and STABLE), so a
+            -- setting that differs is the owner's: it is put back as it was.
+            IF obj.kind = 'VIEW' THEN
+                opts := (SELECT c.reloptions FROM pg_class c WHERE c.oid = oid_);
+            ELSE
+                SELECT p.* INTO old_fn FROM pg_proc p WHERE p.oid = oid_;
+            END IF;
             BEGIN
                 IF NOT member THEN
                     EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat ADD %s %s', obj.kind, ident);
                 END IF;
                 EXECUTE obj.sql;
+                IF obj.kind = 'VIEW' AND opts IS NOT NULL THEN
+                    EXECUTE pg_catalog.format('ALTER VIEW %s SET (%s)', ident,
+                        (SELECT pg_catalog.string_agg(pg_catalog.format('%I = %L', pg_catalog.split_part(o, '=', 1),
+                                                                        pg_catalog.substr(o, pg_catalog.strpos(o, '=') + 1)), ', ')
+                           FROM pg_catalog.unnest(opts) AS o));
+                ELSIF obj.kind = 'FUNCTION' THEN
+                    SELECT p.* INTO new_fn FROM pg_proc p WHERE p.oid = oid_;
+                    alter_ := '';
+                    IF old_fn.prosecdef AND NOT new_fn.prosecdef THEN
+                        alter_ := alter_ || ' SECURITY DEFINER';
+                    END IF;
+                    IF old_fn.proleakproof AND NOT new_fn.proleakproof THEN
+                        alter_ := alter_ || ' LEAKPROOF';
+                    END IF;
+                    IF old_fn.proisstrict <> new_fn.proisstrict THEN
+                        alter_ := alter_ || CASE WHEN old_fn.proisstrict THEN ' STRICT' ELSE ' CALLED ON NULL INPUT' END;
+                    END IF;
+                    IF old_fn.provolatile <> new_fn.provolatile THEN
+                        alter_ := alter_ || CASE old_fn.provolatile WHEN 'i' THEN ' IMMUTABLE' WHEN 's' THEN ' STABLE'
+                                                 ELSE ' VOLATILE' END;
+                    END IF;
+                    IF old_fn.proparallel <> new_fn.proparallel THEN
+                        alter_ := alter_ || CASE old_fn.proparallel WHEN 's' THEN ' PARALLEL SAFE'
+                                                 WHEN 'r' THEN ' PARALLEL RESTRICTED' ELSE ' PARALLEL UNSAFE' END;
+                    END IF;
+                    IF old_fn.procost <> new_fn.procost THEN
+                        alter_ := alter_ || ' COST ' || old_fn.procost;
+                    END IF;
+                    IF old_fn.prorows <> new_fn.prorows THEN
+                        alter_ := alter_ || ' ROWS ' || old_fn.prorows;
+                    END IF;
+                    IF alter_ <> '' THEN
+                        EXECUTE 'ALTER FUNCTION ' || ident || alter_;
+                    END IF;
+                    -- As pg_dump writes them: a list that quotes its elements
+                    -- (search_path, ...) element by element, any other value
+                    -- as one literal.
+                    FOREACH cfg IN ARRAY COALESCE(old_fn.proconfig, '{}') LOOP
+                        cfg_name := pg_catalog.split_part(cfg, '=', 1);
+                        cfg_val := pg_catalog.substr(cfg, pg_catalog.strpos(cfg, '=') + 1);
+                        IF pg_catalog.lower(cfg_name) IN ('local_preload_libraries', 'oauth_validator_libraries',
+                                                          'search_path', 'session_preload_libraries',
+                                                          'shared_preload_libraries', 'temp_tablespaces',
+                                                          'unix_socket_directories') THEN
+                            cfg_val := (SELECT pg_catalog.string_agg(pg_catalog.format('%L',
+                                                 CASE WHEN m[1] LIKE '"%' THEN pg_catalog.replace(
+                                                          pg_catalog.substr(m[1], 2, pg_catalog.length(m[1]) - 2), '""', '"')
+                                                      ELSE m[1] END), ', ')
+                                          FROM pg_catalog.regexp_matches(cfg_val, '("(?:[^"]|"")*"|[^,\s]+)', 'g') AS m);
+                            EXECUTE pg_catalog.format('ALTER FUNCTION %s SET %I = %s', ident, cfg_name,
+                                                      COALESCE(cfg_val, ''''''));
+                        ELSE
+                            EXECUTE pg_catalog.format('ALTER FUNCTION %s SET %I = %L', ident, cfg_name, cfg_val);
+                        END IF;
+                    END LOOP;
+                END IF;
                 IF NOT member THEN
                     EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat DROP %s %s', obj.kind, ident);
                 END IF;

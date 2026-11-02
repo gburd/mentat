@@ -3702,6 +3702,83 @@ mod tests {
         );
     }
 
+    // CREATE OR REPLACE resets a view's options and a function's attributes
+    // its statement doesn't name. The 1.19.0 upgrade replaced a store's views
+    // and functions that way, so a reader of a security_invoker view got the
+    // view owner's privileges, and a SECURITY DEFINER function lost it. Each
+    // setting the store's owner made is kept, on the new definition.
+    #[pg_test]
+    fn upgrade_keeps_the_owners_settings() {
+        setup();
+        make_1_18_store("own_s", false);
+        Spi::run(
+            "CREATE SCHEMA \"Own Path\"; \
+             ALTER VIEW mentat_own_s.facts SET (security_invoker = true); \
+             ALTER VIEW mentat_own_s.text_values SET (security_barrier = true); \
+             ALTER FUNCTION mentat_own_s.entity_value(BIGINT, TEXT) SECURITY DEFINER \
+               SET search_path = pg_catalog, \"Own Path\", pg_temp; \
+             ALTER FUNCTION mentat_own_s.find_text(TEXT) COST 5000 ROWS 7 PARALLEL RESTRICTED STRICT; \
+             ALTER FUNCTION mentat_own_s.lookup_entity(TEXT, TEXT) SET work_mem = '7MB' VOLATILE; \
+             ALTER FUNCTION mentat_own_s.count_by_attribute() LEAKPROOF",
+        )
+        .expect("owner settings");
+        let settings = || -> Vec<String> {
+            let mut v: Vec<String> = Spi::connect(|client| {
+                client
+                    .select(
+                        "SELECT c.relname || ' ' || c.reloptions::TEXT FROM pg_class c \
+                          WHERE c.relnamespace = 'mentat_own_s'::regnamespace AND c.relkind = 'v' \
+                            AND c.reloptions IS NOT NULL \
+                         UNION ALL \
+                         SELECT p.proname || ' ' || concat_ws(' ', p.prosecdef, p.proleakproof, p.proisstrict, \
+                                p.provolatile, p.proparallel, p.procost, p.prorows, p.proconfig::TEXT) \
+                           FROM pg_proc p WHERE p.pronamespace = 'mentat_own_s'::regnamespace",
+                        None,
+                        &[],
+                    )
+                    .unwrap()
+                    .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect()
+            });
+            v.sort();
+            v
+        };
+        let before = settings();
+        assert_eq!(
+            before,
+            vec![
+                "count_by_attribute f t f s u 100 1000",
+                "entities_with_attribute f f f s u 100 1000",
+                "entity_value t f f s u 100 0 {\"search_path=pg_catalog, \\\"Own Path\\\", pg_temp\"}",
+                "facts {security_invoker=true}",
+                "find_text f f t s r 5000 7",
+                "lookup_entity f f f v u 100 1000 {work_mem=7MB}",
+                "text_values {security_barrier=true}",
+            ]
+        );
+        let block = upgrade_119_block("views");
+        Spi::run(&block).expect("upgrade");
+        assert_eq!(settings(), before);
+        for (f, sig) in [
+            ("entity_value", "BIGINT, TEXT"),
+            ("find_text", "TEXT"),
+            ("lookup_entity", "TEXT, TEXT"),
+        ] {
+            assert!(
+                text(&format!(
+                    "SELECT prosrc FROM pg_proc WHERE oid = 'mentat_own_s.{f}({sig})'::regprocedure"
+                ))
+                .contains("current_"),
+                "{f}: the new body"
+            );
+        }
+        assert!(
+            text("SELECT pg_get_viewdef('mentat_own_s.facts'::regclass)").contains("current_text")
+        );
+        Spi::run(&block).expect("twice");
+        assert_eq!(settings(), before);
+    }
+
     fn names_of(store: &str) -> Vec<String> {
         sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
     }
