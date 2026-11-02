@@ -1384,6 +1384,12 @@ BEGIN
                                      AND d.deptype = 'e');
             ELSE
                 oid_ := pg_catalog.to_regprocedure(pg_catalog.format('%I.%I(%s)', st.nspname, obj.name, obj.args));
+                -- to_regprocedure finds a procedure or an aggregate too.
+                IF (SELECT p.prokind FROM pg_proc p WHERE p.oid = oid_) <> 'f' THEN
+                    RAISE WARNING 'pg_mentat upgrade: % of store "%" not replaced: it is not a function.',
+                                  oid_::regprocedure, st.store_name;
+                    CONTINUE;
+                END IF;
                 ident := oid_::regprocedure::TEXT;
                 member := EXISTS (SELECT 1 FROM pg_depend d
                                    WHERE d.classid = 'pg_proc'::regclass AND d.objid = oid_

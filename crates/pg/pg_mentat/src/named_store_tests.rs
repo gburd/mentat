@@ -3779,6 +3779,42 @@ mod tests {
         assert_eq!(settings(), before);
     }
 
+    // A store function its owner replaced by a procedure with the same
+    // arguments: ALTER EXTENSION ADD FUNCTION failed with 42809 "is not a
+    // function", which aborted the upgrade. It is left alone, with a WARNING.
+    #[pg_test]
+    fn upgrade_skips_a_procedure_in_a_functions_place() {
+        setup();
+        make_1_18_store("proc_s", false);
+        Spi::run(
+            "DROP FUNCTION mentat_proc_s.find_text(TEXT); \
+             CREATE PROCEDURE mentat_proc_s.find_text(q TEXT) LANGUAGE sql AS $$ SELECT 1 $$",
+        )
+        .expect("procedure");
+        let block = upgrade_119_block("views");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert_eq!(
+            msg,
+            "pg_mentat upgrade: mentat_proc_s.find_text(text) of store \"proc_s\" not replaced: \
+             it is not a function."
+        );
+        Spi::run(&block).expect("upgrade");
+        assert_eq!(
+            text(
+                "SELECT prokind::TEXT FROM pg_proc WHERE proname = 'find_text' \
+                    AND pronamespace = 'mentat_proc_s'::regnamespace"
+            ),
+            "p"
+        );
+        assert!(text(
+            "SELECT prosrc FROM pg_proc WHERE oid = 'mentat_proc_s.lookup_entity(TEXT, TEXT)'::regprocedure"
+        )
+        .contains("current_"));
+    }
+
     fn names_of(store: &str) -> Vec<String> {
         sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
     }
