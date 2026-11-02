@@ -24,16 +24,22 @@ use pgrx::prelude::*;
 ///
 /// Cached per backend (edn_q asks on every compile); a change to pg_proc or
 /// pg_namespace (CREATE / DROP / ALTER EXTENSION, ALTER SCHEMA RENAME)
-/// clears the cache. Read-only SPI, so a hot standby can run it.
+/// clears the cache. Read through the catalog snapshot, not the statement's:
+/// a refill after another session's commit must see that commit, or the old
+/// schema stays cached until the next unrelated pg_proc change. Takes only
+/// AccessShareLock and no XID, so a hot standby can run it.
 pub(crate) fn extension_schema(ext_name: &str) -> Option<String> {
     thread_local! {
         static CACHE: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
             std::cell::RefCell::new(std::collections::HashMap::new());
         static REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        // Bumped by every clear: a read an invalidation overtook isn't cached.
+        static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
     #[pg_guard]
     unsafe extern "C-unwind" fn clear(_arg: pg_sys::Datum, _cacheid: i32, _hash: u32) {
         CACHE.with(|c| c.borrow_mut().clear());
+        GENERATION.with(|g| g.set(g.get() + 1));
     }
     if !REGISTERED.with(|r| r.replace(true)) {
         for id in [
@@ -50,20 +56,48 @@ pub(crate) fn extension_schema(ext_name: &str) -> Option<String> {
     if let Some(hit) = CACHE.with(|c| c.borrow().get(ext_name).cloned()) {
         return hit;
     }
-    let schema = Spi::connect(|client| {
-        client
-            .select(
-                "SELECT pg_catalog.quote_ident(n.nspname) FROM pg_catalog.pg_extension e \
-                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = $1",
-                Some(1),
-                &[DatumWithOid::from(ext_name)],
-            )?
-            .first()
-            .get_one::<String>()
-    })
-    .ok()
-    .flatten();
-    CACHE.with(|c| c.borrow_mut().insert(ext_name.to_string(), schema.clone()));
+    let name = std::ffi::CString::new(ext_name).ok()?;
+    // What get_extension_oid does (pg13 has no get_extension_schema): an
+    // index scan of pg_extension by name with a NULL snapshot, which is the
+    // catalog snapshot. table_open processes pending invalidations first.
+    // SAFETY: the scan key points at `name`, alive for the scan; the tuple is
+    // read before systable_endscan; errors abort the transaction, which
+    // releases the relation and the scan.
+    let (generation, schema) = unsafe {
+        let rel = pg_sys::table_open(pg_sys::ExtensionRelationId, pg_sys::AccessShareLock as _);
+        let generation = GENERATION.with(|g| g.get());
+        let mut key: pg_sys::ScanKeyData = std::mem::zeroed();
+        pg_sys::ScanKeyInit(
+            &mut key,
+            pg_sys::Anum_pg_extension_extname as _,
+            pg_sys::BTEqualStrategyNumber as _,
+            pg_sys::Oid::from(pg_sys::F_NAMEEQ),
+            pg_sys::Datum::from(name.as_ptr()),
+        );
+        let scan = pg_sys::systable_beginscan(
+            rel,
+            pg_sys::Oid::from(pg_sys::ExtensionNameIndexId),
+            true,
+            std::ptr::null_mut(),
+            1,
+            &mut key,
+        );
+        let tuple = pg_sys::systable_getnext(scan);
+        let nsp = (!tuple.is_null()).then(|| {
+            (*pg_sys::heap_tuple_get_struct::<pg_sys::FormData_pg_extension>(tuple)).extnamespace
+        });
+        pg_sys::systable_endscan(scan);
+        pg_sys::table_close(rel, pg_sys::AccessShareLock as _);
+        let schema = nsp.and_then(|nsp| {
+            let n = pg_sys::get_namespace_name(nsp);
+            (!n.is_null())
+                .then(|| pgrx::spi::quote_identifier(std::ffi::CStr::from_ptr(n).to_string_lossy()))
+        });
+        (generation, schema)
+    };
+    if GENERATION.with(|g| g.get()) == generation {
+        CACHE.with(|c| c.borrow_mut().insert(ext_name.to_string(), schema.clone()));
+    }
     schema
 }
 

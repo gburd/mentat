@@ -1883,6 +1883,89 @@ mod tests {
             .expect("cleanup");
     }
 
+    /// extension_schema for a SQL caller (a dblink session below). It first
+    /// does what this backend's next lock would: process pending invalidations.
+    #[pg_extern]
+    fn xs_extension_schema(name: &str) -> Option<String> {
+        // SAFETY: what any lock acquisition does; no state of ours is held.
+        unsafe { pg_sys::AcceptInvalidationMessages() };
+        crate::functions::virtual_tables::extension_schema(name)
+    }
+
+    // extension_schema caches per backend; a pg_proc / pg_namespace change
+    // clears the cache. The refill read pg_extension with the caller's
+    // snapshot: when another session's ALTER EXTENSION ... SET SCHEMA
+    // committed during a statement or REPEATABLE READ transaction that
+    // started earlier, the old schema went back into the cache for the rest
+    // of the backend's life (edn_q then named public.levenshtein: "does not
+    // exist"). Session B reads, session A runs the DDL; both are dblink
+    // connections, so it is committed and cleaned up at the end. `seg`: no
+    // other test uses it.
+    #[pg_test]
+    fn extension_schema_sees_ddl_committed_during_the_transaction() {
+        crate::ensure_extension_loaded();
+        let available: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_available_extensions WHERE name IN ('dblink', 'seg')",
+        )
+        .unwrap()
+        .unwrap();
+        if available < 2 {
+            return;
+        }
+        Spi::run("CREATE EXTENSION IF NOT EXISTS dblink").expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        Spi::run(&format!(
+            "SELECT dblink_connect('xs_a', '{conn}'), dblink_connect('xs_b', '{conn}')"
+        ))
+        .expect("connect");
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        let in_b = |sql: &str| -> Option<String> {
+            Spi::get_one(&format!(
+                "SELECT s FROM dblink('xs_b', '{}') AS t(s text)",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        };
+        let schema = || in_b("SELECT tests.xs_extension_schema('seg')");
+        on("xs_a", "DROP EXTENSION IF EXISTS seg");
+        on("xs_a", "DROP SCHEMA IF EXISTS xs_one, xs_two, \"xs Two\"");
+        on("xs_a", "CREATE SCHEMA xs_one");
+        on("xs_a", "CREATE SCHEMA xs_two");
+        on("xs_a", "CREATE EXTENSION seg SCHEMA xs_one");
+        on("xs_b", "BEGIN ISOLATION LEVEL REPEATABLE READ");
+        let first = schema();
+        on("xs_a", "ALTER EXTENSION seg SET SCHEMA xs_two");
+        let in_tx = schema();
+        let xid = in_b("SELECT txid_current_if_assigned()::text");
+        on("xs_b", "COMMIT");
+        let after = schema();
+        on("xs_a", "ALTER SCHEMA xs_two RENAME TO \"xs Two\"");
+        let renamed = schema();
+        on("xs_a", "DROP EXTENSION seg");
+        let dropped = schema();
+        on("xs_a", "DROP SCHEMA xs_one, \"xs Two\"");
+        Spi::run("SELECT dblink_disconnect('xs_a'), dblink_disconnect('xs_b')").expect("close");
+        assert_eq!(first.as_deref(), Some("xs_one"));
+        assert_eq!(
+            in_tx.as_deref(),
+            Some("xs_two"),
+            "moved during the transaction"
+        );
+        assert_eq!(xid, None, "the read assigns no transaction id");
+        assert_eq!(after.as_deref(), Some("xs_two"), "after the transaction");
+        assert_eq!(renamed.as_deref(), Some("\"xs Two\""), "schema renamed");
+        assert_eq!(dropped, None, "dropped");
+    }
+
     // (pull ?e [...]) in :find called edn_pull, which reads the default
     // store: on a named store it returned the default store's values for the
     // same entity id. Entity ids overlap across stores.
