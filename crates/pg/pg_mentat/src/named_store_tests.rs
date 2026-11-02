@@ -1710,6 +1710,262 @@ mod tests {
         Spi::run("SELECT drop_store('mvr_b')").expect("drop");
     }
 
+    // materialize / refresh / drop_matview validated the store name as
+    // create_store does, which refuses "default": materialize('default', ...)
+    // (the form docs/src/sql-functions.md shows) always failed with
+    // ":db.error/invalid-store-name ... 'default' is a reserved name".
+    #[pg_test]
+    fn materialize_on_the_default_store() {
+        setup();
+        tx("default", SCHEMA_TX);
+        tx("default", "[{:p/name \"one\"}]");
+        Spi::run("SELECT materialize('default', 'mvd_names', '[:find ?n :where [_ :p/name ?n]]')")
+            .expect("materialize('default', ...)");
+        let rows = || {
+            sorted(json(
+                "SELECT coalesce(jsonb_agg(n), '[]') FROM mentat.mvd_names",
+            ))
+        };
+        assert_eq!(rows(), vec!["one"]);
+        tx("default", "[{:p/name \"two\"}]");
+        assert_eq!(rows(), vec!["one"], "manual: refreshed only on request");
+        Spi::run("SELECT refresh('default', 'mvd_names')").expect("refresh");
+        assert_eq!(rows(), vec!["one", "two"]);
+        let listed = json("SELECT list_matviews('default')");
+        assert_eq!(listed.as_array().map(|a| a.len()), Some(1), "{listed}");
+        Spi::run("SELECT drop_matview('default', 'mvd_names')").expect("drop_matview");
+        let gone: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_matviews WHERE matviewname = 'mvd_names'")
+                .unwrap()
+                .unwrap();
+        assert_eq!(gone, 0);
+    }
+
+    // On PostgreSQL 17 CREATE / REFRESH MATERIALIZED VIEW run the view's query
+    // with search_path = pg_catalog, pg_temp, and the SQL edn_q generates
+    // for a find-pull called pull(...) / edn_pull(...) unqualified: "function
+    // pull(text, text, bigint) does not exist" (#382). Through materialize
+    // and create_datalog_materialized_view, on the default store and on a
+    // named store, created and refreshed. Also with the caller's own path
+    // pinned, as a pinned trigger function runs it.
+    #[pg_test]
+    fn find_pull_in_a_materialized_view() {
+        setup();
+        Spi::run("SELECT create_store('mvp_s')").expect("create");
+        let pull_q = "[:find (pull ?e [:p/name]) :where [?e :p/name _]]";
+        for store in ["default", "mvp_s"] {
+            tx(store, SCHEMA_TX);
+            tx(store, &format!("[{{:p/name \"{store}-1\"}}]"));
+            let schema = if store == "default" {
+                "mentat"
+            } else {
+                "mentat_mvp_s"
+            };
+            Spi::run(&format!(
+                "SELECT materialize('{store}', 'mvp_v', '{pull_q}')"
+            ))
+            .unwrap_or_else(|e| panic!("{store}: materialize: {e}"));
+            let rows = || -> Vec<String> {
+                let v = json(&format!(
+                    "SELECT coalesce(jsonb_agg(p ORDER BY p::TEXT), '[]') FROM \
+                     (SELECT (\"(pull ?e [ :p_name ])\")::jsonb->>':p/name' AS p FROM {schema}.mvp_v) s"
+                ));
+                sorted(v)
+            };
+            assert_eq!(rows(), vec![format!("{store}-1")], "{store}");
+            tx(store, &format!("[{{:p/name \"{store}-2\"}}]"));
+            Spi::run(&format!("SELECT refresh('{store}', 'mvp_v')"))
+                .unwrap_or_else(|e| panic!("{store}: refresh: {e}"));
+            assert_eq!(
+                rows(),
+                vec![format!("{store}-1"), format!("{store}-2")],
+                "{store}"
+            );
+            Spi::run(&format!("SELECT drop_matview('{store}', 'mvp_v')")).expect("drop");
+        }
+        Spi::run(&format!(
+            "SELECT mentat.create_datalog_materialized_view('mvp_d', '{pull_q}')"
+        ))
+        .expect("create_datalog_materialized_view");
+        // (mentat.refresh_datalog_view doesn't compile: `concurrently` is a
+        // keyword in its IF.)
+        Spi::run("REFRESH MATERIALIZED VIEW mvp_d").expect("refresh mvp_d");
+        Spi::run("SELECT mentat.drop_datalog_view('mvp_d', false, true)")
+            .expect("drop_datalog_view");
+        // The caller's path pinned to pg_catalog, as in a pinned trigger.
+        Spi::run("SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)")
+            .expect("pin");
+        let got = Spi::get_one::<pgrx::JsonB>(&format!(
+            "SELECT public.q('mvp_s', '{pull_q}', '{{}}'::jsonb)"
+        ))
+        .expect("q under a pinned path")
+        .expect("NULL")
+        .0;
+        assert_eq!(got["result"].as_array().map(|a| a.len()), Some(2), "{got}");
+        Spi::run("SELECT pg_catalog.set_config('search_path', '\"$user\", public', true)")
+            .expect("unpin");
+        Spi::run("SELECT drop_store('mvp_s')").expect("drop");
+    }
+
+    // The contrib functions edn_q generates calls to (fuzzystrmatch's
+    // levenshtein / soundex / metaphone, pg_trgm's similarity) were named
+    // bare, so they resolved only through the search path: in a view on
+    // PostgreSQL 17 (CREATE / REFRESH MATERIALIZED VIEW pin it to
+    // pg_catalog), in a pinned trigger, or with the extension in a schema
+    // off the path, "function levenshtein(text, text) does not exist"
+    // (#382). They are named through their extension's schema.
+    #[pg_test]
+    fn extension_functions_resolve_through_their_schema() {
+        setup();
+        let available: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_available_extensions \
+              WHERE name IN ('fuzzystrmatch', 'pg_trgm')",
+        )
+        .unwrap()
+        .unwrap();
+        if available < 2 {
+            return;
+        }
+        Spi::run(
+            "DROP EXTENSION IF EXISTS fuzzystrmatch CASCADE; DROP EXTENSION IF EXISTS pg_trgm CASCADE; \
+             CREATE SCHEMA ext_off_path; \
+             CREATE EXTENSION fuzzystrmatch SCHEMA ext_off_path; \
+             CREATE EXTENSION pg_trgm SCHEMA ext_off_path",
+        )
+        .expect("extensions off the path");
+        Spi::run("SELECT create_store('xq_s')").expect("create");
+        let lev = "[:find ?n ?d :where [?e :p/name ?n] [(levenshtein ?n \"Alice\") ?d] [(< ?d 2)]]";
+        let codes = "[:find ?s ?m :where [?e :p/name \"Alicia\"] [(soundex \"Alicia\") ?s] \
+                     [(metaphone \"Alicia\" 4) ?m]]";
+        let sim = "[:find ?n :where [(similar-to $ :p/name \"Alice\" 0.3) [[?e ?n ?s]]]]";
+        for store in ["default", "xq_s"] {
+            tx(store, SCHEMA_TX);
+            tx(
+                store,
+                "[{:p/name \"Alice\"} {:p/name \"Alicia\"} {:p/name \"Bob\"}]",
+            );
+            assert_eq!(
+                q(store, lev, "{}")["result"],
+                serde_json::json!([["Alice", 0]]),
+                "{store}"
+            );
+            assert_eq!(
+                q(store, codes, "{}")["result"],
+                serde_json::json!([["A420", "ALX"]]),
+                "{store}"
+            );
+            let near = sorted(
+                q(store, &sim.replace(":find ?n", ":find [?n ...]"), "{}")["result"].clone(),
+            );
+            assert_eq!(near, vec!["Alice", "Alicia"], "{store}");
+            // In a materialized view (PostgreSQL 17 pins its search path).
+            let schema = if store == "default" {
+                "mentat"
+            } else {
+                "mentat_xq_s"
+            };
+            for (view, query) in [("xq_lev", lev), ("xq_sim", sim)] {
+                Spi::run(&format!(
+                    "SELECT materialize('{store}', '{view}', '{query}')"
+                ))
+                .unwrap_or_else(|e| panic!("{store} {view}: {e}"));
+                Spi::run(&format!("SELECT refresh('{store}', '{view}')"))
+                    .unwrap_or_else(|e| panic!("{store} {view}: refresh: {e}"));
+                let n: i64 = Spi::get_one(&format!("SELECT count(*) FROM {schema}.{view}"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(n, if view == "xq_lev" { 1 } else { 2 }, "{store} {view}");
+                Spi::run(&format!("SELECT drop_matview('{store}', '{view}')")).expect("drop");
+            }
+        }
+        Spi::run("SELECT drop_store('xq_s')").expect("drop");
+        Spi::run("DROP EXTENSION fuzzystrmatch; DROP EXTENSION pg_trgm; DROP SCHEMA ext_off_path")
+            .expect("cleanup");
+    }
+
+    /// extension_schema for a SQL caller (a dblink session below). It first
+    /// does what this backend's next lock would: process pending invalidations.
+    #[pg_extern]
+    fn xs_extension_schema(name: &str) -> Option<String> {
+        // SAFETY: what any lock acquisition does; no state of ours is held.
+        unsafe { pg_sys::AcceptInvalidationMessages() };
+        crate::functions::virtual_tables::extension_schema(name)
+    }
+
+    // extension_schema caches per backend; a pg_proc / pg_namespace change
+    // clears the cache. The refill read pg_extension with the caller's
+    // snapshot: when another session's ALTER EXTENSION ... SET SCHEMA
+    // committed during a statement or REPEATABLE READ transaction that
+    // started earlier, the old schema went back into the cache for the rest
+    // of the backend's life (edn_q then named public.levenshtein: "does not
+    // exist"). Session B reads, session A runs the DDL; both are dblink
+    // connections, so it is committed and cleaned up at the end. `seg`: no
+    // other test uses it.
+    #[pg_test]
+    fn extension_schema_sees_ddl_committed_during_the_transaction() {
+        crate::ensure_extension_loaded();
+        let available: i64 = Spi::get_one(
+            "SELECT count(*) FROM pg_available_extensions WHERE name IN ('dblink', 'seg')",
+        )
+        .unwrap()
+        .unwrap();
+        if available < 2 {
+            return;
+        }
+        Spi::run("CREATE EXTENSION IF NOT EXISTS dblink").expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        Spi::run(&format!(
+            "SELECT dblink_connect('xs_a', '{conn}'), dblink_connect('xs_b', '{conn}')"
+        ))
+        .expect("connect");
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        let in_b = |sql: &str| -> Option<String> {
+            Spi::get_one(&format!(
+                "SELECT s FROM dblink('xs_b', '{}') AS t(s text)",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        };
+        let schema = || in_b("SELECT tests.xs_extension_schema('seg')");
+        on("xs_a", "DROP EXTENSION IF EXISTS seg");
+        on("xs_a", "DROP SCHEMA IF EXISTS xs_one, xs_two, \"xs Two\"");
+        on("xs_a", "CREATE SCHEMA xs_one");
+        on("xs_a", "CREATE SCHEMA xs_two");
+        on("xs_a", "CREATE EXTENSION seg SCHEMA xs_one");
+        on("xs_b", "BEGIN ISOLATION LEVEL REPEATABLE READ");
+        let first = schema();
+        on("xs_a", "ALTER EXTENSION seg SET SCHEMA xs_two");
+        let in_tx = schema();
+        let xid = in_b("SELECT txid_current_if_assigned()::text");
+        on("xs_b", "COMMIT");
+        let after = schema();
+        on("xs_a", "ALTER SCHEMA xs_two RENAME TO \"xs Two\"");
+        let renamed = schema();
+        on("xs_a", "DROP EXTENSION seg");
+        let dropped = schema();
+        on("xs_a", "DROP SCHEMA xs_one, \"xs Two\"");
+        Spi::run("SELECT dblink_disconnect('xs_a'), dblink_disconnect('xs_b')").expect("close");
+        assert_eq!(first.as_deref(), Some("xs_one"));
+        assert_eq!(
+            in_tx.as_deref(),
+            Some("xs_two"),
+            "moved during the transaction"
+        );
+        assert_eq!(xid, None, "the read assigns no transaction id");
+        assert_eq!(after.as_deref(), Some("xs_two"), "after the transaction");
+        assert_eq!(renamed.as_deref(), Some("\"xs Two\""), "schema renamed");
+        assert_eq!(dropped, None, "dropped");
+    }
+
     // (pull ?e [...]) in :find called edn_pull, which reads the default
     // store: on a named store it returned the default store's values for the
     // same entity id. Entity ids overlap across stores.

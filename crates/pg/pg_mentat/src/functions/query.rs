@@ -33,7 +33,11 @@ const STMT_CACHE_CAPACITY: usize = 256;
 
 // Thread-local prepared statement cache.
 //
-// Uses the generated SQL string as the cache key. Since PostgreSQL backends
+// Keyed by the generated SQL string and its parameters' type OIDs: a plan is
+// prepared for its parameter types, and one SQL text can be bound with
+// different types (`[(= ?v ?x)]` with a string, then an integer input). A
+// plan run with another type's Datum crashed the backend or compared the
+// wrong column. Since PostgreSQL backends
 // are single-threaded, a `RefCell` is sufficient (no `Mutex` needed).
 // `OwnedPreparedStatement` uses `SPI_keepplan` to persist the plan in
 // `TopMemoryContext`, so it survives across SPI connection lifetimes.
@@ -82,9 +86,14 @@ fn execute_cached_query<'a>(
     // Try to execute with a cached statement.
     // The borrow of the RefCell is scoped to the closure and released
     // before the SpiTupleTable is used (it references SPI memory, not the plan).
+    let arg_types: Vec<PgOid> = params
+        .iter()
+        .map(|p| PgOid::from_untagged(p.oid()))
+        .collect();
+    let key = stmt_cache_key(sql, &arg_types);
     let cached_result: Option<Result<pgrx::spi::SpiTupleTable<'a>, _>> = STMT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some(entry) = cache.get_mut(sql) {
+        if let Some(entry) = cache.get_mut(&key) {
             entry.hits += 1;
             // Execute using the cached prepared statement.
             // SPI_execute_plan copies what it needs from the plan;
@@ -102,10 +111,6 @@ fn execute_cached_query<'a>(
 
     // Cache miss: prepare, execute, then cache the plan.
     crate::monitoring::record_stmt_cache_miss();
-    let arg_types: Vec<PgOid> = params
-        .iter()
-        .map(|p| PgOid::from_untagged(p.oid()))
-        .collect();
     let prepared = client.prepare(sql, &arg_types)?;
 
     // Execute using the borrowed prepared statement (does not consume it).
@@ -116,7 +121,7 @@ fn execute_cached_query<'a>(
     let owned = prepared.keep();
     STMT_CACHE.with(|cache| {
         cache.borrow_mut().put(
-            sql.to_string(),
+            key,
             CacheEntry {
                 stmt: owned,
                 hits: 0,
@@ -125,6 +130,13 @@ fn execute_cached_query<'a>(
     });
 
     Ok(result)
+}
+
+/// The plan cache key: the SQL text, then a NUL and the parameter type OIDs
+/// (SQL text holds no NUL, so the stats' SQL prefix is the text itself).
+fn stmt_cache_key(sql: &str, arg_types: &[PgOid]) -> String {
+    let oids: Vec<String> = arg_types.iter().map(|t| t.value().to_string()).collect();
+    format!("{sql}\0{}", oids.join(","))
 }
 
 use crate::types::constants::type_tag;
@@ -146,6 +158,28 @@ pub(crate) fn select_one_i64_ro(sql: &str, args: &[DatumWithOid<'_>]) -> Option<
     Spi::connect(|client| client.select(sql, Some(1), args)?.first().get_one::<i64>())
         .ok()
         .flatten()
+}
+
+/// `name` (a function or type of extension `ext`) qualified with the schema
+/// `ext` is installed in, for the SQL edn_q generates: on PostgreSQL 17
+/// CREATE / REFRESH MATERIALIZED VIEW run it with search_path = pg_catalog,
+/// pg_temp, as do the pinned trigger functions, so a bare name is not found
+/// (#382). The bare name when `ext` isn't installed: the query then fails
+/// with PostgreSQL's own "does not exist", as before.
+pub(crate) fn ext_qualified(ext: &str, name: &str) -> String {
+    match crate::functions::virtual_tables::extension_schema(ext) {
+        Some(schema) => format!("{schema}.{name}"),
+        None => name.to_string(),
+    }
+}
+
+/// Operator `op` of extension `ext`, as `OPERATOR(schema.op)` (see
+/// [`ext_qualified`]); the bare operator when `ext` isn't installed.
+pub(crate) fn ext_operator(ext: &str, op: &str) -> String {
+    match crate::functions::virtual_tables::extension_schema(ext) {
+        Some(schema) => format!("OPERATOR({schema}.{op})"),
+        None => op.to_string(),
+    }
 }
 
 /// State accumulated during SQL generation: the parameterized query string
@@ -1152,6 +1186,7 @@ fn bind_input_value(
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     match value {
         serde_json::Value::String(s) => {
@@ -1200,15 +1235,19 @@ fn bind_input_value(
             ))
         }
         serde_json::Value::Array(arr) => {
-            // Lookup ref in value position: [":person/email", "alice@example.com"]
-            let eid = resolve_lookup_ref_to_eid(arr, schema_prefix)?;
+            // Lookup ref in value position: [":person/email", "alice@example.com"].
+            // One that identifies no entity matches nothing.
+            let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix, temporal) else {
+                return Some("FALSE".to_string());
+            };
             let param = builder.bind_bigint(eid);
             Some(format!(
                 "({alias}.v_ref = {param} AND {alias}.value_type_tag = {tag})",
                 tag = type_tag::REF
             ))
         }
-        _ => None,
+        // null or an object: no datom has that value.
+        _ => Some("FALSE".to_string()),
     }
 }
 
@@ -1228,43 +1267,63 @@ fn scalar_input_constraint(
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     match col {
-        "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix),
-        "e" => bind_input_entity(alias, value, builder, schema_prefix),
-        "a" | "tx" => value.as_i64().map(|i| {
-            let param = builder.bind_bigint(i);
-            format!("{alias}.{col} = {param}")
+        "v" => bind_input_value(alias, value, is_ref, builder, schema_prefix, temporal),
+        "e" | "a" => bind_input_entity(alias, col, value, builder, schema_prefix, temporal),
+        // A value no datom has here matches nothing.
+        "tx" => Some(match value.as_i64() {
+            Some(i) => format!("{alias}.tx = {}", builder.bind_bigint(i)),
+            None => "FALSE".to_string(),
         }),
-        "added" => value.as_bool().map(|b| {
-            let param = builder.bind_bool(b);
-            format!("{alias}.added = {param}")
+        "added" => Some(match value.as_bool() {
+            Some(b) => format!("{alias}.added = {}", builder.bind_bool(b)),
+            None => "FALSE".to_string(),
         }),
         _ => None,
     }
 }
 
-/// Bind an :in clause variable to a WHERE constraint on an entity column.
+/// Bind an :in clause variable to a WHERE constraint on an entity column
+/// (`col`: `e`, or `a` for an attribute).
 ///
-/// For entity-position variables, the bound value must be an integer entity ID
+/// The bound value is an integer entity ID, an ident keyword (`":person/name"`)
 /// or a lookup ref array like `[":person/email", "alice@example.com"]`.
-/// Lookup refs are resolved eagerly against the store's datoms table.
+/// Lookup refs are resolved eagerly against the store's datoms table. A value
+/// that identifies no entity matches nothing.
 fn bind_input_entity(
     alias: &str,
+    col: &str,
     value: &serde_json::Value,
     builder: &mut SqlBuilder<'_>,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     if let Some(i) = value.as_i64() {
         let param = builder.bind_bigint(i);
-        Some(format!("{alias}.e = {param}"))
+        Some(format!("{alias}.{col} = {param}"))
     } else if let Some(arr) = value.as_array() {
-        // Lookup ref: [":person/email", "alice@example.com"]
-        let eid = resolve_lookup_ref_to_eid(arr, schema_prefix)?;
+        // Lookup ref: [":person/email", "alice@example.com"]. One that
+        // identifies no entity matches nothing (no constraint would match
+        // every entity).
+        let Some(eid) = resolve_lookup_ref_to_eid(arr, schema_prefix, temporal) else {
+            return Some("FALSE".to_string());
+        };
         let param = builder.bind_bigint(eid);
-        Some(format!("{alias}.e = {param}"))
+        Some(format!("{alias}.{col} = {param}"))
     } else {
-        None
+        // An ident (":db/ident" keyword) names its entity; any other value
+        // identifies none.
+        let ident = value.as_str().filter(|s| s.starts_with(':'));
+        let eid = ident.and_then(|s| {
+            crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix))
+                .resolve_ident(s)
+        });
+        Some(match eid {
+            Some(eid) => format!("{alias}.{col} = {}", builder.bind_bigint(eid)),
+            None => "FALSE".to_string(),
+        })
     }
 }
 
@@ -1275,7 +1334,11 @@ fn bind_input_entity(
 ///
 /// Returns the resolved entity ID, or None if the lookup ref is malformed
 /// or cannot be resolved.
-fn resolve_lookup_ref_to_eid(arr: &[serde_json::Value], schema_prefix: &str) -> Option<i64> {
+fn resolve_lookup_ref_to_eid(
+    arr: &[serde_json::Value],
+    schema_prefix: &str,
+    temporal: &TemporalOption,
+) -> Option<i64> {
     if arr.len() != 2 {
         return None;
     }
@@ -1291,89 +1354,57 @@ fn resolve_lookup_ref_to_eid(arr: &[serde_json::Value], schema_prefix: &str) -> 
         .resolve_ident(attr_str)?;
 
     // Query for the entity with this unique attribute value using typed columns
-    lookup_ref_query(attr_entid, &arr[1], schema_prefix)
+    lookup_ref_query(attr_entid, &arr[1], schema_prefix, temporal)
 }
 
-/// Perform a lookup ref query against type-specific tables.
+/// The entity that holds `value` for the unique attribute `attr_entid`, on
+/// the query's basis: the current-state projection, or the log as of / since
+/// the query's tx (pull's rule, [`crate::functions::pull::live_table`]). The
+/// log alone keeps every value ever asserted, so a value moved to another
+/// entity or retracted would still resolve to its old holder (#374).
 ///
-/// Queries the appropriate type-specific table directly based on the value type,
-/// using store_id for multi-store isolation.
+/// The table is picked by the JSON type of the value, using store_id for
+/// multi-store isolation.
 fn lookup_ref_query(
     attr_entid: i64,
     value: &serde_json::Value,
     schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<i64> {
     // Resolve store_id for the type-specific tables
     let store_id = resolve_store_id(schema_prefix).ok()?;
-
-    match value {
-        serde_json::Value::String(s) => {
-            if let Some(stripped) = s.strip_prefix(':') {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_keyword_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(stripped),
-                    ],
-                )
-            } else {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_text_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(s.as_str()),
-                    ],
-                )
-            }
-        }
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_long_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(i),
-                    ],
-                )
-            } else if let Some(f) = n.as_f64() {
-                select_one_i64_ro(
-                    &format!(
-                        "SELECT e FROM {schema_prefix}datoms_double_new \
-                     WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
-                    ),
-                    &[
-                        DatumWithOid::from(store_id),
-                        DatumWithOid::from(attr_entid),
-                        DatumWithOid::from(f),
-                    ],
-                )
-            } else {
-                None
-            }
-        }
-        serde_json::Value::Bool(b) => select_one_i64_ro(
+    let lookup = |ty: &str, v: DatumWithOid<'_>| {
+        let table = crate::functions::pull::live_table(
+            schema_prefix.trim_end_matches('.'),
+            ty,
+            temporal.as_of,
+            temporal.since,
+        );
+        select_one_i64_ro(
             &format!(
-                "SELECT e FROM {schema_prefix}datoms_boolean_new \
-                 WHERE store_id = $1 AND a = $2 AND v = $3 AND added = true LIMIT 1"
+                "SELECT e FROM {table} AS l WHERE store_id = $1 AND a = $2 AND v = $3 LIMIT 1"
             ),
             &[
                 DatumWithOid::from(store_id),
                 DatumWithOid::from(attr_entid),
-                DatumWithOid::from(*b),
+                v,
             ],
-        ),
+        )
+    };
+
+    match value {
+        serde_json::Value::String(s) => match s.strip_prefix(':') {
+            Some(stripped) => lookup("keyword", DatumWithOid::from(stripped)),
+            None => lookup("text", DatumWithOid::from(s.as_str())),
+        },
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                lookup("long", DatumWithOid::from(i))
+            } else {
+                lookup("double", DatumWithOid::from(n.as_f64()?))
+            }
+        }
+        serde_json::Value::Bool(b) => lookup("boolean", DatumWithOid::from(*b)),
         _ => None,
     }
 }
@@ -3866,8 +3897,8 @@ fn resolve_fts_language(attr_ident: &str, schema_prefix: &str) -> String {
         let query = format!(
             "SELECT dt.v \
              FROM {schema_prefix}schema s \
-             JOIN {schema_prefix}datoms_text_new dt \
-               ON dt.store_id = {store_id} AND dt.e = s.entid AND dt.added = true \
+             JOIN {schema_prefix}current_text dt \
+               ON dt.store_id = {store_id} AND dt.e = s.entid \
              WHERE s.ident = '{ident}' \
                AND dt.a = (SELECT entid FROM {schema_prefix}schema WHERE ident = ':db/doc') \
              LIMIT 1",
@@ -4176,8 +4207,13 @@ fn build_fuzzy_match_join(
     // The %~~ operator and tre_pattern() function are provided by the
     // pg_tre extension. Cast k to int4 since tre_pattern's two-arg variant
     // takes (text, int4); using ::INT in SQL avoids a binding-OID mismatch.
+    // Each named through pg_tre's schema (#382).
+    let (op, tre_pattern) = (
+        ext_operator("pg_tre", "%~~"),
+        ext_qualified("pg_tre", "tre_pattern"),
+    );
     where_parts.push(format!(
-        "{dt_alias}.v %~~ tre_pattern({pattern_param}, ({k_param})::INT)"
+        "{dt_alias}.v {op} {tre_pattern}({pattern_param}, ({k_param})::INT)"
     ));
 
     // Bind result variables from a [[?e ?val]] relation pattern.
@@ -4313,8 +4349,10 @@ fn build_similar_to_join(
     where_parts.push(format!("{dt_alias}.store_id = {store_id_param}"));
     // similarity() is provided by pg_trgm. The expression returns float in
     // [0.0, 1.0]; we filter and (optionally) project it as the score.
+    // pg_trgm's similarity, through its schema (#382).
+    let similarity = ext_qualified("pg_trgm", "similarity");
     where_parts.push(format!(
-        "similarity({dt_alias}.v, {needle_param}) >= ({threshold_param})::REAL"
+        "{similarity}({dt_alias}.v, {needle_param}) >= ({threshold_param})::REAL"
     ));
 
     // Bind result variables from a [[?e ?val ?score]] relation pattern.
@@ -4334,7 +4372,7 @@ fn build_similar_to_join(
                     2 => {
                         var_bindings.insert(
                             var_name,
-                            format!("similarity({dt_alias}.v, {needle_param})"),
+                            format!("{similarity}({dt_alias}.v, {needle_param})"),
                         );
                     }
                     _ => {}
@@ -4349,7 +4387,7 @@ fn build_similar_to_join(
         from_fragment,
         where_parts,
         // Expose pg_trgm similarity as the score so :order :score works.
-        score_expr: Some(format!("similarity({dt_alias}.v, {needle_param})")),
+        score_expr: Some(format!("{similarity}({dt_alias}.v, {needle_param})")),
         entity_alias: sim_entity_var.map(|n| (n, dt_alias.clone())),
     })
 }
@@ -4447,8 +4485,9 @@ fn build_rum_fulltext_join(
         // rum_ts_score returns a real — higher = more relevant. Unlike
         // ts_rank_cd, it factors in lexeme positions stored in the rum
         // index for proximity-aware ranking.
+        let rum_ts_score = ext_qualified("rum", "rum_ts_score");
         score_expr = Some(format!(
-            "rum_ts_score(to_tsvector('{fts_lang}', {dt_alias}.v), \
+            "{rum_ts_score}(to_tsvector('{fts_lang}', {dt_alias}.v), \
              {tsquery_fn}('{fts_lang}', {search_param}))"
         ));
     } else {
@@ -4647,10 +4686,15 @@ fn build_vector_near_join(
     let _ = attr_param;
 
     let dt_alias = format!("vn_d{}", fts_idx);
+    // pgvector's type and operator, through its schema (#382).
+    let (dist_op, vector) = (
+        ext_operator("vector", dist_op),
+        ext_qualified("vector", "vector"),
+    );
     let from_fragment = format!(
-        "(SELECT e, (v {dist_op} ({vec_param})::vector) AS vec_dist \
+        "(SELECT e, (v {dist_op} ({vec_param})::{vector}) AS vec_dist \
          FROM {aux_table} \
-         ORDER BY v {dist_op} ({vec_param})::vector \
+         ORDER BY v {dist_op} ({vec_param})::{vector} \
          LIMIT {k_param}) AS {dt_alias}"
     );
 
@@ -4955,15 +4999,20 @@ fn build_bm25_match_join(
     let dt_alias = format!("bm_d{}", fts_idx);
     // The @@@ predicate is required for pg_fts to use the index; ordering by
     // <=> gives the BM25 ranking, served from the index.
-    let doc = format!("to_ftsdoc('{lang}', t.v)");
-    let ftsq = format!("to_ftsquery('{lang}', {q_param})");
+    // pg_fts's functions and operators, through its schema (#382).
+    let doc = format!("{}('{lang}', t.v)", ext_qualified("pg_fts", "to_ftsdoc"));
+    let ftsq = format!(
+        "{}('{lang}', {q_param})",
+        ext_qualified("pg_fts", "to_ftsquery")
+    );
+    let (rank, matches) = (ext_operator("pg_fts", "<=>"), ext_operator("pg_fts", "@@@"));
     let from_fragment = format!(
-        "(SELECT t.e, ({doc} <=> {ftsq}) AS bm25_score \
+        "(SELECT t.e, ({doc} {rank} {ftsq}) AS bm25_score \
          FROM {schema_prefix}datoms_text_new t \
          WHERE t.a = {entid} \
            AND t.store_id = {store_id} AND t.added \
-           AND {doc} @@@ {ftsq} \
-         ORDER BY {doc} <=> {ftsq} \
+           AND {doc} {matches} {ftsq} \
+         ORDER BY {doc} {rank} {ftsq} \
          LIMIT {k_param}) AS {dt_alias}"
     );
     let entity_var = bind_entity_score_rel(&wf.binding, &dt_alias, "bm25_score", var_bindings);
@@ -5061,13 +5110,16 @@ fn build_pg_infer_scalar_binding(
             // The 3rd arg is accepted syntactically for symmetry with
             // infer-implies, but emits a NOTICE'able no-op (silent here).
             let _ = &model_arg; // explicitly ignored
-            format!("infer_similarity({arg0}, {arg1})")
+            format!(
+                "{}({arg0}, {arg1})",
+                ext_qualified("pg_infer", "infer_similarity")
+            )
         }
-        "infer-implies" => match &model_arg {
+        "infer-implies" => match (&model_arg, ext_qualified("pg_infer", "implies")) {
             // implies(subject, object, model) returns bool; cast to INT for
             // pg_mentat's scalar-binding return path.
-            Some(m) => format!("(implies({arg0}, {arg1}, {m}))::INT"),
-            None => format!("(implies({arg0}, {arg1}))::INT"),
+            (Some(m), implies) => format!("({implies}({arg0}, {arg1}, {m}))::INT"),
+            (None, implies) => format!("({implies}({arg0}, {arg1}))::INT"),
         },
         _ => unreachable!(
             "build_pg_infer_scalar_binding called with non-pg_infer op '{}'",
@@ -5178,12 +5230,13 @@ fn build_infer_near_join(
     // Top-K subquery using <~>. The infer index opclass infer_text_ops
     // supports ORDER BY <~>; without an index this is a sequential
     // scan with a sort.
+    let dist = ext_operator("pg_infer", "<~>");
     let from_fragment = format!(
-        "(SELECT e, (v <~> ({needle_param})::TEXT) AS infer_dist \
+        "(SELECT e, (v {dist} ({needle_param})::TEXT) AS infer_dist \
          FROM {schema_prefix}current_text \
          WHERE a = (SELECT entid FROM {schema_prefix}schema WHERE ident = {attr_param}) \
            AND store_id = {store_id_param} \
-         ORDER BY v <~> ({needle_param})::TEXT \
+         ORDER BY v {dist} ({needle_param})::TEXT \
          LIMIT {k_param}) AS {dt_alias}"
     );
 
@@ -5267,7 +5320,10 @@ fn build_pg_infer_table_join(
             let _ = optional_model_keyword(&wf.args, 2, op)?; // accepted, GUC-driven
             let cols = vec!["layer", "feature", "gate_score", "concept"];
             (
-                format!("SELECT layer, feature, gate_score, concept FROM walk({prompt}, {top})"),
+                format!(
+                    "SELECT layer, feature, gate_score, concept FROM {}({prompt}, {top})",
+                    ext_qualified("pg_infer", "walk")
+                ),
                 cols,
             )
         }
@@ -5308,7 +5364,8 @@ fn build_pg_infer_table_join(
             let cols = vec!["relation", "target", "gate_score", "layer"];
             (
                 format!(
-                    "SELECT relation, target, gate_score, layer FROM describe({entity}, {threshold_sql})"
+                    "SELECT relation, target, gate_score, layer FROM {}({entity}, {threshold_sql})",
+                    ext_qualified("pg_infer", "describe")
                 ),
                 cols,
             )
@@ -5328,7 +5385,10 @@ fn build_pg_infer_table_join(
             let _ = optional_model_keyword(&wf.args, 2, op)?;
             let cols = vec!["token", "probability", "rank"];
             (
-                format!("SELECT token, probability, rank FROM infer({prompt}, {top})"),
+                format!(
+                    "SELECT token, probability, rank FROM {}({prompt}, {top})",
+                    ext_qualified("pg_infer", "infer")
+                ),
                 cols,
             )
         }
@@ -5561,8 +5621,9 @@ fn build_postgis_join(
     // errors when the column was attached with a non-zero SRID.
     let srid: i32 = pgrx::Spi::connect(|client| {
         let q = format!(
-            "SELECT srid FROM geometry_columns WHERE f_table_schema = 'mentat' \
+            "SELECT srid FROM {} WHERE f_table_schema = 'mentat' \
              AND f_table_name = 'attr_{}_geom' AND f_geometry_column = 'geom'",
+            ext_qualified("postgis", "geometry_columns"),
             entid
         );
         let mut tt = client.select(&q, Some(1), &[])?;
@@ -5582,7 +5643,10 @@ fn build_postgis_join(
     // (column was attached with srid=0 or geometry_columns has no row)
     // we still emit the 2-arg call; PostGIS treats SRID 0 as "unknown"
     // and accepts it for predicates between SRID-0 geometries.
-    let geom_expr = format!("ST_GeomFromText({wkt_param}, {srid})");
+    // PostGIS's functions and operator, through its schema (#382).
+    let st = |f: &str| ext_qualified("postgis", f);
+    let geom_expr = format!("{}({wkt_param}, {srid})", st("ST_GeomFromText"));
+    let (st_distance, knn) = (st("ST_Distance"), ext_operator("postgis", "<->"));
 
     // Build per-op SQL.
     let from_fragment = match op {
@@ -5598,9 +5662,9 @@ fn build_postgis_join(
             // and let PostGIS pick. The <-> GIST-friendly distance op
             // is index-orderable.
             format!(
-                "(SELECT e, ST_Distance(geom, {geom_expr}) AS geo_dist \
+                "(SELECT e, {st_distance}(geom, {geom_expr}) AS geo_dist \
                  FROM {aux_table} \
-                 ORDER BY geom <-> {geom_expr} \
+                 ORDER BY geom {knn} {geom_expr} \
                  LIMIT {k_param}) AS {dt_alias}"
             )
         }
@@ -5616,24 +5680,27 @@ fn build_postgis_join(
                 .into());
             }
             let radius_param = builder.bind_double(radius);
+            let st_dwithin = st("ST_DWithin");
             format!(
-                "(SELECT e, ST_Distance(geom, {geom_expr}) AS geo_dist \
+                "(SELECT e, {st_distance}(geom, {geom_expr}) AS geo_dist \
                  FROM {aux_table} \
-                 WHERE ST_DWithin(geom, {geom_expr}, ({radius_param})::FLOAT8)) \
+                 WHERE {st_dwithin}(geom, {geom_expr}, ({radius_param})::FLOAT8)) \
                  AS {dt_alias}"
             )
         }
         "geom-contains" => format!(
             "(SELECT e, NULL::FLOAT8 AS geo_dist \
              FROM {aux_table} \
-             WHERE ST_Contains(geom, {geom_expr})) \
-             AS {dt_alias}"
+             WHERE {st_contains}(geom, {geom_expr})) \
+             AS {dt_alias}",
+            st_contains = st("ST_Contains"),
         ),
         "geom-intersects" => format!(
             "(SELECT e, NULL::FLOAT8 AS geo_dist \
              FROM {aux_table} \
-             WHERE ST_Intersects(geom, {geom_expr})) \
-             AS {dt_alias}"
+             WHERE {st_intersects}(geom, {geom_expr})) \
+             AS {dt_alias}",
+            st_intersects = st("ST_Intersects"),
         ),
         _ => unreachable!(),
     };
@@ -5917,7 +5984,12 @@ fn build_fuzzystrmatch_binding(
             }
             let a = render_text_arg(&wf.args[0], builder)?;
             let b = render_text_arg(&wf.args[1], builder)?;
-            format!("levenshtein({}, {})", a, b)
+            format!(
+                "{}({}, {})",
+                ext_qualified("fuzzystrmatch", "levenshtein"),
+                a,
+                b
+            )
         }
         "soundex" => {
             if wf.args.len() != 1 {
@@ -5929,7 +6001,7 @@ fn build_fuzzystrmatch_binding(
                 .into());
             }
             let a = render_text_arg(&wf.args[0], builder)?;
-            format!("soundex({})", a)
+            format!("{}({})", ext_qualified("fuzzystrmatch", "soundex"), a)
         }
         "metaphone" => {
             if wf.args.len() != 2 {
@@ -5942,7 +6014,12 @@ fn build_fuzzystrmatch_binding(
             }
             let a = render_text_arg(&wf.args[0], builder)?;
             let n = render_int_arg(&wf.args[1])?;
-            format!("metaphone({}, {})", a, n)
+            format!(
+                "{}({}, {})",
+                ext_qualified("fuzzystrmatch", "metaphone"),
+                a,
+                n
+            )
         }
         "daitch-mokotoff" => {
             if wf.args.len() != 1 {
@@ -5957,7 +6034,11 @@ fn build_fuzzystrmatch_binding(
             // daitch_mokotoff returns text[]; cast to text so the scalar
             // binding gets a single value (e.g. "{367460,394000}") that
             // downstream predicates can compare or just inspect.
-            format!("daitch_mokotoff({})::TEXT", a)
+            format!(
+                "{}({})::TEXT",
+                ext_qualified("fuzzystrmatch", "daitch_mokotoff"),
+                a
+            )
         }
         _ => unreachable!(
             "build_fuzzystrmatch_binding called with non-fuzzystrmatch op '{}'",
@@ -6162,11 +6243,28 @@ fn build_collection_in_clause(
     values: &[serde_json::Value],
     is_ref: bool,
     builder: &mut SqlBuilder<'_>,
-    _schema_prefix: &str,
+    schema_prefix: &str,
+    temporal: &TemporalOption,
 ) -> Option<String> {
     if values.is_empty() {
         return Some("FALSE".to_string()); // Empty collection matches nothing
     }
+    // Entity ids: integers and the lookup refs that resolve. Lookup refs
+    // that identify no entity drop out; none left matches nothing.
+    let entity_ids = |builder: &mut SqlBuilder<'_>| -> String {
+        let ids: Vec<i64> = values
+            .iter()
+            .filter_map(|v| match v.as_array() {
+                Some(arr) => resolve_lookup_ref_to_eid(arr, schema_prefix, temporal),
+                None => v.as_i64(),
+            })
+            .collect();
+        if ids.is_empty() {
+            "FALSE".to_string()
+        } else {
+            builder.bind_any(ids)
+        }
+    };
     // One array parameter (`= ANY($n)`), not one parameter per value: the
     // statement text and parameter count stay the same for any collection
     // size, so edn_q's cached plan settles on a generic plan instead of
@@ -6179,7 +6277,14 @@ fn build_collection_in_clause(
         "v" => {
             // Determine the type from the first value and build typed IN clause
             let first = &values[0];
-            if first.is_i64() || first.is_u64() {
+            if first.is_array() {
+                // Lookup refs into a ref attribute's value.
+                let p = entity_ids(builder);
+                if p == "FALSE" {
+                    return Some(p);
+                }
+                Some(format!("{alias}.v_ref = ANY({p})"))
+            } else if first.is_i64() || first.is_u64() {
                 let p = builder.bind_any(ints()?);
                 let c = if is_ref { "v_ref" } else { "v_long" };
                 Some(format!("{alias}.{c} = ANY({p})"))
@@ -6214,7 +6319,14 @@ fn build_collection_in_clause(
                 None
             }
         }
-        "e" | "tx" => {
+        "e" => {
+            let p = entity_ids(builder);
+            if p == "FALSE" {
+                return Some(p);
+            }
+            Some(format!("{alias}.e = ANY({p})"))
+        }
+        "tx" => {
             let p = builder.bind_any(ints()?);
             Some(format!("{alias}.{col} = ANY({p})"))
         }
@@ -6235,7 +6347,8 @@ fn build_relation_values_join(
     var_to_alias: &HashMap<String, (String, &'static str)>,
     var_to_type: &HashMap<String, Option<String>>,
     builder: &mut SqlBuilder<'_>,
-    _schema_prefix: &str,
+    schema_prefix: &str,
+    temporal: &TemporalOption,
     joins: &mut Vec<String>,
 ) -> Option<String> {
     if rows.is_empty() || vars.is_empty() {
@@ -6253,6 +6366,14 @@ fn build_relation_values_join(
                 row_params.push(format!("{}::DOUBLE PRECISION", builder.bind_double(f)));
             } else if let Some(s) = val.as_str() {
                 row_params.push(format!("{}::TEXT", builder.bind_text(s.to_string())));
+            } else if let Some(arr) = val.as_array() {
+                // A lookup ref: its entity id, NULL (matches nothing) if none.
+                row_params.push(
+                    match resolve_lookup_ref_to_eid(arr, schema_prefix, temporal) {
+                        Some(eid) => format!("{}::BIGINT", builder.bind_bigint(eid)),
+                        None => "NULL::BIGINT".to_string(),
+                    },
+                );
             } else {
                 row_params.push("NULL".to_string());
             }
@@ -6303,6 +6424,8 @@ fn build_relation_values_join(
                 Some(serde_json::Value::String(s)) if s.starts_with(':') => "v_keyword",
                 Some(serde_json::Value::String(_)) => "v_text",
                 Some(serde_json::Value::Bool(_)) => "v_bool",
+                // A lookup ref, in a ref attribute's value place.
+                Some(serde_json::Value::Array(_)) => "v_ref",
                 _ => continue,
             };
             on_parts.push(format!("{}.{} = {}.c{}", alias, typed_col, values_alias, i));
@@ -6791,7 +6914,7 @@ fn build_extended_pattern_query(
         if let Some((alias, col)) = var_to_alias.get(var_name.as_str()) {
             let is_ref = is_ref_var(&var_to_type, var_name);
             if let Some(c) =
-                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix, temporal)
             {
                 where_clauses.push(c);
             }
@@ -6814,6 +6937,7 @@ fn build_extended_pattern_query(
                         is_ref_var(&var_to_type, var),
                         builder,
                         schema_prefix,
+                        temporal,
                     );
                     if let Some(c) = in_clause {
                         where_clauses.push(c);
@@ -6836,6 +6960,7 @@ fn build_extended_pattern_query(
                                 is_ref,
                                 builder,
                                 schema_prefix,
+                                temporal,
                             ) {
                                 where_clauses.push(c);
                             }
@@ -6852,6 +6977,7 @@ fn build_extended_pattern_query(
                     &var_to_type,
                     builder,
                     schema_prefix,
+                    temporal,
                     &mut joins,
                 ) {
                     where_clauses.push(values_join);
@@ -7031,27 +7157,31 @@ fn build_extended_pattern_query(
             // named-stores: edn_pull reads the default store; a named store
             // pulls from its own schema with pull(store, pattern, entity_id
             // [, options]).
+            // Qualified with pg_mentat's schema (#382).
             let pull_store = store_name_from_prefix(schema_prefix);
             if pull_store != "default" {
+                let pull_fn = ext_qualified("pg_mentat", "pull");
                 let store_param = builder.bind_text(pull_store.to_string());
                 if opts.is_empty() {
                     select_exprs.push(format!(
-                        "pull({store_param}, {pat_param}, {entity_expr})::TEXT"
+                        "{pull_fn}({store_param}, {pat_param}, {entity_expr})::TEXT"
                     ));
                 } else {
                     let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
                     select_exprs.push(format!(
-                        "pull({store_param}, {pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                        "{pull_fn}({store_param}, {pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
                     ));
                 }
             } else if opts.is_empty() {
                 // edn_pull(pattern, entity_id[, options]) -> jsonb; cast to
                 // text so it flows through the TEXT result-column path.
-                select_exprs.push(format!("edn_pull({pat_param}, {entity_expr})::TEXT"));
+                let pull_fn = ext_qualified("pg_mentat", "edn_pull");
+                select_exprs.push(format!("{pull_fn}({pat_param}, {entity_expr})::TEXT"));
             } else {
+                let pull_fn = ext_qualified("pg_mentat", "edn_pull");
                 let opts_param = builder.bind_text(serde_json::Value::Object(opts).to_string());
                 select_exprs.push(format!(
-                    "edn_pull({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
+                    "{pull_fn}({pat_param}, {entity_expr}, {opts_param}::jsonb)::TEXT"
                 ));
             } // named-stores: end
             if has_aggregates {
@@ -7394,6 +7524,9 @@ enum ArgKind {
     Text,
     /// Longs and doubles (a rule column of both), in their decoded TEXT form.
     Number,
+    /// The longs and doubles of a value of unknown type, as Number; NULL for
+    /// the rest. Its sum is a long when no double is among them.
+    Untyped,
 }
 
 /// SQL for a variable's value within the join, in its native typed column
@@ -7441,14 +7574,34 @@ fn aggregate_var(agg: &edn::query::Aggregate) -> Option<String> {
 }
 
 /// The aggregate's argument expression (NULL when its variable is unbound).
+///
+/// `sum` / `avg` of a value of unknown type (`[?e ?a ?v]`) add its longs and
+/// doubles and skip every other value, as the embedded engine and DuckDB do:
+/// the numbers in their decoded text form, NULL for the rest, aggregated as
+/// a long-and-double column is. Before 1.19.0 the decoded text of every type
+/// was cast to NUMERIC, and a double's ('d:' and its bits) failed (#397).
 fn aggregate_arg_sql(
     agg: &edn::query::Aggregate,
     var_to_alias: &HashMap<String, (String, &'static str)>,
     extra_var_bindings: &HashMap<String, String>,
     var_to_type: &HashMap<String, Option<String>>,
 ) -> (String, ArgKind) {
-    aggregate_var(agg)
-        .and_then(|v| var_value_sql(&v, var_to_alias, extra_var_bindings, var_to_type))
+    let var = aggregate_var(agg);
+    if let (Some(v), "sum" | "avg") = (&var, agg.func.0 .0.as_str()) {
+        if let (Some((alias, "v")), None | Some(None)) = (var_to_alias.get(v), var_to_type.get(v)) {
+            return (
+                format!(
+                    "CASE {alias}.value_type_tag WHEN {long} THEN {alias}.v_long::TEXT \
+                     WHEN {double} THEN {} END",
+                    double_text(&format!("{alias}.v_double")),
+                    long = type_tag::LONG,
+                    double = type_tag::DOUBLE,
+                ),
+                ArgKind::Untyped,
+            );
+        }
+    }
+    var.and_then(|v| var_value_sql(&v, var_to_alias, extra_var_bindings, var_to_type))
         .unwrap_or_else(|| ("NULL".to_string(), ArgKind::Text))
 }
 
@@ -7511,8 +7664,17 @@ fn aggregate_call_sql(
         ("count", _) => format!("COUNT({arg})::TEXT"),
         ("count-distinct", _) => format!("COUNT(DISTINCT {arg})::TEXT"),
         (_, ArgKind::Double) => double_text(&format!("{sql_func}({arg})")),
+        // A sum of longs only is an exact long, with a double present a
+        // double, as Clojure's + (#397).
+        ("sum", ArgKind::Untyped) => format!(
+            "CASE WHEN bool_or(({arg}) LIKE 'd:%') THEN {} \
+             ELSE SUM(CASE WHEN ({arg}) NOT LIKE 'd:%' THEN ({arg})::BIGINT END)::TEXT END",
+            double_text(&format!("SUM({})", decoded_number_sql(arg)))
+        ),
         // As on the embedded engine, a long-and-double aggregate is a double.
-        (_, ArgKind::Number) => double_text(&format!("{sql_func}({})", decoded_number_sql(arg))),
+        (_, ArgKind::Number | ArgKind::Untyped) => {
+            double_text(&format!("{sql_func}({})", decoded_number_sql(arg)))
+        }
         ("sum" | "avg", ArgKind::Text) => format!("{sql_func}(({arg})::NUMERIC)::TEXT"),
         _ => format!("{sql_func}({arg})::TEXT"),
     })
@@ -7984,7 +8146,7 @@ fn build_not_exists_subquery(
         if let Some((alias, col)) = not_var_to_alias.get(var_name) {
             let is_ref = is_ref_var(&not_var_to_type, var_name);
             if let Some(c) =
-                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix)
+                scalar_input_constraint(alias, col, value, is_ref, builder, schema_prefix, temporal)
             {
                 sub_where.push(c);
             }
@@ -8433,6 +8595,20 @@ fn untyped_comparison_sql(
         None if all_numbers || ordering => "num",
         None => "other",
     };
+    if kind == "num" {
+        if let Some(sql) = untyped_long_comparison_sql(
+            pred,
+            sql_op,
+            &untyped,
+            var_to_alias,
+            var_to_type,
+            computed,
+            input_bindings,
+            builder,
+        )? {
+            return Ok(Some(sql));
+        }
+    }
     let mut sides = Vec::with_capacity(2);
     for arg in &pred.args {
         sides.push(match (untyped(arg), arg) {
@@ -8468,6 +8644,85 @@ fn untyped_comparison_sql(
         });
     }
     Ok(Some(format!("({} {sql_op} {})", sides[0], sides[1])))
+}
+
+/// A numeric comparison of a value of unknown type (alias `u`) with a long,
+/// or of two values of unknown type: a long compares with a long exactly, as
+/// BIGINT, and only a long with a double through DOUBLE PRECISION. Reading
+/// every long as a double lost the low bits above 2^53, so `[(= ?v
+/// 9007199254740992)]` matched the long 9007199254740993 and `>` missed it
+/// (#388). None when the typed side is a double (the caller's double
+/// comparison is then right).
+///
+///   u op X     ->  COALESCE(u.v_long op X, u.v_double op X::DOUBLE PRECISION)
+///   u op w     ->  COALESCE(u.v_long op w.v_long, <both as DOUBLE PRECISION>)
+///
+/// A side that isn't a number is NULL in both arms and doesn't match.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "untyped_comparison_sql's context"
+)]
+fn untyped_long_comparison_sql<'u>(
+    pred: &Predicate,
+    sql_op: &str,
+    untyped: &dyn Fn(&FnArg) -> Option<&'u str>,
+    var_to_alias: &HashMap<String, (String, &'static str)>,
+    var_to_type: &HashMap<String, Option<String>>,
+    computed: &HashMap<String, String>,
+    input_bindings: &HashMap<String, serde_json::Value>,
+    builder: &mut SqlBuilder<'_>,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let is_long = |a: &FnArg| match a {
+        FnArg::EntidOrInteger(_) => true,
+        FnArg::Variable(v) => {
+            let name = format!("{v}");
+            if let Some((_, "e" | "a" | "tx")) = var_to_alias.get(&name) {
+                return true;
+            }
+            match var_to_type.get(&name).cloned().flatten().as_deref() {
+                Some(t) => matches!(t, "long" | "ref"),
+                None => input_bindings
+                    .get(&name)
+                    .is_some_and(|j| j.is_i64() || j.is_u64()),
+            }
+        }
+        _ => false,
+    };
+    let (a, b) = (&pred.args[0], &pred.args[1]);
+    let double = |u: &str| format!("COALESCE({u}.v_long::DOUBLE PRECISION, {u}.v_double)");
+    Ok(match (untyped(a), untyped(b)) {
+        (Some(u), Some(w)) => Some(format!(
+            "COALESCE({u}.v_long {sql_op} {w}.v_long, {} {sql_op} {})",
+            double(u),
+            double(w)
+        )),
+        (Some(u), None) | (None, Some(u)) => {
+            let (other, untyped_first) = if untyped(a).is_some() {
+                (b, true)
+            } else {
+                (a, false)
+            };
+            if !is_long(other) {
+                return Ok(None);
+            }
+            let x = pred_arg_to_sql(
+                other,
+                var_to_alias,
+                var_to_type,
+                computed,
+                input_bindings,
+                builder,
+            )?;
+            let (long_side, double_side) = (format!("{u}.v_long"), format!("{u}.v_double"));
+            let xd = format!("({x})::DOUBLE PRECISION");
+            Some(if untyped_first {
+                format!("COALESCE({long_side} {sql_op} {x}, {double_side} {sql_op} {xd})")
+            } else {
+                format!("COALESCE({x} {sql_op} {long_side}, {xd} {sql_op} {double_side})")
+            })
+        }
+        (None, None) => None,
+    })
 }
 
 // ============================================================================

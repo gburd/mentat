@@ -119,17 +119,33 @@ fn basis_from_options(options: &serde_json::Value) -> Result<Option<PullBasis>, 
 /// retraction with a later tx <= T cancels. Since S: the current datoms
 /// transacted after S. Both: the as-of rule with tx > S too.
 fn basis_table(tables_schema: &str, ty: &str) -> String {
+    let basis = PULL_BASIS.with(|b| b.get());
+    live_table(
+        tables_schema,
+        ty,
+        basis.and_then(|b| b.as_of),
+        basis.and_then(|b| b.since),
+    )
+}
+
+/// [`basis_table`] for an explicit basis: the live `(store_id, e, a, v, tx)`
+/// rows of type `ty` under `tables_schema` as of `as_of` and/or since
+/// `since` (both `None`: the `current_<type>` projection). Shared with
+/// edn_q's `:in` lookup refs, which resolve on the query's basis.
+pub(crate) fn live_table(
+    tables_schema: &str,
+    ty: &str,
+    as_of: Option<i64>,
+    since: Option<i64>,
+) -> String {
     let (log, cur) = (
         format!("{tables_schema}.datoms_{ty}_new"),
         format!("{tables_schema}.current_{ty}"),
     );
-    match PULL_BASIS.with(|b| b.get()) {
-        None => cur,
-        Some(PullBasis {
-            as_of: None,
-            since: Some(s),
-        }) => format!("(SELECT store_id, e, a, v, tx FROM {cur} WHERE tx > {s})"),
-        Some(PullBasis { as_of, since }) => {
+    match (as_of, since) {
+        (None, None) => cur,
+        (None, Some(s)) => format!("(SELECT store_id, e, a, v, tx FROM {cur} WHERE tx > {s})"),
+        (as_of, since) => {
             let t = as_of.unwrap_or(i64::MAX);
             let lower = since
                 .map(|s| format!(" AND g.tx > {s}"))

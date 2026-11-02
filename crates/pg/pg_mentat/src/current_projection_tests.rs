@@ -387,4 +387,112 @@ mod tests {
         assert_eq!(tx_lines(fresh).len(), 9);
         assert_eq!(tx_lines(fresh), tx_lines(upgrade));
     }
+
+    /// The SQL helpers that answer for the current state read the projection,
+    /// not the append-only log with `added = true`, which keeps replaced and
+    /// retracted values (Refs #374): export_edn / export_all_edn exported
+    /// them, retract_entity re-retracted them (and failed), attribute_values,
+    /// entity_attrs and lookup_by_ident listed them, mentat_query_stats
+    /// counted them, mentat_excise refused an entity a retracted reference
+    /// had pointed at, and an [fts:lang=...] tag removed from :db/doc still
+    /// set the fulltext language.
+    #[pg_test]
+    fn pg_test_proj_sql_helpers_read_current_state() {
+        setup();
+        schema();
+        Spi::run(
+            "SELECT edn_t('[{:db/id \"a\" :p/email \"a@x.io\" :p/name \"Ann\" :p/age 1 :p/tag [\"t1\" \"t2\"]}
+                            {:db/id \"b\" :p/email \"b@x.io\" :p/name \"Bob\"}]'::TEXT)",
+        )
+        .expect("tx");
+        let (a, b) = (email_eid("a@x.io"), email_eid("b@x.io"));
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {a} :p/name \"Anna\"] [:db/add {a} :p/age 2] \
+                            [:db/retract {a} :p/tag \"t1\"] [:db/add {b} :p/friend {a}]]'::TEXT)"
+        ))
+        .expect("replace");
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/retract {b} :p/friend {a}] [:db/retract {b} :p/name \"Bob\"]]'::TEXT)"
+        ))
+        .expect("retract");
+        let text = |sql: &str| -> String {
+            Spi::get_one::<String>(sql)
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .unwrap_or_default()
+        };
+        let json = |sql: &str| -> serde_json::Value {
+            Spi::get_one::<pgrx::JsonB>(sql)
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .map(|j| j.0)
+                .unwrap_or_default()
+        };
+
+        let export = text(&format!("SELECT mentat.export_edn(ARRAY[{a}, {b}])"));
+        for gone in ["\"Ann\"", ":p/age 1", "\"t1\"", "\"Bob\"", ":p/friend"] {
+            assert!(!export.contains(gone), "export has {gone}: {export}");
+        }
+        for live in ["\"Anna\"", ":p/age 2", "\"t2\""] {
+            assert!(export.contains(live), "export lacks {live}: {export}");
+        }
+        let all = text("SELECT mentat.export_all_edn()");
+        assert!(
+            !all.contains("\"Ann\"") && !all.contains("\"Bob\""),
+            "{all}"
+        );
+
+        let mut names: Vec<String> = json("SELECT mentat.attribute_values(':p/name')")
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap_or("").to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["Anna"]);
+        let attrs = json(&format!("SELECT mentat.entity_attrs({b})"));
+        assert_eq!(attrs, serde_json::json!([":p/email"]), "{attrs}");
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT mentat.lookup_by_ident(':p/name', 'Ann')").unwrap(),
+            None
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT mentat.lookup_by_ident(':p/name', 'Anna')").unwrap(),
+            Some(a)
+        );
+        let live = Spi::get_one::<i64>("SELECT count(*) FROM mentat.current_datoms")
+            .unwrap()
+            .unwrap();
+        let stats = json("SELECT mentat_query_stats()");
+        assert_eq!(stats["database_stats"]["total_datoms"], live, "{stats}");
+
+        // retract_entity retracts b's live datoms, once each.
+        let n = Spi::get_one::<i64>(&format!("SELECT mentat.retract_entity({b})"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 1, "only :p/email is live on b");
+
+        // A removed [fts:lang=...] tag no longer sets the language.
+        Spi::run(
+            "SELECT edn_t('[{:db/ident :p/body :db/valueType :db.type/string \
+               :db/cardinality :db.cardinality/one :db/fulltext true \
+               :db/doc \"Body [fts:lang=german]\"}]'::TEXT)",
+        )
+        .expect("body");
+        Spi::run("SELECT edn_t('[[:db/add :p/body :db/doc \"Body\"]]'::TEXT)").expect("doc");
+        let sql = json(
+            "SELECT mentat_query_sql('[:find ?e :where [(fulltext $ :p/body \"haus\") [[?e ?v]]]]', '{}'::jsonb)",
+        )["sql"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            sql.contains("'english'") && !sql.contains("'german'"),
+            "{sql}"
+        );
+        verify_clean();
+
+        // b no longer refers to a: excising a is not refused.
+        Spi::run("UPDATE mentat.partitions SET allow_excision = true").expect("allow");
+        let out = text(&format!("SELECT mentat_excise(ARRAY[{a}]::BIGINT[])"));
+        assert!(out.contains("\"excised\":1"), "{out}");
+    }
 }

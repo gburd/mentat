@@ -320,17 +320,38 @@ SELECT mentat.q('
 
 ## Excision Functions
 
-### `mentat_excise(store, entity_id, attribute)`
+### `mentat_excise(entity_ids, store, reason)`
 
-Permanently remove datoms from the database, including all history. This is the only operation that truly deletes data (GDPR compliance).
+Permanently remove entities from the database, including all history. This is the only operation that truly deletes data (GDPR compliance). The entities' partition must have `allow_excision = true`, and no other entity may still refer to them.
 
 ```sql
--- Remove all data for an entity
-SELECT mentat.mentat_excise('default', 10042, NULL);
+-- Remove all data for two entities of the default store
+SELECT mentat_excise(ARRAY[1000042, 1000043]::BIGINT[]);
 
--- Remove only a specific attribute
-SELECT mentat.mentat_excise('default', 10042, ':person/email');
+-- On a named store, with a reason for mentat.excision_log
+SELECT mentat_excise(ARRAY[1000042]::BIGINT[], 'acme', 'GDPR request 17');
 ```
+
+Excision deletes the entities' datoms from the log and from the current-state
+projection, their text from the store's fulltext table, their rows in the
+default store's vector and geometry tables, and an excised enum entity's
+`:db/ident`, all in the calling transaction. A materialized view
+(`materialize`, or any `CREATE MATERIALIZED VIEW` over the store) keeps the
+rows it computed until it is refreshed: run `refresh(store, view)` for each
+one after excising. Before 1.19.0 excision left the current-state projection
+in place, so queries, `pull` and `entity` still returned the excised values.
+
+PostgreSQL itself can still hold copies of excised values for a while. The
+deleted rows stay on disk as dead tuples until `VACUUM` reclaims them, and
+planner statistics (`pg_stats`: most common values, histogram bounds) keep
+sampled values until the next `ANALYZE`. Roles that can read `pg_stats` for
+those tables can see them. To clear them at once, run `VACUUM ANALYZE` on the
+store's `datoms_<type>_new`, `current_<type>` and fulltext tables after
+excising. WAL and existing backups keep their copies until they expire.
+
+Excision sends no subscription notification. A `subscribe` listener keeps the
+last payload it received, which can include the excised values, until the
+next transaction on the store sends a new one.
 
 ---
 

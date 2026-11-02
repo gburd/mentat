@@ -20,6 +20,16 @@ use serde_json::json;
 /// Maximum length for a view name.
 const MAX_VIEW_NAME_LEN: usize = 58;
 
+/// A view's store: "default" (the default store, schema `mentat`) or a
+/// name create_store() accepts. validate_store_name alone refuses
+/// "default", so before 1.19.0 materialize('default', ...) always failed.
+fn validate_view_store(store_name: &str) -> Result<(), MentatError> {
+    if store_name == "default" {
+        return Ok(());
+    }
+    validate_store_name(store_name)
+}
+
 /// Validate a materialized view name.
 ///
 /// Rules:
@@ -213,7 +223,7 @@ pub fn materialize(
     datalog_query: &str,
     refresh_policy: default!(&str, "'manual'"),
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_view_name(view_name)?;
     validate_refresh_policy(refresh_policy)?;
 
@@ -380,7 +390,7 @@ pub fn refresh(
     view_name: &str,
     concurrently: default!(bool, "false"),
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_view_name(view_name)?;
 
     // Verify the view exists in metadata
@@ -431,7 +441,7 @@ pub fn drop_matview(
     store_name: &str,
     view_name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_view_name(view_name)?;
 
     // Verify the view exists in metadata

@@ -28,11 +28,8 @@ fn lookup_by_ident(attr_ident: &str, value: &str) -> Option<i64> {
 
     // Query datoms for the entity with this value (string type tag = 7)
     crate::functions::query::select_one_i64_ro(
-        "SELECT e FROM mentat.datoms WHERE a = $1 AND v_text = $2 AND value_type_tag = 7 AND added = true LIMIT 1",
-        &[
-            DatumWithOid::from(attr_id),
-            DatumWithOid::from(value),
-        ],
+        "SELECT e FROM mentat.current_text WHERE store_id = 0 AND a = $1 AND v = $2 LIMIT 1",
+        &[DatumWithOid::from(attr_id), DatumWithOid::from(value)],
     )
 }
 
@@ -51,8 +48,8 @@ fn entity_attrs(entity_id: i64) -> JsonB {
         // Get distinct attribute IDs for this entity
         let query = "\
             SELECT DISTINCT a \
-            FROM mentat.datoms \
-            WHERE e = $1 AND added = true \
+            FROM mentat.current_datoms \
+            WHERE e = $1 \
             ORDER BY a";
 
         let mut idents = Vec::new();
@@ -101,8 +98,8 @@ fn attribute_values(attr_ident: &str) -> JsonB {
                     v_text, v_keyword, \
                     {} AS v_instant_micros, \
                     v_uuid::TEXT, v_bytes \
-             FROM mentat.datoms \
-             WHERE a = $1 AND added = true \
+             FROM mentat.current_datoms \
+             WHERE a = $1 \
              ORDER BY value_type_tag, v_ref, v_long, v_text, v_keyword",
             sql_micros_from_instant("v_instant")
         );
@@ -147,8 +144,8 @@ fn retract_entity(entity_id: i64) -> Result<i64, Box<dyn std::error::Error + Sen
                 v_text, v_keyword, \
                 {} AS v_instant_micros, \
                 v_uuid::TEXT, v_bytes \
-         FROM mentat.datoms \
-         WHERE e = $1 AND added = true",
+         FROM mentat.current_datoms \
+         WHERE e = $1",
         sql_micros_from_instant("v_instant")
     );
 

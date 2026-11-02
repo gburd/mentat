@@ -766,6 +766,8 @@ mod error_handling_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod error_regression_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod excision_tests;
+#[cfg(any(test, feature = "pg_test"))]
 mod explain_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod find_spec_exhaustive_tests;

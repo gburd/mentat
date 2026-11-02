@@ -17,6 +17,12 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: an `:in` value that identifies no entity matches nothing.**
+  A lookup ref nobody holds, an unknown ident, or a string in an entity
+  input used to drop its constraint, so the query matched every entity.
+  Queries that relied on that now return no rows.
+- **pg_mentat: excising an installed attribute is refused** (`mentat_excise`
+  on an entity that is an attribute in the schema).
 - **Embedded engine: `sum`, `min` and `max` over a variable that can hold both
   longs and doubles always return a double** (#391), as DuckDB and pg_mentat
   do. They used to be a long or a double depending on which row won.
@@ -26,6 +32,45 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: `entity(store, eid)` showed every value ever asserted** (#374):
+  replaced, retracted and all cardinality-one history. It shows the current
+  values. A lookup ref in `:in` inputs resolved to an entity that had given
+  up the value; it now resolves on the query's basis, current or as-of /
+  since. A lookup ref in a relation input no longer fails with "operator
+  does not exist".
+- **pg_mentat: a transaction could upsert into, or conflict with, an entity
+  that had moved off a unique value**, and a transaction lookup ref could
+  resolve to the value's former holder (#393).
+- **pg_mentat: `export_edn`, `export_all_edn`, `retract_entity`,
+  `attribute_values`, `entity_attrs`, `lookup_by_ident` and
+  `mentat_query_stats` read replaced and retracted values.** `mentat_excise`
+  refused an entity that a since-retracted reference had pointed at.
+- **pg_mentat: `mentat_excise` left the excised values in the current-state
+  projection** (#396, since 1.5.0), so queries, `pull` and `entity` still
+  returned them. Excision now also removes the projection rows, the store's
+  fulltext text, the default store's vector, geometry and turbovec rows, and
+  an excised enum's `:db/ident`. Materialized views keep their rows until
+  refreshed; dead tuples and `pg_stats` can hold excised values until
+  VACUUM / ANALYZE (see the excision docs).
+- **pg_mentat: `materialize`, `refresh` and `drop_matview` refused the
+  `'default'` store** as a reserved name.
+- **pg_mentat: a materialized view with a find-pull or an extension where-fn
+  (levenshtein, similar-to, …) failed with "function … does not exist" on
+  PostgreSQL 17** (#382). Generated SQL names pg_mentat's and other
+  extensions' functions through their schema, which also covers extensions
+  installed off the search path.
+- **pg_mentat: `sum` / `avg` over a value of unknown type (`[?e ?a ?v]`)
+  failed with "invalid input syntax for type numeric"** (#397). `sum` is a
+  long, exact above 2^53, when every value is a long, and a double when a
+  double is among them; `avg` is a double.
+- **pg_mentat: running one Datalog query with an input of a different JSON
+  type (a string, then an integer) crashed the backend** (#399, since
+  1.2.1). A double constant after a long one in the same query shape found
+  nothing. The plan cache now keys on the parameter types.
+- **pg_mentat: comparing a value of unknown type with a long above 2^53 lost
+  the long's low bits** (part of #388). `<`, `>` and `!=` against a long are
+  exact; a long compared with a stored double still goes through double
+  precision.
 - **DuckDB: `(count ?x)` over a double, string, keyword, uuid or bytes
   attribute returned 0** (#392). Every release from 1.11.0 through 1.18.0 is
   affected; 1.10.3 counted correctly. Counts over longs, refs, instants and
@@ -34,6 +79,12 @@ and the project follows [Semantic Versioning](https://semver.org/).
   5.0) as one value** (#391), so `sum`, `count` and `[?v ...]` over an `or` of
   a long and a double attribute, or over `[?e ?a ?v]`, dropped one. They are
   kept apart, as in Datomic and pg_mentat. DuckDB already kept them apart.
+
+### Security
+
+- **pg_mentat: any role that could call `edn_q` could crash the backend, and
+  restart every session, through the plan cache** (#399).
+- **pg_mentat: excised data stayed readable through queries** (#396).
 
 ## [1.18.0] — named stores on PostgreSQL, historical pull, DuckDB fulltext, Mozilla-era fixes
 

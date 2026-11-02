@@ -66,8 +66,8 @@ pub fn entity(
              FROM {sch}.schema s \
              WHERE s.entid IN ( \
                  SELECT DISTINCT d.v \
-                 FROM {sch}.datoms_ref_new d \
-                 WHERE d.store_id = $1 AND d.e = $2 AND d.added = true \
+                 FROM {sch}.current_ref d \
+                 WHERE d.store_id = $1 AND d.e = $2 \
              )"
         );
         for row in client.select(
@@ -81,53 +81,55 @@ pub fn entity(
             }
         }
 
-        // Query all type-specific tables with UNION ALL, joined to schema for ident
+        // Query all type-specific tables with UNION ALL, joined to schema for
+        // ident. The current-state projection: the log keeps every value
+        // ever asserted, so a replaced or retracted value would show (#374).
         let query = format!(
             r"
             SELECT s.ident, 0::SMALLINT AS type_tag, d.v::TEXT AS value
-            FROM {sch}.datoms_ref_new d
+            FROM {sch}.current_ref d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 1::SMALLINT, d.v::TEXT
-            FROM {sch}.datoms_boolean_new d
+            FROM {sch}.current_boolean d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 2::SMALLINT, d.v::TEXT
-            FROM {sch}.datoms_long_new d
+            FROM {sch}.current_long d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 3::SMALLINT, d.v::TEXT
-            FROM {sch}.datoms_double_new d
+            FROM {sch}.current_double d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 4::SMALLINT, {micros}::TEXT
-            FROM {sch}.datoms_instant_new d
+            FROM {sch}.current_instant d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 7::SMALLINT, d.v
-            FROM {sch}.datoms_text_new d
+            FROM {sch}.current_text d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 8::SMALLINT, d.v
-            FROM {sch}.datoms_keyword_new d
+            FROM {sch}.current_keyword d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 10::SMALLINT, d.v::TEXT
-            FROM {sch}.datoms_uuid_new d
+            FROM {sch}.current_uuid d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
             UNION ALL
             SELECT s.ident, 11::SMALLINT, encode(d.v, 'hex')
-            FROM {sch}.datoms_bytes_new d
+            FROM {sch}.current_bytes d
             JOIN {sch}.schema s ON d.a = s.entid
-            WHERE d.store_id = $1 AND d.e = $2 AND d.added = true
+            WHERE d.store_id = $1 AND d.e = $2
         ",
             micros = sql_micros_from_instant("d.v")
         );

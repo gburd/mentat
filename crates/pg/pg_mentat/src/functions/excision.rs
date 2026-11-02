@@ -84,7 +84,8 @@ fn excise_internal(
         }
     }
 
-    // Check for dangling references: other entities that reference the excised entities
+    // Check for dangling references: other entities that reference the excised
+    // entities now (the projection; a reference retracted since is not one).
     let eid_list: String = entity_ids
         .iter()
         .map(|id| id.to_string())
@@ -92,10 +93,9 @@ fn excise_internal(
         .join(",");
 
     let ref_count = Spi::get_one::<i64>(&format!(
-        "SELECT COUNT(*) FROM {schema_prefix}datoms_ref_new \
+        "SELECT COUNT(*) FROM {schema_prefix}current_ref \
          WHERE store_id = {store_id} AND v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
-         AND e != ALL(ARRAY[{eid_list}]::BIGINT[]) \
-         AND added = true"
+         AND e != ALL(ARRAY[{eid_list}]::BIGINT[])"
     ))
     .ok()
     .flatten()
@@ -104,10 +104,9 @@ fn excise_internal(
     if ref_count > 0 {
         // Collect referencing entities for the error message
         let referrers = Spi::get_one::<String>(&format!(
-            "SELECT array_agg(DISTINCT e)::TEXT FROM {schema_prefix}datoms_ref_new \
+            "SELECT array_agg(DISTINCT e)::TEXT FROM {schema_prefix}current_ref \
              WHERE store_id = {store_id} AND v = ANY(ARRAY[{eid_list}]::BIGINT[]) \
              AND e != ALL(ARRAY[{eid_list}]::BIGINT[]) \
-             AND added = true \
              LIMIT 10"
         ))
         .ok()
@@ -121,6 +120,39 @@ fn excise_internal(
             ref_count, referrers
         ).into());
     }
+
+    // An installed attribute is schema: other entities' datoms name it.
+    let attr = Spi::get_one::<i64>(&format!(
+        "SELECT min(entid) FROM {schema_prefix}schema \
+         WHERE entid = ANY(ARRAY[{eid_list}]::BIGINT[])"
+    ))?;
+    if let Some(a) = attr {
+        return Err(format!(
+            ":db.error/excision-denied Cannot excise entity {a}: it is an installed attribute."
+        )
+        .into());
+    }
+
+    // The excised entities' text on :db/fulltext attributes, for the
+    // fulltext copy table below (read before the log rows go).
+    let fulltext_texts: Vec<String> = Spi::connect(|client| {
+        let rows = client.select(
+            &format!(
+                "SELECT DISTINCT d.v FROM {schema_prefix}datoms_text_new d \
+                 JOIN {schema_prefix}schema s ON s.entid = d.a AND s.fulltext \
+                 WHERE d.store_id = {store_id} AND d.e = ANY(ARRAY[{eid_list}]::BIGINT[])"
+            ),
+            None,
+            &[],
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Some(v) = row.get::<String>(1)? {
+                out.push(v);
+            }
+        }
+        Ok::<_, pgrx::spi::SpiError>(out)
+    })?;
 
     // Perform the excision: DELETE from all 9 typed tables
     let tables = [
@@ -155,6 +187,69 @@ fn excise_internal(
             total_datoms_removed += count;
         }
     }
+
+    // Every other copy of the entities' values goes in the same transaction
+    // (#396): the current-state projection, which every current-time read
+    // serves from; ...
+    for ty in [
+        "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
+    ] {
+        Spi::run(&format!(
+            "DELETE FROM {schema_prefix}current_{ty} \
+             WHERE store_id = {store_id} AND e = ANY(ARRAY[{eid_list}]::BIGINT[])"
+        ))?;
+    }
+    // ... the fulltext copy table, which has no entity column: the text no
+    // other entity has asserted on a fulltext attribute; ...
+    if !fulltext_texts.is_empty() {
+        Spi::run_with_args(
+            &format!(
+                "DELETE FROM {schema_prefix}fulltext f WHERE f.text_value = ANY($1) \
+                 AND NOT EXISTS (SELECT 1 FROM {schema_prefix}datoms_text_new d \
+                   JOIN {schema_prefix}schema s ON s.entid = d.a AND s.fulltext \
+                   WHERE d.store_id = {store_id} AND d.v = f.text_value)"
+            ),
+            &[pgrx::datum::DatumWithOid::from(fulltext_texts)],
+        )?;
+    }
+    // ... the default store's per-attribute vector / geometry tables
+    // (mentat.attach_vector_attribute and friends), keyed by entity; ...
+    if store_id == 0 {
+        let aux: Vec<String> = Spi::connect(|client| {
+            let mut out = Vec::new();
+            for row in client.select(
+                "SELECT c.relname::TEXT FROM pg_catalog.pg_class c \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = 'mentat' AND c.relkind = 'r' \
+                   AND c.relname ~ '^attr_[0-9]+_(vector|geom|tvec)$'",
+                None,
+                &[],
+            )? {
+                if let Some(t) = row.get::<String>(1)? {
+                    out.push(t);
+                }
+            }
+            Ok::<_, pgrx::spi::SpiError>(out)
+        })?;
+        for t in aux {
+            // relname matched ^attr_[0-9]+_(vector|geom|tvec)$: no quoting needed.
+            Spi::run(&format!(
+                "DELETE FROM mentat.{t} WHERE e = ANY(ARRAY[{eid_list}]::BIGINT[])"
+            ))?;
+        }
+    }
+    // ... and an enum entity's :db/ident, here and in every backend's cache.
+    let idents_removed = Spi::get_one::<i64>(&format!(
+        "WITH d AS (DELETE FROM {schema_prefix}idents \
+         WHERE entid = ANY(ARRAY[{eid_list}]::BIGINT[]) RETURNING 1) SELECT count(*) FROM d"
+    ))?
+    .unwrap_or(0);
+    if idents_removed > 0 {
+        crate::cache::invalidate_store_cache(store);
+        crate::cache::bump_store_generation(store);
+    }
+    // Materialized views (materialize(), or any view over the store) keep
+    // their rows until REFRESH; docs/src/sql-functions.md says so.
 
     // Remove transaction log entries that ONLY contain datoms for excised entities.
     // (We preserve transactions that also contain datoms for non-excised entities.)
