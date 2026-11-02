@@ -44,7 +44,7 @@ BEGIN
                                  ORDER BY d.store_name, d.name)
       INTO gone FROM d;
     IF gone IS NOT NULL THEN
-        RAISE NOTICE 'pg_mentat upgrade: deleted subscriptions % (their stores were dropped)', gone;
+        RAISE WARNING 'pg_mentat upgrade: deleted subscriptions % (their stores were dropped)', gone;
     END IF;
     WITH d AS (
         DELETE FROM mentat.materialized_views v
@@ -56,7 +56,7 @@ BEGIN
                                  ORDER BY d.store_name, d.view_name)
       INTO gone FROM d;
     IF gone IS NOT NULL THEN
-        RAISE NOTICE 'pg_mentat upgrade: deleted materialized views % (their stores were dropped)', gone;
+        RAISE WARNING 'pg_mentat upgrade: deleted materialized views % (their stores were dropped)', gone;
     END IF;
     PERFORM pg_catalog.set_config('session_replication_role', srr, true);
     PERFORM pg_catalog.set_config('search_path', old_path, true);
@@ -106,7 +106,7 @@ BEGIN
          ORDER BY c.relname
     LOOP
         EXECUTE pg_catalog.format('DROP INDEX IF EXISTS %I.%I', 'mentat', idx.relname);
-        RAISE NOTICE 'pg_mentat upgrade: dropped index mentat.%, a duplicate a 1.17 named store made '
+        RAISE WARNING 'pg_mentat upgrade: dropped index mentat.%, a duplicate a 1.17 named store made '
                      'on the default store''s tables', idx.relname;
     END LOOP;
 
