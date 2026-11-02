@@ -803,6 +803,8 @@ mod history_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod idempotency_tests;
 #[cfg(any(test, feature = "pg_test"))]
+mod ident_upsert_tests;
+#[cfg(any(test, feature = "pg_test"))]
 pub mod infra_extensions_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod input_parameter_tests;
