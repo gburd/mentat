@@ -1172,7 +1172,10 @@ mod tests {
             for ty in [
                 "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
             ] {
-                assert!(sql.contains(&format!("mentat.{prefix}{ty}{suffix} ")), "{sql}");
+                assert!(
+                    sql.contains(&format!("mentat.{prefix}{ty}{suffix} ")),
+                    "{sql}"
+                );
             }
             assert!(sql.contains("UNION ALL"));
             assert!(sql.contains("store_id = 42"));

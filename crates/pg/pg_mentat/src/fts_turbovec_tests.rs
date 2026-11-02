@@ -263,8 +263,13 @@ mod tests {
             .unwrap();
             assert_eq!(on, Some(true), "{round}: {def:?}");
             let def = def.unwrap();
-            assert!(def.contains("'german'::regconfig") && !def.contains("added"), "{round}: {def}");
-            let v = q("[:find ?n :where [(bm25-match $ :xd/body \"haus\" 5) [[?e ?s]]] [?e :xd/n ?n]]");
+            assert!(
+                def.contains("'german'::regconfig") && !def.contains("added"),
+                "{round}: {def}"
+            );
+            let v = q(
+                "[:find ?n :where [(bm25-match $ :xd/body \"haus\" 5) [[?e ?s]]] [?e :xd/n ?n]]",
+            );
             assert_eq!(v["result"], serde_json::json!([[1]]), "{round}: {v}");
         }
     }

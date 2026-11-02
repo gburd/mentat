@@ -514,7 +514,11 @@ mod tests {
                             {:db/id \"c\" :p/email \"c@x.io\"}]'::TEXT)",
         )
         .expect("tx");
-        let (a, b, c) = (email_eid("a@x.io"), email_eid("b@x.io"), email_eid("c@x.io"));
+        let (a, b, c) = (
+            email_eid("a@x.io"),
+            email_eid("b@x.io"),
+            email_eid("c@x.io"),
+        );
         // a: card-one replace of name and age, a card-many value retracted.
         // b: name and age retracted, friend a replaced by c.
         Spi::run(&format!(
@@ -537,7 +541,9 @@ mod tests {
         };
         let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
         let upgrade = &upgrade[upgrade.find("-- === pg-views ===").expect("section")..];
-        let upgrade = &upgrade[..upgrade.find("CREATE FUNCTION mentat.\"_store_virtual_tables\"").unwrap()];
+        let upgrade = &upgrade[..upgrade
+            .find("CREATE FUNCTION mentat.\"_store_virtual_tables\"")
+            .unwrap()];
         for round in ["install", "upgrade"] {
             if round == "upgrade" {
                 // Outside an extension script, CREATE OR REPLACE of a member
@@ -556,22 +562,30 @@ mod tests {
                 "{round}"
             );
             assert_eq!(
-                n(&format!("mentat.datom_ref_in(':p/friend', ARRAY[{a}, {c}]) AS t(x, v, tx)")),
+                n(&format!(
+                    "mentat.datom_ref_in(':p/friend', ARRAY[{a}, {c}]) AS t(x, v, tx)"
+                )),
                 vec![b.to_string()],
                 "{round}"
             );
             assert_eq!(
-                n(&format!("mentat.datom_ref_in(':p/friend', ARRAY[{a}, {c}]) AS t(e, x, tx)")),
+                n(&format!(
+                    "mentat.datom_ref_in(':p/friend', ARRAY[{a}, {c}]) AS t(e, x, tx)"
+                )),
                 vec![c.to_string()],
                 "{round}"
             );
             assert_eq!(
-                n(&format!("mentat.datom_text_values({a}, ':p/tag') AS t(x, tx)")),
+                n(&format!(
+                    "mentat.datom_text_values({a}, ':p/tag') AS t(x, tx)"
+                )),
                 vec!["t2"],
                 "{round}"
             );
             assert_eq!(
-                n(&format!("mentat.datom_ref_values({b}, ':p/friend') AS t(x, tx)")),
+                n(&format!(
+                    "mentat.datom_ref_values({b}, ':p/friend') AS t(x, tx)"
+                )),
                 vec![c.to_string()],
                 "{round}"
             );
@@ -583,7 +597,8 @@ mod tests {
                 (b, ":p/friend", Some(c.to_string())),
             ] {
                 let by_ident =
-                    Spi::get_one::<String>(&format!("SELECT mentat.current({e}, '{attr}')")).unwrap();
+                    Spi::get_one::<String>(&format!("SELECT mentat.current({e}, '{attr}')"))
+                        .unwrap();
                 assert_eq!(by_ident, want, "{round}: current({e}, {attr})");
             }
             // An attribute the schema doesn't type: current() probes every
@@ -624,11 +639,10 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            let current_text = Spi::get_one::<i64>(
-                "SELECT count(*) FROM mentat.current_text WHERE store_id = 0",
-            )
-            .unwrap()
-            .unwrap();
+            let current_text =
+                Spi::get_one::<i64>("SELECT count(*) FROM mentat.current_text WHERE store_id = 0")
+                    .unwrap()
+                    .unwrap();
             assert_eq!(text, current_text, "{round}");
         }
         verify_clean();

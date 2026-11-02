@@ -3039,7 +3039,11 @@ mod tests {
                 "SELECT entity_id || ' ' || value FROM {schema}.text_values \
                   WHERE attribute = ':p/name'"
             )),
-            s(&[&format!("{a} anna"), &format!("{b} bob"), &format!("{c} cy")]),
+            s(&[
+                &format!("{a} anna"),
+                &format!("{b} bob"),
+                &format!("{c} cy")
+            ]),
             "text_values"
         );
         assert_eq!(
@@ -3123,10 +3127,8 @@ mod tests {
             (b, ":p/friend", Some(c.to_string())),
         ] {
             assert_eq!(
-                Spi::get_one::<String>(&format!(
-                    "SELECT {schema}.entity_value({e}, '{attr}')"
-                ))
-                .unwrap(),
+                Spi::get_one::<String>(&format!("SELECT {schema}.entity_value({e}, '{attr}')"))
+                    .unwrap(),
                 want,
                 "entity_value {e} {attr}"
             );
@@ -3312,8 +3314,11 @@ mod tests {
                SELECT entity_id, value FROM mentat_vt_old.facts WHERE attribute = ':p/name'",
         )
         .expect("user view");
-        let user_view =
-            || sorted(json("SELECT coalesce(jsonb_agg(value), '[]') FROM public.vt_user_facts"));
+        let user_view = || {
+            sorted(json(
+                "SELECT coalesce(jsonb_agg(value), '[]') FROM public.vt_user_facts",
+            ))
+        };
         let granted = || {
             sorted(json(
                 "SELECT coalesce(jsonb_agg(value), '[]') FROM mentat_vt_old.text_values \
@@ -3329,7 +3334,11 @@ mod tests {
 
         assert_eq!(user_view(), vec!["anna"], "the user view on facts");
         Spi::run("SET LOCAL ROLE ns_vt_reader").expect("set role");
-        assert_eq!(granted(), vec!["anna"], "text_values, as the role granted it");
+        assert_eq!(
+            granted(),
+            vec!["anna"],
+            "text_values, as the role granted it"
+        );
         Spi::run("RESET ROLE").expect("reset role");
         assert_eq!(
             text(&format!(
@@ -3366,7 +3375,10 @@ mod tests {
                 .map(|x| x.2.clone())
                 .unwrap()
         };
-        assert_eq!(def(&part_after, "graph_edges"), def(&part_before, "graph_edges"));
+        assert_eq!(
+            def(&part_after, "graph_edges"),
+            def(&part_before, "graph_edges")
+        );
 
         // What a fresh store has.
         Spi::run("SELECT create_store('vt_new')").expect("fresh store");
@@ -3383,7 +3395,11 @@ mod tests {
         for (old, new) in defs(&after).iter().zip(defs(&fresh).iter()) {
             assert_eq!(old, new);
         }
-        for name in ["facts", "references", "entity_value(eid bigint, attr_ident text)"] {
+        for name in [
+            "facts",
+            "references",
+            "entity_value(eid bigint, attr_ident text)",
+        ] {
             assert_eq!(def(&part_after, name), def(&fresh, name));
         }
         if trgm {
