@@ -1046,6 +1046,104 @@ FROM mentat.stores s
 ORDER BY s.store_name;
 
 -- ---------------------------------------------------------------------------
+-- bm25-match reads the default store's current_text (#395), so
+-- create_fts_index builds its pg_fts index there, and the indexes it built
+-- on datoms_text_new (named mentat_fts_<entid>, partial on a = <entid> AND
+-- store_id = 0 AND added) are rebuilt on current_text with the same text
+-- search configuration. Same body as sql/28_pg_fts_helpers.sql. Rebuilding
+-- an index reads the attribute's live values: on a big attribute it takes a
+-- while.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.create_fts_index(
+    attr_ident TEXT,
+    regconfig  TEXT DEFAULT 'english'
+)
+RETURNS TEXT
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    attr_entid BIGINT;
+    attr_type  TEXT;
+    idx_name   TEXT;
+BEGIN
+    IF NOT mentat.has_pg_fts() THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'feature_not_supported',
+            MESSAGE = ':db.error/missing-extension pg_fts is not installed in this database. ' ||
+                      'pg_fts is an OPTIONAL BM25 full-text index for pg_mentat (PostgreSQL 17+). ' ||
+                      'To enable: install pg_fts per https://codeberg.org/gregburd/pg_fts, then ' ||
+                      'run CREATE EXTENSION pg_fts; before retrying. Without it, :db/fulltext ' ||
+                      'still works via the built-in tsvector/GIN path.';
+    END IF;
+
+    SELECT s.entid, s.value_type::text
+      INTO attr_entid, attr_type
+      FROM mentat.schema s
+     WHERE s.ident = attr_ident;
+
+    IF attr_entid IS NULL THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'undefined_object',
+            MESSAGE = ':db.error/attribute-not-found Attribute ' || quote_literal(attr_ident) ||
+                      ' is not defined in mentat.schema. Define it first with ' ||
+                      ':db/valueType :db.type/string.';
+    END IF;
+
+    IF attr_type <> 'string' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'invalid_parameter_value',
+            MESSAGE = ':db.error/wrong-type-for-fts-index Attribute ' || quote_literal(attr_ident) ||
+                      ' has value type ''' || attr_type || ''' but pg_fts indexes only ' ||
+                      ':db.type/string.';
+    END IF;
+
+    idx_name := 'mentat_fts_' || attr_entid;
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS %I ON mentat.current_text ' ||
+        'USING fts (to_ftsdoc(%L, v)) WHERE a = %s AND store_id = 0',
+        idx_name, regconfig, attr_entid
+    );
+    RETURN idx_name;
+END;
+$$;
+
+DO $ftsidx$
+DECLARE
+    idx RECORD;
+    fts_schema TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    -- pg_fts's functions, through its schema (the path is pinned).
+    fts_schema := (SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+                    WHERE e.extname = 'pg_fts');
+    FOR idx IN
+        SELECT c.relname, s.entid, e.cfg
+          FROM pg_class c
+          JOIN pg_index i ON i.indexrelid = c.oid
+          JOIN pg_am am ON am.oid = c.relam
+          JOIN mentat.schema s ON c.relname = 'mentat_fts_' || s.entid
+          -- to_ftsdoc('<config>'::regconfig, v): the configuration it was built
+          -- with, schema-qualified by pg_get_expr unless it is in pg_catalog.
+          CROSS JOIN LATERAL (SELECT pg_catalog.substring(pg_catalog.pg_get_expr(i.indexprs, i.indrelid),
+                                                          '^[^(]*\(''([^'']+)''::regconfig, v\)$') AS cfg) e
+         WHERE c.relnamespace = 'mentat'::regnamespace
+           AND i.indrelid = 'mentat.datoms_text_new'::regclass
+           AND am.amname = 'fts'
+           AND fts_schema IS NOT NULL
+           AND e.cfg IS NOT NULL
+    LOOP
+        EXECUTE pg_catalog.format('DROP INDEX %I.%I', 'mentat', idx.relname);
+        EXECUTE pg_catalog.format(
+            'CREATE INDEX %I ON mentat.current_text USING fts (%I.to_ftsdoc(%L::pg_catalog.regconfig, v)) '
+            'WHERE a = %s AND store_id = 0',
+            idx.relname, fts_schema, idx.cfg, idx.entid);
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$ftsidx$;
+
+-- ---------------------------------------------------------------------------
 -- A named store's views and helper functions (facts, text_values, ...,
 -- lookup_entity, entity_value, find_text) read the store's current_<type>
 -- projections too; tx_log, entity_history and recent_changes are history

@@ -966,7 +966,7 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(sql.contains(&format!("t.a = {named} ")), "{sql}");
-        assert!(sql.contains("mentat_bm_s.datoms_text_new"), "{sql}");
+        assert!(sql.contains("mentat_bm_s.current_text"), "{sql}");
         Spi::run("SELECT drop_store('bm_s')").expect("drop");
     }
 

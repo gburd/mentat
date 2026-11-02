@@ -29,8 +29,9 @@ $$;
 -- mentat.create_fts_index(attr_ident text, regconfig text DEFAULT 'english')
 --
 -- Create a BM25 pg_fts index on the text values of a :db.type/string
--- attribute, scoped to the default store (store_id = 0) and live datoms
--- (added = TRUE). Once it exists, a Datalog query can rank matches with the
+-- attribute, scoped to the default store (store_id = 0), on the current-state
+-- projection mentat.current_text, so it holds only the values entities have
+-- now (the log keeps a replaced value's added = TRUE row). Once it exists, a Datalog query can rank matches with the
 -- (bm25-match $ :attr "query" k) where-fn, which maps to a `@@@` predicate
 -- plus a `<=>` ordering against the stored text and joins the rest of the
 -- clause graph back through the entid column.
@@ -84,8 +85,8 @@ BEGIN
 
     idx_name := 'mentat_fts_' || attr_entid;
     EXECUTE format(
-        'CREATE INDEX IF NOT EXISTS %I ON mentat.datoms_text_new ' ||
-        'USING fts (to_ftsdoc(%L, v)) WHERE a = %s AND store_id = 0 AND added',
+        'CREATE INDEX IF NOT EXISTS %I ON mentat.current_text ' ||
+        'USING fts (to_ftsdoc(%L, v)) WHERE a = %s AND store_id = 0',
         idx_name, regconfig, attr_entid
     );
     RETURN idx_name;
