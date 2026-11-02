@@ -12,7 +12,8 @@
 /// 3. Creates a PostgreSQL view that wraps the CTE for convenient SQL access.
 /// 4. Registers the view in the `mentat.recursive_views` metadata table.
 use crate::error::MentatError;
-use crate::functions::store_management::{get_schema_for_store, quote_ident, validate_store_name};
+use crate::functions::materialized_views::validate_view_store;
+use crate::functions::store_management::{get_schema_for_store, quote_ident};
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::JsonB;
@@ -34,7 +35,7 @@ const DEFAULT_MAX_DEPTH: i32 = 100;
 
 /// Validate an SQL identifier (view name or rule name).
 ///
-/// Rules mirror [`validate_store_name`] but with a different error type:
+/// Rules mirror `validate_store_name` but with a different error type:
 /// - Non-empty
 /// - <= 63 characters
 /// - Starts with letter or underscore
@@ -231,7 +232,7 @@ pub fn recursive(
     max_depth: default!(Option<i32>, "NULL"),
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // 1. Validate inputs
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_identifier(view_name, "View name")?;
     validate_identifier(rule_name, "Rule name")?;
     validate_query_fragment(base_query, "Base query")?;
@@ -367,7 +368,7 @@ pub fn drop_recursive(
     store_name: &str,
     view_name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
     validate_identifier(view_name, "View name")?;
 
     let schema_name = get_schema_for_store(store_name);
@@ -410,7 +411,7 @@ pub fn drop_recursive(
 /// ```
 #[pg_extern]
 pub fn list_recursive(store_name: &str) -> Result<JsonB, Box<dyn std::error::Error + Send + Sync>> {
-    validate_store_name(store_name)?;
+    validate_view_store(store_name)?;
 
     ensure_metadata_table()?;
 
