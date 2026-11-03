@@ -277,13 +277,21 @@ BEGIN
                           FROM %1$I.%2$I
                          WHERE store_id = $1 AND (%4$s)
                          GROUP BY 1, 2, 3, 4
+                    ), kr AS (
+                        -- Only these can overlap: O's own cardinality-one
+                        -- attributes, and :db.unique refs to O.
+                        SELECT * FROM (
+                            SELECT k.*, sc.cardinality = 'one' AND k.me = $3 AS c1,
+                                   sc.unique_constraint IS NOT NULL AND %12$s AS u1
+                              FROM k JOIN %1$I.schema sc ON sc.entid = k.a) x
+                         WHERE c1 OR u1
                     ), ch AS (
                         SELECT * FROM (
-                            SELECT me, a, mv, tx, st,
+                            SELECT me, a, mv, tx, st, c1, u1,
                                    lag(st) OVER (PARTITION BY me, a, mv ORDER BY tx) AS prev,
                                    bool_or(hit) OVER (PARTITION BY me, a, mv) AS h,
                                    bool_and(allm) OVER (PARTITION BY me, a, mv) AS am
-                              FROM k) x
+                              FROM kr) x
                          WHERE st IS DISTINCT FROM coalesce(prev, false)
                     ), live AS (
                         SELECT * FROM (
@@ -291,12 +299,9 @@ BEGIN
                               FROM ch) x
                          WHERE st
                     ), one AS (
-                        SELECT live.* FROM live
-                          JOIN %1$I.schema sc ON sc.entid = live.a AND sc.cardinality = 'one'
+                        SELECT * FROM live WHERE c1
                     ), uniq AS (
-                        SELECT live.* FROM live
-                          JOIN %1$I.schema sc ON sc.entid = live.a AND sc.unique_constraint IS NOT NULL
-                         WHERE %12$s
+                        SELECT * FROM live WHERE u1
                     ), fin AS (
                         SELECT DISTINCT ON (me, a, mv) me, a, mv, st
                           FROM k ORDER BY me, a, mv, tx DESC
@@ -339,7 +344,7 @@ BEGIN
                     replace(ent, '@', 'i.me'), replace(attr, '@', 'i.a'),
                     replace(shown, '@', 'i.mv'), replace(shown, '@', 'j.mv'),
                     replace(ent, '@', 'j.me'),
-                    CASE WHEN ty = 'ref' THEN 'live.mv = $3' ELSE 'false' END,
+                    CASE WHEN ty = 'ref' THEN 'k.mv = $3' ELSE 'false' END,
                     replace(ent, '@', 'cur.me'), replace(attr, '@', 'cur.a'),
                     replace(shown, '@', 'cur.mv'),
                     replace(ent, '@', 'fin.me'), replace(attr, '@', 'fin.a'),
