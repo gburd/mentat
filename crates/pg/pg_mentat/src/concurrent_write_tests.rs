@@ -708,6 +708,13 @@ mod tests {
             "cw_a",
             &format!("SELECT count(*) FROM mentat.moved_idents('{st}')"),
         );
+        // The excise committed through dblink: drop its excision_log row, which
+        // outlives the test's transaction (the 1.19.0 upgrade tests read that
+        // table).
+        on(
+            "cw_a",
+            &format!("DELETE FROM mentat.excision_log WHERE store_name = '{st}'"),
+        );
         r.finish();
         assert!(waited, "the repair waited for B");
         assert_eq!(b, "", "B's write after the excise commits (no deadlock)");
