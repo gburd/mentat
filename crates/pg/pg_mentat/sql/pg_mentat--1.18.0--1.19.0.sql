@@ -800,8 +800,9 @@ $movedidents$;
 -- An installed attribute is left alone (excising one is refused since
 -- 1.19.0). This runs as superuser over tables a store's owner owns, so a
 -- store is skipped, with a WARNING, unless every table it touches is a
--- plain table with built-in column types, and the ones it deletes from have
--- no DELETE trigger or rule and no foreign key pointing at them; every
+-- plain table with built-in column types, neither a partition nor in an
+-- inheritance tree, and the ones it deletes from have no DELETE trigger
+-- (internal ones included) or rule and no foreign key pointing at them; every
 -- statement names its table with ONLY. Nothing here runs code a store's
 -- owner (or, on the default store, the installing role) wrote. A store_name that
 -- names no store now (dropped or renamed) is skipped too; one WARNING lists
@@ -852,11 +853,18 @@ BEGIN
           FROM pg_catalog.unnest(tabs) AS tname
           LEFT JOIN pg_class c ON c.relnamespace = st.ns AND c.relname = tname
          WHERE c.oid IS NULL OR c.relkind <> 'r'
-            -- On the tables it deletes from: no DELETE trigger or rule, and no
-            -- foreign key whose ON DELETE action would reach another table.
+            -- No partition and no inheritance (mentat makes neither): a row
+            -- trigger cloned onto a partition fires on DELETE FROM ONLY it
+            -- (on PostgreSQL 13 and 14 it is marked internal), and ONLY leaves
+            -- out a child's rows (a TimescaleDB hypertable's chunks).
+            OR c.relispartition
+            OR EXISTS (SELECT 1 FROM pg_inherits h WHERE c.oid IN (h.inhrelid, h.inhparent))
+            -- On the tables it deletes from: no DELETE trigger (an internal
+            -- one too) or rule, and no foreign key whose ON DELETE action
+            -- would reach another table.
             OR (tname NOT LIKE 'datoms\_%' AND tname <> 'schema'
                 AND (EXISTS (SELECT 1 FROM pg_trigger g
-                              WHERE g.tgrelid = c.oid AND NOT g.tgisinternal AND (g.tgtype & 8) <> 0)
+                              WHERE g.tgrelid = c.oid AND (g.tgtype & 8) <> 0)
                      OR EXISTS (SELECT 1 FROM pg_rewrite r WHERE r.ev_class = c.oid AND r.ev_type = '4')
                      OR EXISTS (SELECT 1 FROM pg_constraint k WHERE k.confrelid = c.oid)))
             OR EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type y ON y.oid = a.atttypid
@@ -866,8 +874,9 @@ BEGIN
                           AND y.typnamespace <> 'pg_catalog'::regnamespace);
         IF bad IS NOT NULL THEN
             RAISE WARNING 'pg_mentat upgrade: entities excised from store "%" before 1.19.0 were not looked '
-                          'at: % in schema % (missing, not a plain table, a DELETE trigger or rule, or a '
-                          'column type of its own). Their current values may still show. After the '
+                          'at: % in schema % (missing, not a plain table, a partition or inheritance, a '
+                          'DELETE trigger or rule, or a column type of its own). Their current values may '
+                          'still show. After the '
                           'upgrade, run mentat_excise again on the ids mentat.excision_log lists.',
                           st.store_name, bad, st.nspname;
             CONTINUE;

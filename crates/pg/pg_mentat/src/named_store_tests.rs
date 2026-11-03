@@ -3609,6 +3609,102 @@ mod tests {
         );
     }
 
+    /// Store `store` with the 1.18 layout, an :ex/name schema, entity "e"
+    /// excised as 1.18 did and "g" excised and given a value again; returns
+    /// (e, g).
+    fn excised_store(store: &str) -> (i64, i64) {
+        make_1_18_store(store, false);
+        tx(
+            store,
+            "[{:db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        );
+        let r = tx(
+            store,
+            "[{:db/id \"e\" :ex/name \"eve\"} {:db/id \"g\" :ex/name \"gus\"}]",
+        );
+        let id = |t: &str| r["tempids"][t].as_i64().unwrap();
+        excise_as_1_18(store, &[id("e"), id("g")]);
+        tx(
+            store,
+            &format!("[[:db/add {} :ex/name \"gus again\"]]", id("g")),
+        );
+        (id("e"), id("g"))
+    }
+
+    // The upgrade's excision clean-up deletes, as superuser, from tables a
+    // store's owner owns. A store whose current_text its owner attached as a
+    // partition of a table with a row DELETE trigger: on PostgreSQL 13 and 14
+    // the trigger cloned onto the partition is marked internal, the check
+    // skipped internal triggers, and DELETE FROM ONLY the partition fired it.
+    // A log table with an inheritance child (TimescaleDB chunks): ONLY left
+    // out the child's rows, so a value asserted after the excision, logged in
+    // the child, was deleted. Both stores are skipped with a WARNING now.
+    #[pg_test]
+    fn upgrade_skips_an_excised_store_in_a_partition_or_inheritance_tree() {
+        setup();
+        let (pe, _) = excised_store("ex_pt");
+        let (ie, ig) = excised_store("ex_inh");
+        Spi::run(
+            "CREATE TABLE public.ex_pt_ran (x TEXT); \
+             CREATE FUNCTION public.ex_pt_trg() RETURNS trigger LANGUAGE plpgsql AS \
+               $$ BEGIN INSERT INTO public.ex_pt_ran VALUES ('ran'); RETURN OLD; END $$; \
+             CREATE TABLE public.ex_pt_parent (LIKE mentat_ex_pt.current_text) PARTITION BY LIST (store_id); \
+             CREATE TRIGGER ex_pt_trg AFTER DELETE ON public.ex_pt_parent \
+               FOR EACH ROW EXECUTE FUNCTION public.ex_pt_trg(); \
+             ALTER TABLE public.ex_pt_parent ATTACH PARTITION mentat_ex_pt.current_text DEFAULT; \
+             CREATE TABLE public.ex_inh_chunk () INHERITS (mentat_ex_inh.datoms_text_new)",
+        )
+        .expect("partition and inheritance");
+        Spi::run(&format!(
+            "WITH m AS (DELETE FROM ONLY mentat_ex_inh.datoms_text_new WHERE e = {ig} RETURNING *) \
+             INSERT INTO public.ex_inh_chunk SELECT * FROM m"
+        ))
+        .expect("g's log row in the child");
+        let block = upgrade_119_block("excised");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_pt\" before 1.19.0 were not looked at: current_text in"),
+            "{msg:?}"
+        );
+        Spi::run("DELETE FROM mentat.excision_log WHERE store_name = 'ex_pt'")
+            .expect("one at a time");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_inh\" before 1.19.0 were not looked at: datoms_text_new in"),
+            "{msg:?}"
+        );
+        Spi::run(&format!(
+            "INSERT INTO mentat.excision_log (store_name, entity_ids) VALUES ('ex_pt', ARRAY[{pe}])"
+        ))
+        .expect("back");
+        Spi::run(&block).expect("excised");
+        assert_eq!(
+            text("SELECT count(*)::TEXT FROM public.ex_pt_ran"),
+            "0",
+            "the trigger"
+        );
+        assert_eq!(
+            text(&format!(
+                "SELECT string_agg(v, ',' ORDER BY v) FROM mentat_ex_inh.current_text WHERE e IN ({ie}, {ig})"
+            )),
+            "eve,gus again",
+            "ex_inh untouched"
+        );
+        assert_eq!(
+            text(&format!(
+                "SELECT count(*)::TEXT FROM mentat_ex_pt.current_text WHERE e = {pe}"
+            )),
+            "1",
+            "ex_pt untouched"
+        );
+    }
+
     fn viewdef(view: &str) -> String {
         text(&format!("SELECT pg_get_viewdef('{view}'::regclass)"))
     }
