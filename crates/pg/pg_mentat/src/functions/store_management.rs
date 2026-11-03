@@ -126,6 +126,21 @@ fn get_store_schema(store_name: &str) -> Result<Option<String>, pgrx::spi::SpiEr
 
 /// Create or bump the store's row in mentat.cache_generation, so every
 /// backend reloads its schema cache for that name.
+/// Take the store's write key (`write_locks::lock_store`) before its
+/// `cache_generation` row, the order `edn_t` and `repair_moved_idents` use, so
+/// this can't deadlock with a repair queued behind a writer. A store that isn't
+/// registered (yet) has no writers to order against.
+fn lock_store_by_name(store_name: &str) -> Result<(), pgrx::spi::SpiError> {
+    // An aggregate always returns a row (NULL when the store isn't there).
+    if let Some(id) = Spi::get_one_with_args::<i64>(
+        "SELECT pg_catalog.min(store_id) FROM mentat.stores WHERE store_name = $1",
+        &[DatumWithOid::from(store_name)],
+    )? {
+        crate::functions::write_locks::lock_store(id);
+    }
+    Ok(())
+}
+
 fn bump_generation(store_name: &str) -> Result<(), pgrx::spi::SpiError> {
     Spi::run_with_args(
         "INSERT INTO mentat.cache_generation (store_name, gen) VALUES ($1, 1) \
@@ -222,6 +237,7 @@ pub fn drop_store(store_name: &str) -> Result<String, Box<dyn std::error::Error 
     }
 
     validate_store_name(store_name)?;
+    lock_store_by_name(store_name)?;
 
     // Verify store exists and get its schema name
     let schema_name = get_store_schema(store_name)?.ok_or_else(|| {
@@ -314,6 +330,7 @@ pub fn rename_store(
     }
 
     validate_store_name(new_name)?;
+    lock_store_by_name(old_name)?;
 
     // Verify old store exists
     let old_schema = get_store_schema(old_name)?.ok_or_else(|| {

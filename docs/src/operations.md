@@ -473,14 +473,21 @@ as in a real run:
   later retraction wins)`: the value was asserted to the owner, then
   asserted and retracted through `moved_to`; the latest row wins.
 
-A real run blocks every transaction on the store (`t()` / `edn_t`) from
-when it starts until the transaction it runs in ends, and first waits
-for the ones in flight. A writer that arrives meanwhile waits before it
-resolves any ident, then reloads the idents and writes to the owner, not
-to `moved_to` (under READ COMMITTED, the default; a REPEATABLE READ or
-SERIALIZABLE writer keeps the idents of its first snapshot, so stop
-those). Reads of the store, and other stores, don't wait. Until COMMIT
-a real run holds:
+A real run must run under READ COMMITTED (it refuses REPEATABLE READ
+and SERIALIZABLE: its snapshot would predate the writers it waits for,
+and a ref one of them wrote to `moved_to` would stay there with nothing
+listing it). It blocks every transaction on the store (`t()` / `edn_t`,
+`mentat_excise`, `rename_store`) from when it starts until the
+transaction it runs in ends, and first waits for the ones in flight,
+including prepared transactions (check `pg_prepared_xacts` first). A
+writer that arrives meanwhile waits before it resolves any ident, then
+reloads the idents and writes to the owner, not to `moved_to`, under
+READ COMMITTED, the default. A REPEATABLE READ or SERIALIZABLE writer
+keeps the idents of its first snapshot, even when `t()` is its only
+statement (`default_transaction_isolation`), and its ref to `moved_to`
+is then invisible to `moved_idents`, so stop those writers first. Reads
+of the store, and other stores, don't wait. Until COMMIT a real run
+holds:
 
 - the store's write key, an advisory lock (`pg_locks`: `locktype =
   'advisory'`, `classid = 1299084336` (0x4D6E7430, "Mnt0"), `objsubid =

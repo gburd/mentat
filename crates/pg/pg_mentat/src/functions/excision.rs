@@ -47,6 +47,9 @@ fn excise_internal(
     let schema_name = crate::functions::store_management::quote_ident(&get_schema_for_store(store));
     let schema_prefix = format!("{}.", schema_name);
     let store_id = crate::functions::transact::get_store_id_from_schema(&schema_name)?;
+    // Before the generation row below, as edn_t and repair_moved_idents order
+    // them, so an excise can't deadlock with a queued repair.
+    crate::functions::write_locks::lock_store(store_id);
 
     // Check each entity: reject schema entities and verify partition allows excision
     for &eid in entity_ids {

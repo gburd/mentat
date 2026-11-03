@@ -63,8 +63,9 @@
 //! `cache::lock_store_generation`), held until the transaction ends. Every
 //! call first takes its store's [`NS_STORE`] key shared, before that row: the
 //! repair takes the key exclusive before it locks the row, so a writer never
-//! holds the row while waiting for the key. Then a call takes its keys in
-//! three steps, each in ascending (namespace, hash)
+//! holds the row while waiting for the key. `mentat_excise`, `drop_store` and
+//! `rename_store` lock the row too, so they take the key first as well. Then a
+//! call takes its keys in three steps, each in ascending (namespace, hash)
 //! order: an alteration's [`NS_ATTR`] keys; then the written attributes'
 //! [`NS_ATTR`] keys and the [`NS_UNIQUE`] keys; then the [`NS_EA`] keys.
 //! Writers that alter no schema and stay within the budget can't deadlock on
