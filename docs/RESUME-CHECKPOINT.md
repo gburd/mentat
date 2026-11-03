@@ -573,8 +573,13 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   0.5.0 unchanged). Codeberg mirrors commits to GitHub but NOT tags: push the
   tag to the `github` remote directly. The release run's DuckDB registry PR
   and PostgreSQL announce jobs skip (COMMUNITY_EXT_PAT and PGORG_* unset):
-  registry PR opened by hand from gburd/community-extensions branch
-  mentat-1.19.0 (ref = variegata = 92f5e4c4).
+  registry PR duckdb/community-extensions#3522 opened by hand from
+  gburd/community-extensions branch mentat-1.19.0 (ref = variegata =
+  92f5e4c4). Fork run 41710561816: linux_amd64 + linux_arm64 green when
+  opened; the linux_amd64 artifact (footer C_STRUCT v1.19.0 v1.5.6) loads
+  and answers queries in the v1.5.6 and 2.0 CLIs. After merge it needs the
+  maintainer v1.5.6 dispatch (duckdb_version v1.5.6 + ci_tools_version
+  v2.0-cyanoptera); verify footer field 5 on both v1.5.6/ and v2.0.0/.
 - Release gate on the release commit (chef account 842964983020,
   c7i.8xlarge us-east-1, Debian 12; scripts ~/.cache/mentat-werk/rel/119/):
   - pgrx +script: pg13 2200/0/1, pg14-19 2214/0/1 (pg17: one flake, #427,
@@ -592,3 +597,7 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   ~/.cache/mentat-werk/rel/). Plan/log: ~/.cache/mentat-werk/plan-1.19.md.
 - Open follow-ups from this cycle include #386 #387 #388p2 #401 #407-#412
   #417-#425 #427.
+- EC2 torn down 2026-11-03 20:45 UTC: i-03d57d2ff9bce7abc, its SG and key
+  (chef 842964983020, expires 2026-11-05 13:17:18 UTC). No mentat-* resources
+  left in us-east-1/us-east-2/us-west-2. Gate logs kept in
+  ~/.cache/mentat-werk/rel/119/results/.
