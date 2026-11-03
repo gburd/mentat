@@ -410,6 +410,115 @@ On a store with many collisions the repair rewrites every datom of each
 colliding entity, so run it in a maintenance window and expect it to scale
 with the number of affected datoms, not with total store size.
 
+### Idents moved by 1.18.0 and earlier (#415)
+
+Before 1.19.0, re-asserting an existing ident in a map without `:db/id`
+(`[{:db/ident :color/red :db/doc "red"}]`, or an idempotent schema install
+that lists enum idents) pointed the store's `idents` row at a new, empty
+entity. Values written afterwards went to that entity, values written
+before stayed on the ident's own entity, so an enum's data split in two
+(`[?c :db/ident :color/red] [?e :c/color ?c]` found only the older ones),
+and a redefined transaction function stopped being one. 1.19.0 no longer
+does this, but it does not change existing data on upgrade. The 1.19.0
+upgrade WARNs if the default store has such idents; check every store:
+
+```sql
+SELECT * FROM mentat.moved_idents('default');   -- no rows == healthy
+```
+
+Each row is one ident: `owner` is the entity with its `:db/ident` datom
+(for a bootstrap ident such as `:db/doc`, its fixed entid: re-asserting
+`{:db/ident :db/doc :db/doc "..."}` moved it too), `moved_to` the entity
+the `idents` row names, `n_datoms` / `n_refs` what
+was written to `moved_to` since, and `blocker` why the repair can't merge
+the two (NULL if it can).
+
+`mentat.repair_moved_idents(store TEXT DEFAULT 'default', dry_run BOOLEAN
+DEFAULT true)` points each ident with no blocker back at its owner, and
+moves what was written to `moved_to` onto the owner in the log: datoms
+whose entity is `moved_to`, and ref values that point at it. Transaction
+ids stay as they are. A datom written through both entities becomes one
+datom with one history, and the latest row wins as for any datom: a ref
+asserted to the owner and later retracted through `moved_to` is
+retracted. Rows that only repeat the state the datom already had are
+dropped, which changes no as-of answer: re-loading
+`{:c/name "car" :c/color :color/red}` after the move retracted the ref to
+the owner and asserted one to `moved_to` in one transaction, and after
+the repair car's color is the owner, asserted when it was first written.
+The repair then recomputes the current state of the merged datoms from
+the log, so current queries and as-of the latest transaction agree, and
+checks it. An ident whose repair fails that check, or fails at all, is
+rolled back on its own and reported as `failed: <error>`.
+
+It skips (and reports) an ident when both entities have a different
+value of one cardinality-one attribute, when `moved_to` was used as an
+attribute, or when a `:db.unique` ref attribute has the owner as its
+value on one entity and `moved_to` on another (both would hold one
+unique value); those need a decision about which value to keep. Fix them
+by hand (retract one value), then run the repair again. Values through
+each entity that overlapped only in the past are not a blocker (history
+can't be changed by hand); as of that time the merged entity shows both.
+
+Each row's `notes` (NULL if none, one line each) says what the merge
+changes besides moving `moved_to`'s datoms onto the owner, in a dry run
+as in a real run:
+
+- `past overlap: from tx T1 until tx T2, :color/red has two values of
+  :c/label: "a" and "b"`: a cardinality-one attribute had one value
+  through each entity at once. Queries as of those transactions show
+  both (a pull shows one of them).
+- `past overlap: from tx T1 until tx T2, entities E1 and E2 both hold
+  :c/uv :color/red`: the same for a `:db.unique` ref attribute.
+- `[E :c/tags :color/red] is live now and retracted after the repair (a
+  later retraction wins)`: the value was asserted to the owner, then
+  asserted and retracted through `moved_to`; the latest row wins.
+
+A real run must run under READ COMMITTED (it refuses REPEATABLE READ
+and SERIALIZABLE: its snapshot would predate the writers it waits for,
+and a ref one of them wrote to `moved_to` would stay there with nothing
+listing it). It blocks every transaction on the store (`t()` / `edn_t`,
+`mentat_excise`, `rename_store`) from when it starts until the
+transaction it runs in ends, and first waits for the ones in flight,
+including prepared transactions (check `pg_prepared_xacts` first). A
+writer that arrives meanwhile waits before it resolves any ident, then
+reloads the idents and writes to the owner, not to `moved_to`, under
+READ COMMITTED, the default. A REPEATABLE READ or SERIALIZABLE writer
+keeps the idents of its first snapshot, even when `t()` is its only
+statement (`default_transaction_isolation`), and its ref to `moved_to`
+is then invisible to `moved_idents`, so stop those writers first. Reads
+of the store, and other stores, don't wait. Until COMMIT a real run
+holds:
+
+- the store's write key, an advisory lock (`pg_locks`: `locktype =
+  'advisory'`, `classid = 1299084336` (0x4D6E7430, "Mnt0"), `objsubid =
+  2`), exclusive. Every `t()` call on the store takes it shared first,
+  so writers of the store wait;
+- the store's row in `mentat.cache_generation` (it bumps the
+  generation, so every backend reloads its idents), which a
+  schema-changing transaction of the store also locks;
+- row locks on every log and current row it rewrote or deleted, and
+  ROW EXCLUSIVE on the store's tables, which blocks no reader and no
+  writer of other rows.
+
+The repair and the dry run scan the store's ref log a few times per
+ident. On 200,000 ref datoms with 3 moved idents (91,666 refs to their
+`moved_to`): `moved_idents` 0.19 s, dry run 1.3 s, real run 17 s, a
+second run 2 ms. Writers of the store wait for all of it, so on a large
+store run it in a maintenance window.
+
+```sql
+SELECT * FROM mentat.repair_moved_idents('default');           -- dry run
+-- back up, then (writers to the store wait until COMMIT):
+BEGIN;
+SELECT * FROM mentat.repair_moved_idents('default', false);
+SELECT * FROM mentat.moved_idents('default');   -- only skipped ones left
+COMMIT;
+```
+
+An ident re-asserted more than once moved each time; only the last move
+is visible, so refs written to an earlier `moved_to` are not found or
+repaired.
+
 ### The 1.5.6 upgrade caveat (fixed in 1.5.7)
 
 The 1.5.5→1.5.6 migration bounded the sequences with a fixed `MAXVALUE`,

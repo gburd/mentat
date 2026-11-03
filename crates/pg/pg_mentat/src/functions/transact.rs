@@ -6,7 +6,7 @@ use edn::entities::{BuiltinTxFn, OpType, TX_TEMPID};
 use edn::parse;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 thread_local! {
@@ -24,6 +24,19 @@ thread_local! {
     /// Attribute and ident resolution must read the target store's schema,
     /// not the default store's.
     static TX_CACHE: Cell<Option<&'static crate::cache::SchemaCache>> = const { Cell::new(None) };
+
+    /// Idents this transaction renamed, old ident -> entid. Datomic's rename
+    /// ([{:db/id :old :db/ident :new}]) names the entity by its old ident, so
+    /// the old one resolves for the rest of the transaction.
+    static TX_RENAMED: RefCell<BTreeMap<String, i64>> = const { RefCell::new(BTreeMap::new()) };
+}
+
+/// The entid `ident` names in the transacted store, or named before this
+/// transaction renamed it.
+fn resolve_ident(ident: &str) -> Option<i64> {
+    store_cache()
+        .resolve_ident(ident)
+        .or_else(|| TX_RENAMED.with(|r| r.borrow().get(ident).copied()))
 }
 
 /// The schema cache of the store being transacted (the default store outside
@@ -46,6 +59,7 @@ impl Drop for TxContextGuard {
     fn drop(&mut self) {
         TX_STORE_ID.with(|f| f.set(None));
         TX_CACHE.with(|c| c.set(None));
+        TX_RENAMED.with(|r| r.borrow_mut().clear());
         crate::cache::end_tx_cache_bypass();
     }
 }
@@ -83,6 +97,34 @@ struct SchemaBuilder {
     fulltext: Option<bool>,      // :db/fulltext
     component: Option<bool>,     // :db/isComponent or :db/component
     no_history: Option<bool>,    // :db/noHistory
+}
+
+impl SchemaBuilder {
+    /// Does it assert an attribute property? A bare :db/ident only names an
+    /// entity (an enum value like :status/open, or a partition).
+    fn defines_attribute(&self) -> bool {
+        self.value_type.is_some()
+            || self.cardinality.is_some()
+            || self.unique.is_some()
+            || self.indexed.is_some()
+            || self.fulltext.is_some()
+            || self.component.is_some()
+            || self.no_history.is_some()
+    }
+
+    /// Fold `other`'s properties into this one; this one's win where both are
+    /// set (two values of one cardinality-one attribute are rejected later, as
+    /// datoms).
+    fn merge(&mut self, other: SchemaBuilder) {
+        self.ident = self.ident.take().or(other.ident);
+        self.value_type = self.value_type.take().or(other.value_type);
+        self.cardinality = self.cardinality.take().or(other.cardinality);
+        self.unique = self.unique.take().or(other.unique);
+        self.indexed = self.indexed.or(other.indexed);
+        self.fulltext = self.fulltext.or(other.fulltext);
+        self.component = self.component.or(other.component);
+        self.no_history = self.no_history.or(other.no_history);
+    }
 }
 
 /// Typed value for a pending datom, replacing the old BYTEA encoding.
@@ -842,6 +884,14 @@ fn execute_transaction_inner(
     let value_and_span = parse::value(edn_tx)?;
     let value = value_and_span.without_spans();
 
+    // Before any ident is resolved or the schema cache read (tx-fn expansion
+    // included): the store's key, shared. repair_moved_idents holds it
+    // exclusive, so a writer waits here, then reloads the cache it made stale
+    // (begin_tx_cache_bypass, below). See write_locks.rs.
+    // TX_STORE_ID is still None here, so this reads mentat.stores.
+    let tx_store_id = get_store_id_from_schema(&qs)?;
+    write_locks::lock_store(tx_store_id);
+
     // User-defined transaction functions (issue #325): expand every
     // `[:my/fn & args]` whose head ident carries a `:db/fn` into the tx-data
     // it returns, BEFORE the two-pass pipeline below. The expansion is plain
@@ -882,8 +932,6 @@ fn execute_transaction_inner(
     // TxContextGuard clears both on drop (success or early-return via `?`).
     let store_name_raw = schema_to_store_name(schema);
     crate::cache::begin_tx_cache_bypass(store_name_raw);
-    // TX_STORE_ID is still None here — first call goes to the DB.
-    let tx_store_id = get_store_id_from_schema(&qs)?;
     TX_STORE_ID.with(|f| f.set(Some(tx_store_id)));
     TX_CACHE.with(|c| c.set(Some(crate::cache::get_cache_for_store(store_name_raw))));
     let _tx_ctx_guard = TxContextGuard;
@@ -948,6 +996,9 @@ fn execute_transaction_inner(
     // the same IDs instead of calling nextval again.
     let mut map_entity_ids: std::collections::HashMap<usize, i64> =
         std::collections::HashMap::new();
+    // Each :db/ident this transaction asserts, with the entities that assert
+    // it, in transaction order (resolve_ident_upserts).
+    let mut ident_claims: Vec<(String, i64)> = Vec::new();
 
     // --- Pass 1: Scan for schema definitions ---
     // Only process :db/ident, :db/valueType, :db/cardinality, etc. assertions.
@@ -973,6 +1024,7 @@ fn execute_transaction_inner(
                 };
 
                 collect_schema_assertion(e, a, &entity_vec[3], &mut schema_builders);
+                claim_ident(e, a, &entity_vec[3], &mut ident_claims);
             }
             edn::Value::Map(ref map) => {
                 // Resolve entity for stable tempid allocation.
@@ -1006,6 +1058,7 @@ fn execute_transaction_inner(
                         None => continue,
                     };
                     collect_schema_assertion(e, a, attr_value, &mut schema_builders);
+                    claim_ident(e, a, attr_value, &mut ident_claims);
                 }
             }
             _ => {}
@@ -1031,6 +1084,25 @@ fn execute_transaction_inner(
     if has_schema_changes {
         crate::cache::lock_store_generation(store_name_raw)?;
         store_cache().refresh_if_stale();
+    }
+
+    // :db/ident is :db.unique/identity (#415): a new entity of this transaction
+    // that names an existing ident is that ident's entity, and two that name one
+    // new ident are one entity. Resolved under the generation lock, so the
+    // idents read here are the committed ones.
+    // The transaction ("datomic.tx") is never remapped (see Phase A).
+    let fresh: std::collections::BTreeSet<i64> = tempid_map
+        .values()
+        .chain(map_entity_ids.values())
+        .copied()
+        .filter(|&e| e != tx_id)
+        .collect();
+    // The datoms follow through upsert_remaps, below.
+    let ident_remaps = resolve_ident_upserts(&ident_claims, &fresh, &qs)?;
+    for (from, to) in &ident_remaps {
+        if let Some(b) = schema_builders.remove(from) {
+            schema_builders.entry(*to).or_default().merge(b);
+        }
     }
 
     // An alteration that existing data can violate (many -> one, adding
@@ -1255,7 +1327,7 @@ fn execute_transaction_inner(
     //   Phase A: Check the DB for existing entities with the same value.
     //   Phase B: Within the transaction, merge tempids that assert the same
     //            identity-unique value (in-transaction unification).
-    let mut upsert_remaps: BTreeMap<i64, i64> = BTreeMap::new(); // old_eid -> target_eid
+    let mut upsert_remaps: BTreeMap<i64, i64> = ident_remaps; // old_eid -> target_eid
 
     // Phase A: DB-level upsert resolution. The transaction is never remapped: it
     // is a new entity, and a unique value it asserts that another holds is a conflict.
@@ -1374,6 +1446,36 @@ fn execute_transaction_inner(
                 upsert_remaps.insert(k, root);
             }
         }
+    }
+
+    // An ident claimed by an entity that upserted into another through a
+    // :db.unique/identity attribute ({:db/ident :color/new :c/name "sea"}) is
+    // that entity's, with the rest of the map (#415).
+    let mut moved_claim = false;
+    for (ident, e) in &ident_claims {
+        let Some(&to) = upsert_remaps.get(e) else {
+            continue;
+        };
+        if ident_row(ident, &qs) == Some(to) {
+            continue;
+        }
+        if schema_builders
+            .get(e)
+            .is_some_and(SchemaBuilder::defines_attribute)
+        {
+            return Err(MentatError::InvalidTransaction {
+                message: format!(
+                    "the attribute definition of {ident} upserts into entity {to} through \
+                     a :db.unique/identity attribute; define the attribute on its own entity"
+                ),
+            }
+            .into());
+        }
+        install_ident(ident, to, &qs)?;
+        moved_claim = true;
+    }
+    if moved_claim {
+        store_cache().invalidate();
     }
 
     // Apply upsert remaps to all pending datoms and the tempid map
@@ -1859,6 +1961,183 @@ fn is_db_id(kw: &edn::symbols::Keyword) -> bool {
     kw.namespace() == Some("db") && kw.name() == "id"
 }
 
+/// Record that entity `e` asserts `[e :db/ident value]`.
+fn claim_ident(e: i64, a: i64, value: &edn::Value, claims: &mut Vec<(String, i64)>) {
+    if a == bootstrap_entids::DB_IDENT {
+        if let edn::Value::Keyword(kw) = value {
+            claims.push((format!("{kw}"), e));
+        }
+    }
+}
+
+/// The entity that holds `ident` in the store, if any: the one with a live
+/// `:db/ident` datom for it. A bootstrap ident (entid < 100) is held by its
+/// `idents` row, as a named store has no datoms for them. A row with no datom
+/// is an ident retracted from its entity (or a row the #415 bug moved), which
+/// no entity holds.
+fn ident_holder(
+    ident: &str,
+    schema: &str,
+) -> Result<Option<i64>, Box<dyn std::error::Error + Send + Sync>> {
+    let stored = TypedValue::Keyword(ident.trim_start_matches(':').to_string());
+    if let Some(e) = check_unique_typed_value(bootstrap_entids::DB_IDENT, &stored, schema)? {
+        return Ok(Some(e));
+    }
+    Ok(ident_row(ident, schema).filter(|&e| e < 100))
+}
+
+/// The entid `<schema>.idents` maps `ident` to.
+fn ident_row(ident: &str, schema: &str) -> Option<i64> {
+    Spi::get_one_with_args::<i64>(
+        &format!("SELECT entid FROM {schema}.idents WHERE ident = $1"),
+        &[DatumWithOid::from(ident)],
+    )
+    .ok()
+    .flatten()
+}
+
+/// Does entity `e` have a live datom, as entity, attribute or ref value?
+fn entity_in_use(e: i64, schema: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let store_id = get_store_id_from_schema(schema)?;
+    let tables = [
+        "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
+    ];
+    let mut arms: Vec<String> = tables
+        .iter()
+        .map(|t| {
+            format!("SELECT 1 FROM {schema}.current_{t} WHERE store_id = $1 AND (e = $2 OR a = $2)")
+        })
+        .collect();
+    arms.push(format!(
+        "SELECT 1 FROM {schema}.current_ref WHERE store_id = $1 AND v = $2"
+    ));
+    let sql = format!("SELECT EXISTS ({})", arms.join(" UNION ALL "));
+    let args = [DatumWithOid::from(store_id), DatumWithOid::from(e)];
+    Ok(Spi::get_one_with_args::<bool>(&sql, &args)?.unwrap_or(false))
+}
+
+/// Point `ident` at `entid` in `<schema>.idents`, which maps each ident to one
+/// entity and each entity to one ident. An ident never moves silently (#415):
+/// if another entity holds it, this is a unique conflict. Its row moves when
+/// no entity holds it (retracted from its entity earlier), or when `entid`
+/// holds it and the row is one the #415 bug moved to an entity with no data.
+/// An entity that had another ident is renamed (Datomic's rename: assert the
+/// new ident on the same entity), an attribute's schema row with it.
+fn install_ident(
+    ident: &str,
+    entid: i64,
+    schema: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(old) = ident_row(ident, schema) else {
+        return write_ident(ident, entid, schema);
+    };
+    if old == entid {
+        return Ok(());
+    }
+    let holder = ident_holder(ident, schema)?;
+    if let Some(h) = holder.filter(|&h| h != entid) {
+        return Err(MentatError::InvalidTransaction {
+            message: format!(
+                "{ident} is the :db/ident of entity {h}; entity {entid} can't also have it \
+                 (:db/ident is :db.unique/identity). To move it, retract it in an earlier \
+                 transaction: [:db/retract {h} :db/ident {ident}]."
+            ),
+        }
+        .into());
+    }
+    if holder == Some(entid) && entity_in_use(old, schema)? {
+        let store = schema_to_store_name(schema);
+        return Err(MentatError::InvalidTransaction {
+            message: format!(
+                "{ident} is the :db/ident of entity {entid}, but the store's idents table \
+                 maps it to entity {old}, which has data (moved by pg_mentat 1.18.0 or \
+                 earlier, issue #415). See SELECT * FROM mentat.moved_idents('{store}') and \
+                 mentat.repair_moved_idents('{store}')."
+            ),
+        }
+        .into());
+    }
+    write_ident(ident, entid, schema)
+}
+
+fn write_ident(
+    ident: &str,
+    entid: i64,
+    schema: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let args = [DatumWithOid::from(ident), DatumWithOid::from(entid)];
+    // An entity's other ident is removed (a rename); the old one still names
+    // it for the rest of this transaction.
+    if let Some(old) = Spi::get_one_with_args::<String>(
+        &format!(
+            "WITH d AS (DELETE FROM {schema}.idents WHERE entid = $2 AND ident <> $1 \
+             RETURNING ident) SELECT min(ident) FROM d"
+        ),
+        &args,
+    )? {
+        TX_RENAMED.with(|r| r.borrow_mut().insert(old, entid));
+    }
+    Spi::run_with_args(
+        &format!(
+            "INSERT INTO {schema}.idents (ident, entid) VALUES ($1, $2) \
+             ON CONFLICT (ident) DO UPDATE SET entid = EXCLUDED.entid"
+        ),
+        &args,
+    )?;
+    Spi::run_with_args(
+        &format!("UPDATE {schema}.schema SET ident = $1 WHERE entid = $2 AND ident <> $1"),
+        &args,
+    )?;
+    Ok(())
+}
+
+/// Upsert on :db/ident, as on the embedded engine and in Datomic (#415). An
+/// entity this transaction allocated (`fresh`: a tempid, or a map without
+/// :db/id) that asserts an ident is the entity holding that ident, if one does;
+/// else the transaction's explicit entid asserting it; else the first fresh
+/// entity asserting it. Returns the remapping (allocated entid -> entid); the
+/// datoms follow it, and the :db.unique/identity upsert step then finds them
+/// on the right entity. An explicit entid is never remapped: if it asserts an
+/// ident another entity holds, installing the ident fails.
+fn resolve_ident_upserts(
+    claims: &[(String, i64)],
+    fresh: &std::collections::BTreeSet<i64>,
+    schema: &str,
+) -> Result<BTreeMap<i64, i64>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut owner: BTreeMap<&str, i64> = BTreeMap::new();
+    for (ident, _) in claims {
+        if !owner.contains_key(ident.as_str()) {
+            if let Some(h) = ident_holder(ident, schema)? {
+                owner.insert(ident, h);
+            }
+        }
+    }
+    for (ident, e) in claims.iter().filter(|(_, e)| !fresh.contains(e)) {
+        owner.entry(ident.as_str()).or_insert(*e);
+    }
+    let mut remaps: BTreeMap<i64, i64> = BTreeMap::new();
+    for (ident, e) in claims.iter().filter(|(_, e)| fresh.contains(e)) {
+        let target = *owner.entry(ident.as_str()).or_insert(*e);
+        match remaps.get(e) {
+            Some(&t) if t != target => {
+                return Err(MentatError::InvalidTransaction {
+                    message: format!(
+                        "Conflicting upsert: entity {e} names {ident}, the :db/ident of \
+                         entity {target}, and an ident of entity {t}"
+                    ),
+                }
+                .into())
+            }
+            Some(_) => {}
+            None if target != *e => {
+                remaps.insert(*e, target);
+            }
+            None => {}
+        }
+    }
+    Ok(remaps)
+}
+
 fn collect_schema_assertion(
     entity_id: i64,
     attr_entid: i64,
@@ -1937,13 +2216,7 @@ fn install_schema_attributes(
         // value like :status/open, or a partition) -- a legitimate Datomic
         // pattern, NOT an incomplete attribute. For those we install the
         // ident mapping and move on.
-        let is_attribute_definition = builder.value_type.is_some()
-            || builder.cardinality.is_some()
-            || builder.unique.is_some()
-            || builder.indexed.is_some()
-            || builder.fulltext.is_some()
-            || builder.component.is_some()
-            || builder.no_history.is_some();
+        let is_attribute_definition = builder.defines_attribute();
         // The schema as it was before this transaction: an attribute that
         // already exists is being altered, and keeps what this transaction
         // does not change (#286). Its ident may come from an earlier one.
@@ -1971,17 +2244,7 @@ fn install_schema_attributes(
         // A bare :db/ident (no attribute property): install the ident-only
         // mapping for the named entity and skip attribute-column handling.
         if !is_attribute_definition {
-            Spi::run_with_args(
-                &format!(
-                    "INSERT INTO {}.idents (ident, entid) VALUES ($1, $2) \
-                     ON CONFLICT (ident) DO UPDATE SET entid = EXCLUDED.entid",
-                    schema
-                ),
-                &[
-                    DatumWithOid::from(ident.as_str()),
-                    DatumWithOid::from(entid),
-                ],
-            )?;
+            install_ident(&ident, entid, schema)?;
             continue;
         }
 
@@ -2082,17 +2345,7 @@ fn install_schema_attributes(
         }
 
         // Insert into idents (keyword -> entid mapping)
-        Spi::run_with_args(
-            &format!(
-                "INSERT INTO {}.idents (ident, entid) VALUES ($1, $2) \
-                 ON CONFLICT (ident) DO UPDATE SET entid = EXCLUDED.entid",
-                schema
-            ),
-            &[
-                DatumWithOid::from(ident.as_str()),
-                DatumWithOid::from(entid),
-            ],
-        )?;
+        install_ident(&ident, entid, schema)?;
 
         // Build the unique_constraint DatumWithOid: either a text value or NULL.
         let unique_datum = match &unique {
@@ -2187,8 +2440,7 @@ fn resolve_entity_place(
             let ident_str = format!("{}", kw);
             // Try the cache first, then fall back to direct DB lookup in the
             // store's idents table.
-            let entid = store_cache()
-                .resolve_ident(&ident_str)
+            let entid = resolve_ident(&ident_str)
                 .or_else(|| {
                     Spi::get_one_with_args::<i64>(
                         &format!("SELECT entid FROM {}.idents WHERE ident = $1", schema),
@@ -2274,11 +2526,9 @@ fn resolve_attribute(value: &edn::Value) -> Result<i64, Box<dyn std::error::Erro
         edn::Value::Keyword(kw) => {
             // Use Display format (:namespace/name) to match schema ident storage
             let ident_str = format!("{}", kw);
-            store_cache().resolve_ident(&ident_str).ok_or_else(
-                || -> Box<dyn std::error::Error + Send + Sync> {
-                    error::attribute_not_found(&ident_str, store_cache().db_schema()).into()
-                },
-            )
+            resolve_ident(&ident_str).ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                error::attribute_not_found(&ident_str, store_cache().db_schema()).into()
+            })
         }
         other => Err(MentatError::InvalidAttribute {
             got_type: value_type_name(other).to_string(),
@@ -2296,7 +2546,7 @@ fn try_resolve_attribute(value: &edn::Value) -> Option<i64> {
         edn::Value::Integer(i) => Some(*i),
         edn::Value::Keyword(kw) => {
             let ident_str = format!("{}", kw);
-            store_cache().resolve_ident(&ident_str)
+            resolve_ident(&ident_str)
         }
         _ => None,
     }

@@ -10,6 +10,23 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **pg_mentat: `mentat.moved_idents(store)` and
+  `mentat.repair_moved_idents(store, dry_run DEFAULT true)`**, for stores
+  where 1.18.0 or earlier moved an ident to a new, empty entity (#415).
+  The first lists such idents, including moved bootstrap idents such as
+  `:db/doc`, and changes nothing. The second points each ident back at its
+  entity and moves what was written to the empty entity onto it, keeping
+  transaction ids: a datom written through both entities becomes one, and
+  the current state is rebuilt from the log and checked against it. It
+  skips an ident, with the reason, when both entities have different
+  values of one cardinality-one attribute, a `:db.unique` ref attribute
+  would hold the value on two entities, or the empty entity was used as an
+  attribute. Its `notes` column, in a dry run too, lists what else the
+  merge changes: a cardinality-one attribute or unique value that had two
+  values or holders as of past transactions, and values live now that a
+  later retraction through the other entity retracts. A real run must run
+  under READ COMMITTED and blocks writers of the store until it commits;
+  see Operations.
 - **The reserved tempid `"datomic.tx"` names the transaction being
   committed** (#414), as in Datomic, on pg_mentat, the embedded engine and
   DuckDB: `[{:db/id "datomic.tx" :audit/user "bob"} ...]` annotates the
@@ -38,6 +55,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: every `t()` / `edn_t` call takes a shared per-store
+  advisory lock** (`pg_locks.classid` 1299084336) before it resolves
+  idents, and `mentat_excise`, `drop_store` and `rename_store` take it too;
+  a real run of `mentat.repair_moved_idents` takes it exclusive, so the
+  store's writers wait until the repair commits, then write to the
+  repaired entity. No measurable throughput cost.
+- **Docs: a renamed entity's old ident is not kept** (pg_mentat and the
+  embedded engine), unlike Datomic, which keeps it as an alias. Once the
+  rename commits, writes with the old ident fail with `ident-not-found`
+  and queries with it match nothing.
+- **pg_mentat 1.19.0 upgrade and #415:** the upgrade does not repair
+  existing data. It warns if the default store has moved idents; owners of
+  named stores should run `SELECT * FROM mentat.moved_idents('<store>')`,
+  then `mentat.repair_moved_idents` (a dry run first) if it returns rows.
+  An ident re-asserted more than once can only be repaired from its last
+  move.
 - **pg_mentat: a role without rights on a store gets PostgreSQL's
   "permission denied"** for the store's schema or tables, instead of
   `:db.error/unknown-attribute` (#402). A role that has only column-level
@@ -88,6 +121,24 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: a keyword in a ref attribute's value place is an ident**
+  (#416). `[?e :c/color :color/red]` matched nothing when `:c/color` is a
+  ref; it now matches the ident's entity, in plain patterns, `not` /
+  `not-join`, `or` and rule bodies, and a keyword `:in` value bound to a ref
+  place (scalar, collection, tuple, relation) resolves the same way. A
+  keyword in `ground` was encoded wrongly and matched nothing; it now
+  matches. An unknown ident matches nothing.
+- **pg_mentat: re-asserting a `:db/ident` upserts into its entity** (#415).
+  `[{:db/ident :color/red :db/doc "red"}]`, or re-running a schema install,
+  moved the ident to a new, empty entity, so later values went there and
+  an enum's data split in two; a redefined tx-fn stopped running, and a
+  repeated full schema install failed on `schema_ident_key`. `:db/ident` is
+  now `:db.unique/identity`, as in Datomic and on the embedded engine.
+  Asserting an ident another entity holds is an error; asserting a new
+  ident on an entity renames it, by entid or by the old ident
+  (`[{:db/id :color/blue :db/ident :color/azure}]`); a map that names a new
+  ident and upserts through another unique attribute puts the ident on the
+  entity it upserts into.
 - **pg_mentat: `mentat.entid_collision_report()` counted a transaction's
   own annotations as entid collisions** (#414), so
   `repair_entid_collisions(false)` would have moved them onto a new entity.

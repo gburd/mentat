@@ -768,6 +768,8 @@ mod entid_collision_tests;
 mod entity_lifecycle_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod entity_tests;
+#[cfg(any(test, feature = "pg_test"))]
+mod enum_ident_tests;
 pub mod error;
 #[cfg(any(test, feature = "pg_test"))]
 mod error_handling_tests;
@@ -800,6 +802,8 @@ mod ground_collection_tests;
 mod history_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod idempotency_tests;
+#[cfg(any(test, feature = "pg_test"))]
+mod ident_upsert_tests;
 #[cfg(any(test, feature = "pg_test"))]
 pub mod infra_extensions_tests;
 #[cfg(any(test, feature = "pg_test"))]
@@ -1254,6 +1258,14 @@ extension_sql_file!(
     "../sql/31_speculative_exec.sql",
     name = "speculative_exec",
     requires = [mentat_transact, t],
+);
+
+// Idents moved by pg_mentat before 1.19.0 (#415): mentat.moved_idents and
+// mentat.repair_moved_idents.
+extension_sql_file!(
+    "../sql/32_moved_idents.sql",
+    name = "moved_idents",
+    requires = ["bootstrap_schema", "narrow_storage", "current_projection"],
 );
 
 // Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /

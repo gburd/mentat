@@ -1202,7 +1202,17 @@ fn bind_input_value(
     match value {
         serde_json::Value::String(s) => {
             // Check if it looks like a keyword (starts with ':')
-            if let Some(stripped) = s.strip_prefix(':') {
+            if is_ref && s.starts_with(':') {
+                // In a ref attribute's value place a keyword is an ident (#416).
+                Some(match resolve_input_ident(s, schema_prefix) {
+                    Some(eid) => format!(
+                        "({alias}.v_ref = {} AND {alias}.value_type_tag = {tag})",
+                        builder.bind_bigint(eid),
+                        tag = type_tag::REF
+                    ),
+                    None => "FALSE".to_string(),
+                })
+            } else if let Some(stripped) = s.strip_prefix(':') {
                 let param = builder.bind_text(stripped.to_string());
                 Some(format!(
                     "({alias}.v_keyword = {param} AND {alias}.value_type_tag = {tag})",
@@ -1326,16 +1336,24 @@ fn bind_input_entity(
     } else {
         // An ident (":db/ident" keyword) names its entity; any other value
         // identifies none.
-        let ident = value.as_str().filter(|s| s.starts_with(':'));
-        let eid = ident.and_then(|s| {
-            crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix))
-                .resolve_ident(s)
-        });
+        let eid = value
+            .as_str()
+            .and_then(|s| resolve_input_ident(s, schema_prefix));
         Some(match eid {
             Some(eid) => format!("{alias}.{col} = {}", builder.bind_bigint(eid)),
             None => "FALSE".to_string(),
         })
     }
+}
+
+/// The entity an ident input (`":color/red"`) names in the store, if any.
+fn resolve_input_ident(s: &str, schema_prefix: &str) -> Option<i64> {
+    s.starts_with(':')
+        .then(|| {
+            crate::cache::get_cache_for_store(store_name_from_prefix(schema_prefix))
+                .resolve_ident(s)
+        })
+        .flatten()
 }
 
 /// Resolve a lookup ref JSON array to an entity ID.
@@ -2618,6 +2636,7 @@ fn bind_constant_value(
     place: &PatternValuePlace,
     builder: &mut SqlBuilder<'_>,
     value_type: Option<&str>,
+    schema_prefix: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
     match place {
         // An integer constant in value position is ambiguous: it can be a
@@ -2639,6 +2658,15 @@ fn bind_constant_value(
                     tag = type_tag::LONG
                 )))
             }
+        }
+        // In a ref attribute's value place a keyword is an ident naming an
+        // entity (Datomic's enum idiom, [?e :c/color :color/red]); an unknown
+        // ident matches nothing. Elsewhere it is a keyword value (#416).
+        PatternValuePlace::IdentOrKeyword(kw) if value_type == Some("ref") => {
+            let param = builder.bind_text(keyword_to_ident(kw));
+            Ok(Some(format!(
+                "{alias}.v_ref = (SELECT entid FROM {schema_prefix}idents WHERE ident = {param})"
+            )))
         }
         PatternValuePlace::IdentOrKeyword(kw) => {
             let ident_str = keyword_to_ident(kw);
@@ -5774,14 +5802,9 @@ fn ground_arg_to_json_scalar(
         }
         FnArg::Constant(NonIntegerConstant::Float(f)) => Ok(json!(f.into_inner())),
         FnArg::Constant(NonIntegerConstant::Boolean(b)) => Ok(serde_json::Value::Bool(*b)),
-        FnArg::IdentOrKeyword(kw) => {
-            // Match the existing scalar-ground encoding: prefix with ':' so
-            // bind_input_value's keyword branch picks up the value via v_keyword.
-            Ok(serde_json::Value::String(format!(
-                ":{}",
-                keyword_to_ident(kw)
-            )))
-        }
+        // ":ns/name", as a keyword :in input is written (keyword_to_ident has
+        // the ':'; a second one made "::ns/name", which matched nothing).
+        FnArg::IdentOrKeyword(kw) => Ok(serde_json::Value::String(keyword_to_ident(kw))),
         FnArg::Vector(_) => Err(
             ":db.error/fn-arg ground does not accept nested vectors except in the relation \
              form [(ground [[v1 v2] [v3 v4]]) [[?x ?y]]]."
@@ -6265,9 +6288,12 @@ fn build_collection_in_clause(
     let entity_ids = |builder: &mut SqlBuilder<'_>| -> String {
         let ids: Vec<i64> = values
             .iter()
-            .filter_map(|v| match v.as_array() {
-                Some(arr) => resolve_lookup_ref_to_eid(arr, schema_prefix, temporal),
-                None => v.as_i64(),
+            .filter_map(|v| match v {
+                serde_json::Value::Array(arr) => {
+                    resolve_lookup_ref_to_eid(arr, schema_prefix, temporal)
+                }
+                serde_json::Value::String(s) => resolve_input_ident(s, schema_prefix),
+                _ => v.as_i64(),
             })
             .collect();
         if ids.is_empty() {
@@ -6288,8 +6314,8 @@ fn build_collection_in_clause(
         "v" => {
             // Determine the type from the first value and build typed IN clause
             let first = &values[0];
-            if first.is_array() {
-                // Lookup refs into a ref attribute's value.
+            if first.is_array() || (is_ref && first.as_str().is_some_and(|s| s.starts_with(':'))) {
+                // Lookup refs or idents (#416) into a ref attribute's value.
                 let p = entity_ids(builder);
                 if p == "FALSE" {
                     return Some(p);
@@ -6368,10 +6394,22 @@ fn build_relation_values_join(
 
     // Build VALUES rows
     let mut value_rows = Vec::new();
+    // A ref value column: a keyword in it is an ident (#416).
+    let ref_col = |i: usize| {
+        vars.get(i).is_some_and(|v| {
+            matches!(var_to_alias.get(v.as_str()), Some((_, "v"))) && is_ref_var(var_to_type, v)
+        })
+    };
     for row in rows {
         let mut row_params = Vec::new();
-        for val in row {
-            if let Some(i) = val.as_i64() {
+        for (i, val) in row.iter().enumerate() {
+            let ident = val.as_str().filter(|s| ref_col(i) && s.starts_with(':'));
+            if let Some(s) = ident {
+                row_params.push(match resolve_input_ident(s, schema_prefix) {
+                    Some(eid) => format!("{}::BIGINT", builder.bind_bigint(eid)),
+                    None => "NULL::BIGINT".to_string(),
+                });
+            } else if let Some(i) = val.as_i64() {
                 row_params.push(format!("{}::BIGINT", builder.bind_bigint(i)));
             } else if let Some(f) = val.as_f64() {
                 row_params.push(format!("{}::DOUBLE PRECISION", builder.bind_double(f)));
@@ -6432,6 +6470,7 @@ fn build_relation_values_join(
                     }
                 }
                 Some(serde_json::Value::Number(_)) => "v_double",
+                Some(serde_json::Value::String(s)) if s.starts_with(':') && ref_col(i) => "v_ref",
                 Some(serde_json::Value::String(s)) if s.starts_with(':') => "v_keyword",
                 Some(serde_json::Value::String(_)) => "v_text",
                 Some(serde_json::Value::Bool(_)) => "v_bool",
@@ -6649,6 +6688,7 @@ fn build_extended_pattern_query(
                     &pattern.value,
                     builder,
                     pattern_value_type.as_deref(),
+                    schema_prefix,
                 )? {
                     where_clauses.push(constraint);
                 }
@@ -8019,6 +8059,7 @@ fn build_not_exists_subquery(
                             &p.value,
                             builder,
                             not_pattern_value_type.as_deref(),
+                            schema_prefix,
                         )? {
                             sub_where.push(constraint);
                         }
@@ -9259,12 +9300,6 @@ fn rule_constant_filter(
     schema_prefix: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let place = match arg {
-        FnArg::IdentOrKeyword(kw) if ty == Some("ref") => {
-            let param = builder.bind_text(keyword_to_ident(kw));
-            return Ok(format!(
-                "{view}.v_ref = (SELECT entid FROM {schema_prefix}idents WHERE ident = {param})"
-            ));
-        }
         FnArg::IdentOrKeyword(kw) => {
             PatternValuePlace::IdentOrKeyword(edn::ValueRc::new(kw.clone()))
         }
@@ -9280,7 +9315,10 @@ fn rule_constant_filter(
             )
         }
     };
-    Ok(bind_constant_value(view, &place, builder, ty)?.unwrap_or_else(|| "TRUE".to_string()))
+    Ok(
+        bind_constant_value(view, &place, builder, ty, schema_prefix)?
+            .unwrap_or_else(|| "TRUE".to_string()),
+    )
 }
 
 /// Build a SQL WHERE condition from a Datalog predicate in a rule body.
@@ -9589,6 +9627,7 @@ fn build_rule_clause_sql(
                             &p.value,
                             builder,
                             rule_pattern_value_type.as_deref(),
+                            schema_prefix,
                         )? {
                             where_parts.push(constraint);
                         }

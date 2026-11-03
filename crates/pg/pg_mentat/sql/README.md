@@ -211,7 +211,10 @@ ends up on one entity, and a schema alteration to `:db.cardinality/one` or
 `:db/unique` can't race a write to the attribute. The transactor takes
 transaction-scoped advisory locks before it reads (`pg_locks` shows them as
 `locktype = 'advisory'`, `objsubid = 2`, `classid` 1299084337 to 1299084339);
-a second writer of the same value waits for the first to commit. Under READ
+a second writer of the same value waits for the first to commit. Each call
+first takes its store's key (`classid` 1299084336) shared, which no other
+writer conflicts with; `mentat.repair_moved_idents` takes it exclusive, so
+the store's writers wait for the repair to commit. Under READ
 COMMITTED it then sees the first writer's value: it replaces it, or its cas
 fails. Under SERIALIZABLE, PostgreSQL may abort it with a serialization
 failure instead (SQLSTATE 40001); retry the transaction.

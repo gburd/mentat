@@ -20,17 +20,24 @@
 //! `locktype = 'advisory'`, `objsubid = 2`, `classid` = the first key,
 //! `objid` = the second.
 //!
-//! * `classid` is a namespace: [`NS_ATTR`], [`NS_UNIQUE`] or [`NS_EA`]
-//!   (ASCII "Mnt1".."Mnt3", 0x4D6E7431..), so other users of two-int advisory
-//!   locks collide with pg_mentat only if they pick the same 32-bit tags.
-//!   The one-bigint form (`objsubid = 1`) never collides with these.
-//! * `objid` is a 32-bit FNV-1a hash of the locked tuple: (store_id, a) for
-//!   [`NS_ATTR`], (store_id, a, value type tag, value) for [`NS_UNIQUE`], and
-//!   (store_id, e, a) for [`NS_EA`]. Two tuples can share a hash; the only
-//!   cost is that two unrelated writers wait for each other.
+//! * `classid` is a namespace: [`NS_STORE`], [`NS_ATTR`], [`NS_UNIQUE`] or
+//!   [`NS_EA`] (ASCII "Mnt0".."Mnt3", 0x4D6E7430..), so other users of
+//!   two-int advisory locks collide with pg_mentat only if they pick the same
+//!   32-bit tags. The one-bigint form (`objsubid = 1`) never collides with
+//!   these.
+//! * `objid` is a 32-bit FNV-1a hash of the locked tuple: (store_id) for
+//!   [`NS_STORE`], (store_id, a) for [`NS_ATTR`], (store_id, a, value type
+//!   tag, value) for [`NS_UNIQUE`], and (store_id, e, a) for [`NS_EA`]. Two
+//!   tuples can share a hash; the only cost is that two unrelated writers
+//!   wait for each other.
 //!
 //! What a transaction takes, before it reads:
 //!
+//! * [`NS_STORE`] shared, once per `edn_t` call, before it resolves any ident
+//!   or reads the schema cache. Writers never conflict on it.
+//!   `mentat.repair_moved_idents` takes it exclusive (computing the same key
+//!   in plpgsql), so a writer waits before it resolves an ident the repair
+//!   is pointing elsewhere, and then reloads the cache the repair made stale.
 //! * [`NS_ATTR`] shared, for every attribute it writes; exclusive, for an
 //!   attribute it alters from many to one or makes `:db/unique` (so that
 //!   alteration's check of the existing data runs with no writer of the
@@ -53,7 +60,11 @@
 //!
 //! An `edn_t` call that changes schema first locks its store's row in
 //! `mentat.cache_generation` (which it bumps when it ends; see
-//! `cache::lock_store_generation`), held until the transaction ends. Then a
+//! `cache::lock_store_generation`), held until the transaction ends. Every
+//! call first takes its store's [`NS_STORE`] key shared, before that row: the
+//! repair takes the key exclusive before it locks the row, so a writer never
+//! holds the row while waiting for the key. `mentat_excise`, `drop_store` and
+//! `rename_store` lock the row too, so they take the key first as well. Then a
 //! call takes its keys in three steps, each in ascending (namespace, hash)
 //! order: an alteration's [`NS_ATTR`] keys; then the written attributes'
 //! [`NS_ATTR`] keys and the [`NS_UNIQUE`] keys; then the [`NS_EA`] keys.
@@ -86,6 +97,8 @@
 use pgrx::pg_sys;
 use std::cell::Cell;
 
+/// Namespace of the per-store key: writers shared, repair_moved_idents exclusive.
+pub const NS_STORE: u32 = u32::from_be_bytes(*b"Mnt0");
 /// Namespace of the per-(store_id, a) key: one attribute and its schema.
 pub const NS_ATTR: u32 = u32::from_be_bytes(*b"Mnt1");
 /// Namespace of the per-(store_id, a, v) key: one `:db/unique` value.
@@ -140,6 +153,18 @@ pub fn fnv1a(parts: &[&[u8]]) -> u32 {
 pub fn ea_key(store_id: i64, e: i64, a: i64) -> (u32, u32) {
     let h = fnv1a(&[&store_id.to_le_bytes(), &e.to_le_bytes(), &a.to_le_bytes()]);
     (NS_EA, h)
+}
+
+/// The key of one store (sql/32_moved_idents.sql computes the same).
+pub fn store_key(store_id: i64) -> (u32, u32) {
+    (NS_STORE, fnv1a(&[&store_id.to_le_bytes()]))
+}
+
+/// Take the store's key shared, until the transaction ends. Not a per-value
+/// key: it costs no budget.
+pub fn lock_store(store_id: i64) {
+    let (ns, h) = store_key(store_id);
+    acquire(ns, h, false);
 }
 
 /// The key of one attribute's schema.
@@ -208,6 +233,8 @@ mod unit_tests {
 
     #[test]
     fn namespaces_are_distinct_ascii_tags() {
+        assert_eq!(NS_STORE, 0x4D6E_7430);
+        assert_eq!(NS_ATTR, NS_STORE + 1);
         assert_eq!(NS_ATTR, 0x4D6E_7431);
         assert_eq!(NS_UNIQUE, NS_ATTR + 1);
         assert_eq!(NS_EA, NS_ATTR + 2);
@@ -226,6 +253,9 @@ mod unit_tests {
         assert_ne!(ea_key(1, 2, 3), ea_key(1, 3, 2));
         assert_ne!(ea_key(1, 2, 3), ea_key(2, 2, 3));
         assert_ne!(attr_key(1, 7), attr_key(2, 7));
+        assert_ne!(store_key(0), store_key(1));
+        // FNV-1a of the eight zero bytes of store_id 0 (the default store).
+        assert_eq!(store_key(0), (NS_STORE, 0x9be1_7165));
         assert_ne!(unique_key(1, 7, 7, b"x"), unique_key(1, 7, 8, b"x"));
         assert_eq!(ea_key(1, 2, 3).0, NS_EA);
     }

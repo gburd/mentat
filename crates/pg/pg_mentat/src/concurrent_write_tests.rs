@@ -414,6 +414,360 @@ mod tests {
         assert!(!waited, "B did not wait");
     }
 
+    /// A store as 1.18.0 left it after re-asserting :color/red: the idents row
+    /// points at a new entity N, the data at O. Returns (O, N).
+    fn move_like_118(r: &Race, ident: &str) -> (i64, i64) {
+        let sch = format!("mentat_{}", r.store);
+        let o: i64 = get(
+            "cw_a",
+            &format!("SELECT entid FROM {sch}.idents WHERE ident = '{ident}'"),
+        )
+        .parse()
+        .unwrap();
+        let n: i64 = get("cw_a", &format!("nextval('{sch}.partition_user_seq')"))
+            .parse()
+            .unwrap();
+        on(
+            "cw_a",
+            &format!(
+                "UPDATE {sch}.idents SET entid = {n} WHERE ident = '{ident}'; \
+                 UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = '{}'",
+                r.store
+            ),
+        );
+        (o, n)
+    }
+
+    /// A writer racing repair_moved_idents waits for it, then writes to the
+    /// entity the repair pointed the ident back at, not to N: it resolves the
+    /// ident only after the repair commits. Without the store key it didn't
+    /// wait, wrote a ref to N with the idents it had cached, and once the
+    /// repair committed moved_idents no longer listed the ident.
+    #[pg_test]
+    fn write_racing_repair_moved_idents_lands_on_the_owner() {
+        let Some(r) = Race::new("cw_repair") else {
+            return;
+        };
+        r.t(
+            "cw_a",
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+              {:db/ident :color/red}]",
+        );
+        let (o, n) = move_like_118(&r, ":color/red");
+        // B's cache has :color/red -> N.
+        let car = tempid(
+            &r.t("cw_b", "[{:db/id \"car\" :c/color :color/red}]"),
+            "car",
+        );
+        let sch = format!("mentat_{}", r.store);
+        let color = |e: i64| {
+            get(
+                "cw_a",
+                &format!("SELECT v FROM {sch}.current_ref WHERE e = {e}"),
+            )
+        };
+        assert_eq!(color(car), n.to_string(), "the split, before the repair");
+        on("cw_a", "BEGIN");
+        let rep = get(
+            "cw_a",
+            &format!(
+                "SELECT string_agg(action, ',') FROM mentat.repair_moved_idents('{}', false)",
+                r.store
+            ),
+        );
+        let pid_b = get("cw_b", "pg_backend_pid()");
+        Spi::run(&format!(
+            "SELECT dblink_send_query('cw_b', $q$SELECT (t('{}', '[{{:db/id \"x\" :c/color :color/red}}]')::jsonb -> 'tempids' ->> 'x')$q$)",
+            r.store
+        ))
+        .expect("send");
+        let mut waited = false;
+        for _ in 0..100 {
+            waited = text(&format!(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = {pid_b}"
+            )) == "Lock";
+            let busy: i32 = Spi::get_one("SELECT dblink_is_busy('cw_b')")
+                .unwrap()
+                .unwrap();
+            if waited || busy == 0 {
+                break;
+            }
+            Spi::run("SELECT pg_sleep(0.05)").unwrap();
+        }
+        on("cw_a", "COMMIT");
+        let x = text("SELECT * FROM dblink_get_result('cw_b') AS t(r text)");
+        let _ = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_b') AS t(r text)$q$)",
+        );
+        let x: i64 = x.parse().unwrap_or_else(|e| panic!("{x}: {e}"));
+        let (car_color, x_color) = (color(car), color(x));
+        let left = get(
+            "cw_a",
+            &format!("SELECT count(*) FROM mentat.moved_idents('{}')", r.store),
+        );
+        r.finish();
+        assert_eq!(rep, "repaired");
+        assert!(waited, "B waited for the repair");
+        assert_eq!(
+            car_color,
+            o.to_string(),
+            "the repair moved car's ref onto O"
+        );
+        assert_eq!(x_color, o.to_string(), "B's write landed on O, not N");
+        assert_eq!(left, "0");
+    }
+
+    /// A real repair refuses REPEATABLE READ and SERIALIZABLE: its snapshot
+    /// would predate the writers it waits for, so a ref one of them wrote to
+    /// N would be left there with nothing listing it.
+    #[pg_test]
+    fn repair_moved_idents_refuses_a_snapshot_isolation_level() {
+        let Some(r) = Race::new("cw_repair_iso") else {
+            return;
+        };
+        r.t(
+            "cw_a",
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+              {:db/ident :color/red}]",
+        );
+        let _ = move_like_118(&r, ":color/red");
+        on(
+            "cw_a",
+            "CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        );
+        let mut errs = Vec::new();
+        for level in ["repeatable read", "serializable"] {
+            on("cw_a", &format!("BEGIN ISOLATION LEVEL {level}"));
+            errs.push(get(
+                "cw_a",
+                &format!(
+                    "pg_temp.capture($q$SELECT * FROM mentat.repair_moved_idents('{}', false)$q$)",
+                    r.store
+                ),
+            ));
+            on("cw_a", "ROLLBACK");
+        }
+        // A dry run reads only, so it may run at any level.
+        on("cw_a", "BEGIN ISOLATION LEVEL REPEATABLE READ");
+        let dry = get(
+            "cw_a",
+            &format!(
+                "SELECT string_agg(action, ',') FROM mentat.repair_moved_idents('{}', true)",
+                r.store
+            ),
+        );
+        on("cw_a", "ROLLBACK");
+        let left = get(
+            "cw_a",
+            &format!("SELECT count(*) FROM mentat.moved_idents('{}')", r.store),
+        );
+        r.finish();
+        for e in &errs {
+            assert!(e.contains("must run under READ COMMITTED"), "{e}");
+        }
+        assert_eq!(dry, "would repair");
+        assert_eq!(left, "1", "nothing repaired");
+    }
+
+    /// A schema-changing writer that holds the store key (it started first)
+    /// and a repair that waits for it can't deadlock: the repair takes the key
+    /// before the generation row, which the writer locks after the key.
+    #[pg_test]
+    fn schema_write_racing_repair_moved_idents_does_not_deadlock() {
+        let Some(r) = Race::new("cw_repair2") else {
+            return;
+        };
+        r.t(
+            "cw_a",
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+              {:db/ident :color/red}]",
+        );
+        move_like_118(&r, ":color/red");
+        let st = r.store.clone();
+        // B: a data call (store key shared), then the repair starts in A and
+        // waits for B, then B changes schema (the generation row), commits.
+        on("cw_b", "BEGIN");
+        on(
+            "cw_b",
+            &format!("DO $d$ BEGIN PERFORM t('{st}', '[{{:db/id \"y\" :db/doc \"y\"}}]'); END $d$"),
+        );
+        let pid_a = get("cw_a", "pg_backend_pid()");
+        Spi::run(&format!(
+            "SELECT dblink_send_query('cw_a', $q$SELECT string_agg(action, ',') FROM mentat.repair_moved_idents('{st}', false)$q$)"
+        ))
+        .expect("send");
+        let mut waited = false;
+        for _ in 0..100 {
+            waited = text(&format!(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = {pid_a}"
+            )) == "Lock";
+            if waited {
+                break;
+            }
+            Spi::run("SELECT pg_sleep(0.05)").unwrap();
+        }
+        let b = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT dblink_exec('cw_b', {}) $q$)",
+            pgrx::spi::quote_literal(&format!(
+                "DO $d$ BEGIN PERFORM t('{st}', '[{{:db/ident :c/size :db/valueType :db.type/long                  :db/cardinality :db.cardinality/one}}]'); END $d$"
+            ))
+        ));
+        on("cw_b", "COMMIT");
+        let rep = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_a') AS t(r text)$q$)",
+        );
+        let _ = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_a') AS t(r text)$q$)",
+        );
+        let left = get(
+            "cw_a",
+            &format!("SELECT count(*) FROM mentat.moved_idents('{st}')"),
+        );
+        let size = get(
+            "cw_a",
+            &format!("SELECT count(*) FROM mentat_{st}.schema WHERE ident = ':c/size'"),
+        );
+        r.finish();
+        assert!(waited, "the repair waited for B's store key");
+        assert_eq!(b, "", "B's schema call commits");
+        assert_eq!(rep, "", "the repair finishes (no deadlock)");
+        assert_eq!((left.as_str(), size.as_str()), ("0", "1"));
+    }
+
+    /// mentat_excise and rename_store lock the generation row too, so they take
+    /// the store key first, as edn_t does. Before, `BEGIN; mentat_excise(..)`
+    /// (generation row), then a repair queued for the key, then `t()` in the
+    /// same transaction (wanting the key behind the repair) deadlocked.
+    #[pg_test]
+    fn excise_then_write_racing_repair_moved_idents_does_not_deadlock() {
+        let Some(r) = Race::new("cw_repair3") else {
+            return;
+        };
+        r.t(
+            "cw_a",
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+              {:db/ident :c/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one} \
+              {:db/ident :color/red} {:db/ident :color/doomed}]",
+        );
+        move_like_118(&r, ":color/red");
+        let st = r.store.clone();
+        on(
+            "cw_a",
+            &format!(
+                "UPDATE mentat_{st}.partitions SET allow_excision = true WHERE name = 'db.part/user'"
+            ),
+        );
+        let doomed = get(
+            "cw_a",
+            &format!("SELECT entid FROM mentat_{st}.idents WHERE ident = ':color/doomed'"),
+        );
+        // B: excise an entity with an idents row (bumps the generation row).
+        on("cw_b", "BEGIN");
+        on(
+            "cw_b",
+            &format!(
+                "DO $d$ BEGIN PERFORM mentat_excise(ARRAY[{doomed}]::bigint[], '{st}', 'x'); END $d$"
+            ),
+        );
+        // A: the repair queues behind B.
+        let pid_a = get("cw_a", "pg_backend_pid()");
+        Spi::run(&format!(
+            "SELECT dblink_send_query('cw_a', $q$SELECT string_agg(action, ',') FROM mentat.repair_moved_idents('{st}', false)$q$)"
+        ))
+        .expect("send");
+        let mut waited = false;
+        for _ in 0..100 {
+            waited = text(&format!(
+                "SELECT wait_event_type FROM pg_stat_activity WHERE pid = {pid_a}"
+            )) == "Lock";
+            if waited {
+                break;
+            }
+            Spi::run("SELECT pg_sleep(0.05)").unwrap();
+        }
+        // B: a write in the same transaction, then commit.
+        let b = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT dblink_exec('cw_b', {}) $q$)",
+            pgrx::spi::quote_literal(&format!(
+                "DO $d$ BEGIN PERFORM t('{st}', '[{{:c/name \"after\" :c/color :color/red}}]'); END $d$"
+            ))
+        ));
+        let _ = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT dblink_exec('cw_b', {}) $q$)",
+            pgrx::spi::quote_literal("COMMIT")
+        ));
+        let rep = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_a') AS t(r text)$q$)",
+        );
+        let _ = text(
+            "SELECT pg_temp.capture($q$SELECT * FROM dblink_get_result('cw_a') AS t(r text)$q$)",
+        );
+        let left = get(
+            "cw_a",
+            &format!("SELECT count(*) FROM mentat.moved_idents('{st}')"),
+        );
+        r.finish();
+        assert!(waited, "the repair waited for B");
+        assert_eq!(b, "", "B's write after the excise commits (no deadlock)");
+        assert_eq!(rep, "", "the repair finishes (no deadlock)");
+        assert_eq!(left, "0");
+    }
+
+    /// The store key the repair computes in plpgsql is the transactor's: an
+    /// edn_t call holds it shared ("Mnt0" = 0x4d6e7430).
+    #[pg_test]
+    fn store_key_in_sql_matches_the_transactor() {
+        crate::ensure_extension_loaded();
+        Spi::run("SELECT edn_t('[{:db/id \"k\" :db/doc \"k\"}]')").unwrap();
+        let held: String = Spi::get_one(
+            "SELECT string_agg(to_hex(classid::int8) || ' ' || to_hex(objid::int8) || ' ' || mode, ',') \
+               FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory' \
+                AND objsubid = 2 AND classid = 1299084336",
+        )
+        .unwrap()
+        .unwrap();
+        let (ns, h) = crate::functions::write_locks::store_key(0);
+        assert_eq!(held, format!("{ns:x} {h:x} ShareLock"));
+        // The repair's computation, from the function's source.
+        let src = include_str!("../sql/32_moved_idents.sql");
+        let a = src.find("        h := 2166136261;").unwrap();
+        let b = src[a..].find("        -- Then make").unwrap() + a;
+        let block = format!(
+            "DO $d$ DECLARE sid BIGINT := 0; h BIGINT; BEGIN {} END $d$",
+            &src[a..b]
+        );
+        Spi::run(&block).unwrap();
+        let mine: String = Spi::get_one(
+            "SELECT string_agg(to_hex(classid::int8) || ' ' || to_hex(objid::int8), ',') \
+               FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory' \
+                AND objsubid = 2 AND classid = 1299084336 AND mode = 'ExclusiveLock'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mine, format!("{ns:x} {h:x}"), "the key edn_t took shared");
+        for sid in [1_i64, 7, 1 << 40, -1] {
+            let block = format!(
+                "DO $d$ DECLARE sid BIGINT := {sid}; h BIGINT; BEGIN {} \
+                 PERFORM set_config('pgm.h', h::text, true); END $d$",
+                &src[a..src[a..]
+                    .find("        PERFORM pg_advisory_xact_lock")
+                    .unwrap()
+                    + a]
+            );
+            Spi::run(&block).unwrap();
+            let h: i64 = Spi::get_one("SELECT current_setting('pgm.h')::int8")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                h,
+                i64::from(crate::functions::write_locks::store_key(sid).1),
+                "store_id {sid}"
+            );
+        }
+    }
+
     /// The advisory locks a transaction holds, by namespace (classid) and mode.
     fn held_locks() -> Vec<(String, String, i64)> {
         Spi::connect(|c| {
