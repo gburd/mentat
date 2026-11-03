@@ -496,6 +496,12 @@ BEGIN
         RAISE EXCEPTION 'pg_mentat: no store named %', store;
     END IF;
     IF NOT dry_run THEN
+        -- A snapshot taken before the wait below would miss what the writers it
+        -- waited for wrote, and leave their refs on the empty entity.
+        IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+            RAISE EXCEPTION 'pg_mentat: repair_moved_idents(%, dry_run => false) must run under READ COMMITTED, not %',
+                store, pg_catalog.current_setting('transaction_isolation');
+        END IF;
         -- Wait for, and hold off, every edn_t call on the store: each takes the
         -- store's advisory key shared before it resolves an ident (write_locks.rs:
         -- namespace "Mnt0", then FNV-1a-32 of the store_id's 8 little-endian

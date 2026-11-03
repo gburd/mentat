@@ -517,6 +517,60 @@ mod tests {
         assert_eq!(left, "0");
     }
 
+    /// A real repair refuses REPEATABLE READ and SERIALIZABLE: its snapshot
+    /// would predate the writers it waits for, so a ref one of them wrote to
+    /// N would be left there with nothing listing it.
+    #[pg_test]
+    fn repair_moved_idents_refuses_a_snapshot_isolation_level() {
+        let Some(r) = Race::new("cw_repair_iso") else {
+            return;
+        };
+        r.t(
+            "cw_a",
+            "[{:db/ident :c/color :db/valueType :db.type/ref :db/cardinality :db.cardinality/one} \
+              {:db/ident :color/red}]",
+        );
+        let _ = move_like_118(&r, ":color/red");
+        on(
+            "cw_a",
+            "CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        );
+        let mut errs = Vec::new();
+        for level in ["repeatable read", "serializable"] {
+            on("cw_a", &format!("BEGIN ISOLATION LEVEL {level}"));
+            errs.push(get(
+                "cw_a",
+                &format!(
+                    "pg_temp.capture($q$SELECT * FROM mentat.repair_moved_idents('{}', false)$q$)",
+                    r.store
+                ),
+            ));
+            on("cw_a", "ROLLBACK");
+        }
+        // A dry run reads only, so it may run at any level.
+        on("cw_a", "BEGIN ISOLATION LEVEL REPEATABLE READ");
+        let dry = get(
+            "cw_a",
+            &format!(
+                "SELECT string_agg(action, ',') FROM mentat.repair_moved_idents('{}', true)",
+                r.store
+            ),
+        );
+        on("cw_a", "ROLLBACK");
+        let left = get(
+            "cw_a",
+            &format!("SELECT count(*) FROM mentat.moved_idents('{}')", r.store),
+        );
+        r.finish();
+        for e in &errs {
+            assert!(e.contains("must run under READ COMMITTED"), "{e}");
+        }
+        assert_eq!(dry, "would repair");
+        assert_eq!(left, "1", "nothing repaired");
+    }
+
     /// A schema-changing writer that holds the store key (it started first)
     /// and a repair that waits for it can't deadlock: the repair takes the key
     /// before the generation row, which the writer locks after the key.
