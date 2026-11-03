@@ -1258,6 +1258,13 @@ extension_sql_file!(
     requires = [mentat_transact, t],
 );
 
+// mentat._as_table_owner is for the upgrade scripts (#426): superusers only.
+extension_sql!(
+    "REVOKE ALL ON FUNCTION mentat._as_table_owner(oid, text, bigint, bigint[], bigint[]) FROM PUBLIC;",
+    name = "as_table_owner_acl",
+    requires = [as_table_owner],
+);
+
 // Idents moved by pg_mentat before 1.19.0 (#415): mentat.moved_idents and
 // mentat.repair_moved_idents.
 extension_sql_file!(
