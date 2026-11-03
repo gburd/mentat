@@ -453,10 +453,13 @@ $fn$;
 --     a store whose current state already disagreed with its log.
 -- At most 50 lines per ident, then a count of the rest.
 --
--- Run it with nothing writing to the store: a writer that resolved the ident
--- before the repair committed can still write a ref to N. Back up first; run
--- it in your own transaction and check moved_idents(store) is empty before
--- COMMIT.
+-- A real run blocks every edn_t call on the store until the transaction it
+-- runs in ends: it takes the store's write key exclusive, which each call
+-- takes shared before it resolves an ident, so a writer waits, then reloads
+-- the idents and writes to O (under READ COMMITTED; a REPEATABLE READ or
+-- SERIALIZABLE writer still sees the idents of its first snapshot). It
+-- waits for calls in flight to commit first. Back up first; run it in your
+-- own transaction and check moved_idents(store) before COMMIT.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION mentat.repair_moved_idents(
     store   TEXT    DEFAULT 'default',
@@ -482,6 +485,7 @@ DECLARE
     nk INT[];
     nt BIGINT[];
     nl TEXT[];
+    h BIGINT;
     repaired BOOLEAN := false;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant',
                           'text', 'keyword', 'uuid', 'bytes'];
@@ -492,8 +496,19 @@ BEGIN
         RAISE EXCEPTION 'pg_mentat: no store named %', store;
     END IF;
     IF NOT dry_run THEN
-        -- Wait for, and hold off, schema-changing transactions of the store
-        -- (they lock this row first), and make every backend reload its idents.
+        -- Wait for, and hold off, every edn_t call on the store: each takes the
+        -- store's advisory key shared before it resolves an ident (write_locks.rs:
+        -- namespace "Mnt0", then FNV-1a-32 of the store_id's 8 little-endian
+        -- bytes). Taken before the generation row, which a schema-changing call
+        -- locks after the key, so the two can't wait for each other.
+        h := 2166136261;
+        FOR i IN 0..7 LOOP
+            h := ((h # ((sid >> (8 * i)) & 255)) * 16777619) & 4294967295;
+        END LOOP;
+        PERFORM pg_advisory_xact_lock(1299084336,
+            (CASE WHEN h >= 2147483648 THEN h - 4294967296 ELSE h END)::int4);
+        -- Then make every backend reload its idents (and wait for a
+        -- schema-changing transaction in flight, which holds this row).
         UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = store;
     END IF;
     -- How a note shows entity @ ($3 is O, $4 its ident) and attribute @.

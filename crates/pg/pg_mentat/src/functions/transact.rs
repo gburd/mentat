@@ -884,6 +884,14 @@ fn execute_transaction_inner(
     let value_and_span = parse::value(edn_tx)?;
     let value = value_and_span.without_spans();
 
+    // Before any ident is resolved or the schema cache read (tx-fn expansion
+    // included): the store's key, shared. repair_moved_idents holds it
+    // exclusive, so a writer waits here, then reloads the cache it made stale
+    // (begin_tx_cache_bypass, below). See write_locks.rs.
+    // TX_STORE_ID is still None here, so this reads mentat.stores.
+    let tx_store_id = get_store_id_from_schema(&qs)?;
+    write_locks::lock_store(tx_store_id);
+
     // User-defined transaction functions (issue #325): expand every
     // `[:my/fn & args]` whose head ident carries a `:db/fn` into the tx-data
     // it returns, BEFORE the two-pass pipeline below. The expansion is plain
@@ -924,8 +932,6 @@ fn execute_transaction_inner(
     // TxContextGuard clears both on drop (success or early-return via `?`).
     let store_name_raw = schema_to_store_name(schema);
     crate::cache::begin_tx_cache_bypass(store_name_raw);
-    // TX_STORE_ID is still None here — first call goes to the DB.
-    let tx_store_id = get_store_id_from_schema(&qs)?;
     TX_STORE_ID.with(|f| f.set(Some(tx_store_id)));
     TX_CACHE.with(|c| c.set(Some(crate::cache::get_cache_for_store(store_name_raw))));
     let _tx_ctx_guard = TxContextGuard;

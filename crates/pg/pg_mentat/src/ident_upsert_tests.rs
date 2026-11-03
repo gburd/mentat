@@ -898,7 +898,10 @@ mod tests {
         assert!(actions[2].starts_with("skipped: entities"), "{done:?}");
         assert_eq!(projection_drift(s), 0);
         assert_eq!(
-            q(s, r#"[:find [?c ...] :where [?e :c/um ?c] [?e :c/name "z"]]"#),
+            q(
+                s,
+                r#"[:find [?c ...] :where [?e :c/um ?c] [?e :c/name "z"]]"#
+            ),
             serde_json::json!([green])
         );
     }

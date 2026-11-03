@@ -472,12 +472,20 @@ as in a real run:
 - `[E :c/tags :color/red] is live now and retracted after the repair (a
   later retraction wins)`: the value was asserted to the owner, then
   asserted and retracted through `moved_to`; the latest row wins.
-The repair scans the store's ref log a few times per ident, so on a
-large store run it in a maintenance window.
+
+A real run blocks every transaction on the store (`t()` / `edn_t`) from
+when it starts until the transaction it runs in ends, and first waits
+for the ones in flight. A writer that arrives meanwhile waits before it
+resolves any ident, then reloads the idents and writes to the owner, not
+to `moved_to` (under READ COMMITTED, the default; a REPEATABLE READ or
+SERIALIZABLE writer keeps the idents of its first snapshot, so stop
+those). Reads of the store, and other stores, don't wait. The repair
+scans the store's ref log a few times per ident, so on a large store run
+it in a maintenance window.
 
 ```sql
 SELECT * FROM mentat.repair_moved_idents('default');           -- dry run
--- back up, stop writers to the store, then:
+-- back up, then (writers to the store wait until COMMIT):
 BEGIN;
 SELECT * FROM mentat.repair_moved_idents('default', false);
 SELECT * FROM mentat.moved_idents('default');   -- only skipped ones left
