@@ -556,3 +556,39 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   C_STRUCT. Nothing open for 1.18.0.
 - Scratch state (~/.cache/mentat: worker brief, dev.sh, gate scripts, review
   notes) lives on floki, not werk.
+
+## v1.19.0 RELEASED (2026-11-03) — tag v1.19.0 on 92f5e4c4
+- Work merged for 1.19.0 (each through review, a fix round and an
+  independent verifier): #374 #376 #379-#384 #389 #391-#400 #402-#406
+  #410(docs) #411 #413-#416 #426. Highlights: pg SQL views and helpers read
+  current state (#395); the upgrade cleans up 1.5.0-1.18.0 excisions,
+  running each statement as the store tables' owner (#396, #426); per-store
+  write locks keep card-one/cas/unique under READ COMMITTED (#376);
+  :db/ident upserts plus mentat.moved_idents/repair_moved_idents (#415);
+  enum keywords in ref value places (#416); tx-fns on named stores, pinned
+  to their store (#389, #405); "datomic.tx" (#414); tempid-not-an-entity
+  (#384); per-role plan cache (#402).
+- Channels: GitHub Release (8 assets; run 41682883862 all green), PGXN
+  1.19.0, crates.io 20 crates at 1.19.0 (mino_gc 0.5.1 / mino_gc_derive
+  0.5.0 unchanged). Codeberg mirrors commits to GitHub but NOT tags: push the
+  tag to the `github` remote directly. The release run's DuckDB registry PR
+  and PostgreSQL announce jobs skip (COMMUNITY_EXT_PAT and PGORG_* unset):
+  registry PR opened by hand from gburd/community-extensions branch
+  mentat-1.19.0 (ref = variegata = 92f5e4c4).
+- Release gate on the release commit (chef account 842964983020,
+  c7i.8xlarge us-east-1, Debian 12; scripts ~/.cache/mentat-werk/rel/119/):
+  - pgrx +script: pg13 2200/0/1, pg14-19 2214/0/1 (pg17: one flake, #427,
+    two reruns clean).
+  - packages pg15-19: GLIBC_2.34, 1.18.0->1.19.0 edge present.
+  - Upgrade from the released 1.18.0 tarballs, pg15-19: data and named
+    stores work; vs fresh only edn_eval/mentat_eval absent (released
+    tarballs have no script feature) and refresh_datalog_view whitespace;
+    indexes identical. 1.17.2 -> 1.19.0 chain OK (pg15/17/19). The gate's
+    1.17.2 rows fail in SETUP only (create_store via the 1.19 .so on 1.17 SQL).
+  - Trusted install OK, hijack f f t f, DuckDB build + cross-version PASS
+    (v1.5.6 and v2.0, footer C_STRUCT v1.19.0 floor v1.5.6) + harness 64/0.
+  - werk: workspace 1925/0, mino 204/0, clippy, cargo deny clean.
+- Build host is now werk (floki's ~/.cache/mentat kit copied to
+  ~/.cache/mentat-werk/rel/). Plan/log: ~/.cache/mentat-werk/plan-1.19.md.
+- Open follow-ups from this cycle include #386 #387 #388p2 #401 #407-#412
+  #417-#425 #427.
