@@ -102,6 +102,20 @@ BEGIN
                 blocker := format('entity %s is used as an attribute', rec.moved_to);
             END IF;
         END LOOP;
+        -- A :db.unique ref attribute that one entity has with value O and
+        -- another with value N: both would hold one unique value.
+        IF blocker IS NULL THEN
+            EXECUTE format(
+                'SELECT format(''entities %%s and %%s would both hold %%s %%s'', y.e, x.e, sc.ident, $4)
+                   FROM %1$I.current_ref x
+                   JOIN %1$I.schema sc ON sc.entid = x.a AND sc.unique_constraint IS NOT NULL
+                   JOIN %1$I.current_ref y ON y.store_id = $1 AND y.a = x.a AND y.v = $3
+                  WHERE x.store_id = $1 AND x.v = $2
+                    AND CASE WHEN x.e = $2 THEN $3 ELSE x.e END
+                        <> CASE WHEN y.e = $2 THEN $3 ELSE y.e END
+                  ORDER BY sc.ident, y.e, x.e LIMIT 1', s)
+                INTO blocker USING sid, rec.moved_to, rec.owner, rec.ident;
+        END IF;
         EXECUTE format('SELECT count(*) FROM %I.idents WHERE entid = $1', s)
             INTO hit USING rec.owner;
         IF hit > 0 AND blocker IS NULL THEN
@@ -242,8 +256,8 @@ BEGIN
                      WHERE added$q$,
                     s, 'current_' || ty, 'datoms_' || ty || '_new', scope)
                     USING sid, rec.moved_to, rec.owner;
-                -- Check what the repair wrote: current == log, and one value
-                -- per cardinality-one attribute.
+                -- Check what the repair wrote: current == log, one value per
+                -- cardinality-one attribute, one entity per :db.unique value.
                 EXECUTE format($q$
                     WITH l AS (
                         SELECT e, a, v FROM (SELECT DISTINCT ON (e, a, v) e, a, v, added
@@ -260,7 +274,11 @@ BEGIN
                                  UNION ALL (SELECT * FROM c EXCEPT SELECT * FROM l)) d LIMIT 1),
                         (SELECT format('entity %%s has two values of attribute %%s', c.e, c.a)
                            FROM c JOIN %1$I.schema sc ON sc.entid = c.a AND sc.cardinality = 'one'
-                          GROUP BY c.e, c.a HAVING count(*) > 1 LIMIT 1))$q$,
+                          GROUP BY c.e, c.a HAVING count(*) > 1 LIMIT 1),
+                        (SELECT format('two entities hold one value of unique attribute %%s', c.a)
+                           FROM c JOIN %1$I.schema sc ON sc.entid = c.a
+                                 AND sc.unique_constraint IS NOT NULL
+                          GROUP BY c.a, c.v HAVING count(*) > 1 LIMIT 1))$q$,
                     s, 'current_' || ty, 'datoms_' || ty || '_new', scope)
                     INTO bad USING sid, rec.moved_to, rec.owner;
                 IF bad IS NOT NULL THEN

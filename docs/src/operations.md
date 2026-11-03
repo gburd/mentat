@@ -449,8 +449,10 @@ checks it. An ident whose repair fails that check, or fails at all, is
 rolled back on its own and reported as `failed: <error>`.
 
 It skips (and reports) an ident when both entities have a different
-value of one cardinality-one attribute, or when `moved_to` was used as
-an attribute; those need a decision about which value to keep. Fix them
+value of one cardinality-one attribute, when `moved_to` was used as an
+attribute, or when a `:db.unique` ref attribute has the owner as its
+value on one entity and `moved_to` on another (both would hold one
+unique value); those need a decision about which value to keep. Fix them
 by hand (retract one value), then run the repair again. Values through
 each entity that overlapped only in the past are not a blocker (history
 can't be changed by hand); as of that time the merged entity shows both.

@@ -832,6 +832,88 @@ mod tests {
         repair_refers_to_both("id415b");
     }
 
+    /// A :db.unique ref attribute: one entity refers to O, another to N. Once
+    /// N is O both would hold one unique value, so the ident is not repaired.
+    /// One entity holding both (cardinality many) is one value after the merge.
+    fn repair_unique_ref(s: &str) {
+        tx(
+            s,
+            "[{:db/ident :c/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/identity}
+              {:db/ident :c/uv :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/value}
+              {:db/ident :c/ui :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/identity}
+              {:db/ident :c/um :db/valueType :db.type/ref :db/cardinality :db.cardinality/many
+               :db/unique :db.unique/value}]",
+        );
+        tx(
+            s,
+            "[{:db/ident :color/red} {:db/ident :color/blue} {:db/ident :color/green}]",
+        );
+        tx(
+            s,
+            r#"[{:c/name "y" :c/uv :color/red} {:c/name "y2" :c/ui :color/blue}
+                {:c/name "z" :c/um [:color/green]}]"#,
+        );
+        break_like_118(s, ":color/red");
+        break_like_118(s, ":color/blue");
+        let (green, _) = break_like_118(s, ":color/green");
+        tx(
+            s,
+            r#"[{:c/name "x" :c/uv :color/red} {:c/name "x2" :c/ui :color/blue}
+                {:c/name "z" :c/um [:color/green]}]"#,
+        );
+        let e = |n: &str| {
+            q(s, &format!(r#"[:find ?e . :where [?e :c/name "{n}"]]"#))
+                .as_i64()
+                .unwrap()
+        };
+        let found = moved_idents(s);
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert_eq!(
+            found[0]["blocker"],
+            format!(
+                "entities {} and {} would both hold :c/ui :color/blue",
+                e("y2"),
+                e("x2")
+            ),
+            "{found:?}"
+        );
+        assert_eq!(found[1]["blocker"], serde_json::Value::Null, "{found:?}");
+        assert_eq!(
+            found[2]["blocker"],
+            format!(
+                "entities {} and {} would both hold :c/uv :color/red",
+                e("y"),
+                e("x")
+            ),
+            "{found:?}"
+        );
+        let done = repair(s, false);
+        let actions: Vec<&str> = done.iter().map(|d| d["action"].as_str().unwrap()).collect();
+        assert!(actions[0].starts_with("skipped: entities"), "{done:?}");
+        assert_eq!(actions[1], "repaired", "{done:?}");
+        assert!(actions[2].starts_with("skipped: entities"), "{done:?}");
+        assert_eq!(projection_drift(s), 0);
+        assert_eq!(
+            q(s, r#"[:find [?c ...] :where [?e :c/um ?c] [?e :c/name "z"]]"#),
+            serde_json::json!([green])
+        );
+    }
+
+    #[pg_test]
+    fn ident_repair_unique_ref() {
+        setup("default");
+        repair_unique_ref("default");
+    }
+
+    #[pg_test]
+    fn ident_repair_unique_ref_named_store() {
+        setup("id415q");
+        repair_unique_ref("id415q");
+    }
+
     #[pg_test]
     fn ident_repair_history_on_moved() {
         setup("default");
