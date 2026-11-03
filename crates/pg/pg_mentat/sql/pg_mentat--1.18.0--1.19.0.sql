@@ -427,11 +427,24 @@ $fn$;
 -- as for any datom: a value asserted through O and retracted through N is
 -- retracted. The current state of the merged datoms is then recomputed from
 -- the log, so it equals as-of the latest transaction, and checked: a
--- mismatch, or two values of a cardinality-one attribute, fails the ident.
+-- mismatch, two values of a cardinality-one attribute, or one :db.unique
+-- value on two entities fails the ident.
 --
 -- A row with a blocker is skipped and left as it is; an ident whose repair
--- fails is rolled back on its own. Returns one row per ident with what was
--- done ('repaired', 'would repair', 'skipped: why', or 'failed: error').
+-- fails is rolled back on its own. Returns one row per ident: action is what
+-- was done ('repaired', 'would repair', 'skipped: why', or 'failed: error'),
+-- and notes (NULL if none, one per line) what the merge changes besides
+-- moving N's datoms onto O, read from the log before the rewrite, so a dry
+-- run shows them too:
+--   past overlap: from tx T1 until tx T2, O has two values of a
+--     cardinality-one attribute (one written through each entity), or two
+--     entities both hold O as one :db.unique value. As of those
+--     transactions, queries show both.
+--   [e a v] is live now and retracted after the repair: a later retraction
+--     through the other entity wins (or the current row has no datom in the
+--     log at all). The reverse, not live now and live after, only shows on
+--     a store whose current state already disagreed with its log.
+-- At most 50 lines per ident, then a count of the rest.
 --
 -- Run it with nothing writing to the store: a writer that resolved the ident
 -- before the repair committed can still write a ref to N. Back up first; run
@@ -442,7 +455,7 @@ CREATE OR REPLACE FUNCTION mentat.repair_moved_idents(
     store   TEXT    DEFAULT 'default',
     dry_run BOOLEAN DEFAULT true
 )
-RETURNS TABLE (ident TEXT, moved_to BIGINT, owner BIGINT, action TEXT)
+RETURNS TABLE (ident TEXT, moved_to BIGINT, owner BIGINT, action TEXT, notes TEXT)
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $fn$
@@ -450,11 +463,18 @@ DECLARE
     s TEXT;
     sid BIGINT;
     rec RECORD;
+    nrow RECORD;
     ty TEXT;
     vmap TEXT;
     moved TEXT;
     scope TEXT;
     bad TEXT;
+    ent TEXT;
+    attr TEXT;
+    shown TEXT;
+    nk INT[];
+    nt BIGINT[];
+    nl TEXT[];
     repaired BOOLEAN := false;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant',
                           'text', 'keyword', 'uuid', 'bytes'];
@@ -469,29 +489,128 @@ BEGIN
         -- (they lock this row first), and make every backend reload its idents.
         UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = store;
     END IF;
+    -- How a note shows entity @ ($3 is O, $4 its ident) and attribute @.
+    ent := format('coalesce(CASE WHEN @ = $3 THEN $4 END, '
+                  '(SELECT ii.ident FROM %I.idents ii WHERE ii.entid = @), (@)::text)', s);
+    attr := format('coalesce((SELECT sa.ident FROM %I.schema sa WHERE sa.entid = @), (@)::text)', s);
     FOR rec IN SELECT * FROM mentat.moved_idents(store) LOOP
         ident := rec.ident;
         moved_to := rec.moved_to;
         owner := rec.owner;
+        notes := NULL;
+        nk := '{}';
+        nt := '{}';
+        nl := '{}';
         IF rec.blocker IS NOT NULL THEN
             action := 'skipped: ' || rec.blocker;
-        ELSIF dry_run THEN
-            action := 'would repair';
         ELSE
           BEGIN
-            EXECUTE format('UPDATE %I.idents SET entid = $1 WHERE ident = $2', s)
-                USING rec.owner, rec.ident;
+            IF NOT dry_run THEN
+                EXECUTE format('UPDATE %I.idents SET entid = $1 WHERE ident = $2', s)
+                    USING rec.owner, rec.ident;
+            END IF;
             FOREACH ty IN ARRAY types LOOP
                 -- $2 is N, $3 is O.
                 IF ty = 'ref' THEN
                     vmap := 'CASE WHEN v = $2 THEN $3 ELSE v END';
                     moved := 'e = $2 OR v = $2';
                     scope := 'e IN ($2, $3) OR v IN ($2, $3)';
+                    shown := ent;
                 ELSE
                     vmap := 'v';
                     moved := 'e = $2';
                     scope := 'e IN ($2, $3)';
+                    shown := CASE ty WHEN 'keyword' THEN $s$(':' || @)$s$
+                                     WHEN 'text' THEN 'to_json(@)::text'
+                                     ELSE '(@)::text' END;
                 END IF;
+                -- The notes. Each merged datom's state per transaction is
+                -- asserted if any of its rows there is (the rule below); from
+                -- its changes of state come the intervals it is live in. Only
+                -- datoms with a row through N change: a pair of datoms both
+                -- written only through O, or both only through N, overlapped
+                -- before the repair too.
+                FOR nrow IN EXECUTE format($q$
+                    WITH k AS (
+                        SELECT CASE WHEN e = $2 THEN $3 ELSE e END AS me, a, %3$s AS mv, tx,
+                               bool_or(added) AS st, bool_or(%5$s) AS hit, bool_and(%5$s) AS allm
+                          FROM %1$I.%2$I
+                         WHERE store_id = $1 AND (%4$s)
+                         GROUP BY 1, 2, 3, 4
+                    ), ch AS (
+                        SELECT * FROM (
+                            SELECT me, a, mv, tx, st,
+                                   lag(st) OVER (PARTITION BY me, a, mv ORDER BY tx) AS prev,
+                                   bool_or(hit) OVER (PARTITION BY me, a, mv) AS h,
+                                   bool_and(allm) OVER (PARTITION BY me, a, mv) AS am
+                              FROM k) x
+                         WHERE st IS DISTINCT FROM coalesce(prev, false)
+                    ), live AS (
+                        SELECT * FROM (
+                            SELECT ch.*, lead(tx) OVER (PARTITION BY me, a, mv ORDER BY tx) AS t1
+                              FROM ch) x
+                         WHERE st
+                    ), one AS (
+                        SELECT live.* FROM live
+                          JOIN %1$I.schema sc ON sc.entid = live.a AND sc.cardinality = 'one'
+                    ), uniq AS (
+                        SELECT live.* FROM live
+                          JOIN %1$I.schema sc ON sc.entid = live.a AND sc.unique_constraint IS NOT NULL
+                         WHERE %12$s
+                    ), fin AS (
+                        SELECT DISTINCT ON (me, a, mv) me, a, mv, st
+                          FROM k ORDER BY me, a, mv, tx DESC
+                    ), cur AS (
+                        SELECT DISTINCT CASE WHEN e = $2 THEN $3 ELSE e END AS me, a, %3$s AS mv
+                          FROM %1$I.%6$I
+                         WHERE store_id = $1 AND (%4$s)
+                    )
+                    SELECT 1 AS k, greatest(i.tx, j.tx) AS t,
+                           format('past overlap: from tx %%s until %%s, %%s has two values of %%s: %%s and %%s',
+                                  greatest(i.tx, j.tx), coalesce('tx ' || least(i.t1, j.t1), 'now'),
+                                  %7$s, %8$s, %9$s, %10$s) AS line
+                      FROM one i
+                      JOIN one j ON j.me = i.me AND j.a = i.a AND j.mv > i.mv
+                     WHERE greatest(i.tx, j.tx) < coalesce(least(i.t1, j.t1), 9223372036854775807)
+                       AND NOT ((NOT i.h AND NOT j.h) OR (i.am AND j.am))
+                    UNION ALL
+                    SELECT 1, greatest(i.tx, j.tx),
+                           format('past overlap: from tx %%s until %%s, entities %%s and %%s both hold %%s %%s',
+                                  greatest(i.tx, j.tx), coalesce('tx ' || least(i.t1, j.t1), 'now'),
+                                  %7$s, %11$s, %8$s, $4)
+                      FROM uniq i
+                      JOIN uniq j ON j.a = i.a AND j.mv = i.mv AND j.me > i.me
+                     WHERE greatest(i.tx, j.tx) < coalesce(least(i.t1, j.t1), 9223372036854775807)
+                       AND NOT ((NOT i.h AND NOT j.h) OR (i.am AND j.am))
+                    UNION ALL
+                    SELECT 2, 0, format('[%%s %%s %%s] is live now and retracted after the repair (%%s)',
+                                        %13$s, %14$s, %15$s,
+                                        CASE WHEN fin.st IS NULL THEN 'it has no datom in the log'
+                                             ELSE 'a later retraction wins' END)
+                      FROM cur LEFT JOIN fin USING (me, a, mv)
+                     WHERE NOT coalesce(fin.st, false)
+                    UNION ALL
+                    SELECT 2, 0, format('[%%s %%s %%s] is not live now and live after the repair',
+                                        %16$s, %17$s, %18$s)
+                      FROM fin
+                     WHERE fin.st AND NOT EXISTS (SELECT 1 FROM cur
+                                                   WHERE (cur.me, cur.a, cur.mv) = (fin.me, fin.a, fin.mv))$q$,
+                    s, 'datoms_' || ty || '_new', vmap, scope, moved, 'current_' || ty,
+                    replace(ent, '@', 'i.me'), replace(attr, '@', 'i.a'),
+                    replace(shown, '@', 'i.mv'), replace(shown, '@', 'j.mv'),
+                    replace(ent, '@', 'j.me'),
+                    CASE WHEN ty = 'ref' THEN 'live.mv = $3' ELSE 'false' END,
+                    replace(ent, '@', 'cur.me'), replace(attr, '@', 'cur.a'),
+                    replace(shown, '@', 'cur.mv'),
+                    replace(ent, '@', 'fin.me'), replace(attr, '@', 'fin.a'),
+                    replace(shown, '@', 'fin.mv'))
+                    USING sid, rec.moved_to, rec.owner, rec.ident
+                LOOP
+                    nk := nk || nrow.k;
+                    nt := nt || nrow.t;
+                    nl := nl || nrow.line;
+                END LOOP;
+                CONTINUE WHEN dry_run;
                 -- In each datom that has a row through N, drop the rows that
                 -- repeat its state, and keep one row per transaction (its net
                 -- effect: asserted if any row of it is).
@@ -567,11 +686,20 @@ BEGIN
                     RAISE EXCEPTION '%', bad;
                 END IF;
             END LOOP;
-            repaired := true;
-            action := 'repaired';
+            IF dry_run THEN
+                action := 'would repair';
+            ELSE
+                repaired := true;
+                action := 'repaired';
+            END IF;
           EXCEPTION WHEN OTHERS THEN
             action := 'failed: ' || SQLERRM;
           END;
+        END IF;
+        SELECT string_agg(u.l, E'\n' ORDER BY u.k, u.t, u.l) INTO notes
+          FROM (SELECT * FROM unnest(nk, nt, nl) AS x(k, t, l) ORDER BY 1, 2, 3 LIMIT 50) u;
+        IF cardinality(nl) > 50 THEN
+            notes := notes || format(E'\n... and %s more', cardinality(nl) - 50);
         END IF;
         RETURN NEXT;
     END LOOP;

@@ -456,6 +456,20 @@ unique value); those need a decision about which value to keep. Fix them
 by hand (retract one value), then run the repair again. Values through
 each entity that overlapped only in the past are not a blocker (history
 can't be changed by hand); as of that time the merged entity shows both.
+
+Each row's `notes` (NULL if none, one line each) says what the merge
+changes besides moving `moved_to`'s datoms onto the owner, in a dry run
+as in a real run:
+
+- `past overlap: from tx T1 until tx T2, :color/red has two values of
+  :c/label: "a" and "b"`: a cardinality-one attribute had one value
+  through each entity at once. Queries as of those transactions show
+  both (a pull shows one of them).
+- `past overlap: from tx T1 until tx T2, entities E1 and E2 both hold
+  :c/uv :color/red`: the same for a `:db.unique` ref attribute.
+- `[E :c/tags :color/red] is live now and retracted after the repair (a
+  later retraction wins)`: the value was asserted to the owner, then
+  asserted and retracted through `moved_to`; the latest row wins.
 The repair scans the store's ref log a few times per ident, so on a
 large store run it in a maintenance window.
 

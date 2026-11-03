@@ -902,6 +902,99 @@ mod tests {
         );
     }
 
+    /// What the repair changes beyond moving N's datoms onto O, in its notes
+    /// (dry run and real run alike): a cardinality-one attribute with a value
+    /// through each entity at once in the past, a unique value two entities
+    /// held at once in the past, and a value live through O now whose later
+    /// retraction through N wins.
+    fn repair_notes(s: &str) {
+        history_schema(s);
+        tx(
+            s,
+            "[{:db/ident :c/uv :db/valueType :db.type/ref :db/cardinality :db.cardinality/one
+               :db/unique :db.unique/value}]",
+        );
+        tx(
+            s,
+            r#"[{:c/name "x" :c/tags [:color/red]} {:c/name "y" :c/uv :color/red}
+                [:db/add :color/red :c/label "a"]]"#,
+        );
+        let (red, _) = break_like_118(s, ":color/red");
+        let t2 = last_tx(&tx(s, r#"[[:db/add :color/red :c/label "b"]]"#));
+        let t3 = last_tx(&tx(s, &format!(r#"[[:db/add {red} :c/label "c"]]"#)));
+        let t4 = last_tx(&tx(s, r#"[[:db/retract :color/red :c/label "b"]]"#));
+        tx(s, r#"[{:c/name "x" :c/tags [:color/red]}]"#);
+        tx(s, r#"[[:db/retract [:c/name "x"] :c/tags :color/red]]"#);
+        let t7 = last_tx(&tx(s, r#"[{:c/name "z" :c/uv :color/red}]"#));
+        let t8 = last_tx(&tx(
+            s,
+            &format!(r#"[[:db/retract [:c/name "y"] :c/uv {red}]]"#),
+        ));
+        let e = |n: &str| {
+            q(s, &format!(r#"[:find ?e . :where [?e :c/name "{n}"]]"#))
+                .as_i64()
+                .unwrap()
+        };
+        let (x, y, z) = (e("x"), e("y"), e("z"));
+        let expected = [
+            format!(
+                "past overlap: from tx {t2} until tx {t3}, :color/red has two values of \
+                 :c/label: \"a\" and \"b\""
+            ),
+            format!(
+                "past overlap: from tx {t3} until tx {t4}, :color/red has two values of \
+                 :c/label: \"b\" and \"c\""
+            ),
+            format!(
+                "past overlap: from tx {t7} until tx {t8}, entities {y} and {z} both hold \
+                 :c/uv :color/red"
+            ),
+            format!(
+                "[{x} :c/tags :color/red] is live now and retracted after the repair \
+                 (a later retraction wins)"
+            ),
+        ]
+        .join("\n");
+        let dry = repair(s, true);
+        assert_eq!(dry.len(), 1, "{dry:?}");
+        assert_eq!(dry[0]["action"], "would repair");
+        assert_eq!(dry[0]["notes"], expected.as_str());
+        let done = repair(s, false);
+        assert_eq!(done[0]["action"], "repaired", "{done:?}");
+        assert_eq!(done[0]["notes"], expected.as_str());
+        assert_eq!(projection_drift(s), 0);
+        // As the notes say.
+        let labels = "[:find [?l ...] :where [?c :db/ident :color/red] [?c :c/label ?l]]";
+        let (now, then) = now_and_as_of(s, labels, t2);
+        assert_eq!(now, serde_json::json!(["c"]));
+        assert_eq!(sorted(then), ["\"a\"", "\"b\""]);
+        let holders = "[:find [?e ...] :where [?e :c/uv :color/red]]";
+        let (now, then) = now_and_as_of(s, holders, t7);
+        assert_eq!(now, serde_json::json!([z]));
+        assert_eq!(len(&then), 2, "{then}");
+        assert_eq!(
+            q(s, "[:find ?n ?c :where [?e :c/tags ?c] [?e :c/name ?n]]"),
+            serde_json::json!([])
+        );
+        // Nothing to note: no notes.
+        break_like_118(s, ":color/blue");
+        tx(s, r#"[{:c/name "w" :c/tags [:color/blue]}]"#);
+        let dry = repair(s, true);
+        assert_eq!(dry[0]["notes"], serde_json::Value::Null, "{dry:?}");
+    }
+
+    #[pg_test]
+    fn ident_repair_notes() {
+        setup("default");
+        repair_notes("default");
+    }
+
+    #[pg_test]
+    fn ident_repair_notes_named_store() {
+        setup("id415n");
+        repair_notes("id415n");
+    }
+
     #[pg_test]
     fn ident_repair_unique_ref() {
         setup("default");
