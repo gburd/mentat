@@ -217,8 +217,8 @@ DECLARE
     visible  BIGINT;
 BEGIN
     n_off := mentat.enable_multi_tenant_rls(false);
-    IF n_off <> 9 THEN
-        RAISE EXCEPTION 'enable_multi_tenant_rls(false) reported %, expected 9', n_off;
+    IF n_off <> 18 THEN
+        RAISE EXCEPTION 'enable_multi_tenant_rls(false) reported %, expected 18', n_off;
     END IF;
 
     -- Sanity: with RLS off, both rows are visible again from any role.

@@ -130,8 +130,9 @@ SELECT mentat.cron_schedule_vacuum_datoms('0 4 * * *');
 
 ### Monitoring before it bites
 
-`mentat.attribute_health()` reports live datom counts and the
-dead-tuple % of each backing table:
+`mentat.attribute_health()` reports live datom counts (the values
+entities have now, from the current-state projection) and the
+dead-tuple % of each backing log table:
 
 ```sql
 SELECT * FROM mentat.attribute_health() ORDER BY dead_pct DESC;
@@ -221,9 +222,11 @@ materialized view that joins many attributes.
 ### `mentat.current(e, a)`
 
 `mentat.current()` returns the current value of one attribute for one
-entity as text, with a single indexed lookup on the
-`(store_id, e, a, tx DESC) WHERE added` covering index. It dispatches on
-the attribute's declared value type so only one narrow table is touched.
+entity as text, with a single primary-key lookup on the attribute's
+`mentat.current_<type>` projection table, so a replaced or retracted
+value is never returned. For a cardinality-many attribute it returns the
+value asserted last. It dispatches on the attribute's declared value type
+so only one table is touched.
 
 ```sql
 -- By attribute keyword (resolves the entid for you):
@@ -244,8 +247,8 @@ SELECT
     mentat.current(e, ':person/employer')        AS employer
 FROM (
     -- the set of person entities (one row per entity)
-    SELECT DISTINCT e FROM mentat.datoms_text_new
-    WHERE a = mentat.attr_id(':person/canonical-email') AND added
+    SELECT DISTINCT e FROM mentat.current_text
+    WHERE store_id = 0 AND a = mentat.attr_id(':person/canonical-email')
 ) p;
 ```
 
@@ -647,3 +650,42 @@ Measured on a 32-vCPU box, PostgreSQL 16.15, current-time queries
   per attribute; the automatic index manager (section 7) adds those
   indexes from observed use.
 
+
+## 9. Upgrading to 1.19.0
+
+`ALTER EXTENSION pg_mentat UPDATE TO '1.19.0'` builds indexes, and it holds
+the locks they take until it commits:
+
+- Each pg_fts index `mentat.create_fts_index` made (`mentat_fts_<entid>`)
+  is dropped from `mentat.datoms_text_new` and built again on
+  `mentat.current_text`. That is an ACCESS EXCLUSIVE lock on
+  `mentat.datoms_text_new` and a SHARE lock on `mentat.current_text`.
+- The full-text GIN index `idx_current_text_fts` is built on
+  `mentat.current_text` and on each named store's `current_text`: a SHARE
+  lock on each.
+- In each named store, the trigram indexes `create_store` made with
+  pg_trgm move from `datoms_text_new` / `datoms_keyword_new` to
+  `current_text` / `current_keyword`: an ACCESS EXCLUSIVE lock on the log
+  table and a SHARE lock on the projection.
+
+Two more steps take ACCESS EXCLUSIVE locks, held until the upgrade
+commits:
+
+- Each named store's views (`facts`, `text_values`, ...) are replaced, so
+  a query on one of them waits from the moment its store is done until
+  commit. Its functions (`find_text`, `entity_value`, ...) and its tables
+  are not locked.
+- The last step gives the nine `mentat.current_<type>` tables their
+  Row-Level Security policy. Coming from 1.18 it creates the policies,
+  which locks those tables: from there to commit, which is short, every
+  read and write of the default store waits. A table already in the
+  wanted state is left alone, so running the step again takes no lock.
+
+While it runs, every write of a string or keyword value to an affected
+store waits (on the default store, so does every read of
+`mentat.datoms_text_new`); other writes, and reads of the tables, go on.
+Measured on an
+assert-enabled build: a pg_fts index over 100,000 values took 26 s to
+rebuild, the trigram move on 383,000 values 0.9 s. On a big store, plan a
+maintenance window, or set `lock_timeout` in the session: the upgrade then
+fails and changes nothing instead of waiting.

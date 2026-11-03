@@ -4970,7 +4970,7 @@ fn build_turbovec_near_join(
 /// BM25-ranked top-K full-text search from the optional pg_fts extension,
 /// over the live text values of a `:db.type/string` attribute. Uses the
 /// `fts` index created by `mentat.create_fts_index(attr, regconfig)` on
-/// `mentat.datoms_text_new (to_ftsdoc(regconfig, v))`. Binds `[[?e ?score]]`,
+/// `mentat.current_text (to_ftsdoc(regconfig, v))`. Binds `[[?e ?score]]`,
 /// where a *smaller* `<=>` value is a better match (pg_fts orders ascending).
 fn build_bm25_match_join(
     wf: &WhereFn,
@@ -5025,7 +5025,8 @@ fn build_bm25_match_join(
     // planner can match the expression to the index.
     let lang = resolve_fts_language(&attr_ident, schema_prefix);
     // create_fts_index builds a PARTIAL index `WHERE a = <entid> AND
-    // store_id = 0 AND added`. The planner can only use a partial index when
+    // store_id = 0` on current_text (the live values: the log keeps a
+    // replaced value's added = true row, #395). The planner can only use a partial index when
     // the query's predicate provably implies it, which a subquery or a bind
     // parameter does not. Inline the entid and store_id literals so it can.
     // (Both are integers we resolved ourselves, never user text.)
@@ -5047,9 +5048,9 @@ fn build_bm25_match_join(
     let (rank, matches) = (ext_operator("pg_fts", "<=>"), ext_operator("pg_fts", "@@@"));
     let from_fragment = format!(
         "(SELECT t.e, ({doc} {rank} {ftsq}) AS bm25_score \
-         FROM {schema_prefix}datoms_text_new t \
+         FROM {schema_prefix}current_text t \
          WHERE t.a = {entid} \
-           AND t.store_id = {store_id} AND t.added \
+           AND t.store_id = {store_id} \
            AND {doc} {matches} {ftsq} \
          ORDER BY {doc} {rank} {ftsq} \
          LIMIT {k_param}) AS {dt_alias}"

@@ -113,6 +113,108 @@ mod tests {
         assert!(ddl.contains("mentat.v_") && ddl.contains("LABEL"));
     }
 
+    fn rows(sql: &str) -> Vec<String> {
+        let mut v: Vec<String> = Spi::connect(|client| {
+            client
+                .select(sql, None, &[])
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        });
+        v.sort();
+        v
+    }
+
+    // Vertex and edge views read the log with only `added`, so a replaced
+    // name or employer was still a vertex or an edge (#395). They read the
+    // projection now, and the 1.19.0 upgrade makes the 1.18 ones again,
+    // keeping their owner, grants and options. A view of the same name with
+    // another body is left alone.
+    #[pg_test]
+    fn pg_test_inf_vertex_and_edge_views_read_current_state() {
+        setup();
+        install_basic_schema();
+        Spi::run(
+            "SELECT edn_t('[{:db/id \"c1\" :company/name \"Acme\"} {:db/id \"c2\" :company/name \"Bolt\"} \
+                            {:db/id \"p\" :person/name \"Pat\" :person/employer \"c1\"}]'::TEXT)",
+        )
+        .expect("data");
+        let eid = |n: &str| -> i64 {
+            Spi::get_one::<i64>(&format!(
+                "SELECT e FROM mentat.current_text WHERE store_id = 0 AND v = '{n}'"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        let (c2, p) = (eid("Bolt"), eid("Pat"));
+        Spi::run(&format!(
+            "SELECT edn_t('[[:db/add {p} :person/name \"Patricia\"] [:db/add {p} :person/employer {c2}]]'::TEXT)"
+        ))
+        .expect("replace");
+        let check = |round: &str| {
+            assert_eq!(
+                rows("SELECT label FROM mentat.v__person_name"),
+                vec!["Patricia"],
+                "{round}: vertices"
+            );
+            assert_eq!(
+                rows("SELECT dst::TEXT FROM mentat.e__person_employer"),
+                vec![c2.to_string()],
+                "{round}: edges"
+            );
+        };
+        Spi::run("SELECT mentat.create_vertex_view(':person/name'), mentat.create_edge_view(':person/employer')")
+            .expect("views");
+        check("1.19");
+
+        // What 1.18's create_vertex_view / create_edge_view made, with an
+        // owner, a grant and an option; and a view of its own named like one.
+        let attr = |i: &str| -> i64 {
+            Spi::get_one::<i64>(&format!("SELECT mentat.attr_id('{i}')"))
+                .unwrap()
+                .unwrap()
+        };
+        Spi::run(&format!(
+            "CREATE OR REPLACE VIEW mentat.v__person_name AS \
+               SELECT e, v::TEXT AS label FROM mentat.datoms_text_new WHERE a = {} AND added; \
+             CREATE OR REPLACE VIEW mentat.e__person_employer AS \
+               SELECT (e * 100000 + v) AS id, e AS src, v AS dst, ':person/employer' AS label \
+               FROM mentat.datoms_ref_new WHERE a = {} AND added; \
+             CREATE VIEW mentat.v__company_name AS SELECT 1::BIGINT AS e, 'mine'::TEXT AS label; \
+             CREATE ROLE inf_gv_reader NOLOGIN; \
+             GRANT SELECT ON mentat.v__person_name TO inf_gv_reader; \
+             ALTER VIEW mentat.e__person_employer SET (security_barrier = true)",
+            attr(":person/name"),
+            attr(":person/employer")
+        ))
+        .expect("1.18 views");
+        assert_eq!(
+            rows("SELECT label FROM mentat.v__person_name"),
+            vec!["Pat", "Patricia"],
+            "1.18 reads the log"
+        );
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let block = &upgrade[upgrade.find("DO $graphviews$").unwrap()..];
+        let block = &block[..block.find("$graphviews$;").unwrap() + "$graphviews$;".len()];
+        Spi::run(block).expect("upgrade");
+        check("upgraded");
+        assert_eq!(
+            rows("SELECT label FROM mentat.v__company_name"),
+            vec!["mine"],
+            "another view of that name"
+        );
+        assert_eq!(
+            rows(
+                "SELECT relname || ' ' || coalesce(relacl::TEXT, '-') || ' ' || coalesce(reloptions::TEXT, '-') \
+                   FROM pg_class WHERE relname IN ('v__person_name', 'e__person_employer')"
+            )
+            .iter()
+            .map(|r| r.contains("inf_gv_reader=r") || r.contains("security_barrier=true"))
+            .collect::<Vec<_>>(),
+            vec![true, true]
+        );
+    }
+
     #[pg_test]
     fn pg_test_inf_drop_vertex_view_idempotent() {
         setup();

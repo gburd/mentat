@@ -55,6 +55,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_mentat: `mentat.current_text` has a GIN index on
+  `to_tsvector('english', v)`** (`idx_current_text_fts`), in the default
+  store and every named store, so a store's `find_text` and
+  `searchable_text` use an index again (100k entities: `find_text('elk')`
+  1.1 s → 0.25 s).
+- **pg_mentat 1.19.0 upgrade locks:** it rebuilds pg_fts indexes on
+  `current_text`, builds `idx_current_text_fts`, and moves each store's
+  trigram indexes, holding those locks until it commits, so writes of
+  string and keyword values to affected stores wait for the whole upgrade
+  (measured: 26 s for a pg_fts index over 100k values on an assert-enabled
+  build; 3.3 s for the whole upgrade on 100k entities). Named store views
+  are replaced under ACCESS EXCLUSIVE, so queries on a store's views wait
+  from when that store is done until commit. As its last step the upgrade
+  creates the RLS policies on the nine `mentat.current_<type>` tables; from
+  then until commit, every read and write of the default store waits. On a
+  big store, plan a window or set `lock_timeout`.
 - **pg_mentat: every `t()` / `edn_t` call takes a shared per-store
   advisory lock** (`pg_locks.classid` 1299084336) before it resolves
   idents, and `mentat_excise`, `drop_store` and `rename_store` take it too;
@@ -121,6 +137,45 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **pg_mentat: SQL-level reads showed replaced and retracted values**
+  (#395). A named store's views and helper functions (`facts`,
+  `text_values` and the other per-type value views, `searchable_text`,
+  `entity_references`, `reverse_references`, `graph_edges`, `entities`,
+  `schema_summary`, `entities_with_attribute`, `lookup_entity`,
+  `entity_value`, `count_by_attribute`, `find_text`), the
+  `mentat.datom_text_like` / `datom_long_between` / `datom_ref_in` /
+  `datom_text_values` / `datom_ref_values` helpers, `mentat.current(e, a)`,
+  `attribute_health`'s `live_datoms`, `store_overview`, `bm25-match`,
+  `mentat.create_fts_index`, and `create_vertex_view` / `create_edge_view`
+  now read the current-state tables. `tx_log`, `entity_history` and
+  `recent_changes` still show history. A named store's
+  `entities.first_tx` / `first_ts` still mean when the entity was first
+  asserted; whole-store scans that read them take about twice as long as
+  in 1.18, single-entity lookups are unaffected.
+- **pg_mentat 1.19.0 upgrade: entities excised on 1.5.0–1.18.0 no longer
+  reappear** in a store's views, `datom_text_like`, `current()` or `q()`
+  (#396 follow-up). The upgrade deletes the projection rows, idents,
+  fulltext text and default-store vector/geometry rows those excisions
+  left, including old text a `:db/noHistory` replacement dropped. On 1.18,
+  asserting the value an excised entity still showed wrote no log row, so
+  such a value is deleted with the stale ones; a WARNING names, per store,
+  the excised entities given values again after the excision, to check. A
+  store is skipped with a WARNING if any table it touches is a partition or
+  in an inheritance tree, has a DELETE trigger (internal ones included), a
+  rule or a foreign key pointing at it, has a column type of its own, or
+  has an index, CHECK constraint or statistics object that uses a function,
+  operator or type a non-superuser owns; then run `mentat_excise` again on
+  the ids `mentat.excision_log` lists.
+- **pg_mentat 1.19.0 upgrade:** a 1.17 store the 1.18.0 upgrade skipped no
+  longer aborts the upgrade (it gets a WARNING); a lock timeout on a store
+  view fails the upgrade instead of leaving that view reading the log;
+  options and attributes a store's owner set on store views and functions
+  (`security_invoker`, `security_barrier`, SECURITY DEFINER, SET, COST,
+  ROWS, LEAKPROOF, PARALLEL, STRICT, volatility) are kept; a procedure with
+  a store function's name and arguments is skipped with a WARNING; a store
+  whose schema was renamed by hand or is missing, and a pg_fts index the
+  upgrade can't parse, each get a WARNING instead of being skipped
+  silently.
 - **pg_mentat: a keyword in a ref attribute's value place is an ident**
   (#416). `[?e :c/color :color/red]` matched nothing when `:c/color` is a
   ref; it now matches the ident's entity, in plain patterns, `not` /
@@ -246,6 +301,23 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **pg_mentat: with `enable_multi_tenant_rls(true)`, current-time reads
+  showed a tenant every store's current values** (`edn_q`,
+  `mentat.current()`, the `datom_*` helpers), because the `current_<type>`
+  tables had no policy. They now get the same policy and FORCE ROW LEVEL
+  SECURITY setting as the log tables; `enable_multi_tenant_rls` toggles all
+  18 tables and returns 18 (it returned 9). The upgrade turns RLS on for the
+  projections wherever the log tables have it. A tenant role granted the
+  log tables but not the projections now gets "permission denied for table
+  current_<type>" from `mentat.current()` and the `datom_*` helpers (from
+  `edn_q` already since 1.18.0): grant it `SELECT, INSERT, UPDATE, DELETE`
+  on the nine `mentat.current_<type>` tables.
+- **pg_mentat 1.19.0 upgrade: the excision clean-up runs as superuser in
+  tables a store's owner owns.** On PostgreSQL 13/14 it could have fired a
+  DELETE trigger the owner attached through a partitioned parent, and on
+  any version planning its statements could have run the owner's function
+  from an index expression or predicate, a statistics expression, or a
+  CHECK constraint. Such stores are skipped.
 - **pg_mentat: `q()` / `edn_q()` reused a query plan made for another role**
   (#402). In one session, after a privileged role had run a query, a role
   with table grants but no `USAGE` on `mentat_<store>` could read the store.

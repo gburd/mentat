@@ -95,6 +95,13 @@ CREATE INDEX IF NOT EXISTS idx_current_uuid_aev    ON mentat.current_uuid    (st
 CREATE INDEX IF NOT EXISTS idx_current_bytes_aev   ON mentat.current_bytes   (store_id, a, e) INCLUDE (v, tx);
 CREATE INDEX IF NOT EXISTS idx_current_boolean_aev ON mentat.current_boolean (store_id, a, e) INCLUDE (v, tx);
 
+-- Full-text GIN index on the text projection: a store's searchable_text
+-- view and find_text() filter on to_tsvector('english', v), and so does
+-- q()'s (fulltext ...) for an attribute in English (the default). Named
+-- stores get a copy (sql/30_store_layout.sql).
+CREATE INDEX IF NOT EXISTS idx_current_text_fts
+    ON mentat.current_text USING gin (pg_catalog.to_tsvector('english'::pg_catalog.regconfig, v));
+
 -- VAET index on the ref projection: reverse-reference traversal
 -- [?e :attr <target>] -> find entities pointing at target. Mirrors the
 -- datoms_ref_new VAET index but over current state only.
@@ -131,6 +138,30 @@ CREATE INDEX IF NOT EXISTS idx_current_keyword_tx ON mentat.current_keyword (sto
 CREATE INDEX IF NOT EXISTS idx_current_uuid_tx    ON mentat.current_uuid    (store_id, tx);
 CREATE INDEX IF NOT EXISTS idx_current_bytes_tx   ON mentat.current_bytes   (store_id, tx);
 CREATE INDEX IF NOT EXISTS idx_current_boolean_tx ON mentat.current_boolean (store_id, tx);
+
+-- Multi-tenant Row-Level Security, as on the nine log tables
+-- (sql/10_narrow_storage.sql): the same policy on each projection table,
+-- inert until mentat.enable_multi_tenant_rls(true) enables RLS on all
+-- eighteen. Current-time reads (edn_q, current(), the datom_* helpers) read
+-- these tables, so without it a tenant saw every store's current values.
+DO $rls$
+DECLARE
+    ty TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');  -- see sql/10_narrow_storage.sql
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOREACH ty IN ARRAY ARRAY['ref', 'long', 'text', 'double', 'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP
+        EXECUTE pg_catalog.format('DROP POLICY IF EXISTS %I ON mentat.%I', 'store_isolation_current_' || ty,
+                                  'current_' || ty);
+        EXECUTE pg_catalog.format(
+            'CREATE POLICY %I ON mentat.%I '
+            'USING (store_id = mentat.current_store_id()) '
+            'WITH CHECK (store_id = mentat.current_store_id())',
+            'store_isolation_current_' || ty, 'current_' || ty);
+        EXECUTE pg_catalog.format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', 'current_' || ty);
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END $rls$;
 
 -- These tables take in-place upserts; keep autovacuum aggressive so the
 -- HOT-pruning + dead-tuple reclaim keeps pace with churn.

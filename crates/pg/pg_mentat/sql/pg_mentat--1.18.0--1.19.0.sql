@@ -778,3 +778,1111 @@ BEGIN
     PERFORM pg_catalog.set_config('search_path', old_path, true);
 END
 $movedidents$;
+
+-- === pg-views ===
+-- ---------------------------------------------------------------------------
+-- Entities excised before 1.19.0 (#396). From 1.5.0 to 1.18.0 mentat_excise
+-- deleted only the entities' log rows. Their current_<type> rows, which
+-- every current-time read serves from, stayed, and so did their text in the
+-- store's fulltext table, an enum entity's idents row and the default
+-- store's attr_<n>_{vector,geom,tvec} rows. The 1.18 store views read the
+-- log and hid them; the views below read the projection, so this runs
+-- first. For each store mentat.excision_log names, it deletes what
+-- mentat_excise deletes now:
+--   * the excised entities' current_<type> rows that no log row backs (one
+--     with the same e, a, v and tx): a value asserted for the same entity id
+--     after the excision has its log row and stays, unless it was asserted
+--     unchanged, which on 1.18 wrote no log row; the entities that may have
+--     lost such a value are named in a WARNING;
+--   * for an excised entity with no log row left, its idents rows and, in
+--     the default store, its attr_<n>_* rows;
+--   * text in the store's fulltext table that no assertion in the store's
+--     log holds (the table has no entity column, and the excised entities'
+--     log rows are gone). That is any such text in the store, not only the
+--     excised entities': a value a :db/noHistory replacement dropped from
+--     the log goes too (mentat.fulltext_search, which reads the table,
+--     stops returning it). A retracted value's assertion stays in the log,
+--     so its text stays.
+-- An installed attribute is left alone (excising one is refused since
+-- 1.19.0). This runs as superuser over tables a store's owner owns, so a
+-- store is skipped, with a WARNING, unless every table it touches is a
+-- plain table with built-in column types, neither a partition nor in an
+-- inheritance tree, with no index, CHECK constraint or statistics object
+-- that uses a function, operator or type a non-superuser made (planning a
+-- statement can run it), and the ones it deletes from have no DELETE trigger
+-- (internal ones included) or rule and no foreign key pointing at them; every
+-- statement names its table with ONLY. Nothing here runs code a store's
+-- owner (or, on the default store, the installing role) wrote. A store_name that
+-- names no store now (dropped or renamed) is skipped too; one WARNING lists
+-- them.
+-- ---------------------------------------------------------------------------
+DO $excised$
+DECLARE
+    st RECORD;
+    ty TEXT;
+    tabs TEXT[];
+    bad TEXT;
+    ids BIGINT[];
+    gone BIGINT[];
+    hit BIGINT[];
+    done TEXT[] := '{}';
+    n BIGINT;
+    types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
+    srr TEXT := pg_catalog.current_setting('session_replication_role');
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOR st IN
+        SELECT s.store_id, s.store_name, n.oid AS ns, n.nspname,
+               pg_catalog.array_agg(DISTINCT xe) AS ids
+          FROM mentat.excision_log l
+          CROSS JOIN LATERAL pg_catalog.unnest(l.entity_ids) AS xe
+          JOIN mentat.stores s ON s.store_name = l.store_name
+          JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE xe >= 10000
+           AND ((s.store_name = 'default' AND s.schema_name = 'mentat')
+                OR (s.schema_name = 'mentat_' || s.store_name
+                    AND s.store_name ~ '^[A-Za-z_][A-Za-z0-9_]*$'
+                    AND pg_catalog.length(s.store_name) <= 56
+                    AND pg_catalog.lower(s.store_name) NOT IN ('default', 'information_schema')
+                    AND pg_catalog.lower(s.store_name) NOT LIKE 'pg\_%'))
+         GROUP BY s.store_id, s.store_name, n.oid, n.nspname
+         ORDER BY s.store_id
+    LOOP
+        done := done || st.store_name;
+        tabs := ARRAY['schema', 'idents', 'fulltext']
+                || ARRAY(SELECT 'current_' || t FROM pg_catalog.unnest(types) AS t)
+                || ARRAY(SELECT 'datoms_' || t || '_new' FROM pg_catalog.unnest(types) AS t);
+        IF st.nspname = 'mentat' THEN
+            tabs := tabs || ARRAY(SELECT c.relname::TEXT FROM pg_class c
+                                   WHERE c.relnamespace = st.ns AND c.relkind = 'r'
+                                     AND c.relname ~ '^attr_[0-9]+_(vector|geom|tvec)$');
+        END IF;
+        SELECT pg_catalog.string_agg(tname, ', ' ORDER BY tname) INTO bad
+          FROM pg_catalog.unnest(tabs) AS tname
+          LEFT JOIN pg_class c ON c.relnamespace = st.ns AND c.relname = tname
+         WHERE c.oid IS NULL OR c.relkind <> 'r'
+            -- No partition and no inheritance (mentat makes neither): a row
+            -- trigger cloned onto a partition fires on DELETE FROM ONLY it
+            -- (on PostgreSQL 13 and 14 it is marked internal), and ONLY leaves
+            -- out a child's rows (a TimescaleDB hypertable's chunks).
+            OR c.relispartition
+            OR EXISTS (SELECT 1 FROM pg_inherits h WHERE c.oid IN (h.inhrelid, h.inhparent))
+            -- On the tables it deletes from: no DELETE trigger (an internal
+            -- one too) or rule, and no foreign key whose ON DELETE action
+            -- would reach another table.
+            OR (tname NOT LIKE 'datoms\_%' AND tname <> 'schema'
+                AND (EXISTS (SELECT 1 FROM pg_trigger g
+                              WHERE g.tgrelid = c.oid AND (g.tgtype & 8) <> 0)
+                     OR EXISTS (SELECT 1 FROM pg_rewrite r WHERE r.ev_class = c.oid AND r.ev_type = '4')
+                     OR EXISTS (SELECT 1 FROM pg_constraint k WHERE k.confrelid = c.oid)))
+            -- No index expression or predicate, CHECK constraint or statistics
+            -- object that uses a function, operator or type a role other
+            -- than a superuser made: planning a statement on the table folds
+            -- an IMMUTABLE call with constant arguments, i.e. runs it.
+            OR EXISTS (SELECT 1 FROM pg_depend d
+                        WHERE ((d.classid = 'pg_class'::regclass
+                                AND d.objid IN (SELECT i.indexrelid FROM pg_index i WHERE i.indrelid = c.oid))
+                               OR (d.classid = 'pg_constraint'::regclass
+                                   AND d.objid IN (SELECT k.oid FROM pg_constraint k WHERE k.conrelid = c.oid))
+                               OR (d.classid = 'pg_statistic_ext'::regclass
+                                   AND d.objid IN (SELECT x.oid FROM pg_statistic_ext x WHERE x.stxrelid = c.oid)))
+                          AND EXISTS (SELECT 1 FROM pg_roles r
+                                       WHERE NOT r.rolsuper
+                                         AND r.oid IN (SELECT p.proowner FROM pg_proc p
+                                                        WHERE d.refclassid = 'pg_proc'::regclass AND p.oid = d.refobjid
+                                                       UNION ALL
+                                                       SELECT p.proowner FROM pg_operator o
+                                                         JOIN pg_proc p ON p.oid IN (o.oprcode, o.oprrest, o.oprjoin)
+                                                        WHERE d.refclassid = 'pg_operator'::regclass AND o.oid = d.refobjid
+                                                       UNION ALL
+                                                       SELECT o.oprowner FROM pg_operator o
+                                                        WHERE d.refclassid = 'pg_operator'::regclass AND o.oid = d.refobjid
+                                                       UNION ALL
+                                                       SELECT y.typowner FROM pg_type y
+                                                        WHERE d.refclassid = 'pg_type'::regclass AND y.oid = d.refobjid)))
+            OR EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type y ON y.oid = a.atttypid
+                        WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                          AND a.attname IN ('store_id', 'e', 'a', 'v', 'tx', 'added', 'entid', 'text_value')
+                          AND NOT (a.attname = 'v' AND tname LIKE 'attr\_%')
+                          AND y.typnamespace <> 'pg_catalog'::regnamespace);
+        IF bad IS NOT NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: entities excised from store "%" before 1.19.0 were not looked '
+                          'at: % in schema % (missing, not a plain table, a partition or inheritance, a '
+                          'DELETE trigger or rule, a column type of its own, or an index, constraint or '
+                          'statistics object that uses a function of its own). Their current values may '
+                          'still show. After the '
+                          'upgrade, run mentat_excise again on the ids mentat.excision_log lists.',
+                          st.store_name, bad, st.nspname;
+            CONTINUE;
+        END IF;
+
+        -- Installed attributes stay.
+        EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
+                                  'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.schema s WHERE s.entid = x)', st.nspname)
+           INTO ids USING st.ids;
+        CONTINUE WHEN ids IS NULL;
+        gone := ids;
+        hit := '{}';
+        FOREACH ty IN ARRAY types LOOP
+            EXECUTE pg_catalog.format(
+                'WITH x AS (DELETE FROM ONLY %1$I.%2$I c WHERE c.store_id = $1 AND c.e = ANY($2) '
+                'AND NOT EXISTS (SELECT 1 FROM ONLY %1$I.%3$I d WHERE d.store_id = c.store_id '
+                'AND d.e = c.e AND d.a = c.a AND d.v = c.v AND d.tx = c.tx) RETURNING c.e) '
+                'SELECT $3 || pg_catalog.array_agg(DISTINCT x.e) FROM x',
+                st.nspname, 'current_' || ty, 'datoms_' || ty || '_new') INTO hit USING st.store_id, ids, hit;
+            EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
+                                      'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.%I d WHERE d.store_id = $2 AND d.e = x)',
+                                      st.nspname, 'datoms_' || ty || '_new')
+               INTO gone USING gone, st.store_id;
+        END LOOP;
+        -- An excised entity with log rows now was given values after the
+        -- excision. On 1.18, asserting one of them with the value it still
+        -- showed wrote no log row (the transactor saw it as already there),
+        -- so such a value was just deleted with the stale ones.
+        hit := ARRAY(SELECT DISTINCT x FROM pg_catalog.unnest(hit) AS x
+                      WHERE x IS NOT NULL AND x <> ALL (COALESCE(gone, '{}')) ORDER BY x);
+        IF hit <> '{}' THEN
+            RAISE WARNING 'pg_mentat upgrade: entities % of store "%" were given values again after mentat_excise '
+                          'excised them, and values of theirs that no log row backs were deleted. On 1.18, a '
+                          'value asserted unchanged (one the entity still showed) wrote no log row, so it is '
+                          'among them: check these entities and assert any value they should have again.',
+                          hit, st.store_name;
+        END IF;
+        IF gone IS NOT NULL THEN
+            FOREACH ty IN ARRAY tabs LOOP
+                IF ty LIKE 'attr\_%' THEN
+                    EXECUTE pg_catalog.format('DELETE FROM ONLY %I.%I WHERE e = ANY($1)', st.nspname, ty) USING gone;
+                END IF;
+            END LOOP;
+            EXECUTE pg_catalog.format('DELETE FROM ONLY %I.idents WHERE entid = ANY($1)', st.nspname) USING gone;
+            GET DIAGNOSTICS n = ROW_COUNT;
+            IF n > 0 THEN
+                -- Other sessions reload the store's idents. In replica mode: the
+                -- installing role holds TRIGGER on this table.
+                PERFORM pg_catalog.set_config('session_replication_role', 'replica', true);
+                UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = st.store_name;
+                PERFORM pg_catalog.set_config('session_replication_role', srr, true);
+            END IF;
+        END IF;
+        EXECUTE pg_catalog.format('DELETE FROM ONLY %1$I.fulltext f WHERE NOT EXISTS (SELECT 1 FROM ONLY %1$I.datoms_text_new d '
+                                  'WHERE d.store_id = $1 AND d.v = f.text_value AND d.added)', st.nspname)
+           USING st.store_id;
+    END LOOP;
+    SELECT pg_catalog.string_agg(DISTINCT pg_catalog.quote_literal(l.store_name), ', ') INTO bad
+      FROM mentat.excision_log l
+     WHERE l.store_name <> ALL (done);
+    IF bad IS NOT NULL THEN
+        RAISE WARNING 'pg_mentat upgrade: mentat.excision_log lists entities excised from %, which name no '
+                      'store now (dropped, renamed, or a mentat.stores row edited by hand). For a renamed '
+                      'store, run mentat_excise on those ids again under its new name after the upgrade.',
+                      bad;
+    END IF;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$excised$;
+
+-- ---------------------------------------------------------------------------
+-- SQL objects that answer for the current state read the current_<type>
+-- projections (#395). Since 1.5.0 the datoms_<type>_new log is append-only:
+-- a replacement or retraction appends a retraction row and leaves the old
+-- row's added = true, so a read of the log with only `added = true` returned
+-- values an entity no longer has. Same bodies as the install source:
+-- src/lib.rs (datom_helpers), sql/23_operational_accessors.sql and
+-- sql/monitoring_views.sql. Signatures and view columns are unchanged.
+-- ---------------------------------------------------------------------------
+    -- datom_text_like: Find entities whose text attribute matches a LIKE pattern.
+    CREATE OR REPLACE FUNCTION mentat.datom_text_like(
+        attr_ident TEXT,
+        pattern TEXT
+    )
+    RETURNS TABLE(entity_id BIGINT, value TEXT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_text d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v LIKE pattern;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_long_between: Find entities whose long attribute falls within a range.
+    CREATE OR REPLACE FUNCTION mentat.datom_long_between(
+        attr_ident TEXT,
+        low_val BIGINT,
+        high_val BIGINT
+    )
+    RETURNS TABLE(entity_id BIGINT, value BIGINT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_long d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v BETWEEN low_val AND high_val;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_ref_in: Find entities whose ref attribute points to one of a set of targets.
+    CREATE OR REPLACE FUNCTION mentat.datom_ref_in(
+        attr_ident TEXT,
+        ref_ids BIGINT[]
+    )
+    RETURNS TABLE(entity_id BIGINT, ref_value BIGINT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.e, d.v, d.tx
+        FROM mentat.current_ref d
+        WHERE d.store_id = 0
+          AND d.a = attr_entid
+          AND d.v = ANY(ref_ids);
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_text_values: Get all current text values for a cardinality-many attribute on an entity.
+    CREATE OR REPLACE FUNCTION mentat.datom_text_values(
+        eid BIGINT,
+        attr_ident TEXT
+    )
+    RETURNS TABLE(value TEXT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.v, d.tx
+        FROM mentat.current_text d
+        WHERE d.store_id = 0
+          AND d.e = eid
+          AND d.a = attr_entid
+        ORDER BY d.tx;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+    -- datom_ref_values: Get all current ref values for a cardinality-many attribute on an entity.
+    CREATE OR REPLACE FUNCTION mentat.datom_ref_values(
+        eid BIGINT,
+        attr_ident TEXT
+    )
+    RETURNS TABLE(ref_value BIGINT, tx BIGINT)
+    AS $$
+    DECLARE
+        attr_entid BIGINT;
+    BEGIN
+        SELECT mentat.resolve_ident(attr_ident) INTO attr_entid;
+        IF attr_entid IS NULL THEN
+            RAISE EXCEPTION 'Unknown attribute ident: %', attr_ident;
+        END IF;
+
+        RETURN QUERY
+        SELECT d.v, d.tx
+        FROM mentat.current_ref d
+        WHERE d.store_id = 0
+          AND d.e = eid
+          AND d.a = attr_entid
+        ORDER BY d.tx;
+    END;
+    $$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION mentat.current(p_e BIGINT, p_a BIGINT, p_store BIGINT DEFAULT 0)
+RETURNS TEXT
+LANGUAGE plpgsql STABLE
+AS $$
+DECLARE
+    v_type TEXT;
+    v_out  TEXT;
+BEGIN
+    SELECT value_type::text INTO v_type FROM mentat.schema WHERE entid = p_a;
+
+    -- Dispatch on the declared type: a single indexed lookup.
+    IF v_type = 'string' THEN
+        SELECT v INTO v_out FROM mentat.current_text
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'keyword' THEN
+        SELECT v INTO v_out FROM mentat.current_keyword
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'long' THEN
+        SELECT v::text INTO v_out FROM mentat.current_long
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'ref' THEN
+        SELECT v::text INTO v_out FROM mentat.current_ref
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'double' THEN
+        SELECT v::text INTO v_out FROM mentat.current_double
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'boolean' THEN
+        SELECT v::text INTO v_out FROM mentat.current_boolean
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'instant' THEN
+        SELECT to_char(v, 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') INTO v_out
+            FROM mentat.current_instant
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'uuid' THEN
+        SELECT v::text INTO v_out FROM mentat.current_uuid
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSIF v_type = 'bytes' THEN
+        SELECT encode(v, 'hex') INTO v_out FROM mentat.current_bytes
+            WHERE store_id = p_store AND e = p_e AND a = p_a
+            ORDER BY tx DESC LIMIT 1;
+    ELSE
+        -- Type unknown: probe all tables, newest tx wins.
+        SELECT value INTO v_out FROM (
+            SELECT v AS value, tx FROM mentat.current_text    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v, tx FROM mentat.current_keyword WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_long    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_ref     WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_double  WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_boolean WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT to_char(v,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), tx FROM mentat.current_instant WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT v::text, tx FROM mentat.current_uuid    WHERE store_id=p_store AND e=p_e AND a=p_a
+            UNION ALL SELECT encode(v,'hex'), tx FROM mentat.current_bytes WHERE store_id=p_store AND e=p_e AND a=p_a
+            ORDER BY tx DESC LIMIT 1
+        ) probe;
+    END IF;
+
+    RETURN v_out;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mentat.attribute_health()
+RETURNS TABLE (
+    attr_ident   TEXT,
+    value_type   TEXT,
+    backing_table TEXT,
+    live_datoms  BIGINT,
+    dead_pct     NUMERIC
+)
+LANGUAGE sql STABLE
+AS $$
+    WITH tbl AS (
+        SELECT
+            s.ident                                   AS attr_ident,
+            s.value_type::text                        AS value_type,
+            'mentat.datoms_' || CASE s.value_type::text
+                WHEN 'string'  THEN 'text'
+                WHEN 'boolean' THEN 'boolean'
+                ELSE s.value_type::text
+            END || '_new'                             AS backing_table,
+            s.entid                                   AS a
+        FROM mentat.schema s
+    ),
+    deadstats AS (
+        SELECT
+            ('mentat.' || c.relname)                  AS backing_table,
+            n_live_tup, n_dead_tup,
+            CASE WHEN (n_live_tup + n_dead_tup) > 0
+                 THEN round(100.0 * n_dead_tup / (n_live_tup + n_dead_tup), 1)
+                 ELSE 0 END                           AS dead_pct
+        FROM pg_stat_user_tables c
+        WHERE c.schemaname = 'mentat' AND c.relname LIKE 'datoms_%_new'
+    )
+    SELECT
+        t.attr_ident,
+        t.value_type,
+        t.backing_table,
+        (SELECT count(*) FROM mentat.current_datoms WHERE a = t.a)::BIGINT AS live_datoms,
+        COALESCE(d.dead_pct, 0) AS dead_pct
+    FROM tbl t
+    LEFT JOIN deadstats d ON d.backing_table = t.backing_table
+    ORDER BY live_datoms DESC;
+$$;
+
+CREATE OR REPLACE VIEW mentat.store_overview AS
+WITH counts AS (
+    SELECT value_type_tag, count(*) AS cnt
+    FROM mentat.current_datoms
+    GROUP BY value_type_tag
+)
+SELECT
+    s.store_name,
+    s.store_id,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 0), 0)::BIGINT  AS ref_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 1), 0)::BIGINT  AS boolean_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 2), 0)::BIGINT  AS long_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 3), 0)::BIGINT  AS double_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 4), 0)::BIGINT  AS instant_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 7), 0)::BIGINT  AS text_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 8), 0)::BIGINT  AS keyword_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 10), 0)::BIGINT AS uuid_datoms,
+    COALESCE((SELECT cnt FROM counts WHERE value_type_tag = 11), 0)::BIGINT AS bytes_datoms,
+    COALESCE((SELECT SUM(cnt) FROM counts), 0)::BIGINT                      AS total_datoms
+FROM mentat.stores s
+ORDER BY s.store_name;
+
+-- ---------------------------------------------------------------------------
+-- create_vertex_view / create_edge_view (sql/19_pg19_graph_helpers.sql)
+-- make views over the current_<type> projection, like the views above: a
+-- vertex or edge is what an entity has now. Same bodies as the install
+-- source. The views they made before (mentat.v_<attr> / mentat.e_<attr>, over
+-- the log with `AND added`) are made again with them, keeping their owner,
+-- grants and options: only a view whose definition is exactly what 1.18 made
+-- for the attribute its name is for, so a view of that name the installing
+-- role wrote itself is left alone. Columns are unchanged.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.create_vertex_view(attr_ident TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_entid BIGINT;
+    v_view TEXT;
+    v_type TEXT;
+    v_table TEXT;
+BEGIN
+    SELECT entid, value_type::text INTO v_entid, v_type
+        FROM mentat.schema WHERE ident = attr_ident;
+    IF v_entid IS NULL THEN
+        RAISE EXCEPTION ':db.error/unknown-attribute Attribute % is not registered.', attr_ident;
+    END IF;
+    v_view := mentat._pg19_vertex_view_name(attr_ident);
+
+    -- Map value_type to the current-state projection table.
+    v_table := CASE v_type
+        WHEN 'string'  THEN 'current_text'
+        WHEN 'keyword' THEN 'current_keyword'
+        WHEN 'long'    THEN 'current_long'
+        WHEN 'ref'     THEN 'current_ref'
+        WHEN 'double'  THEN 'current_double'
+        WHEN 'boolean' THEN 'current_boolean'
+        WHEN 'instant' THEN 'current_instant'
+        WHEN 'uuid'    THEN 'current_uuid'
+        WHEN 'bytes'   THEN 'current_bytes'
+        ELSE NULL
+    END;
+    IF v_table IS NULL THEN
+        RAISE EXCEPTION ':db.error/fn-arg attribute % has unsupported value_type %.',
+            attr_ident, v_type;
+    END IF;
+
+    EXECUTE format(
+        'CREATE OR REPLACE VIEW mentat.%I AS ' ||
+        'SELECT e, v::TEXT AS label FROM mentat.%I WHERE store_id = 0 AND a = %s',
+        v_view, v_table, v_entid
+    );
+    RETURN 'mentat.' || v_view;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mentat.create_edge_view(attr_ident TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_entid BIGINT;
+    v_view TEXT;
+    v_type TEXT;
+BEGIN
+    SELECT entid, value_type::text INTO v_entid, v_type
+        FROM mentat.schema WHERE ident = attr_ident;
+    IF v_entid IS NULL THEN
+        RAISE EXCEPTION ':db.error/unknown-attribute Attribute % is not registered.', attr_ident;
+    END IF;
+    IF v_type <> 'ref' THEN
+        RAISE EXCEPTION ':db.error/fn-arg attribute % must be :db.type/ref to be used as an edge (got type %).',
+            attr_ident, v_type;
+    END IF;
+    v_view := mentat._pg19_edge_view_name(attr_ident);
+
+    EXECUTE format(
+        'CREATE OR REPLACE VIEW mentat.%I AS ' ||
+        'SELECT (e * 100000 + v) AS id, e AS src, v AS dst, %L AS label ' ||
+        'FROM mentat.current_ref WHERE store_id = 0 AND a = %s',
+        v_view, attr_ident, v_entid
+    );
+    RETURN 'mentat.' || v_view;
+END;
+$$;
+
+DO $graphviews$
+DECLARE
+    v RECORD;
+    old_sql TEXT;
+    same BOOLEAN;
+    member BOOLEAN;
+    ext OID;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    ext := (SELECT e.oid FROM pg_extension e WHERE e.extname = 'pg_mentat');
+    FOR v IN
+        SELECT c.oid, c.relname, c.reloptions, s.entid, s.ident, s.value_type::TEXT AS vt,
+               c.relname = mentat._pg19_edge_view_name(s.ident) AS edge
+          FROM pg_class c
+          JOIN mentat.schema s ON c.relname IN (mentat._pg19_vertex_view_name(s.ident),
+                                                mentat._pg19_edge_view_name(s.ident))
+         WHERE c.relnamespace = 'mentat'::regnamespace AND c.relkind = 'v'
+         ORDER BY c.relname
+    LOOP
+        CONTINUE WHEN v.edge AND v.vt <> 'ref';
+        CONTINUE WHEN v.vt NOT IN ('string', 'keyword', 'long', 'ref', 'double', 'boolean', 'instant',
+                                   'uuid', 'bytes');
+        -- The statement 1.18 ran, made again as a temporary view: the two
+        -- deparse alike only if the view is what 1.18 made.
+        old_sql := CASE WHEN v.edge THEN
+                pg_catalog.format('SELECT (e * 100000 + v) AS id, e AS src, v AS dst, %L AS label '
+                                  'FROM mentat.datoms_ref_new WHERE a = %s AND added', v.ident, v.entid)
+            ELSE
+                pg_catalog.format('SELECT e, v::TEXT AS label FROM mentat.%I WHERE a = %s AND added',
+                                  'datoms_' || CASE v.vt WHEN 'string' THEN 'text' ELSE v.vt END || '_new',
+                                  v.entid)
+            END;
+        EXECUTE 'CREATE TEMPORARY VIEW pg_mentat_upgrade_graph_view AS ' || old_sql;
+        same := pg_catalog.pg_get_viewdef(v.oid)
+                = pg_catalog.pg_get_viewdef('pg_temp.pg_mentat_upgrade_graph_view'::regclass);
+        DROP VIEW pg_temp.pg_mentat_upgrade_graph_view;
+        CONTINUE WHEN NOT same;
+        member := EXISTS (SELECT 1 FROM pg_depend d
+                           WHERE d.classid = 'pg_class'::regclass AND d.objid = v.oid
+                             AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext
+                             AND d.deptype = 'e');
+        IF NOT member THEN
+            EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat ADD VIEW mentat.%I', v.relname);
+        END IF;
+        IF v.edge THEN
+            PERFORM mentat.create_edge_view(v.ident);
+        ELSE
+            PERFORM mentat.create_vertex_view(v.ident);
+        END IF;
+        -- CREATE OR REPLACE VIEW resets the view's options (security_invoker, ...).
+        IF v.reloptions IS NOT NULL THEN
+            EXECUTE pg_catalog.format('ALTER VIEW mentat.%I SET (%s)', v.relname,
+                (SELECT pg_catalog.string_agg(pg_catalog.format('%I = %L', pg_catalog.split_part(o, '=', 1),
+                                                                pg_catalog.substr(o, pg_catalog.strpos(o, '=') + 1)), ', ')
+                   FROM pg_catalog.unnest(v.reloptions) AS o));
+        END IF;
+        IF NOT member THEN
+            EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat DROP VIEW mentat.%I', v.relname);
+        END IF;
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$graphviews$;
+
+-- ---------------------------------------------------------------------------
+-- bm25-match reads the default store's current_text (#395), so
+-- create_fts_index builds its pg_fts index there, and the indexes it built
+-- on datoms_text_new (named mentat_fts_<entid>, partial on a = <entid> AND
+-- store_id = 0 AND added) are rebuilt on current_text with the same text
+-- search configuration. Same body as sql/28_pg_fts_helpers.sql. Rebuilding
+-- an index reads the attribute's live values: on a big attribute it takes a
+-- while.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.create_fts_index(
+    attr_ident TEXT,
+    regconfig  TEXT DEFAULT 'english'
+)
+RETURNS TEXT
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    attr_entid BIGINT;
+    attr_type  TEXT;
+    idx_name   TEXT;
+BEGIN
+    IF NOT mentat.has_pg_fts() THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'feature_not_supported',
+            MESSAGE = ':db.error/missing-extension pg_fts is not installed in this database. ' ||
+                      'pg_fts is an OPTIONAL BM25 full-text index for pg_mentat (PostgreSQL 17+). ' ||
+                      'To enable: install pg_fts per https://codeberg.org/gregburd/pg_fts, then ' ||
+                      'run CREATE EXTENSION pg_fts; before retrying. Without it, :db/fulltext ' ||
+                      'still works via the built-in tsvector/GIN path.';
+    END IF;
+
+    SELECT s.entid, s.value_type::text
+      INTO attr_entid, attr_type
+      FROM mentat.schema s
+     WHERE s.ident = attr_ident;
+
+    IF attr_entid IS NULL THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'undefined_object',
+            MESSAGE = ':db.error/attribute-not-found Attribute ' || quote_literal(attr_ident) ||
+                      ' is not defined in mentat.schema. Define it first with ' ||
+                      ':db/valueType :db.type/string.';
+    END IF;
+
+    IF attr_type <> 'string' THEN
+        RAISE EXCEPTION USING
+            ERRCODE = 'invalid_parameter_value',
+            MESSAGE = ':db.error/wrong-type-for-fts-index Attribute ' || quote_literal(attr_ident) ||
+                      ' has value type ''' || attr_type || ''' but pg_fts indexes only ' ||
+                      ':db.type/string.';
+    END IF;
+
+    idx_name := 'mentat_fts_' || attr_entid;
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS %I ON mentat.current_text ' ||
+        'USING fts (to_ftsdoc(%L, v)) WHERE a = %s AND store_id = 0',
+        idx_name, regconfig, attr_entid
+    );
+    RETURN idx_name;
+END;
+$$;
+
+DO $ftsidx$
+DECLARE
+    idx RECORD;
+    fts_schema TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    -- pg_fts's functions, through its schema (the path is pinned).
+    fts_schema := (SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+                    WHERE e.extname = 'pg_fts');
+    FOR idx IN
+        SELECT c.relname, s.entid, e.cfg
+          FROM pg_class c
+          JOIN pg_index i ON i.indexrelid = c.oid
+          JOIN pg_am am ON am.oid = c.relam
+          JOIN mentat.schema s ON c.relname = 'mentat_fts_' || s.entid
+          -- to_ftsdoc('<config>'::regconfig, v): the configuration it was built
+          -- with, schema-qualified by pg_get_expr unless it is in pg_catalog.
+          CROSS JOIN LATERAL (SELECT pg_catalog.substring(pg_catalog.pg_get_expr(i.indexprs, i.indrelid),
+                                                          '^[^(]*\(''([^'']+)''::regconfig, v\)$') AS cfg) e
+         WHERE c.relnamespace = 'mentat'::regnamespace
+           AND i.indrelid = 'mentat.datoms_text_new'::regclass
+           AND am.amname = 'fts'
+           AND fts_schema IS NOT NULL
+    LOOP
+        IF idx.cfg IS NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: pg_fts index mentat.% not moved to mentat.current_text: it is '
+                          'not on to_ftsdoc(<configuration>, v). bm25-match reads current_text now, so it '
+                          'no longer uses it: drop it and run mentat.create_fts_index again.', idx.relname;
+            CONTINUE;
+        END IF;
+        EXECUTE pg_catalog.format('DROP INDEX %I.%I', 'mentat', idx.relname);
+        EXECUTE pg_catalog.format(
+            'CREATE INDEX %I ON mentat.current_text USING fts (%I.to_ftsdoc(%L::pg_catalog.regconfig, v)) '
+            'WHERE a = %s AND store_id = 0',
+            idx.relname, fts_schema, idx.cfg, idx.entid);
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$ftsidx$;
+
+-- ---------------------------------------------------------------------------
+-- A full-text GIN index on current_text (sql/24_current_projection.sql),
+-- here and below on each named store's. A store's find_text() and
+-- searchable_text, and q()'s (fulltext ...) in English, filter on
+-- to_tsvector('english', v): on the log that was idx_datoms_text_new_fts,
+-- which the projection had no counterpart for. The log's index stays (a
+-- query of your own over the log may use it). Building it reads every live
+-- string value.
+-- ---------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_current_text_fts
+    ON mentat.current_text USING gin (pg_catalog.to_tsvector('english'::pg_catalog.regconfig, v));
+
+-- ---------------------------------------------------------------------------
+-- A named store's views and helper functions (facts, text_values, ...,
+-- lookup_entity, entity_value, find_text) read the store's current_<type>
+-- projections too; tx_log, entity_history and recent_changes are history
+-- and still read the log. mentat._store_virtual_tables(store) returns the
+-- CREATE OR REPLACE statements create_store uses now. Same shape as the
+-- pgrx-generated install SQL.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION mentat."_store_virtual_tables"("store_name" TEXT)
+RETURNS TABLE ("kind" TEXT, "name" TEXT, "args" TEXT, "sql" TEXT)
+STRICT LANGUAGE c
+AS 'MODULE_PATHNAME', 'store_virtual_tables_wrapper';
+
+-- Replace each of these objects a named store has, and only those: a store
+-- may lack one (dropped by its owner), and nothing is created here. CREATE
+-- OR REPLACE keeps the object's owner, grants and the user views built on
+-- it (a view is never dropped), and the options and function attributes
+-- its owner set. An object that can't be replaced (its owner changed a
+-- view's columns or a function's return type, or another extension owns it)
+-- keeps its old definition, with a WARNING; any other error aborts the
+-- upgrade.
+--
+-- In an extension script CREATE OR REPLACE refuses an object the extension
+-- doesn't own (CVE-2022-2625), and a store's objects are not members (the
+-- 1.18.0 upgrade and create_store leave them out). So each is added to the
+-- extension, replaced and dropped from it again, inside a subtransaction:
+-- its membership ends as it began.
+--
+-- The trigram indexes create_store made with pg_trgm,
+-- idx_datoms_{text,keyword}_new_trgm on the log, move to the projections
+-- the views read (idx_current_{text,keyword}_trgm), unless a trigram index
+-- is already there. This builds the index: on a big store it takes a while.
+--
+-- Stores are the ones the 1.18.0 upgrade would rebuild: mentat.stores is
+-- writable by the installing role, so a row that create_store() would not
+-- have made is skipped. So is a store without the 1.18 layout (one the
+-- 1.18.0 upgrade skipped), with a WARNING. Nothing here reads a store's tables or calls a
+-- function in a store's schema.
+-- ---------------------------------------------------------------------------
+DO $views$
+DECLARE
+    st RECORD;
+    obj RECORD;
+    idx RECORD;
+    oid_ OID;
+    ident TEXT;
+    member BOOLEAN;
+    ext OID;
+    missing TEXT;
+    types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
+    opts TEXT[];
+    old_fn RECORD;
+    new_fn RECORD;
+    alter_ TEXT;
+    cfg TEXT;
+    cfg_name TEXT;
+    cfg_val TEXT;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    ext := (SELECT e.oid FROM pg_extension e WHERE e.extname = 'pg_mentat');
+    -- Rows left alone, as the 1.18.0 upgrade leaves them: one whose schema
+    -- is gone, or that names a schema create_store() would not have made,
+    -- gets a WARNING.
+    FOR st IN
+        SELECT s.store_name, s.schema_name, n.oid AS ns
+          FROM mentat.stores s
+          LEFT JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE s.schema_name IS DISTINCT FROM 'mentat'
+           AND ((n.oid IS NULL AND s.schema_name = 'mentat_' || s.store_name)
+                OR (n.oid IS NOT NULL AND s.schema_name IS DISTINCT FROM 'mentat_' || s.store_name))
+         ORDER BY s.store_id
+    LOOP
+        IF st.ns IS NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: views of named store "%" not replaced: its schema % does not '
+                          'exist (dropped by hand?). drop_store(%) removes the store.',
+                          st.store_name, st.schema_name, pg_catalog.quote_literal(st.store_name);
+        ELSE
+            RAISE WARNING 'pg_mentat upgrade: views in schema % not replaced: its mentat.stores row "%" '
+                          'would not have been made by create_store() (renamed by hand?). Rename it back, '
+                          'or use rename_store, then run create_virtual_tables(%).',
+                          st.schema_name, st.store_name, pg_catalog.quote_literal(st.store_name);
+        END IF;
+    END LOOP;
+    FOR st IN
+        SELECT s.store_name, n.oid AS ns, n.nspname
+          FROM mentat.stores s
+          JOIN pg_namespace n ON n.nspname = s.schema_name
+         WHERE s.schema_name = 'mentat_' || s.store_name
+           AND s.store_name ~ '^[A-Za-z_][A-Za-z0-9_]*$'
+           AND pg_catalog.length(s.store_name) <= 56
+           AND pg_catalog.lower(s.store_name) NOT IN ('default', 'information_schema')
+           AND pg_catalog.lower(s.store_name) NOT LIKE 'pg\_%'
+         ORDER BY s.store_id
+    LOOP
+        -- The tables the new definitions name. A 1.17 store the 1.18.0
+        -- upgrade skipped (mentat_<name>_pre118 already existed, ...) still
+        -- has the old wide layout.
+        SELECT pg_catalog.string_agg(t, ', ' ORDER BY t) INTO missing
+          FROM pg_catalog.unnest(ARRAY['schema', 'idents', 'transactions']
+                 || ARRAY(SELECT 'current_' || ty FROM pg_catalog.unnest(types) AS ty)
+                 || ARRAY(SELECT 'datoms_' || ty || '_new' FROM pg_catalog.unnest(types) AS ty)) AS t
+         WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = st.ns AND c.relname = t);
+        IF missing IS NOT NULL THEN
+            RAISE WARNING 'pg_mentat upgrade: views of named store "%" not replaced: schema % does not have the '
+                          '1.18 layout (no %), so the 1.18.0 upgrade did not rebuild it. See "A store the upgrade '
+                          'skipped" under "Upgrading from 1.17" in docs/src/multi-tenancy.md.',
+                          st.store_name, st.nspname, missing;
+            CONTINUE;
+        END IF;
+        -- The full-text index find_text and searchable_text use (see above),
+        -- if v is still text. Looked up first: CREATE INDEX IF NOT EXISTS
+        -- would lock the table even when the index is there.
+        IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = st.ns AND c.relname = 'idx_current_text_fts')
+           AND EXISTS (SELECT 1 FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
+                    WHERE t.relnamespace = st.ns AND t.relname = 'current_text' AND t.relkind = 'r'
+                      AND a.attname = 'v' AND a.atttypid = 'pg_catalog.text'::regtype
+                      AND NOT a.attisdropped) THEN
+            EXECUTE pg_catalog.format('CREATE INDEX IF NOT EXISTS idx_current_text_fts ON %I.current_text '
+                                      'USING gin (pg_catalog.to_tsvector(''english''::pg_catalog.regconfig, v))',
+                                      st.nspname);
+        END IF;
+        FOR obj IN SELECT * FROM mentat._store_virtual_tables(st.store_name) LOOP
+            IF obj.kind = 'VIEW' THEN
+                oid_ := (SELECT c.oid FROM pg_class c
+                          WHERE c.relnamespace = st.ns AND c.relname = obj.name AND c.relkind = 'v');
+                ident := pg_catalog.format('%I.%I', st.nspname, obj.name);
+                member := EXISTS (SELECT 1 FROM pg_depend d
+                                   WHERE d.classid = 'pg_class'::regclass AND d.objid = oid_
+                                     AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext
+                                     AND d.deptype = 'e');
+            ELSE
+                oid_ := pg_catalog.to_regprocedure(pg_catalog.format('%I.%I(%s)', st.nspname, obj.name, obj.args));
+                -- to_regprocedure finds a procedure or an aggregate too.
+                IF (SELECT p.prokind FROM pg_proc p WHERE p.oid = oid_) <> 'f' THEN
+                    RAISE WARNING 'pg_mentat upgrade: % of store "%" not replaced: it is not a function.',
+                                  oid_::regprocedure, st.store_name;
+                    CONTINUE;
+                END IF;
+                ident := oid_::regprocedure::TEXT;
+                member := EXISTS (SELECT 1 FROM pg_depend d
+                                   WHERE d.classid = 'pg_proc'::regclass AND d.objid = oid_
+                                     AND d.refclassid = 'pg_extension'::regclass AND d.refobjid = ext
+                                     AND d.deptype = 'e');
+            END IF;
+            CONTINUE WHEN oid_ IS NULL;
+            -- CREATE OR REPLACE resets what its statement doesn't say: a
+            -- view's options, a function's SECURITY DEFINER, SET, COST, ROWS,
+            -- LEAKPROOF, PARALLEL, STRICT and volatility. Both 1.18.0 and
+            -- this release make them with the defaults (and STABLE), so a
+            -- setting that differs is the owner's: it is put back as it was.
+            IF obj.kind = 'VIEW' THEN
+                opts := (SELECT c.reloptions FROM pg_class c WHERE c.oid = oid_);
+            ELSE
+                SELECT p.* INTO old_fn FROM pg_proc p WHERE p.oid = oid_;
+            END IF;
+            BEGIN
+                IF NOT member THEN
+                    EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat ADD %s %s', obj.kind, ident);
+                END IF;
+                EXECUTE obj.sql;
+                IF obj.kind = 'VIEW' AND opts IS NOT NULL THEN
+                    EXECUTE pg_catalog.format('ALTER VIEW %s SET (%s)', ident,
+                        (SELECT pg_catalog.string_agg(pg_catalog.format('%I = %L', pg_catalog.split_part(o, '=', 1),
+                                                                        pg_catalog.substr(o, pg_catalog.strpos(o, '=') + 1)), ', ')
+                           FROM pg_catalog.unnest(opts) AS o));
+                ELSIF obj.kind = 'FUNCTION' THEN
+                    SELECT p.* INTO new_fn FROM pg_proc p WHERE p.oid = oid_;
+                    alter_ := '';
+                    IF old_fn.prosecdef AND NOT new_fn.prosecdef THEN
+                        alter_ := alter_ || ' SECURITY DEFINER';
+                    END IF;
+                    IF old_fn.proleakproof AND NOT new_fn.proleakproof THEN
+                        alter_ := alter_ || ' LEAKPROOF';
+                    END IF;
+                    IF old_fn.proisstrict <> new_fn.proisstrict THEN
+                        alter_ := alter_ || CASE WHEN old_fn.proisstrict THEN ' STRICT' ELSE ' CALLED ON NULL INPUT' END;
+                    END IF;
+                    IF old_fn.provolatile <> new_fn.provolatile THEN
+                        alter_ := alter_ || CASE old_fn.provolatile WHEN 'i' THEN ' IMMUTABLE' WHEN 's' THEN ' STABLE'
+                                                 ELSE ' VOLATILE' END;
+                    END IF;
+                    IF old_fn.proparallel <> new_fn.proparallel THEN
+                        alter_ := alter_ || CASE old_fn.proparallel WHEN 's' THEN ' PARALLEL SAFE'
+                                                 WHEN 'r' THEN ' PARALLEL RESTRICTED' ELSE ' PARALLEL UNSAFE' END;
+                    END IF;
+                    IF old_fn.procost <> new_fn.procost THEN
+                        alter_ := alter_ || ' COST ' || old_fn.procost;
+                    END IF;
+                    IF old_fn.prorows <> new_fn.prorows THEN
+                        alter_ := alter_ || ' ROWS ' || old_fn.prorows;
+                    END IF;
+                    IF alter_ <> '' THEN
+                        EXECUTE 'ALTER FUNCTION ' || ident || alter_;
+                    END IF;
+                    -- As pg_dump writes them: a list that quotes its elements
+                    -- (search_path, ...) element by element, any other value
+                    -- as one literal.
+                    FOREACH cfg IN ARRAY COALESCE(old_fn.proconfig, '{}') LOOP
+                        cfg_name := pg_catalog.split_part(cfg, '=', 1);
+                        cfg_val := pg_catalog.substr(cfg, pg_catalog.strpos(cfg, '=') + 1);
+                        IF pg_catalog.lower(cfg_name) IN ('local_preload_libraries', 'oauth_validator_libraries',
+                                                          'search_path', 'session_preload_libraries',
+                                                          'shared_preload_libraries', 'temp_tablespaces',
+                                                          'unix_socket_directories') THEN
+                            cfg_val := (SELECT pg_catalog.string_agg(pg_catalog.format('%L',
+                                                 CASE WHEN m[1] LIKE '"%' THEN pg_catalog.replace(
+                                                          pg_catalog.substr(m[1], 2, pg_catalog.length(m[1]) - 2), '""', '"')
+                                                      ELSE m[1] END), ', ')
+                                          FROM pg_catalog.regexp_matches(cfg_val, '("(?:[^"]|"")*"|[^,\s]+)', 'g') AS m);
+                            EXECUTE pg_catalog.format('ALTER FUNCTION %s SET %I = %s', ident, cfg_name,
+                                                      COALESCE(cfg_val, ''''''));
+                        ELSE
+                            EXECUTE pg_catalog.format('ALTER FUNCTION %s SET %I = %L', ident, cfg_name, cfg_val);
+                        END IF;
+                    END LOOP;
+                END IF;
+                IF NOT member THEN
+                    EXECUTE pg_catalog.format('ALTER EXTENSION pg_mentat DROP %s %s', obj.kind, ident);
+                END IF;
+            EXCEPTION WHEN invalid_table_definition OR invalid_function_definition
+                           OR object_not_in_prerequisite_state THEN
+                -- object_not_in_prerequisite_state is the class code 55000, so
+                -- it also catches the rest of class 55: 55P03 (lock_timeout)
+                -- and 55006 must abort the upgrade, not leave a view behind.
+                -- 55000 itself: "already a member of extension".
+                IF SQLSTATE NOT IN ('42P16', '42P13', '55000') THEN
+                    RAISE;
+                END IF;
+                RAISE WARNING 'pg_mentat upgrade: % % of store "%" not replaced (%: %). It still reads the '
+                              'log and returns replaced and retracted values.',
+                              pg_catalog.lower(obj.kind), ident, st.store_name, SQLSTATE, SQLERRM;
+            END;
+        END LOOP;
+
+        FOR idx IN
+            SELECT c.relname AS old_name,
+                   pg_catalog.regexp_replace(t.relname, '^datoms_(.*)_new$', 'current_\1') AS cur_table,
+                   n.nspname AS trgm_schema
+              FROM pg_class c
+              JOIN pg_index i ON i.indexrelid = c.oid
+              JOIN pg_class t ON t.oid = i.indrelid
+              JOIN pg_opclass o ON o.oid = i.indclass[0]
+              JOIN pg_namespace n ON n.oid = o.opcnamespace
+             WHERE c.relnamespace = st.ns
+               AND t.relname IN ('datoms_text_new', 'datoms_keyword_new')
+               AND c.relname = 'idx_' || t.relname || '_trgm'
+               AND o.opcname = 'gin_trgm_ops'
+        LOOP
+            -- A plain table with a text column v (its owner could have
+            -- altered it), with no trigram index yet.
+            IF EXISTS (SELECT 1 FROM pg_class t JOIN pg_attribute a ON a.attrelid = t.oid
+                        WHERE t.relnamespace = st.ns AND t.relname = idx.cur_table AND t.relkind = 'r'
+                          AND a.attname = 'v' AND a.atttypid = 'pg_catalog.text'::regtype
+                          AND NOT a.attisdropped)
+               AND NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_opclass o ON o.oid = i.indclass[0]
+                                JOIN pg_class t ON t.oid = i.indrelid
+                               WHERE t.relnamespace = st.ns AND t.relname = idx.cur_table
+                                 AND o.opcname = 'gin_trgm_ops') THEN
+                EXECUTE pg_catalog.format('CREATE INDEX IF NOT EXISTS %I ON %I.%I USING GIN (v %I.gin_trgm_ops)',
+                                          'idx_' || idx.cur_table || '_trgm', st.nspname, idx.cur_table,
+                                          idx.trgm_schema);
+            END IF;
+            EXECUTE pg_catalog.format('DROP INDEX %I.%I', st.nspname, idx.old_name);
+        END LOOP;
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$views$;
+
+-- ---------------------------------------------------------------------------
+-- Multi-tenant Row-Level Security on the current_<type> projections. Since
+-- 1.18.0 edn_q's current-time reads, and now current() and the datom_*
+-- helpers too, read these tables, which had no policy: with
+-- enable_multi_tenant_rls(true) armed, a tenant read every store's current
+-- values. They get the policy the log tables have (sql/24_current_projection.sql),
+-- enable_multi_tenant_rls toggles all eighteen tables (sql/10_narrow_storage.sql),
+-- and where the log has RLS enabled now, or forced (FORCE ROW LEVEL
+-- SECURITY), so does the projection.
+--
+-- CREATE POLICY and ALTER TABLE ... ROW LEVEL SECURITY take an ACCESS
+-- EXCLUSIVE lock on the table, held until the upgrade commits: every read
+-- and write of the default store waits from here on. So this comes last,
+-- after the index builds, and leaves a table alone whose policy and RLS
+-- setting are already what they should be.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION mentat.enable_multi_tenant_rls(enable BOOLEAN)
+RETURNS INT AS $$
+DECLARE
+    t TEXT;
+    n INT := 0;
+    forced BOOLEAN;
+    narrow_tables TEXT[] := ARRAY[
+        'datoms_ref_new', 'datoms_long_new', 'datoms_text_new',
+        'datoms_double_new', 'datoms_instant_new', 'datoms_keyword_new',
+        'datoms_uuid_new', 'datoms_bytes_new', 'datoms_boolean_new',
+        'current_ref', 'current_long', 'current_text',
+        'current_double', 'current_instant', 'current_keyword',
+        'current_uuid', 'current_bytes', 'current_boolean'
+    ];
+BEGIN
+    FOREACH t IN ARRAY narrow_tables LOOP
+        IF enable THEN
+            EXECUTE format('ALTER TABLE mentat.%I ENABLE ROW LEVEL SECURITY', t);
+        ELSE
+            EXECUTE format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', t);
+        END IF;
+        -- A projection is forced (FORCE ROW LEVEL SECURITY: the table's
+        -- owner is filtered too) when its log table is.
+        IF t LIKE 'current\_%' THEN
+            forced := (SELECT c.relforcerowsecurity FROM pg_catalog.pg_class c
+                        WHERE c.oid = format('mentat.%I', 'datoms_' || substr(t, 9) || '_new')::regclass);
+            IF forced IS DISTINCT FROM (SELECT c.relforcerowsecurity FROM pg_catalog.pg_class c
+                                         WHERE c.oid = format('mentat.%I', t)::regclass) THEN
+                EXECUTE format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', t,
+                               CASE WHEN forced THEN 'FORCE' ELSE 'NO FORCE' END);
+            END IF;
+        END IF;
+        n := n + 1;
+    END LOOP;
+    RETURN n;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION mentat.enable_multi_tenant_rls(boolean) IS
+  'Toggle Row-Level Security on the nine narrow datom tables and the nine '
+  'current_<type> projection tables, and give each projection its log table''s '
+  'FORCE ROW LEVEL SECURITY setting. '
+  'Pass true to enforce per-store isolation (queries are filtered by '
+  'store_id = mentat.current_store_id()); pass false to disable enforcement '
+  'and revert to single-store behaviour. Returns the number of tables '
+  'affected (always 18 on success; 9 before 1.19.0). Pair with the mentat.enable_multi_tenant_rls '
+  'GUC, which signals operator intent at the session/role level.';
+
+DO $rls$
+DECLARE
+    ty TEXT;
+    cur REGCLASS;
+    armed BOOLEAN;
+    forced BOOLEAN;
+    old_path TEXT := pg_catalog.current_setting('search_path');
+BEGIN
+    PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+    FOREACH ty IN ARRAY ARRAY['ref', 'long', 'text', 'double', 'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP
+        cur := pg_catalog.format('mentat.%I', 'current_' || ty)::regclass;
+        -- The policy sql/24_current_projection.sql makes (expressions as
+        -- pg_get_expr prints them with this search_path).
+        IF NOT EXISTS (SELECT 1 FROM pg_policy p
+                        WHERE p.polrelid = cur AND p.polname = 'store_isolation_current_' || ty
+                          AND p.polcmd = '*' AND p.polpermissive AND p.polroles = '{0}'
+                          AND pg_catalog.pg_get_expr(p.polqual, p.polrelid) = '(store_id = mentat.current_store_id())'
+                          AND pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)
+                              = '(store_id = mentat.current_store_id())') THEN
+            EXECUTE pg_catalog.format('DROP POLICY IF EXISTS %I ON mentat.%I', 'store_isolation_current_' || ty,
+                                      'current_' || ty);
+            EXECUTE pg_catalog.format(
+                'CREATE POLICY %I ON mentat.%I '
+                'USING (store_id = mentat.current_store_id()) '
+                'WITH CHECK (store_id = mentat.current_store_id())',
+                'store_isolation_current_' || ty, 'current_' || ty);
+        END IF;
+        SELECT c.relrowsecurity, c.relforcerowsecurity INTO armed, forced FROM pg_class c
+         WHERE c.oid = pg_catalog.format('mentat.%I', 'datoms_' || ty || '_new')::regclass;
+        IF armed IS DISTINCT FROM (SELECT c.relrowsecurity FROM pg_class c WHERE c.oid = cur) THEN
+            EXECUTE pg_catalog.format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', 'current_' || ty,
+                                      CASE WHEN armed THEN 'ENABLE' ELSE 'DISABLE' END);
+        END IF;
+        IF forced IS DISTINCT FROM (SELECT c.relforcerowsecurity FROM pg_class c WHERE c.oid = cur) THEN
+            EXECUTE pg_catalog.format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', 'current_' || ty,
+                                      CASE WHEN forced THEN 'FORCE' ELSE 'NO FORCE' END);
+        END IF;
+    END LOOP;
+    PERFORM pg_catalog.set_config('search_path', old_path, true);
+END
+$rls$;

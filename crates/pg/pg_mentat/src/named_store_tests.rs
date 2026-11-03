@@ -966,7 +966,7 @@ mod tests {
             .unwrap_or_default()
             .to_string();
         assert!(sql.contains(&format!("t.a = {named} ")), "{sql}");
-        assert!(sql.contains("mentat_bm_s.datoms_text_new"), "{sql}");
+        assert!(sql.contains("mentat_bm_s.current_text"), "{sql}");
         Spi::run("SELECT drop_store('bm_s')").expect("drop");
     }
 
@@ -2879,8 +2879,8 @@ mod tests {
             sorted(v)
         };
         let expected = vec![
-            "datoms_keyword_new:idx_datoms_keyword_new_trgm".to_string(),
-            "datoms_text_new:idx_datoms_text_new_trgm".to_string(),
+            "current_keyword:idx_current_keyword_trgm".to_string(),
+            "current_text:idx_current_text_trgm".to_string(),
         ];
         let long = "k".repeat(56);
         Spi::run(&format!("SELECT create_store('{long}')")).expect("create");
@@ -2892,16 +2892,16 @@ mod tests {
         // A trigram index the store already has, under any name, is kept and
         // not doubled.
         Spi::run(
-            "DROP INDEX mentat_tg_rn3.idx_datoms_text_new_trgm; \
-             CREATE INDEX mine ON mentat_tg_rn3.datoms_text_new USING GIN (v ns_trgm7.gin_trgm_ops)",
+            "DROP INDEX mentat_tg_rn3.idx_current_text_trgm; \
+             CREATE INDEX mine ON mentat_tg_rn3.current_text USING GIN (v ns_trgm7.gin_trgm_ops)",
         )
         .expect("own index");
         Spi::run("SELECT rename_store('tg_rn3', 'tg_rn4')").expect("rename");
         assert_eq!(
             per_table("mentat_tg_rn4"),
             vec![
-                "datoms_keyword_new:idx_datoms_keyword_new_trgm".to_string(),
-                "datoms_text_new:mine".to_string()
+                "current_keyword:idx_current_keyword_trgm".to_string(),
+                "current_text:mine".to_string()
             ]
         );
     }
@@ -2969,5 +2969,1219 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(foreign, 0);
+    }
+
+    /// A store's views and helper functions, each with the rows it returns
+    /// as sorted text, after a card-one replace and a retraction (#395).
+    /// Values are distinct per object so a stale row can't hide.
+    fn store_objects_read_live_values(store: &str) {
+        let schema = crate::functions::store_management::quote_ident(&format!("mentat_{store}"));
+        tx(store, SCHEMA_TX);
+        tx(
+            store,
+            "[{:db/ident :p/tag :db/valueType :db.type/string :db/cardinality :db.cardinality/many}]",
+        );
+        let r = tx(
+            store,
+            "[{:db/id \"a\" :p/name \"ann\" :p/age 1 :p/tag [\"fox jumps\" \"t2\"]} \
+              {:db/id \"b\" :p/name \"bob\" :p/age 7 :p/friend \"a\"} {:db/id \"c\" :p/name \"cy\"}]",
+        );
+        let (a, b, c) = (
+            r["tempids"]["a"].as_i64().unwrap(),
+            r["tempids"]["b"].as_i64().unwrap(),
+            r["tempids"]["c"].as_i64().unwrap(),
+        );
+        let tx1 = r["db-after"]["basis-t"].as_i64().unwrap();
+        tx(
+            store,
+            &format!(
+                "[[:db/add {a} :p/name \"anna\"] [:db/add {a} :p/age 2] \
+                  [:db/retract {a} :p/tag \"fox jumps\"] [:db/add {a} :p/tag \"lazy dog\"] \
+                  [:db/retract {b} :p/age 7] [:db/retract {b} :p/friend {a}] [:db/add {b} :p/friend {c}]]"
+            ),
+        );
+        // c's only value replaced: c was still created at tx1.
+        let tx3 = tx(store, &format!("[[:db/add {c} :p/name \"cyd\"]]"))["db-after"]["basis-t"]
+            .as_i64()
+            .unwrap();
+        let first_last = text(&format!(
+            "SELECT e.first_tx || ' ' || e.last_tx || ' ' || (e.first_ts = t.tx_instant) \
+               FROM {schema}.entities e JOIN {schema}.transactions t ON t.tx = {tx1} \
+              WHERE e.entity_id = {c}"
+        ));
+        assert_eq!(
+            first_last,
+            format!("{tx1} {tx3} true"),
+            "entities: first_tx of {c}"
+        );
+        let rows = |sql: &str| -> Vec<String> {
+            let mut out: Vec<String> = Spi::connect(|client| {
+                client
+                    .select(sql, None, &[])
+                    .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                    .map(|row| row.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect()
+            });
+            out.sort();
+            out
+        };
+        let mine = format!("{a}, {b}, {c}");
+        let in_mine = |col: &str| format!("{col} IN ({mine})");
+        let s = |v: &[&str]| -> Vec<String> {
+            let mut v: Vec<String> = v.iter().map(|x| x.to_string()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || attribute || ' ' || value FROM {schema}.facts \
+                  WHERE {} AND attribute LIKE ':p/%'",
+                in_mine("entity_id")
+            )),
+            s(&[
+                &format!("{a} :p/name anna"),
+                &format!("{a} :p/age 2"),
+                &format!("{a} :p/tag t2"),
+                &format!("{a} :p/tag lazy dog"),
+                &format!("{b} :p/name bob"),
+                &format!("{b} :p/friend {c}"),
+                &format!("{c} :p/name cyd"),
+            ]),
+            "facts"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || value FROM {schema}.text_values \
+                  WHERE attribute = ':p/name'"
+            )),
+            s(&[
+                &format!("{a} anna"),
+                &format!("{b} bob"),
+                &format!("{c} cyd")
+            ]),
+            "text_values"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || value FROM {schema}.numeric_values \
+                  WHERE attribute = ':p/age'"
+            )),
+            s(&[&format!("{a} 2")]),
+            "numeric_values"
+        );
+        for view in ["entity_references", "graph_edges"] {
+            let (src, dst) = if view == "graph_edges" {
+                ("source", "target")
+            } else {
+                ("source_entity", "target_entity")
+            };
+            assert_eq!(
+                rows(&format!(
+                    "SELECT {src} || ' ' || {dst} FROM {schema}.{view} WHERE {}",
+                    in_mine(src)
+                )),
+                s(&[&format!("{b} {c}")]),
+                "{view}"
+            );
+        }
+        assert_eq!(
+            rows(&format!(
+                "SELECT source_entity || ' ' || target_entity FROM {schema}.reverse_references \
+                  WHERE {}",
+                in_mine("target_entity")
+            )),
+            s(&[&format!("{b} {c}")]),
+            "reverse_references"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT value FROM {schema}.searchable_text \
+                  WHERE search_vector @@ plainto_tsquery('english', 'fox') \
+                     OR search_vector @@ plainto_tsquery('english', 'dog')"
+            )),
+            s(&["lazy dog"]),
+            "searchable_text"
+        );
+        assert_eq!(
+            rows(&format!("SELECT value FROM {schema}.find_text('fox')")),
+            s(&[]),
+            "find_text"
+        );
+        assert_eq!(
+            rows(&format!("SELECT value FROM {schema}.find_text('dog')")),
+            s(&["lazy dog"]),
+            "find_text"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id::TEXT FROM {schema}.entities_with_attribute(':p/age')"
+            )),
+            s(&[&a.to_string()]),
+            "entities_with_attribute"
+        );
+        for (attr, value, want) in [
+            (":p/name", "ann".to_string(), vec![]),
+            (":p/name", "anna".to_string(), vec![a.to_string()]),
+            (":p/age", "7".to_string(), vec![]),
+            (":p/age", "2".to_string(), vec![a.to_string()]),
+            (":p/friend", a.to_string(), vec![]),
+            (":p/friend", c.to_string(), vec![b.to_string()]),
+        ] {
+            assert_eq!(
+                rows(&format!(
+                    "SELECT entity_id::TEXT FROM {schema}.lookup_entity('{attr}', '{value}')"
+                )),
+                want,
+                "lookup_entity {attr} {value}"
+            );
+        }
+        for (e, attr, want) in [
+            (a, ":p/name", Some("anna".to_string())),
+            (a, ":p/age", Some("2".to_string())),
+            (b, ":p/age", None),
+            (b, ":p/friend", Some(c.to_string())),
+        ] {
+            assert_eq!(
+                Spi::get_one::<String>(&format!("SELECT {schema}.entity_value({e}, '{attr}')"))
+                    .unwrap(),
+                want,
+                "entity_value {e} {attr}"
+            );
+        }
+        assert_eq!(
+            rows(&format!(
+                "SELECT entity_id || ' ' || attribute_count FROM {schema}.entities WHERE {}",
+                in_mine("entity_id")
+            )),
+            s(&[&format!("{a} 3"), &format!("{b} 2"), &format!("{c} 1")]),
+            "entities"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT ident || ' ' || entity_count || ' ' || datom_count FROM {schema}.schema_summary \
+                  WHERE ident IN (':p/age', ':p/tag', ':p/friend')"
+            )),
+            s(&[":p/age 1 1", ":p/friend 1 1", ":p/tag 1 2"]),
+            "schema_summary"
+        );
+        assert_eq!(
+            rows(&format!(
+                "SELECT attribute || ' ' || entity_count || ' ' || datom_count \
+                   FROM {schema}.count_by_attribute() WHERE attribute IN (':p/age', ':p/tag')"
+            )),
+            s(&[":p/age 1 1", ":p/tag 1 2"]),
+            "count_by_attribute"
+        );
+        // History views keep what was replaced.
+        assert_eq!(
+            rows(&format!(
+                "SELECT value FROM {schema}.recent_changes WHERE attribute = ':p/name' AND {}",
+                in_mine("entity_id")
+            )),
+            s(&["ann", "anna", "bob", "cy", "cyd"]),
+            "recent_changes"
+        );
+    }
+
+    // Since 1.5.0 the log is append-only: a replaced or retracted value
+    // keeps its added = true row. A named store's views and helper functions
+    // read the log with only `added = true`, so they returned values
+    // entities no longer have (#395).
+    #[pg_test]
+    fn store_views_read_current_state() {
+        setup();
+        Spi::run("SELECT create_store('cur_views')").expect("create_store");
+        store_objects_read_live_values("cur_views");
+        Spi::run("SELECT create_store('Cur_Mixed')").expect("create_store");
+        store_objects_read_live_values("Cur_Mixed");
+    }
+
+    /// A store's views and functions, but for the layout's datoms /
+    /// current_datoms: (kind, name, definition with the schema and store
+    /// name written as STORE, owner, member of an extension, grants).
+    fn store_object_defs(store: &str) -> Vec<(String, String, String, String, bool, String)> {
+        let schema = format!("mentat_{store}");
+        let sql = format!(
+            "SELECT 'view', c.relname::TEXT, pg_get_viewdef(c.oid), c.relowner::regrole::TEXT, \
+                    EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass \
+                              AND d.objid = c.oid AND d.deptype = 'e'), \
+                    coalesce(c.relacl::TEXT, '') \
+               FROM pg_class c \
+              WHERE c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}') \
+                AND c.relkind = 'v' AND c.relname NOT IN ('datoms', 'current_datoms') \
+             UNION ALL \
+             SELECT 'function', p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', \
+                    p.prosrc, p.proowner::regrole::TEXT, \
+                    EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass \
+                              AND d.objid = p.oid AND d.deptype = 'e'), \
+                    coalesce(p.proacl::TEXT, '') \
+               FROM pg_proc p \
+              WHERE p.pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = '{schema}') \
+              ORDER BY 1, 2"
+        );
+        Spi::connect(|client| {
+            client
+                .select(&sql, None, &[])
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .map(|row| {
+                    let t = |i| row.get::<String>(i).unwrap().unwrap_or_default();
+                    (
+                        t(1),
+                        t(2),
+                        t(3).replace(&schema, "STORE")
+                            .replace(&format!("'{store}'"), "'STORE'"),
+                        t(4),
+                        row.get::<bool>(5).unwrap().unwrap(),
+                        t(6),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Give store `store` the views and functions 1.18.0's create_store made
+    /// (src/tests/store_views_1_18_0.sql, taken from the released build) and,
+    /// with pg_trgm (in schema ns_vt), its trigram indexes on the log.
+    fn make_1_18_store(store: &str, trgm: bool) {
+        Spi::run(&format!("SELECT create_store('{store}')")).expect("create_store");
+        let old = include_str!("tests/store_views_1_18_0.sql")
+            .replace("mentat_v118", &format!("mentat_{store}"))
+            .replace("'v118'", &format!("'{store}'"));
+        Spi::run(&old).expect("1.18.0 definitions");
+        Spi::run(&format!(
+            "DROP INDEX IF EXISTS mentat_{store}.idx_current_text_trgm; \
+             DROP INDEX IF EXISTS mentat_{store}.idx_current_keyword_trgm; \
+             DROP INDEX IF EXISTS mentat_{store}.idx_current_text_fts"
+        ))
+        .expect("drop 1.19 indexes");
+        if trgm {
+            Spi::run(&format!(
+                "CREATE INDEX idx_datoms_text_new_trgm ON mentat_{store}.datoms_text_new \
+                   USING GIN (v ns_vt.gin_trgm_ops) WHERE added = true; \
+                 CREATE INDEX idx_datoms_keyword_new_trgm ON mentat_{store}.datoms_keyword_new \
+                   USING GIN (v ns_vt.gin_trgm_ops) WHERE added = true"
+            ))
+            .expect("1.18.0 trigram indexes");
+        }
+    }
+
+    /// The trigram indexes in a store's schema, as table.index.
+    fn trgm_indexes(store: &str) -> Vec<String> {
+        let sql = format!(
+            "SELECT t.relname || '.' || c.relname FROM pg_index i \
+               JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid \
+               JOIN pg_opclass o ON o.oid = i.indclass[0] \
+              WHERE o.opcname = 'gin_trgm_ops' AND c.relnamespace = \
+                    (SELECT oid FROM pg_namespace WHERE nspname = 'mentat_{store}') \
+              ORDER BY 1"
+        );
+        Spi::connect(|client| {
+            client
+                .select(&sql, None, &[])
+                .unwrap()
+                .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                .collect()
+        })
+    }
+
+    // The 1.18.0 -> 1.19.0 upgrade replaces a 1.18 store's views and helper
+    // functions with ones that read the projections (#395), and only the
+    // ones the store has. Each keeps its owner, grants, extension membership
+    // and the user views built on it; one whose columns its owner changed is
+    // left alone; the trigram indexes move to the projections. The result is
+    // what a fresh store has, and a second run changes nothing.
+    #[pg_test]
+    fn upgrade_replaces_a_1_18_stores_views() {
+        setup();
+        let trgm = pg_trgm_in_schema("ns_vt");
+        make_1_18_store("vt_old", trgm);
+        make_1_18_store("vt_part", false);
+        make_1_18_store("vt_live", false);
+        // vt_part: two objects its owner dropped, one it changed.
+        Spi::run(
+            "DROP VIEW mentat_vt_part.searchable_text; \
+             DROP FUNCTION mentat_vt_part.find_text(TEXT); \
+             DROP VIEW mentat_vt_part.graph_edges; \
+             CREATE VIEW mentat_vt_part.graph_edges AS SELECT 1 AS mine",
+        )
+        .expect("vt_part");
+        // vt_old: another owner, a grant to a reader, a user view on facts,
+        // and one object that is a member of pg_mentat.
+        Spi::run(
+            "CREATE ROLE ns_vt_owner NOLOGIN; CREATE ROLE ns_vt_reader NOLOGIN; \
+             GRANT USAGE ON SCHEMA mentat TO ns_vt_owner; GRANT SELECT ON mentat.stores TO ns_vt_owner; \
+             ALTER SCHEMA mentat_vt_old OWNER TO ns_vt_owner; \
+             SELECT mentat._store_grants('mentat_vt_old'); \
+             GRANT USAGE ON SCHEMA mentat_vt_old TO ns_vt_reader; \
+             GRANT SELECT ON mentat_vt_old.text_values TO ns_vt_reader; \
+             ALTER EXTENSION pg_mentat ADD VIEW mentat_vt_old.attributes",
+        )
+        .expect("owners and grants");
+        tx("vt_old", SCHEMA_TX);
+        let a = tx("vt_old", "[{:db/id \"a\" :p/name \"ann\" :p/age 1}]")["tempids"]["a"]
+            .as_i64()
+            .unwrap();
+        tx(
+            "vt_old",
+            &format!("[[:db/add {a} :p/name \"anna\"] [:db/retract {a} :p/age 1]]"),
+        );
+        Spi::run(
+            "CREATE VIEW public.vt_user_facts AS \
+               SELECT entity_id, value FROM mentat_vt_old.facts WHERE attribute = ':p/name'",
+        )
+        .expect("user view");
+        let user_view = || {
+            sorted(json(
+                "SELECT coalesce(jsonb_agg(value), '[]') FROM public.vt_user_facts",
+            ))
+        };
+        let granted = || {
+            sorted(json(
+                "SELECT coalesce(jsonb_agg(value), '[]') FROM mentat_vt_old.text_values \
+                  WHERE attribute = ':p/name'",
+            ))
+        };
+        assert_eq!(user_view(), vec!["ann", "anna"], "1.18.0 reads the log");
+        let before = store_object_defs("vt_old");
+        let part_before = store_object_defs("vt_part");
+
+        let block = upgrade_119_block("views");
+        Spi::run(&block).expect("upgrade");
+
+        assert_eq!(user_view(), vec!["anna"], "the user view on facts");
+        Spi::run("SET LOCAL ROLE ns_vt_reader").expect("set role");
+        assert_eq!(
+            granted(),
+            vec!["anna"],
+            "text_values, as the role granted it"
+        );
+        Spi::run("RESET ROLE").expect("reset role");
+        assert_eq!(
+            text(&format!(
+                "SELECT coalesce(mentat_vt_old.entity_value({a}, ':p/age'), 'none')"
+            )),
+            "none"
+        );
+        // The same objects, owners, grants and memberships.
+        type Defs = Vec<(String, String, String, String, bool, String)>;
+        let meta = |v: &Defs| -> Vec<(String, String, String, bool, String)> {
+            v.iter()
+                .map(|(k, n, _, o, m, acl)| (k.clone(), n.clone(), o.clone(), *m, acl.clone()))
+                .collect()
+        };
+        let after = store_object_defs("vt_old");
+        assert_eq!(meta(&after), meta(&before));
+        assert!(
+            after.iter().all(|(_, _, _, o, _, _)| o == "ns_vt_owner"),
+            "{after:?}"
+        );
+        let members: Vec<&str> = after
+            .iter()
+            .filter(|(.., m, _)| *m)
+            .map(|(_, n, ..)| n.as_str())
+            .collect();
+        assert_eq!(members, vec!["attributes"]);
+
+        // vt_part: nothing made; the view its owner changed is left alone.
+        let part_after = store_object_defs("vt_part");
+        assert_eq!(meta(&part_after), meta(&part_before));
+        let def = |v: &Defs, name: &str| {
+            v.iter()
+                .find(|(_, n, ..)| n == name)
+                .map(|x| x.2.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            def(&part_after, "graph_edges"),
+            def(&part_before, "graph_edges")
+        );
+
+        // What a fresh store has.
+        Spi::run("SELECT create_store('vt_new')").expect("fresh store");
+        let defs = |v: &Defs| -> Vec<(String, String, String)> {
+            v.iter()
+                .map(|(k, n, d, ..)| (k.clone(), n.clone(), d.clone()))
+                .collect()
+        };
+        let fresh = store_object_defs("vt_new");
+        assert_eq!(
+            defs(&after).iter().map(|d| d.1.clone()).collect::<Vec<_>>(),
+            defs(&fresh).iter().map(|d| d.1.clone()).collect::<Vec<_>>()
+        );
+        for (old, new) in defs(&after).iter().zip(defs(&fresh).iter()) {
+            assert_eq!(old, new);
+        }
+        for name in [
+            "facts",
+            "references",
+            "entity_value(eid bigint, attr_ident text)",
+        ] {
+            assert_eq!(def(&part_after, name), def(&fresh, name));
+        }
+        if trgm {
+            assert_eq!(trgm_indexes("vt_old"), trgm_indexes("vt_new"));
+            assert_eq!(
+                trgm_indexes("vt_old"),
+                vec![
+                    "current_keyword.idx_current_keyword_trgm",
+                    "current_text.idx_current_text_trgm"
+                ]
+            );
+        }
+        assert!(trgm_indexes("vt_part").is_empty());
+
+        // Twice changes nothing.
+        Spi::run(&block).expect("upgrade again");
+        assert_eq!(store_object_defs("vt_old"), after);
+        assert_eq!(store_object_defs("vt_part"), part_after);
+        assert_eq!(trgm_indexes("vt_old"), trgm_indexes("vt_new"));
+
+        // An upgraded store's objects return only live values.
+        store_objects_read_live_values("vt_live");
+    }
+
+    /// Excise `ids` from `store` as 1.5.0 - 1.18.0 did (#396): delete the log
+    /// rows and log the excision; the projection, fulltext text and idents
+    /// stay.
+    fn excise_as_1_18(store: &str, ids: &[i64]) {
+        let sch = if store == "default" {
+            "mentat".to_string()
+        } else {
+            format!("mentat_{store}")
+        };
+        let list = ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        for ty in [
+            "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
+        ] {
+            Spi::run(&format!(
+                "DELETE FROM \"{sch}\".datoms_{ty}_new WHERE e IN ({list})"
+            ))
+            .expect("log rows");
+        }
+        Spi::run(&format!(
+            "INSERT INTO mentat.excision_log (store_name, entity_ids) VALUES ('{store}', ARRAY[{list}])"
+        ))
+        .expect("excision_log");
+    }
+
+    // 1.5.0 - 1.18.0's mentat_excise left the projection rows of the
+    // entities it excised (#396). The 1.18 store views read the log, which
+    // hid them; the 1.19 views read the projection, so the upgrade deletes
+    // them first: they don't come back in facts, text_values, datom_text_like,
+    // current() or q(). A value asserted for the same id after the excision
+    // stays, another entity is untouched, and a store the log names that is
+    // gone gets a WARNING.
+    #[pg_test]
+    fn upgrade_deletes_what_old_excisions_left() {
+        setup();
+        make_1_18_store("ex_old", false);
+        let mut eve = std::collections::HashMap::new();
+        for store in ["default", "ex_old"] {
+            tx(
+                store,
+                "[{:db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one \
+                   :db/unique :db.unique/identity :db/fulltext true} \
+                  {:db/ident :ex/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+            );
+            let r = tx(
+                store,
+                "[{:db/id \"e\" :ex/name \"eve secret\" :ex/age 50} {:db/id \"f\" :ex/name \"fay\" :ex/age 3} \
+                  {:db/id \"g\" :ex/name \"gus\"} {:db/id \"k\" :db/ident :ex/kmauve}]",
+            );
+            let id = |t: &str| r["tempids"][t].as_i64().unwrap();
+            // g: excised, then given a value again under the same id.
+            excise_as_1_18(store, &[id("e"), id("g"), id("k")]);
+            tx(
+                store,
+                &format!("[[:db/add {} :ex/name \"gus again\"]]", id("g")),
+            );
+            eve.insert(store, (id("e"), id("f"), id("g")));
+        }
+        Spi::run("INSERT INTO mentat.excision_log (store_name, entity_ids) VALUES ('ex_gone', ARRAY[1000001])")
+            .expect("gone store");
+        let (e, _, _) = eve["ex_old"];
+        let shows = || -> i64 {
+            Spi::get_one::<i64>(&format!(
+                "SELECT (SELECT count(*) FROM mentat_ex_old.facts WHERE entity_id = {e}) \
+                      + (SELECT count(*) FROM mentat_ex_old.text_values WHERE value = 'eve secret')"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(shows(), 0, "1.18 views read the log");
+
+        let block = upgrade_119_block("excised");
+        Spi::run(&block).expect("excised");
+        Spi::run(&upgrade_119_block("views")).expect("views");
+        assert_eq!(shows(), 0, "facts / text_values after the upgrade");
+
+        for store in ["default", "ex_old"] {
+            let (e, f, g) = eve[store];
+            let sch = if store == "default" {
+                "mentat"
+            } else {
+                "mentat_ex_old"
+            };
+            let left = Spi::get_one::<i64>(&format!(
+                "SELECT (SELECT count(*) FROM {sch}.current_datoms WHERE e = {e}) \
+                      + (SELECT count(*) FROM {sch}.fulltext WHERE text_value = 'eve secret') \
+                      + (SELECT count(*) FROM {sch}.idents WHERE ident = ':ex/kmauve')"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(left, 0, "{store}: rows of excised entities");
+            assert_eq!(
+                q(store, &format!("[:find ?a ?v :where [{e} ?a ?v]]"), "{}")["result"],
+                serde_json::json!([]),
+                "{store}: q"
+            );
+            assert_eq!(
+                names_of(store),
+                vec!["fay".to_string(), "gus again".to_string()],
+                "{store}: q, the others"
+            );
+        }
+        // current() reads the default store.
+        let (e, f, g) = eve["default"];
+        for (id, attr, want) in [
+            (e, ":ex/name", "-"),
+            (e, ":ex/age", "-"),
+            (f, ":ex/age", "3"),
+            (g, ":ex/name", "gus again"),
+        ] {
+            assert_eq!(
+                text(&format!(
+                    "SELECT coalesce(mentat.current({id}, '{attr}'), '-')"
+                )),
+                want,
+                "current({id}, {attr})"
+            );
+        }
+        assert_eq!(
+            Spi::get_one::<i64>(
+                "SELECT count(*) FROM mentat.datom_text_like(':ex/name', '%secret%')"
+            )
+            .unwrap()
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT mentat.verify_current_projection(0)")
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("mentat.excision_log lists entities excised from 'ex_gone'"),
+            "{msg:?}"
+        );
+        // A table the store's owner gave a DELETE trigger: the store is
+        // skipped, the trigger doesn't run.
+        Spi::run(
+            "CREATE TABLE public.ex_ran (x TEXT); \
+             CREATE FUNCTION public.ex_trg() RETURNS trigger LANGUAGE plpgsql AS \
+               $$ BEGIN INSERT INTO public.ex_ran VALUES ('ran'); RETURN OLD; END $$; \
+             CREATE TRIGGER ex_trg BEFORE DELETE ON mentat_ex_old.current_long \
+               FOR EACH ROW EXECUTE FUNCTION public.ex_trg()",
+        )
+        .expect("trigger");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_old\" before 1.19.0 were not looked at: current_long"),
+            "{msg:?}"
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM public.ex_ran")
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    /// Store `store` with the 1.18 layout, an :ex/name schema, entity "e"
+    /// excised as 1.18 did and "g" excised and given a value again; returns
+    /// (e, g).
+    fn excised_store(store: &str) -> (i64, i64) {
+        make_1_18_store(store, false);
+        tx(
+            store,
+            "[{:db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one}]",
+        );
+        let r = tx(
+            store,
+            "[{:db/id \"e\" :ex/name \"eve\"} {:db/id \"g\" :ex/name \"gus\"}]",
+        );
+        let id = |t: &str| r["tempids"][t].as_i64().unwrap();
+        excise_as_1_18(store, &[id("e"), id("g")]);
+        tx(
+            store,
+            &format!("[[:db/add {} :ex/name \"gus again\"]]", id("g")),
+        );
+        (id("e"), id("g"))
+    }
+
+    // The upgrade's excision clean-up deletes, as superuser, from tables a
+    // store's owner owns. A store whose current_text its owner attached as a
+    // partition of a table with a row DELETE trigger: on PostgreSQL 13 and 14
+    // the trigger cloned onto the partition is marked internal, the check
+    // skipped internal triggers, and DELETE FROM ONLY the partition fired it.
+    // A log table with an inheritance child (TimescaleDB chunks): ONLY left
+    // out the child's rows, so a value asserted after the excision, logged in
+    // the child, was deleted. Both stores are skipped with a WARNING now.
+    #[pg_test]
+    fn upgrade_skips_an_excised_store_in_a_partition_or_inheritance_tree() {
+        setup();
+        let (pe, _) = excised_store("ex_pt");
+        let (ie, ig) = excised_store("ex_inh");
+        Spi::run(
+            "CREATE TABLE public.ex_pt_ran (x TEXT); \
+             CREATE FUNCTION public.ex_pt_trg() RETURNS trigger LANGUAGE plpgsql AS \
+               $$ BEGIN INSERT INTO public.ex_pt_ran VALUES ('ran'); RETURN OLD; END $$; \
+             CREATE TABLE public.ex_pt_parent (LIKE mentat_ex_pt.current_text) PARTITION BY LIST (store_id); \
+             CREATE TRIGGER ex_pt_trg AFTER DELETE ON public.ex_pt_parent \
+               FOR EACH ROW EXECUTE FUNCTION public.ex_pt_trg(); \
+             ALTER TABLE public.ex_pt_parent ATTACH PARTITION mentat_ex_pt.current_text DEFAULT; \
+             CREATE TABLE public.ex_inh_chunk () INHERITS (mentat_ex_inh.datoms_text_new)",
+        )
+        .expect("partition and inheritance");
+        Spi::run(&format!(
+            "WITH m AS (DELETE FROM ONLY mentat_ex_inh.datoms_text_new WHERE e = {ig} RETURNING *) \
+             INSERT INTO public.ex_inh_chunk SELECT * FROM m"
+        ))
+        .expect("g's log row in the child");
+        let block = upgrade_119_block("excised");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_pt\" before 1.19.0 were not looked at: current_text in"),
+            "{msg:?}"
+        );
+        Spi::run("DELETE FROM mentat.excision_log WHERE store_name = 'ex_pt'")
+            .expect("one at a time");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_inh\" before 1.19.0 were not looked at: datoms_text_new in"),
+            "{msg:?}"
+        );
+        Spi::run(&format!(
+            "INSERT INTO mentat.excision_log (store_name, entity_ids) VALUES ('ex_pt', ARRAY[{pe}])"
+        ))
+        .expect("back");
+        Spi::run(&block).expect("excised");
+        assert_eq!(
+            text("SELECT count(*)::TEXT FROM public.ex_pt_ran"),
+            "0",
+            "the trigger"
+        );
+        assert_eq!(
+            text(&format!(
+                "SELECT string_agg(v, ',' ORDER BY v) FROM mentat_ex_inh.current_text WHERE e IN ({ie}, {ig})"
+            )),
+            "eve,gus again",
+            "ex_inh untouched"
+        );
+        assert_eq!(
+            text(&format!(
+                "SELECT count(*)::TEXT FROM mentat_ex_pt.current_text WHERE e = {pe}"
+            )),
+            "1",
+            "ex_pt untouched"
+        );
+    }
+
+    // Planning a statement on a table folds an IMMUTABLE call with constant
+    // arguments in its index expressions and predicates, its statistics
+    // objects' expressions and (with constraint_exclusion = on, which a
+    // database owner can set) its CHECK constraints: the function runs as
+    // the role planning. The excision clean-up plans its DELETEs and SELECTs
+    // as superuser, so a store whose tables use a function a non-superuser
+    // made is skipped with a WARNING, and the function never runs.
+    #[pg_test]
+    fn upgrade_skips_an_excised_store_whose_tables_use_an_owners_function() {
+        setup();
+        let (e, g) = excised_store("ex_fn");
+        Spi::run(
+            "CREATE ROLE ex_fn_owner NOLOGIN; \
+             CREATE SEQUENCE public.ex_fn_ran; \
+             CREATE FUNCTION public.ex_fn(TEXT) RETURNS INT IMMUTABLE LANGUAGE plpgsql AS \
+               $$ BEGIN PERFORM pg_catalog.nextval('public.ex_fn_ran'); RETURN 1; END $$; \
+             ALTER FUNCTION public.ex_fn(TEXT) OWNER TO ex_fn_owner",
+        )
+        .expect("function");
+        let stats: bool =
+            Spi::get_one("SELECT current_setting('server_version_num')::INT >= 140000")
+                .unwrap()
+                .unwrap();
+        let mut cases = vec![
+            (
+                "current_text",
+                "CREATE INDEX ex_fn_x ON mentat_ex_fn.current_text ((public.ex_fn('x') + e))",
+                "DROP INDEX mentat_ex_fn.ex_fn_x",
+            ),
+            (
+                "datoms_long_new",
+                "CREATE INDEX ex_fn_p ON mentat_ex_fn.datoms_long_new (e) WHERE public.ex_fn('p') = 1",
+                "DROP INDEX mentat_ex_fn.ex_fn_p",
+            ),
+            (
+                "idents",
+                "ALTER TABLE mentat_ex_fn.idents ADD CONSTRAINT ex_fn_c CHECK (public.ex_fn('c') = 1)",
+                "ALTER TABLE mentat_ex_fn.idents DROP CONSTRAINT ex_fn_c",
+            ),
+        ];
+        if stats {
+            cases.push((
+                "schema",
+                "CREATE STATISTICS mentat_ex_fn.ex_fn_s ON (public.ex_fn('s') + entid), ident \
+                   FROM mentat_ex_fn.schema",
+                "DROP STATISTICS mentat_ex_fn.ex_fn_s",
+            ));
+        }
+        let block = upgrade_119_block("excised");
+        let ran = || text("SELECT is_called::TEXT FROM public.ex_fn_ran");
+        Spi::run("SET LOCAL constraint_exclusion = on").expect("constraint_exclusion");
+        for (table, make, unmake) in cases {
+            Spi::run(make).expect(make);
+            Spi::run("SELECT pg_catalog.setval('public.ex_fn_ran', 1, false)").expect("reset");
+            let msg = text(&format!(
+                "SELECT pg_temp.capture($cap${}$cap$)",
+                block.replace("RAISE WARNING", "RAISE EXCEPTION")
+            ));
+            assert!(
+                msg.contains(&format!(
+                    "entities excised from store \"ex_fn\" before 1.19.0 were not looked at: {table} in"
+                )),
+                "{make}: {msg:?}"
+            );
+            assert_eq!(ran(), "false", "{make}: the function ran");
+            Spi::run(unmake).expect(unmake);
+        }
+        // A function of a superuser's (here pg_catalog's) is fine.
+        Spi::run("CREATE INDEX ex_fn_ok ON mentat_ex_fn.current_text (pg_catalog.lower(v))")
+            .expect("index");
+        Spi::run(&block).expect("excised");
+        Spi::run("RESET constraint_exclusion").expect("reset");
+        assert_eq!(
+            text(&format!(
+                "SELECT string_agg(v, ',' ORDER BY v) FROM mentat_ex_fn.current_text WHERE e IN ({e}, {g})"
+            )),
+            "gus again"
+        );
+    }
+
+    // On 1.18, after mentat_excise left an entity's current rows, asserting
+    // a value the entity still showed wrote no log row (the transactor took
+    // it as already there). The upgrade can't tell that value from a stale
+    // one (its tx is from before the excision) and deletes it with them; it
+    // names the entities that were given values again after the excision,
+    // so their owners can check them. An entity with no new value is not
+    // named.
+    #[pg_test]
+    fn upgrade_names_excised_entities_given_values_again() {
+        setup();
+        make_1_18_store("ex_again", false);
+        tx(
+            "ex_again",
+            "[{:db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one} \
+              {:db/ident :ex/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        let r = tx(
+            "ex_again",
+            "[{:db/id \"e\" :ex/name \"eve\" :ex/age 5} {:db/id \"h\" :ex/name \"hal\" :ex/age 7}]",
+        );
+        let (e, h) = (
+            r["tempids"]["e"].as_i64().unwrap(),
+            r["tempids"]["h"].as_i64().unwrap(),
+        );
+        excise_as_1_18("ex_again", &[e, h]);
+        // h's age asserted unchanged: no log row. Its name changed: logged.
+        let unchanged = tx("ex_again", &format!("[[:db/add {h} :ex/age 7]]"));
+        assert_eq!(
+            unchanged["tx-data"].as_array().unwrap().len(),
+            1,
+            "only the txInstant"
+        );
+        tx("ex_again", &format!("[[:db/add {h} :ex/name \"hal 2\"]]"));
+        let block = upgrade_119_block("excised");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert_eq!(
+            msg,
+            format!(
+                "pg_mentat upgrade: entities {{{h}}} of store \"ex_again\" were given values again after \
+                 mentat_excise excised them, and values of theirs that no log row backs were deleted. On \
+                 1.18, a value asserted unchanged (one the entity still showed) wrote no log row, so it \
+                 is among them: check these entities and assert any value they should have again."
+            )
+        );
+        Spi::run(&block).expect("excised");
+        assert_eq!(
+            text(&format!(
+                "SELECT string_agg(e || ' ' || v, ',' ORDER BY e) FROM mentat_ex_again.current_text"
+            )),
+            format!("{h} hal 2")
+        );
+        assert_eq!(
+            text("SELECT count(*)::TEXT FROM mentat_ex_again.current_long"),
+            "0",
+            "h's unchanged age went with the stale rows"
+        );
+    }
+
+    fn viewdef(view: &str) -> String {
+        text(&format!("SELECT pg_get_viewdef('{view}'::regclass)"))
+    }
+
+    // A 1.17 store the 1.18.0 upgrade skipped (it WARNs and goes on, e.g.
+    // when mentat_<name>_pre118 already exists) keeps the wide layout. The
+    // 1.19.0 upgrade's CREATE OR REPLACE VIEW ... FROM mentat_<name>.current_ref
+    // then failed with "relation does not exist" and aborted the whole
+    // upgrade. Such a store is skipped with a WARNING; the others are done.
+    #[pg_test]
+    fn upgrade_skips_a_store_without_the_1_18_layout() {
+        setup();
+        make_1_18_store("lay_ok", false);
+        Spi::run(
+            "INSERT INTO mentat.stores (store_name, schema_name) VALUES ('lay_old', 'mentat_lay_old'); \
+             CREATE SCHEMA mentat_lay_old; \
+             CREATE TABLE mentat_lay_old.datoms (e BIGINT NOT NULL, a BIGINT NOT NULL, \
+               value_type_tag SMALLINT NOT NULL, v_text TEXT, tx BIGINT NOT NULL, added BOOLEAN NOT NULL); \
+             CREATE TABLE mentat_lay_old.schema (entid BIGINT, ident TEXT); \
+             CREATE VIEW mentat_lay_old.facts AS SELECT e AS entity_id, v_text AS value \
+               FROM mentat_lay_old.datoms WHERE added",
+        )
+        .expect("1.17 store");
+        let old = viewdef("mentat_lay_old.facts");
+        let block = upgrade_119_block("views");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.starts_with(
+                "pg_mentat upgrade: views of named store \"lay_old\" not replaced: schema mentat_lay_old \
+                 does not have the 1.18 layout (no current_boolean, current_bytes,"
+            ),
+            "{msg:?}"
+        );
+        assert!(msg.contains("idents, transactions)"), "{msg:?}");
+        Spi::run(&block).expect("the upgrade goes on");
+        assert_eq!(viewdef("mentat_lay_old.facts"), old);
+        assert!(
+            viewdef("mentat_lay_ok.facts").contains("current_text"),
+            "the other store's views are replaced"
+        );
+    }
+
+    // The upgrade caught SQLSTATE 55000 by its condition name, which is a
+    // class code: it caught all of class 55, so a lock timeout (55P03) on a
+    // store view became a WARNING, the extension reached 1.19.0 and that view
+    // kept reading the log. A lock timeout must abort the upgrade. Two real
+    // sessions (dblink): one creates a store and commits, the other holds a
+    // lock on one of its views.
+    #[pg_test]
+    fn upgrade_aborts_on_a_lock_timeout() {
+        crate::ensure_extension_loaded();
+        let available: i64 =
+            Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
+                .unwrap()
+                .unwrap();
+        if available == 0 {
+            return;
+        }
+        Spi::run(
+            "CREATE EXTENSION IF NOT EXISTS dblink; \
+             CREATE OR REPLACE FUNCTION pg_temp.try_rollback(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RAISE EXCEPTION 'ran'; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("dblink");
+        let conn = text(
+            "SELECT pg_catalog.format('dbname=%s port=%s host=%s', current_database(), \
+               current_setting('port'), split_part(current_setting('unix_socket_directories'), ',', 1))",
+        );
+        let on = |c: &str, sql: &str| {
+            Spi::run(&format!(
+                "SELECT dblink_exec('{c}', '{}')",
+                sql.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{c}: {sql}: {e}"))
+        };
+        Spi::run(&format!(
+            "SELECT dblink_connect('lk_a', '{conn}'), dblink_connect('lk_b', '{conn}')"
+        ))
+        .expect("connect");
+        let drop =
+            "DO $d$ BEGIN PERFORM drop_store('lk_s'); EXCEPTION WHEN OTHERS THEN NULL; END $d$";
+        on("lk_a", "SET search_path TO mentat, public");
+        on("lk_a", drop);
+        on("lk_a", "DO $d$ BEGIN PERFORM create_store('lk_s'); END $d$");
+        on("lk_b", "BEGIN");
+        on(
+            "lk_b",
+            "LOCK TABLE mentat_lk_s.\"references\" IN ACCESS SHARE MODE",
+        );
+        Spi::run("SET LOCAL lock_timeout = '200ms'").expect("lock_timeout");
+        // Rolled back either way, so its locks don't block the cleanup.
+        let msg = text(&format!(
+            "SELECT pg_temp.try_rollback($cap${}$cap$)",
+            upgrade_119_block("views")
+        ));
+        Spi::run("RESET lock_timeout").expect("reset");
+        on("lk_b", "ROLLBACK");
+        on("lk_a", drop);
+        Spi::run("SELECT dblink_disconnect('lk_a'), dblink_disconnect('lk_b')").expect("close");
+        assert!(
+            msg.contains("lock timeout"),
+            "the upgrade must fail: {msg:?}"
+        );
+    }
+
+    // CREATE OR REPLACE resets a view's options and a function's attributes
+    // its statement doesn't name. The 1.19.0 upgrade replaced a store's views
+    // and functions that way, so a reader of a security_invoker view got the
+    // view owner's privileges, and a SECURITY DEFINER function lost it. Each
+    // setting the store's owner made is kept, on the new definition.
+    #[pg_test]
+    fn upgrade_keeps_the_owners_settings() {
+        setup();
+        make_1_18_store("own_s", false);
+        // security_invoker is PostgreSQL 15+.
+        let invoker =
+            Spi::get_one::<bool>("SELECT current_setting('server_version_num')::INT >= 150000")
+                .unwrap()
+                .unwrap();
+        let facts_opt = if invoker {
+            "security_invoker=true"
+        } else {
+            "security_barrier=false"
+        };
+        Spi::run(&format!("ALTER VIEW mentat_own_s.facts SET ({facts_opt})"))
+            .expect("facts option");
+        Spi::run(
+            "CREATE SCHEMA \"Own Path\"; \
+             ALTER VIEW mentat_own_s.text_values SET (security_barrier = true); \
+             ALTER FUNCTION mentat_own_s.entity_value(BIGINT, TEXT) SECURITY DEFINER \
+               SET search_path = pg_catalog, \"Own Path\", pg_temp; \
+             ALTER FUNCTION mentat_own_s.find_text(TEXT) COST 5000 ROWS 7 PARALLEL RESTRICTED STRICT; \
+             ALTER FUNCTION mentat_own_s.lookup_entity(TEXT, TEXT) SET work_mem = '7MB' VOLATILE; \
+             ALTER FUNCTION mentat_own_s.count_by_attribute() LEAKPROOF",
+        )
+        .expect("owner settings");
+        let settings = || -> Vec<String> {
+            let mut v: Vec<String> = Spi::connect(|client| {
+                client
+                    .select(
+                        "SELECT c.relname || ' ' || c.reloptions::TEXT FROM pg_class c \
+                          WHERE c.relnamespace = 'mentat_own_s'::regnamespace AND c.relkind = 'v' \
+                            AND c.reloptions IS NOT NULL \
+                         UNION ALL \
+                         SELECT p.proname || ' ' || concat_ws(' ', p.prosecdef, p.proleakproof, p.proisstrict, \
+                                p.provolatile, p.proparallel, p.procost, p.prorows, p.proconfig::TEXT) \
+                           FROM pg_proc p WHERE p.pronamespace = 'mentat_own_s'::regnamespace",
+                        None,
+                        &[],
+                    )
+                    .unwrap()
+                    .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect()
+            });
+            v.sort();
+            v
+        };
+        let before = settings();
+        assert_eq!(
+            before,
+            [
+                "count_by_attribute f t f s u 100 1000",
+                "entities_with_attribute f f f s u 100 1000",
+                "entity_value t f f s u 100 0 {\"search_path=pg_catalog, \\\"Own Path\\\", pg_temp\"}",
+                &format!("facts {{{facts_opt}}}"),
+                "find_text f f t s r 5000 7",
+                "lookup_entity f f f v u 100 1000 {work_mem=7MB}",
+                "text_values {security_barrier=true}",
+            ]
+            .map(String::from)
+            .to_vec()
+        );
+        let block = upgrade_119_block("views");
+        Spi::run(&block).expect("upgrade");
+        assert_eq!(settings(), before);
+        for (f, sig) in [
+            ("entity_value", "BIGINT, TEXT"),
+            ("find_text", "TEXT"),
+            ("lookup_entity", "TEXT, TEXT"),
+        ] {
+            assert!(
+                text(&format!(
+                    "SELECT prosrc FROM pg_proc WHERE oid = 'mentat_own_s.{f}({sig})'::regprocedure"
+                ))
+                .contains("current_"),
+                "{f}: the new body"
+            );
+        }
+        assert!(
+            text("SELECT pg_get_viewdef('mentat_own_s.facts'::regclass)").contains("current_text")
+        );
+        Spi::run(&block).expect("twice");
+        assert_eq!(settings(), before);
+    }
+
+    // A store function its owner replaced by a procedure with the same
+    // arguments: ALTER EXTENSION ADD FUNCTION failed with 42809 "is not a
+    // function", which aborted the upgrade. It is left alone, with a WARNING.
+    #[pg_test]
+    fn upgrade_skips_a_procedure_in_a_functions_place() {
+        setup();
+        make_1_18_store("proc_s", false);
+        Spi::run(
+            "DROP FUNCTION mentat_proc_s.find_text(TEXT); \
+             CREATE PROCEDURE mentat_proc_s.find_text(q TEXT) LANGUAGE sql AS $$ SELECT 1 $$",
+        )
+        .expect("procedure");
+        let block = upgrade_119_block("views");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert_eq!(
+            msg,
+            "pg_mentat upgrade: mentat_proc_s.find_text(text) of store \"proc_s\" not replaced: \
+             it is not a function."
+        );
+        Spi::run(&block).expect("upgrade");
+        assert_eq!(
+            text(
+                "SELECT prokind::TEXT FROM pg_proc WHERE proname = 'find_text' \
+                    AND pronamespace = 'mentat_proc_s'::regnamespace"
+            ),
+            "p"
+        );
+        assert!(text(
+            "SELECT prosrc FROM pg_proc WHERE oid = 'mentat_proc_s.lookup_entity(TEXT, TEXT)'::regprocedure"
+        )
+        .contains("current_"));
+    }
+
+    // On 1.18 a store's find_text and searchable_text used the log's GIN
+    // index on to_tsvector('english', v); current_text had none, so on the
+    // projection they scanned every live string. The store layout has the
+    // index now and the upgrade builds it for existing stores.
+    #[pg_test]
+    fn store_full_text_reads_use_an_index() {
+        setup();
+        Spi::run("SELECT create_store('fts_new')").expect("create_store");
+        make_1_18_store("fts_old", false);
+        let has = |store: &str| -> bool {
+            Spi::get_one::<bool>(&format!(
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'mentat_{store}' \
+                   AND indexname = 'idx_current_text_fts' AND indexdef LIKE '%USING gin (to_tsvector(%')"
+            ))
+            .unwrap()
+            .unwrap()
+        };
+        assert!(has("fts_new"), "a new store");
+        assert!(
+            Spi::get_one::<bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'mentat' \
+                   AND indexname = 'idx_current_text_fts')"
+            )
+            .unwrap()
+            .unwrap(),
+            "the default store"
+        );
+        assert!(!has("fts_old"));
+        Spi::run(&upgrade_119_block("views")).expect("upgrade");
+        assert!(has("fts_old"), "an upgraded store");
+        for store in ["fts_new", "fts_old"] {
+            Spi::run(&format!(
+                "INSERT INTO mentat_{store}.current_text (store_id, e, a, v, tx) \
+                 SELECT (SELECT store_id FROM mentat.stores WHERE store_name = '{store}'), \
+                        1000000 + i, 100, CASE WHEN i % 1000 = 0 THEN 'a fox' ELSE 'word ' || i END, 1 \
+                   FROM generate_series(1, 5000) i; \
+                 ANALYZE mentat_{store}.current_text"
+            ))
+            .expect("rows");
+            let plan: String = Spi::connect(|client| {
+                client
+                    .select(
+                        &format!(
+                            "EXPLAIN SELECT * FROM mentat_{store}.searchable_text \
+                              WHERE search_vector @@ plainto_tsquery('english', 'fox')"
+                        ),
+                        None,
+                        &[],
+                    )
+                    .unwrap()
+                    .map(|r| r.get::<String>(1).unwrap().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+            assert!(plan.contains("idx_current_text_fts"), "{store}: {plan}");
+        }
+    }
+
+    // Stores the upgrade can't replace the views of were skipped with no
+    // WARNING: a store row whose schema was renamed by hand, and one whose
+    // schema is gone.
+    #[pg_test]
+    fn upgrade_names_the_stores_it_skips() {
+        setup();
+        make_1_18_store("sk_ren", false);
+        make_1_18_store("sk_gone", false);
+        Spi::run(
+            "ALTER SCHEMA mentat_sk_ren RENAME TO mentat_sk_moved; \
+             UPDATE mentat.stores SET schema_name = 'mentat_sk_moved' WHERE store_name = 'sk_ren'",
+        )
+        .expect("renamed");
+        let block = upgrade_119_block("views");
+        let first = || {
+            text(&format!(
+                "SELECT pg_temp.capture($cap${}$cap$)",
+                block.replace("RAISE WARNING", "RAISE EXCEPTION")
+            ))
+        };
+        assert_eq!(
+            first(),
+            "pg_mentat upgrade: views in schema mentat_sk_moved not replaced: its mentat.stores row \
+             \"sk_ren\" would not have been made by create_store() (renamed by hand?). Rename it back, \
+             or use rename_store, then run create_virtual_tables('sk_ren')."
+        );
+        Spi::run(
+            "UPDATE mentat.stores SET schema_name = 'mentat_sk_ren' WHERE store_name = 'sk_ren'; \
+             ALTER SCHEMA mentat_sk_moved RENAME TO mentat_sk_ren; \
+             DROP SCHEMA mentat_sk_gone CASCADE",
+        )
+        .expect("gone");
+        assert_eq!(
+            first(),
+            "pg_mentat upgrade: views of named store \"sk_gone\" not replaced: its schema \
+             mentat_sk_gone does not exist (dropped by hand?). drop_store('sk_gone') removes the store."
+        );
+        Spi::run("DELETE FROM mentat.stores WHERE store_name = 'sk_gone'").expect("drop row");
+        assert_eq!(first(), "", "the others: no WARNING");
+        Spi::run(&block).expect("the upgrade goes on");
+    }
+
+    fn names_of(store: &str) -> Vec<String> {
+        sorted(q(store, "[:find [?n ...] :where [?e :ex/name ?n]]", "{}")["result"].clone())
     }
 }

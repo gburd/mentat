@@ -37,8 +37,14 @@ definitions (`mentat._create_store_layout`, sql/30_store_layout.sql), so a
 named store has every table, column, constraint and shipped index the
 default store has. The store also gets the read-only views
 (`mentat_<name>.facts`, `.entities`, `.attributes`, ...) and helper
-functions (`lookup_entity`, `entity_value`, `find_text`, ...). The default
-store (`mentat`) cannot be dropped or renamed.
+functions (`lookup_entity`, `entity_value`, `find_text`, ...). They show
+the store's current datoms, the values its entities have now; `tx_log`,
+`entity_history` and `recent_changes` show history, replaced and
+retracted values included. Before 1.19.0 the current-state ones showed
+replaced and retracted values too; `ALTER EXTENSION pg_mentat UPDATE`
+replaces them in every store (a view or function the store's owner
+dropped is not made again). The default store (`mentat`) cannot be
+dropped or renamed.
 
 The extension-wide functions that have no store argument (`edn_t`, `edn_q`,
 `edn_pull`, `mentat_tune_indexes`, the `mentat.attach_*`
@@ -199,7 +205,8 @@ look up its truncated schema with
 ## Row-Level Security over `store_id` (shared `mentat` tables)
 
 pg_mentat also ships with optional per-store Row-Level Security (RLS) for the
-nine narrow datom tables (`mentat.datoms_<type>_new`). When armed, every
+nine narrow datom tables (`mentat.datoms_<type>_new`) and their nine
+current-state projections (`mentat.current_<type>`, since 1.19.0). When armed, every
 SELECT, INSERT, UPDATE, and DELETE against those tables is automatically
 filtered by `store_id = mentat.current_store_id()`, where
 `mentat.current_store_id()` reads the session GUC
@@ -248,13 +255,34 @@ overhead. Two steps arm it:
    SELECT mentat.enable_multi_tenant_rls(true);
    ```
 
-   This calls `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on all nine
-   narrow tables in one transaction and returns `9`.
+   This calls `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on the nine
+   narrow tables and the nine `current_<type>` tables in one transaction
+   and returns `18`. Before 1.19.0 it armed only the nine log tables
+   (and returned `9`), and current-time reads (`edn_q`, `mentat.current()`,
+   the `datom_*` helpers), which read the projections, were not filtered;
+   `ALTER EXTENSION pg_mentat UPDATE` arms the projections wherever the log
+   tables are armed.
+
+   A tenant role granted the nine log tables but not the projections, as
+   the example below did before 1.19.0, gets `permission denied for table
+   current_<type>` from `mentat.current()` and the `datom_*` helpers after
+   the upgrade (`edn_q` has read the projections since 1.18.0, and a
+   transaction writes them). Grant it the projections too, with the same
+   privileges as the log tables:
+
+   ```sql
+   GRANT SELECT, INSERT, UPDATE, DELETE
+      ON mentat.current_ref, mentat.current_long, mentat.current_text,
+         mentat.current_double, mentat.current_instant,
+         mentat.current_keyword, mentat.current_uuid,
+         mentat.current_bytes, mentat.current_boolean
+      TO tenant_alice, tenant_bob;
+   ```
 
 To disarm:
 
 ```sql
-SELECT mentat.enable_multi_tenant_rls(false);  -- DISABLE ROW LEVEL SECURITY on all nine tables
+SELECT mentat.enable_multi_tenant_rls(false);  -- DISABLE ROW LEVEL SECURITY on all eighteen tables
 ALTER SYSTEM SET mentat.enable_multi_tenant_rls = off;
 SELECT pg_reload_conf();
 ```
@@ -311,7 +339,11 @@ What this does **not** protect against:
   The owner bypasses RLS: if the application connection role is the owner,
   RLS is silently inert. Run application connections as separate roles with
   explicit grants, or call `ALTER TABLE mentat.datoms_<type>_new FORCE ROW
-  LEVEL SECURITY` to subject the owner as well.
+  LEVEL SECURITY` to subject the owner as well. `enable_multi_tenant_rls`
+  and `ALTER EXTENSION pg_mentat UPDATE` (since 1.19.0) give each
+  `mentat.current_<type>` its log table's FORCE setting; after changing it
+  on a log table, call `enable_multi_tenant_rls(true)` again, or run the
+  same `ALTER TABLE` on `mentat.current_<type>`.
 * **`SECURITY DEFINER` functions** owned by a privileged role.
   `SECURITY DEFINER` functions execute as their owner, so an unwary
   function created by the superuser is a hole in the wall.
@@ -385,7 +417,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE
    ON mentat.datoms_ref_new, mentat.datoms_long_new, mentat.datoms_text_new,
       mentat.datoms_double_new, mentat.datoms_instant_new,
       mentat.datoms_keyword_new, mentat.datoms_uuid_new,
-      mentat.datoms_bytes_new, mentat.datoms_boolean_new
+      mentat.datoms_bytes_new, mentat.datoms_boolean_new,
+      mentat.current_ref, mentat.current_long, mentat.current_text,
+      mentat.current_double, mentat.current_instant,
+      mentat.current_keyword, mentat.current_uuid,
+      mentat.current_bytes, mentat.current_boolean
    TO tenant_alice, tenant_bob;
 
 ALTER ROLE tenant_alice

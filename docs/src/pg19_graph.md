@@ -98,8 +98,8 @@ SELECT name FROM GRAPH_TABLE (social
 | Function | Purpose |
 |:---|:---|
 | `mentat.has_pg19_graph()` | True if PG version >= 19 and SQL/PGQ catalog is present. |
-| `mentat.create_vertex_view(:attr)` | Create / replace a vertex view for a value attribute. Returns the qualified view name. |
-| `mentat.create_edge_view(:attr)` | Create / replace an edge view for a ref-typed attribute. Returns the qualified view name. |
+| `mentat.create_vertex_view(:attr)` | Create / replace a vertex view for a value attribute: the entities that have a value for it now, with that value. Returns the qualified view name. |
+| `mentat.create_edge_view(:attr)` | Create / replace an edge view for a ref-typed attribute: the references entities have now. Returns the qualified view name. |
 | `mentat.drop_vertex_view(:attr)` | Drop the vertex view. Returns true if it existed. |
 | `mentat.drop_edge_view(:attr)` | Drop the edge view. Returns true if it existed. |
 | `mentat.create_property_graph_ddl(graph_name, vertex_attrs[], edge_attrs[])` | Generate the CREATE PROPERTY GRAPH text. Does NOT execute. Works on any PG version. |
@@ -120,8 +120,11 @@ SELECT name FROM GRAPH_TABLE (social
    won't collide, but for very large entity-id ranges you may want
    to redefine the view.
 
-3. **Datom type fan-out.** Each vertex view materializes from a
-   single typed datom table (string / long / ref / etc.) so a
+3. **Datom type fan-out.** Each vertex view reads a single typed
+   current-state table (`mentat.current_text` / `current_long` /
+   `current_ref` / etc.: the values entities have now; before 1.19.0
+   these views read the log and also listed replaced and retracted
+   values, and `ALTER EXTENSION pg_mentat UPDATE` makes them again), so a
    "person" with mixed-type attributes has one view per attribute.
    To get multiple property columns in one vertex view, materialize
    a custom view by hand (combining several datom tables on `e`)
