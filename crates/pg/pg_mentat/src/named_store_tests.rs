@@ -3705,6 +3705,86 @@ mod tests {
         );
     }
 
+    // Planning a statement on a table folds an IMMUTABLE call with constant
+    // arguments in its index expressions and predicates, its statistics
+    // objects' expressions and (with constraint_exclusion = on, which a
+    // database owner can set) its CHECK constraints: the function runs as
+    // the role planning. The excision clean-up plans its DELETEs and SELECTs
+    // as superuser, so a store whose tables use a function a non-superuser
+    // made is skipped with a WARNING, and the function never runs.
+    #[pg_test]
+    fn upgrade_skips_an_excised_store_whose_tables_use_an_owners_function() {
+        setup();
+        let (e, g) = excised_store("ex_fn");
+        Spi::run(
+            "CREATE ROLE ex_fn_owner NOLOGIN; \
+             CREATE SEQUENCE public.ex_fn_ran; \
+             CREATE FUNCTION public.ex_fn(TEXT) RETURNS INT IMMUTABLE LANGUAGE plpgsql AS \
+               $$ BEGIN PERFORM pg_catalog.nextval('public.ex_fn_ran'); RETURN 1; END $$; \
+             ALTER FUNCTION public.ex_fn(TEXT) OWNER TO ex_fn_owner",
+        )
+        .expect("function");
+        let stats: bool =
+            Spi::get_one("SELECT current_setting('server_version_num')::INT >= 140000")
+                .unwrap()
+                .unwrap();
+        let mut cases = vec![
+            (
+                "current_text",
+                "CREATE INDEX ex_fn_x ON mentat_ex_fn.current_text ((public.ex_fn('x') + e))",
+                "DROP INDEX mentat_ex_fn.ex_fn_x",
+            ),
+            (
+                "datoms_long_new",
+                "CREATE INDEX ex_fn_p ON mentat_ex_fn.datoms_long_new (e) WHERE public.ex_fn('p') = 1",
+                "DROP INDEX mentat_ex_fn.ex_fn_p",
+            ),
+            (
+                "idents",
+                "ALTER TABLE mentat_ex_fn.idents ADD CONSTRAINT ex_fn_c CHECK (public.ex_fn('c') = 1)",
+                "ALTER TABLE mentat_ex_fn.idents DROP CONSTRAINT ex_fn_c",
+            ),
+        ];
+        if stats {
+            cases.push((
+                "schema",
+                "CREATE STATISTICS mentat_ex_fn.ex_fn_s ON (public.ex_fn('s') + entid), ident \
+                   FROM mentat_ex_fn.schema",
+                "DROP STATISTICS mentat_ex_fn.ex_fn_s",
+            ));
+        }
+        let block = upgrade_119_block("excised");
+        let ran = || text("SELECT is_called::TEXT FROM public.ex_fn_ran");
+        Spi::run("SET LOCAL constraint_exclusion = on").expect("constraint_exclusion");
+        for (table, make, unmake) in cases {
+            Spi::run(make).expect(make);
+            Spi::run("SELECT pg_catalog.setval('public.ex_fn_ran', 1, false)").expect("reset");
+            let msg = text(&format!(
+                "SELECT pg_temp.capture($cap${}$cap$)",
+                block.replace("RAISE WARNING", "RAISE EXCEPTION")
+            ));
+            assert!(
+                msg.contains(&format!(
+                    "entities excised from store \"ex_fn\" before 1.19.0 were not looked at: {table} in"
+                )),
+                "{make}: {msg:?}"
+            );
+            assert_eq!(ran(), "false", "{make}: the function ran");
+            Spi::run(unmake).expect(unmake);
+        }
+        // A function of a superuser's (here pg_catalog's) is fine.
+        Spi::run("CREATE INDEX ex_fn_ok ON mentat_ex_fn.current_text (pg_catalog.lower(v))")
+            .expect("index");
+        Spi::run(&block).expect("excised");
+        Spi::run("RESET constraint_exclusion").expect("reset");
+        assert_eq!(
+            text(&format!(
+                "SELECT string_agg(v, ',' ORDER BY v) FROM mentat_ex_fn.current_text WHERE e IN ({e}, {g})"
+            )),
+            "gus again"
+        );
+    }
+
     fn viewdef(view: &str) -> String {
         text(&format!("SELECT pg_get_viewdef('{view}'::regclass)"))
     }

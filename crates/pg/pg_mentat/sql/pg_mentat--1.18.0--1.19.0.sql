@@ -801,7 +801,9 @@ $movedidents$;
 -- 1.19.0). This runs as superuser over tables a store's owner owns, so a
 -- store is skipped, with a WARNING, unless every table it touches is a
 -- plain table with built-in column types, neither a partition nor in an
--- inheritance tree, and the ones it deletes from have no DELETE trigger
+-- inheritance tree, with no index, CHECK constraint or statistics object
+-- that uses a function, operator or type a non-superuser made (planning a
+-- statement can run it), and the ones it deletes from have no DELETE trigger
 -- (internal ones included) or rule and no foreign key pointing at them; every
 -- statement names its table with ONLY. Nothing here runs code a store's
 -- owner (or, on the default store, the installing role) wrote. A store_name that
@@ -867,6 +869,31 @@ BEGIN
                               WHERE g.tgrelid = c.oid AND (g.tgtype & 8) <> 0)
                      OR EXISTS (SELECT 1 FROM pg_rewrite r WHERE r.ev_class = c.oid AND r.ev_type = '4')
                      OR EXISTS (SELECT 1 FROM pg_constraint k WHERE k.confrelid = c.oid)))
+            -- No index expression or predicate, CHECK constraint or statistics
+            -- object that uses a function, operator or type a role other
+            -- than a superuser made: planning a statement on the table folds
+            -- an IMMUTABLE call with constant arguments, i.e. runs it.
+            OR EXISTS (SELECT 1 FROM pg_depend d
+                        WHERE ((d.classid = 'pg_class'::regclass
+                                AND d.objid IN (SELECT i.indexrelid FROM pg_index i WHERE i.indrelid = c.oid))
+                               OR (d.classid = 'pg_constraint'::regclass
+                                   AND d.objid IN (SELECT k.oid FROM pg_constraint k WHERE k.conrelid = c.oid))
+                               OR (d.classid = 'pg_statistic_ext'::regclass
+                                   AND d.objid IN (SELECT x.oid FROM pg_statistic_ext x WHERE x.stxrelid = c.oid)))
+                          AND EXISTS (SELECT 1 FROM pg_roles r
+                                       WHERE NOT r.rolsuper
+                                         AND r.oid IN (SELECT p.proowner FROM pg_proc p
+                                                        WHERE d.refclassid = 'pg_proc'::regclass AND p.oid = d.refobjid
+                                                       UNION ALL
+                                                       SELECT p.proowner FROM pg_operator o
+                                                         JOIN pg_proc p ON p.oid IN (o.oprcode, o.oprrest, o.oprjoin)
+                                                        WHERE d.refclassid = 'pg_operator'::regclass AND o.oid = d.refobjid
+                                                       UNION ALL
+                                                       SELECT o.oprowner FROM pg_operator o
+                                                        WHERE d.refclassid = 'pg_operator'::regclass AND o.oid = d.refobjid
+                                                       UNION ALL
+                                                       SELECT y.typowner FROM pg_type y
+                                                        WHERE d.refclassid = 'pg_type'::regclass AND y.oid = d.refobjid)))
             OR EXISTS (SELECT 1 FROM pg_attribute a JOIN pg_type y ON y.oid = a.atttypid
                         WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
                           AND a.attname IN ('store_id', 'e', 'a', 'v', 'tx', 'added', 'entid', 'text_value')
@@ -875,7 +902,8 @@ BEGIN
         IF bad IS NOT NULL THEN
             RAISE WARNING 'pg_mentat upgrade: entities excised from store "%" before 1.19.0 were not looked '
                           'at: % in schema % (missing, not a plain table, a partition or inheritance, a '
-                          'DELETE trigger or rule, or a column type of its own). Their current values may '
+                          'DELETE trigger or rule, a column type of its own, or an index, constraint or '
+                          'statistics object that uses a function of its own). Their current values may '
                           'still show. After the '
                           'upgrade, run mentat_excise again on the ids mentat.excision_log lists.',
                           st.store_name, bad, st.nspname;
