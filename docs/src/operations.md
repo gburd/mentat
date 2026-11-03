@@ -479,9 +479,25 @@ for the ones in flight. A writer that arrives meanwhile waits before it
 resolves any ident, then reloads the idents and writes to the owner, not
 to `moved_to` (under READ COMMITTED, the default; a REPEATABLE READ or
 SERIALIZABLE writer keeps the idents of its first snapshot, so stop
-those). Reads of the store, and other stores, don't wait. The repair
-scans the store's ref log a few times per ident, so on a large store run
-it in a maintenance window.
+those). Reads of the store, and other stores, don't wait. Until COMMIT
+a real run holds:
+
+- the store's write key, an advisory lock (`pg_locks`: `locktype =
+  'advisory'`, `classid = 1299084336` (0x4D6E7430, "Mnt0"), `objsubid =
+  2`), exclusive. Every `t()` call on the store takes it shared first,
+  so writers of the store wait;
+- the store's row in `mentat.cache_generation` (it bumps the
+  generation, so every backend reloads its idents), which a
+  schema-changing transaction of the store also locks;
+- row locks on every log and current row it rewrote or deleted, and
+  ROW EXCLUSIVE on the store's tables, which blocks no reader and no
+  writer of other rows.
+
+The repair and the dry run scan the store's ref log a few times per
+ident. On 200,000 ref datoms with 3 moved idents (91,666 refs to their
+`moved_to`): `moved_idents` 0.19 s, dry run 1.3 s, real run 17 s, a
+second run 2 ms. Writers of the store wait for all of it, so on a large
+store run it in a maintenance window.
 
 ```sql
 SELECT * FROM mentat.repair_moved_idents('default');           -- dry run
