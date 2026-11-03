@@ -8,6 +8,37 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.19.0] — current-state SQL, concurrent writers, enum idents, tx-fns on named stores
+
+Upgrading: `ALTER EXTENSION pg_mentat UPDATE` reaches 1.19.0 from 1.18.0
+(and from 1.17.2 through 1.18.0). It replaces each named store's views
+and helpers with ones that read current state, cleans up what
+`mentat_excise` left on 1.5.0–1.18.0, adds a fulltext index on
+`current_text`, and gives the current-state tables the log's RLS
+policies. It holds those locks until it commits: on a big store plan a
+window or set `lock_timeout` (see Changed and Operations §9). It does
+not repair idents 1.18.0 and earlier moved (#415): run
+`mentat.moved_idents()` per store afterwards.
+
+Behaviour changes to check before upgrading:
+- a tempid used only as a ref value now fails the transaction (#384);
+- an `:in` value that identifies no entity matches nothing;
+- asserting an ident another entity holds is an error (#415);
+- a transaction function can only reach the store it runs on and can't
+  transact (#389, #405);
+- `enable_multi_tenant_rls` returns 18 and tenant roles need grants on
+  `mentat.current_<type>`;
+- a role without rights on a store gets "permission denied" instead of an
+  unknown-attribute error (#402).
+
+### Breaking (Rust API)
+
+- **`mentat_db_traits::DbErrorKind` has new variants,
+  `TempIdNotAnEntity` and `UniqueConflict`** (#384, #414), and
+  **`mentat_query_projector_traits::aggregates::SimpleAggregationOp` has
+  `CountDistinct`** (#394). Neither enum is `#[non_exhaustive]`, so an
+  exhaustive `match` on one needs a new arm.
+
 ### Added
 
 - **pg_mentat: `mentat.moved_idents(store)` and
