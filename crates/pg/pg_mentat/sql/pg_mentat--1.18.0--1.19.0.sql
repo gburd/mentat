@@ -300,10 +300,15 @@ $$;
 -- mentat.moved_idents(store TEXT DEFAULT 'default')
 --
 -- One row per ident whose idents row names a different entity than the one
--- holding its live [O :db/ident ident] datom: the shape the bug left.
+-- holding its live [O :db/ident ident] datom: the shape the bug left. For a
+-- bootstrap ident (:db/doc), O is its fixed entid (its schema row, below
+-- 100): a store has no :db/ident datoms for those, so re-asserting one
+-- ({:db/ident :db/doc :db/doc "..."}) moved the row to a new entity that also
+-- got the :db/ident datom.
 --   ident     the ident, ':color/red'
 --   moved_to  N, the entid the idents row names
---   owner     O, the entity with the live :db/ident datom
+--   owner     O, the entity with the live :db/ident datom (or the bootstrap
+--             entid)
 --   n_datoms  live datoms with N as their entity
 --   n_refs    live ref values that point at N
 --   blocker   NULL if repair_moved_idents can repair it, else why it can't
@@ -338,13 +343,15 @@ BEGIN
     IF s IS NULL THEN
         RAISE EXCEPTION 'pg_mentat: no store named %', store;
     END IF;
-    -- 10 is :db/ident; its values are stored without the leading ':'.
+    -- 10 is :db/ident; its values are stored without the leading ':'. A
+    -- bootstrap ident's entity is its schema row's (entid < 100).
     FOR rec IN EXECUTE format(
-        'SELECT i.ident, i.entid AS moved_to, k.e AS owner
+        'SELECT i.ident, i.entid AS moved_to, coalesce(b.entid, k.e) AS owner
            FROM %1$I.idents i
-           JOIN %1$I.current_keyword k
+           LEFT JOIN %1$I.schema b ON b.ident = i.ident AND b.entid < 100
+           LEFT JOIN %1$I.current_keyword k
              ON k.store_id = $1 AND k.a = 10 AND k.v = substr(i.ident, 2)
-          WHERE k.e <> i.entid
+          WHERE coalesce(b.entid, k.e) <> i.entid
           ORDER BY i.ident', s) USING sid
     LOOP
         ident := rec.ident;
@@ -721,12 +728,14 @@ DECLARE
     old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
     PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
-    -- 10 is :db/ident; its values are stored without the leading ':'.
+    -- 10 is :db/ident; its values are stored without the leading ':'. A
+    -- bootstrap ident's entity is its schema row's (entid < 100).
     SELECT pg_catalog.count(*) INTO n
       FROM mentat.idents i
-      JOIN mentat.current_keyword k
+      LEFT JOIN mentat.schema b ON b.ident = i.ident AND b.entid < 100
+      LEFT JOIN mentat.current_keyword k
         ON k.store_id = 0 AND k.a = 10 AND k.v = pg_catalog.substr(i.ident, 2)
-     WHERE k.e <> i.entid;
+     WHERE coalesce(b.entid, k.e) <> i.entid;
     IF n > 0 THEN
         RAISE WARNING 'pg_mentat upgrade: the default store has % ident(s) that 1.18.0 or '
                       'earlier moved to an empty entity (issue #415). See SELECT * FROM '

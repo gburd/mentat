@@ -426,8 +426,10 @@ upgrade WARNs if the default store has such idents; check every store:
 SELECT * FROM mentat.moved_idents('default');   -- no rows == healthy
 ```
 
-Each row is one ident: `owner` is the entity with its `:db/ident` datom,
-`moved_to` the entity the `idents` row names, `n_datoms` / `n_refs` what
+Each row is one ident: `owner` is the entity with its `:db/ident` datom
+(for a bootstrap ident such as `:db/doc`, its fixed entid: re-asserting
+`{:db/ident :db/doc :db/doc "..."}` moved it too), `moved_to` the entity
+the `idents` row names, `n_datoms` / `n_refs` what
 was written to `moved_to` since, and `blocker` why the repair can't merge
 the two (NULL if it can).
 

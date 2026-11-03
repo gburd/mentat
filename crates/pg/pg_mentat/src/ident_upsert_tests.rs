@@ -576,6 +576,7 @@ mod tests {
         let s = "default";
         tx(s, "[{:db/ident :color/red}]");
         break_like_118(s, ":color/red");
+        break_bootstrap_like_118(s);
         let start = upgrade.find("DO $movedidents$").unwrap();
         let end = upgrade.rfind("$movedidents$;").unwrap() + "$movedidents$".len();
         // The block's WARNING, raised as an error so the test can read it.
@@ -587,8 +588,8 @@ mod tests {
         ))
         .unwrap()
         .unwrap_or_default();
-        assert!(err.contains("the default store has 1 ident(s)"), "{err}");
-        assert_eq!(moved_idents(s).len(), 1);
+        assert!(err.contains("the default store has 2 ident(s)"), "{err}");
+        assert_eq!(moved_idents(s).len(), 2);
     }
 
     /// `[?e <attr> ?v ?tx ?added]` over the whole history, sorted.
@@ -993,6 +994,70 @@ mod tests {
     fn ident_repair_notes_named_store() {
         setup("id415n");
         repair_notes("id415n");
+    }
+
+    /// A store as 1.18.0 left it after `[{:db/ident :db/doc :db/doc "d"}]`.
+    /// :db/doc is a bootstrap ident (schema row 19), and an installed store has
+    /// no :db/ident datoms for those. So the map made a new entity X with
+    /// [X :db/ident :db/doc] and [X :db/doc "d"], and the idents row moved to
+    /// X. The schema row stayed 19.
+    fn break_bootstrap_like_118(s: &str) -> i64 {
+        let sch = schema_of(s);
+        let sid = format!("(SELECT store_id FROM mentat.stores WHERE store_name = '{s}')");
+        // As on an installed store (the tests' bootstrap_schema() writes them).
+        Spi::run(&format!(
+            "DELETE FROM {sch}.datoms_keyword_new WHERE store_id = {sid} AND a = 10 AND e < 100; \
+             DELETE FROM {sch}.current_keyword WHERE store_id = {sid} AND a = 10 AND e < 100"
+        ))
+        .expect("drop the bootstrap ident datoms");
+        let r = tx(s, r#"[{:db/id "x" :db/doc "d"}]"#);
+        let x = r["tempids"]["x"].as_i64().expect("x");
+        let t = last_tx(&r);
+        Spi::run(&format!(
+            "INSERT INTO {sch}.datoms_keyword_new (store_id, e, a, v, tx, added) \
+               VALUES ({sid}, {x}, 10, 'db/doc', {t}, true); \
+             INSERT INTO {sch}.current_keyword (store_id, e, a, v, tx) \
+               VALUES ({sid}, {x}, 10, 'db/doc', {t}); \
+             UPDATE {sch}.idents SET entid = {x} WHERE ident = ':db/doc'; \
+             UPDATE mentat.cache_generation SET gen = gen + 1 WHERE store_name = '{s}'"
+        ))
+        .expect("move :db/doc");
+        x
+    }
+
+    fn repair_moved_bootstrap_ident(s: &str) {
+        let x = break_bootstrap_like_118(s);
+        let found = moved_idents(s);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0]["ident"], ":db/doc");
+        assert_eq!(found[0]["owner"], 19);
+        assert_eq!(found[0]["moved_to"], x);
+        assert_eq!(found[0]["n_datoms"], 2);
+        assert_eq!(found[0]["blocker"], serde_json::Value::Null, "{found:?}");
+        let done = repair(s, false);
+        assert_eq!(done[0]["action"], "repaired", "{done:?}");
+        assert!(moved_idents(s).is_empty());
+        assert_eq!(projection_drift(s), 0);
+        assert_eq!(ident_entid(s, ":db/doc"), Some(19));
+        assert_eq!(ident_entity(s, ":db/doc"), 19);
+        let doc = "[:find ?d . :where [?a :db/ident :db/doc] [?a :db/doc ?d]]";
+        assert_eq!(q(s, doc), "d");
+        // Re-asserting it now upserts into 19.
+        tx(s, r#"[{:db/ident :db/doc :db/doc "again"}]"#);
+        assert_eq!(ident_entid(s, ":db/doc"), Some(19));
+        assert_eq!(q(s, doc), "again");
+    }
+
+    #[pg_test]
+    fn ident_repair_moved_bootstrap_ident() {
+        setup("default");
+        repair_moved_bootstrap_ident("default");
+    }
+
+    #[pg_test]
+    fn ident_repair_moved_bootstrap_ident_named_store() {
+        setup("id415s");
+        repair_moved_bootstrap_ident("id415s");
     }
 
     #[pg_test]
