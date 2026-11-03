@@ -779,19 +779,20 @@ BEGIN
 END
 $movedidents$;
 
--- === pg-views ===
+-- === purge-owner ===
 -- mentat._as_table_owner(rel, stmt, p1, p2, p3): run one statement as the
 -- owner of rel, in a security-restricted operation with a pinned
 -- search_path, as VACUUM and REFRESH MATERIALIZED VIEW run as a table's
 -- owner (#426). Superusers only; the clean-up below uses it. Same shape as
 -- the pgrx-generated install SQL.
-CREATE FUNCTION mentat."_as_table_owner"(
+CREATE OR REPLACE FUNCTION mentat."_as_table_owner"(
     "rel" oid, "stmt" TEXT, "p1" bigint, "p2" bigint[], "p3" bigint[]
 ) RETURNS bigint[]
 LANGUAGE c
 AS 'MODULE_PATHNAME', 'as_table_owner_wrapper';
 REVOKE ALL ON FUNCTION mentat._as_table_owner(oid, text, bigint, bigint[], bigint[]) FROM PUBLIC;
 
+-- === pg-views ===
 -- ---------------------------------------------------------------------------
 -- Entities excised before 1.19.0 (#396). From 1.5.0 to 1.18.0 mentat_excise
 -- deleted only the entities' log rows. Their current_<type> rows, which
