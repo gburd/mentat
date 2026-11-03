@@ -798,7 +798,11 @@ $movedidents$;
 --     the default store, its attr_<n>_* rows;
 --   * text in the store's fulltext table that no assertion in the store's
 --     log holds (the table has no entity column, and the excised entities'
---     log rows are gone).
+--     log rows are gone). That is any such text in the store, not only the
+--     excised entities': a value a :db/noHistory replacement dropped from
+--     the log goes too (mentat.fulltext_search, which reads the table,
+--     stops returning it). A retracted value's assertion stays in the log,
+--     so its text stays.
 -- An installed attribute is left alone (excising one is refused since
 -- 1.19.0). This runs as superuser over tables a store's owner owns, so a
 -- store is skipped, with a WARNING, unless every table it touches is a
