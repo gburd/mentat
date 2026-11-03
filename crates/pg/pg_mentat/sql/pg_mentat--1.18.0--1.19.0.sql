@@ -779,6 +779,19 @@ BEGIN
 END
 $movedidents$;
 
+-- === purge-owner ===
+-- mentat._as_table_owner(rel, stmt, p1, p2, p3): run one statement as the
+-- owner of rel, in a security-restricted operation with a pinned
+-- search_path, as VACUUM and REFRESH MATERIALIZED VIEW run as a table's
+-- owner (#426). Superusers only; the clean-up below uses it. Same shape as
+-- the pgrx-generated install SQL.
+CREATE OR REPLACE FUNCTION mentat."_as_table_owner"(
+    "rel" oid, "stmt" TEXT, "p1" bigint, "p2" bigint[], "p3" bigint[]
+) RETURNS bigint[]
+LANGUAGE c
+AS 'MODULE_PATHNAME', 'as_table_owner_wrapper';
+REVOKE ALL ON FUNCTION mentat._as_table_owner(oid, text, bigint, bigint[], bigint[]) FROM PUBLIC;
+
 -- === pg-views ===
 -- ---------------------------------------------------------------------------
 -- Entities excised before 1.19.0 (#396). From 1.5.0 to 1.18.0 mentat_excise
@@ -804,15 +817,20 @@ $movedidents$;
 --     stops returning it). A retracted value's assertion stays in the log,
 --     so its text stays.
 -- An installed attribute is left alone (excising one is refused since
--- 1.19.0). This runs as superuser over tables a store's owner owns, so a
--- store is skipped, with a WARNING, unless every table it touches is a
+-- 1.19.0). This runs as superuser over tables a store's owner owns, so each
+-- statement runs as the tables' owner, in a security-restricted operation
+-- with a pinned search_path (mentat._as_table_owner, as VACUUM and REFRESH
+-- MATERIALIZED VIEW do; #426): code the owner attached to the tables runs
+-- with the owner's privileges. As a second layer, a store is skipped, with a
+-- WARNING, unless its schema and tables have one owner and every table it touches is a
 -- plain table with built-in column types, neither a partition nor in an
 -- inheritance tree, with no index, CHECK constraint or statistics object
 -- that uses a function, operator or type a non-superuser made (planning a
 -- statement can run it), and the ones it deletes from have no DELETE trigger
 -- (internal ones included) or rule and no foreign key pointing at them; every
 -- statement names its table with ONLY. Nothing here runs code a store's
--- owner (or, on the default store, the installing role) wrote. A store_name that
+-- owner (or, on the default store, the installing role) wrote with more than
+-- that owner's privileges. A store_name that
 -- names no store now (dropped or renamed) is skipped too; one WARNING lists
 -- them.
 -- ---------------------------------------------------------------------------
@@ -829,6 +847,7 @@ DECLARE
     n BIGINT;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
     srr TEXT := pg_catalog.current_setting('session_replication_role');
+    rel OID;
     old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
     PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
@@ -906,6 +925,19 @@ BEGIN
                           AND a.attname IN ('store_id', 'e', 'a', 'v', 'tx', 'added', 'entid', 'text_value')
                           AND NOT (a.attname = 'v' AND tname LIKE 'attr\_%')
                           AND y.typnamespace <> 'pg_catalog'::regnamespace);
+        -- Its statements run as the tables' owner (mentat._as_table_owner, the
+        -- way VACUUM runs as a table's owner): all of them must have one, the
+        -- one that owns the store's schema.
+        IF bad IS NULL THEN
+            SELECT pg_catalog.string_agg(DISTINCT pg_catalog.pg_get_userbyid(o)::TEXT, ', ') INTO bad
+              FROM (SELECT c.relowner AS o FROM pg_catalog.unnest(tabs) AS tname
+                      JOIN pg_class c ON c.relnamespace = st.ns AND c.relname = tname
+                    UNION SELECT n.nspowner FROM pg_namespace n WHERE n.oid = st.ns) AS owners
+            HAVING pg_catalog.count(DISTINCT o) > 1;
+            IF bad IS NOT NULL THEN
+                bad := 'tables and schema owned by more than one role (' || bad || ')';
+            END IF;
+        END IF;
         IF bad IS NOT NULL THEN
             RAISE WARNING 'pg_mentat upgrade: entities excised from store "%" before 1.19.0 were not looked '
                           'at: % in schema % (missing, not a plain table, a partition or inheritance, a '
@@ -918,23 +950,27 @@ BEGIN
         END IF;
 
         -- Installed attributes stay.
-        EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
-                                  'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.schema s WHERE s.entid = x)', st.nspname)
-           INTO ids USING st.ids;
+        rel := pg_catalog.format('%I.schema', st.nspname)::pg_catalog.regclass;
+        ids := mentat._as_table_owner(rel,
+                 pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($2) AS x '
+                                   'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.schema s WHERE s.entid = x)', st.nspname),
+                 NULL, st.ids, NULL);
         CONTINUE WHEN ids IS NULL;
         gone := ids;
         hit := '{}';
         FOREACH ty IN ARRAY types LOOP
-            EXECUTE pg_catalog.format(
+            rel := pg_catalog.format('%I.%I', st.nspname, 'current_' || ty)::pg_catalog.regclass;
+            hit := mentat._as_table_owner(rel, pg_catalog.format(
                 'WITH x AS (DELETE FROM ONLY %1$I.%2$I c WHERE c.store_id = $1 AND c.e = ANY($2) '
                 'AND NOT EXISTS (SELECT 1 FROM ONLY %1$I.%3$I d WHERE d.store_id = c.store_id '
                 'AND d.e = c.e AND d.a = c.a AND d.v = c.v AND d.tx = c.tx) RETURNING c.e) '
                 'SELECT $3 || pg_catalog.array_agg(DISTINCT x.e) FROM x',
-                st.nspname, 'current_' || ty, 'datoms_' || ty || '_new') INTO hit USING st.store_id, ids, hit;
-            EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
-                                      'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.%I d WHERE d.store_id = $2 AND d.e = x)',
-                                      st.nspname, 'datoms_' || ty || '_new')
-               INTO gone USING gone, st.store_id;
+                st.nspname, 'current_' || ty, 'datoms_' || ty || '_new'), st.store_id, ids, hit);
+            rel := pg_catalog.format('%I.%I', st.nspname, 'datoms_' || ty || '_new')::pg_catalog.regclass;
+            gone := mentat._as_table_owner(rel, pg_catalog.format(
+                'SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($2) AS x '
+                'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.%I d WHERE d.store_id = $1 AND d.e = x)',
+                st.nspname, 'datoms_' || ty || '_new'), st.store_id, gone, NULL);
         END LOOP;
         -- An excised entity with log rows now was given values after the
         -- excision. On 1.18, asserting one of them with the value it still
@@ -952,11 +988,17 @@ BEGIN
         IF gone IS NOT NULL THEN
             FOREACH ty IN ARRAY tabs LOOP
                 IF ty LIKE 'attr\_%' THEN
-                    EXECUTE pg_catalog.format('DELETE FROM ONLY %I.%I WHERE e = ANY($1)', st.nspname, ty) USING gone;
+                    rel := pg_catalog.format('%I.%I', st.nspname, ty)::pg_catalog.regclass;
+                    PERFORM mentat._as_table_owner(rel, pg_catalog.format(
+                        'WITH x AS (DELETE FROM ONLY %I.%I WHERE e = ANY($2) RETURNING 1) '
+                        'SELECT NULL::BIGINT[] FROM (SELECT pg_catalog.count(*) FROM x) AS c', st.nspname, ty),
+                        NULL, gone, NULL);
                 END IF;
             END LOOP;
-            EXECUTE pg_catalog.format('DELETE FROM ONLY %I.idents WHERE entid = ANY($1)', st.nspname) USING gone;
-            GET DIAGNOSTICS n = ROW_COUNT;
+            rel := pg_catalog.format('%I.idents', st.nspname)::pg_catalog.regclass;
+            n := pg_catalog.cardinality(mentat._as_table_owner(rel, pg_catalog.format(
+                     'WITH x AS (DELETE FROM ONLY %I.idents WHERE entid = ANY($2) RETURNING entid) '
+                     'SELECT pg_catalog.array_agg(entid) FROM x', st.nspname), NULL, gone, NULL));
             IF n > 0 THEN
                 -- Other sessions reload the store's idents. In replica mode: the
                 -- installing role holds TRIGGER on this table.
@@ -965,9 +1007,12 @@ BEGIN
                 PERFORM pg_catalog.set_config('session_replication_role', srr, true);
             END IF;
         END IF;
-        EXECUTE pg_catalog.format('DELETE FROM ONLY %1$I.fulltext f WHERE NOT EXISTS (SELECT 1 FROM ONLY %1$I.datoms_text_new d '
-                                  'WHERE d.store_id = $1 AND d.v = f.text_value AND d.added)', st.nspname)
-           USING st.store_id;
+        rel := pg_catalog.format('%I.fulltext', st.nspname)::pg_catalog.regclass;
+        PERFORM mentat._as_table_owner(rel, pg_catalog.format(
+            'WITH x AS (DELETE FROM ONLY %1$I.fulltext f WHERE NOT EXISTS (SELECT 1 FROM ONLY %1$I.datoms_text_new d '
+            'WHERE d.store_id = $1 AND d.v = f.text_value AND d.added) RETURNING 1) '
+            'SELECT NULL::BIGINT[] FROM (SELECT pg_catalog.count(*) FROM x) AS c', st.nspname),
+            st.store_id, NULL, NULL);
     END LOOP;
     SELECT pg_catalog.string_agg(DISTINCT pg_catalog.quote_literal(l.store_name), ', ') INTO bad
       FROM mentat.excision_log l

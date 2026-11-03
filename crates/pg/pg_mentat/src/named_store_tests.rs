@@ -3631,6 +3631,125 @@ mod tests {
         (id("e"), id("g"))
     }
 
+    // mentat._as_table_owner runs a statement as the table's owner, in a
+    // security-restricted operation, as VACUUM does (#426). Called directly
+    // here, without the upgrade's skip list in front: a DELETE trigger the
+    // owner put on current_text runs as the owner, cannot SET ROLE or create
+    // a temp table, and the caller is the superuser again afterwards, after
+    // an error too. A non-superuser can't call it.
+    #[pg_test]
+    fn as_table_owner_runs_the_owners_code_as_the_owner() {
+        setup();
+        let (e, _) = excised_store("ex_ao");
+        Spi::run(
+            "CREATE ROLE ex_ao_owner NOLOGIN; \
+             CREATE TABLE public.ex_ao_seen (who TEXT, sudo TEXT, tmp TEXT); \
+             GRANT INSERT ON public.ex_ao_seen TO ex_ao_owner; \
+             CREATE FUNCTION public.ex_ao_trg() RETURNS trigger LANGUAGE plpgsql AS $$ \
+               DECLARE s TEXT := ''; t TEXT := ''; BEGIN \
+                 BEGIN SET ROLE NONE; EXCEPTION WHEN OTHERS THEN s := SQLSTATE; END; \
+                 BEGIN CREATE TEMP TABLE ex_ao_tmp (x INT); EXCEPTION WHEN OTHERS THEN t := SQLSTATE; END; \
+                 INSERT INTO public.ex_ao_seen VALUES (current_user, s, t); RETURN OLD; END $$; \
+             ALTER FUNCTION public.ex_ao_trg() OWNER TO ex_ao_owner; \
+             CREATE TRIGGER ex_ao_t BEFORE DELETE ON mentat_ex_ao.current_text \
+               FOR EACH ROW EXECUTE FUNCTION public.ex_ao_trg()",
+        )
+        .expect("owner trigger");
+        Spi::run(
+            "DO $o$ DECLARE r RECORD; BEGIN \
+               FOR r IN SELECT c.relname FROM pg_class c \
+                         WHERE c.relnamespace = 'mentat_ex_ao'::regnamespace AND c.relkind IN ('r', 'v', 'S') LOOP \
+                 EXECUTE pg_catalog.format('ALTER TABLE mentat_ex_ao.%I OWNER TO ex_ao_owner', r.relname); \
+               END LOOP; \
+               ALTER SCHEMA mentat_ex_ao OWNER TO ex_ao_owner; END $o$",
+        )
+        .expect("owner");
+        let me = text("SELECT current_user::text");
+        let path = text("SELECT current_setting('search_path')");
+        let deleted = Spi::get_one::<Vec<i64>>(&format!(
+            "SELECT mentat._as_table_owner('mentat_ex_ao.current_text'::regclass, \
+               'WITH x AS (DELETE FROM ONLY mentat_ex_ao.current_text WHERE e = ANY($2) RETURNING e) \
+                SELECT pg_catalog.array_agg(e) FROM x', NULL, ARRAY[{e}]::bigint[], NULL)"
+        ))
+        .expect("as owner")
+        .unwrap_or_default();
+        assert_eq!(deleted, vec![e], "the statement ran");
+        let seen = text("SELECT who || ' ' || sudo || ' ' || tmp FROM public.ex_ao_seen");
+        // 42501: insufficient_privilege, PostgreSQL's error for both inside a
+        // security-restricted operation.
+        assert_eq!(
+            seen, "ex_ao_owner 42501 42501",
+            "the trigger ran as the owner, restricted"
+        );
+        assert_eq!(text("SELECT current_user::text"), me, "the caller again");
+
+        // An error inside: the subtransaction abort restores the caller.
+        let err = text(
+            "SELECT pg_temp.capture($q$SELECT mentat._as_table_owner('mentat_ex_ao.current_text'::regclass, \
+               'SELECT ARRAY[1/0]::bigint[]', NULL, NULL, NULL)$q$)",
+        );
+        assert!(err.contains("division by zero"), "{err}");
+        assert_eq!(
+            text("SELECT current_user::text"),
+            me,
+            "the caller again after an error"
+        );
+        assert_eq!(
+            text("SELECT current_setting('search_path')"),
+            path,
+            "search_path is the caller's again"
+        );
+
+        // Superusers only, and no EXECUTE for PUBLIC.
+        Spi::run("CREATE ROLE ex_ao_user NOLOGIN").expect("role");
+        assert!(!Spi::get_one::<bool>(
+            "SELECT has_function_privilege('ex_ao_user', \
+               'mentat._as_table_owner(oid, text, bigint, bigint[], bigint[])', 'EXECUTE')"
+        )
+        .unwrap()
+        .unwrap());
+        Spi::run("GRANT EXECUTE ON FUNCTION mentat._as_table_owner(oid, text, bigint, bigint[], bigint[]) TO ex_ao_user; \
+                  GRANT USAGE ON SCHEMA mentat TO ex_ao_user")
+            .expect("grant");
+        let rel = text("SELECT 'mentat_ex_ao.current_text'::regclass::oid::text");
+        Spi::run("SET ROLE ex_ao_user").expect("set role");
+        let refused = text(&format!(
+            "SELECT pg_temp.capture($q$SELECT mentat._as_table_owner({rel}::oid, \
+               'SELECT NULL::bigint[]', NULL, NULL, NULL)$q$)"
+        ));
+        Spi::run("RESET ROLE").expect("reset role");
+        assert!(refused.contains("only a superuser"), "{refused}");
+    }
+
+    // The upgrade's clean-up runs a store's statements as its tables' owner:
+    // a store whose tables and schema have more than one owner is skipped
+    // with a WARNING.
+    #[pg_test]
+    fn upgrade_skips_an_excised_store_whose_tables_have_two_owners() {
+        setup();
+        let (e, _) = excised_store("ex_2o");
+        Spi::run(
+            "CREATE ROLE ex_2o_owner NOLOGIN; \
+             ALTER TABLE mentat_ex_2o.current_text OWNER TO ex_2o_owner",
+        )
+        .expect("owner");
+        let block = upgrade_119_block("excised");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert!(
+            msg.contains("entities excised from store \"ex_2o\" before 1.19.0 were not looked at: tables and schema owned by more than one role"),
+            "{msg}"
+        );
+        let left = Spi::get_one::<i64>(&format!(
+            "SELECT count(*) FROM mentat_ex_2o.current_text WHERE e = {e}"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(left, 1, "skipped: nothing deleted");
+    }
+
     // The upgrade's excision clean-up deletes, as superuser, from tables a
     // store's owner owns. A store whose current_text its owner attached as a
     // partition of a table with a row DELETE trigger: on PostgreSQL 13 and 14

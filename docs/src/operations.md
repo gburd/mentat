@@ -689,3 +689,18 @@ assert-enabled build: a pg_fts index over 100,000 values took 26 s to
 rebuild, the trigram move on 383,000 values 0.9 s. On a big store, plan a
 maintenance window, or set `lock_timeout` in the session: the upgrade then
 fails and changes nothing instead of waiting.
+
+The upgrade also deletes what `mentat_excise` left in the current-state
+tables on 1.5.0 to 1.18.0, for the entities `mentat.excision_log` lists.
+It runs as the role that runs `ALTER EXTENSION`, usually a superuser, in
+tables a store's owner owns, so each of its statements runs as the tables'
+owner, in a security-restricted operation with a pinned search_path, the
+way VACUUM and `REFRESH MATERIALIZED VIEW` run as a table's owner: a
+trigger or index function the owner put on those tables runs with the
+owner's privileges. As a second check, a store is skipped, with a WARNING,
+if its schema and tables have more than one owner, or if any of its tables
+is a partition or in an inheritance tree, has a DELETE trigger, a rule, a
+foreign key pointing at it, a column type of its own, or an index, CHECK
+constraint or statistics object that uses a non-superuser's function,
+operator or type. For a skipped store, run `mentat_excise` again on the
+ids `mentat.excision_log` lists after the upgrade.

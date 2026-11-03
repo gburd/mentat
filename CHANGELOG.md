@@ -317,7 +317,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
   DELETE trigger the owner attached through a partitioned parent, and on
   any version planning its statements could have run the owner's function
   from an index expression or predicate, a statistics expression, or a
-  CHECK constraint. Such stores are skipped.
+  CHECK constraint. Each of its statements now runs as the store tables'
+  owner, in a security-restricted operation with a pinned search_path, as
+  VACUUM and `REFRESH MATERIALIZED VIEW` run as a table's owner
+  (`mentat._as_table_owner`, superusers only), so code the owner attached
+  to those tables runs with the owner's privileges (#426). Stores with such
+  code, or whose schema and tables have more than one owner, are also
+  skipped with a WARNING.
 - **pg_mentat: `q()` / `edn_q()` reused a query plan made for another role**
   (#402). In one session, after a privileged role had run a query, a role
   with table grants but no `USAGE` on `mentat_<store>` could read the store.
