@@ -3785,6 +3785,67 @@ mod tests {
         );
     }
 
+    // On 1.18, after mentat_excise left an entity's current rows, asserting
+    // a value the entity still showed wrote no log row (the transactor took
+    // it as already there). The upgrade can't tell that value from a stale
+    // one (its tx is from before the excision) and deletes it with them; it
+    // names the entities that were given values again after the excision,
+    // so their owners can check them. An entity with no new value is not
+    // named.
+    #[pg_test]
+    fn upgrade_names_excised_entities_given_values_again() {
+        setup();
+        make_1_18_store("ex_again", false);
+        tx(
+            "ex_again",
+            "[{:db/ident :ex/name :db/valueType :db.type/string :db/cardinality :db.cardinality/one} \
+              {:db/ident :ex/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        );
+        let r = tx(
+            "ex_again",
+            "[{:db/id \"e\" :ex/name \"eve\" :ex/age 5} {:db/id \"h\" :ex/name \"hal\" :ex/age 7}]",
+        );
+        let (e, h) = (
+            r["tempids"]["e"].as_i64().unwrap(),
+            r["tempids"]["h"].as_i64().unwrap(),
+        );
+        excise_as_1_18("ex_again", &[e, h]);
+        // h's age asserted unchanged: no log row. Its name changed: logged.
+        let unchanged = tx("ex_again", &format!("[[:db/add {h} :ex/age 7]]"));
+        assert_eq!(
+            unchanged["tx-data"].as_array().unwrap().len(),
+            1,
+            "only the txInstant"
+        );
+        tx("ex_again", &format!("[[:db/add {h} :ex/name \"hal 2\"]]"));
+        let block = upgrade_119_block("excised");
+        let msg = text(&format!(
+            "SELECT pg_temp.capture($cap${}$cap$)",
+            block.replace("RAISE WARNING", "RAISE EXCEPTION")
+        ));
+        assert_eq!(
+            msg,
+            format!(
+                "pg_mentat upgrade: entities {{{h}}} of store \"ex_again\" were given values again after \
+                 mentat_excise excised them, and values of theirs that no log row backs were deleted. On \
+                 1.18, a value asserted unchanged (one the entity still showed) wrote no log row, so it \
+                 is among them: check these entities and assert any value they should have again."
+            )
+        );
+        Spi::run(&block).expect("excised");
+        assert_eq!(
+            text(&format!(
+                "SELECT string_agg(e || ' ' || v, ',' ORDER BY e) FROM mentat_ex_again.current_text"
+            )),
+            format!("{h} hal 2")
+        );
+        assert_eq!(
+            text("SELECT count(*)::TEXT FROM mentat_ex_again.current_long"),
+            "0",
+            "h's unchanged age went with the stale rows"
+        );
+    }
+
     fn viewdef(view: &str) -> String {
         text(&format!("SELECT pg_get_viewdef('{view}'::regclass)"))
     }

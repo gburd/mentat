@@ -790,8 +790,10 @@ $movedidents$;
 -- first. For each store mentat.excision_log names, it deletes what
 -- mentat_excise deletes now:
 --   * the excised entities' current_<type> rows that no log row backs (one
---     with the same e, a and tx): a value asserted for the same entity id
---     after the excision has its log row and stays;
+--     with the same e, a, v and tx): a value asserted for the same entity id
+--     after the excision has its log row and stays, unless it was asserted
+--     unchanged, which on 1.18 wrote no log row; the entities that may have
+--     lost such a value are named in a WARNING;
 --   * for an excised entity with no log row left, its idents rows and, in
 --     the default store, its attr_<n>_* rows;
 --   * text in the store's fulltext table that no assertion in the store's
@@ -818,6 +820,7 @@ DECLARE
     bad TEXT;
     ids BIGINT[];
     gone BIGINT[];
+    hit BIGINT[];
     done TEXT[] := '{}';
     n BIGINT;
     types TEXT[] := ARRAY['ref', 'boolean', 'long', 'double', 'instant', 'text', 'keyword', 'uuid', 'bytes'];
@@ -916,17 +919,32 @@ BEGIN
            INTO ids USING st.ids;
         CONTINUE WHEN ids IS NULL;
         gone := ids;
+        hit := '{}';
         FOREACH ty IN ARRAY types LOOP
             EXECUTE pg_catalog.format(
-                'DELETE FROM ONLY %1$I.%2$I c WHERE c.store_id = $1 AND c.e = ANY($2) '
+                'WITH x AS (DELETE FROM ONLY %1$I.%2$I c WHERE c.store_id = $1 AND c.e = ANY($2) '
                 'AND NOT EXISTS (SELECT 1 FROM ONLY %1$I.%3$I d WHERE d.store_id = c.store_id '
-                'AND d.e = c.e AND d.a = c.a AND d.v = c.v AND d.tx = c.tx)',
-                st.nspname, 'current_' || ty, 'datoms_' || ty || '_new') USING st.store_id, ids;
+                'AND d.e = c.e AND d.a = c.a AND d.v = c.v AND d.tx = c.tx) RETURNING c.e) '
+                'SELECT $3 || pg_catalog.array_agg(DISTINCT x.e) FROM x',
+                st.nspname, 'current_' || ty, 'datoms_' || ty || '_new') INTO hit USING st.store_id, ids, hit;
             EXECUTE pg_catalog.format('SELECT pg_catalog.array_agg(x) FROM pg_catalog.unnest($1) AS x '
                                       'WHERE NOT EXISTS (SELECT 1 FROM ONLY %I.%I d WHERE d.store_id = $2 AND d.e = x)',
                                       st.nspname, 'datoms_' || ty || '_new')
                INTO gone USING gone, st.store_id;
         END LOOP;
+        -- An excised entity with log rows now was given values after the
+        -- excision. On 1.18, asserting one of them with the value it still
+        -- showed wrote no log row (the transactor saw it as already there),
+        -- so such a value was just deleted with the stale ones.
+        hit := ARRAY(SELECT DISTINCT x FROM pg_catalog.unnest(hit) AS x
+                      WHERE x IS NOT NULL AND x <> ALL (COALESCE(gone, '{}')) ORDER BY x);
+        IF hit <> '{}' THEN
+            RAISE WARNING 'pg_mentat upgrade: entities % of store "%" were given values again after mentat_excise '
+                          'excised them, and values of theirs that no log row backs were deleted. On 1.18, a '
+                          'value asserted unchanged (one the entity still showed) wrote no log row, so it is '
+                          'among them: check these entities and assert any value they should have again.',
+                          hit, st.store_name;
+        END IF;
         IF gone IS NOT NULL THEN
             FOREACH ty IN ARRAY tabs LOOP
                 IF ty LIKE 'attr\_%' THEN
