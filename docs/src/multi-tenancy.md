@@ -263,6 +263,21 @@ overhead. Two steps arm it:
    `ALTER EXTENSION pg_mentat UPDATE` arms the projections wherever the log
    tables are armed.
 
+   A tenant role granted the nine log tables but not the projections, as
+   the example below did before 1.19.0, gets `permission denied for table
+   current_<type>` from `mentat.current()` and the `datom_*` helpers after
+   the upgrade (`edn_q` has read the projections since 1.18.0, and a
+   transaction writes them). Grant it the projections too, with the same
+   privileges as the log tables:
+
+   ```sql
+   GRANT SELECT, INSERT, UPDATE, DELETE
+      ON mentat.current_ref, mentat.current_long, mentat.current_text,
+         mentat.current_double, mentat.current_instant,
+         mentat.current_keyword, mentat.current_uuid,
+         mentat.current_bytes, mentat.current_boolean
+      TO tenant_alice, tenant_bob;
+   ```
 
 To disarm:
 
