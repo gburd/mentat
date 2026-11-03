@@ -172,40 +172,30 @@ fn all_datoms_union_sql(schema: &str, store_id_expr: &str, live: bool) -> String
 /// projection). first_tx / first_ts are when the entity was first asserted
 /// (the earliest assertion in the log, as on 1.18), so replacing its values
 /// doesn't move them; last_tx / last_ts and attribute_count are over its
-/// current datoms.
+/// current datoms. The log is read in one grouped pass, joined on e: a
+/// correlated MIN per log table and entity made a whole-store read ~10x
+/// slower than 1.18's.
 ///
 /// Columns: entity_id, first_tx, last_tx, first_ts, last_ts, attribute_count
 fn entities_view_sql(schema: &str) -> String {
     let sid = store_id_subquery(schema);
     let union = all_datoms_union_sql(schema, &sid, true);
-    // One index probe (EAVT, WHERE added) per log table.
-    let first = [
+    let log = [
         "ref", "boolean", "long", "double", "instant", "text", "keyword", "uuid", "bytes",
     ]
     .iter()
     .map(|ty| {
-        format!(
-            "(SELECT MIN(l.tx) FROM {schema}.datoms_{ty}_new l \
-             WHERE l.store_id = {sid} AND l.e = c.entity_id AND l.added)"
-        )
+        format!("SELECT e, tx FROM {schema}.datoms_{ty}_new WHERE store_id = {sid} AND added")
     })
     .collect::<Vec<_>>()
-    .join(",\n        ");
+    .join("\nUNION ALL\n");
     format!(
         r"CREATE OR REPLACE VIEW {schema}.entities AS
 SELECT
-    x.entity_id,
-    x.first_tx,
-    x.last_tx,
-    (SELECT t.tx_instant FROM {schema}.transactions t WHERE t.tx = x.first_tx) AS first_ts,
-    x.last_ts,
-    x.attribute_count
-FROM (
-SELECT
     c.entity_id,
-    COALESCE(LEAST(
-        {first}), c.min_tx) AS first_tx,
+    COALESCE(f.first_tx, c.min_tx) AS first_tx,
     c.last_tx,
+    COALESCE(f.first_ts, c.min_ts) AS first_ts,
     c.last_ts,
     c.attribute_count
 FROM (
@@ -213,6 +203,7 @@ SELECT
     d.e AS entity_id,
     MIN(d.tx) AS min_tx,
     MAX(d.tx) AS last_tx,
+    MIN(t.tx_instant) AS min_ts,
     MAX(t.tx_instant) AS last_ts,
     COUNT(DISTINCT d.a) AS attribute_count
 FROM (
@@ -221,8 +212,15 @@ FROM (
 JOIN {schema}.transactions t ON t.tx = d.tx
 GROUP BY d.e
 ) c
-) x
-ORDER BY x.entity_id",
+LEFT JOIN (
+SELECT l.e, MIN(l.tx) AS first_tx, MIN(t.tx_instant) AS first_ts
+FROM (
+{log}
+) l
+JOIN {schema}.transactions t ON t.tx = l.tx
+GROUP BY l.e
+) f ON f.e = c.entity_id
+ORDER BY c.entity_id",
     )
 }
 
@@ -1224,9 +1222,12 @@ mod tests {
             if history.contains(&name) {
                 assert!(sql.contains("mentat_s.datoms_"), "{name}: {sql}");
             } else if name == "entities" {
-                // Its rows are current; only first_tx looks in the log.
-                let rows = &sql[sql.find("FROM (\nSELECT\n    d.e").unwrap()..];
+                // Its rows are current; only first_tx / first_ts look in
+                // the log, in the LEFT JOIN.
+                let start = sql.find("FROM (\nSELECT\n    d.e").unwrap();
+                let rows = &sql[start..sql.find("LEFT JOIN").unwrap()];
                 assert!(!rows.contains("datoms_"), "{rows}");
+                assert!(sql[start..].contains("datoms_text_new"), "{sql}");
             } else {
                 assert!(!sql.contains("datoms_"), "{name} reads the log: {sql}");
                 assert!(!sql.contains("added"), "{name}: {sql}");
