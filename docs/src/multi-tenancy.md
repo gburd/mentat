@@ -263,6 +263,7 @@ overhead. Two steps arm it:
    `ALTER EXTENSION pg_mentat UPDATE` arms the projections wherever the log
    tables are armed.
 
+
 To disarm:
 
 ```sql
@@ -323,7 +324,11 @@ What this does **not** protect against:
   The owner bypasses RLS: if the application connection role is the owner,
   RLS is silently inert. Run application connections as separate roles with
   explicit grants, or call `ALTER TABLE mentat.datoms_<type>_new FORCE ROW
-  LEVEL SECURITY` to subject the owner as well.
+  LEVEL SECURITY` to subject the owner as well. `enable_multi_tenant_rls`
+  and `ALTER EXTENSION pg_mentat UPDATE` (since 1.19.0) give each
+  `mentat.current_<type>` its log table's FORCE setting; after changing it
+  on a log table, call `enable_multi_tenant_rls(true)` again, or run the
+  same `ALTER TABLE` on `mentat.current_<type>`.
 * **`SECURITY DEFINER` functions** owned by a privileged role.
   `SECURITY DEFINER` functions execute as their owner, so an unwary
   function created by the superuser is a hole in the wall.

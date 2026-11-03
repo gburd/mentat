@@ -1766,7 +1766,8 @@ $views$;
 -- enable_multi_tenant_rls(true) armed, a tenant read every store's current
 -- values. They get the policy the log tables have (sql/24_current_projection.sql),
 -- enable_multi_tenant_rls toggles all eighteen tables (sql/10_narrow_storage.sql),
--- and where the log has RLS enabled now, so does the projection.
+-- and where the log has RLS enabled now, or forced (FORCE ROW LEVEL
+-- SECURITY), so does the projection.
 --
 -- CREATE POLICY and ALTER TABLE ... ROW LEVEL SECURITY take an ACCESS
 -- EXCLUSIVE lock on the table, held until the upgrade commits: every read
@@ -1779,6 +1780,7 @@ RETURNS INT AS $$
 DECLARE
     t TEXT;
     n INT := 0;
+    forced BOOLEAN;
     narrow_tables TEXT[] := ARRAY[
         'datoms_ref_new', 'datoms_long_new', 'datoms_text_new',
         'datoms_double_new', 'datoms_instant_new', 'datoms_keyword_new',
@@ -1794,6 +1796,17 @@ BEGIN
         ELSE
             EXECUTE format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', t);
         END IF;
+        -- A projection is forced (FORCE ROW LEVEL SECURITY: the table's
+        -- owner is filtered too) when its log table is.
+        IF t LIKE 'current\_%' THEN
+            forced := (SELECT c.relforcerowsecurity FROM pg_catalog.pg_class c
+                        WHERE c.oid = format('mentat.%I', 'datoms_' || substr(t, 9) || '_new')::regclass);
+            IF forced IS DISTINCT FROM (SELECT c.relforcerowsecurity FROM pg_catalog.pg_class c
+                                         WHERE c.oid = format('mentat.%I', t)::regclass) THEN
+                EXECUTE format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', t,
+                               CASE WHEN forced THEN 'FORCE' ELSE 'NO FORCE' END);
+            END IF;
+        END IF;
         n := n + 1;
     END LOOP;
     RETURN n;
@@ -1802,7 +1815,8 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION mentat.enable_multi_tenant_rls(boolean) IS
   'Toggle Row-Level Security on the nine narrow datom tables and the nine '
-  'current_<type> projection tables. '
+  'current_<type> projection tables, and give each projection its log table''s '
+  'FORCE ROW LEVEL SECURITY setting. '
   'Pass true to enforce per-store isolation (queries are filtered by '
   'store_id = mentat.current_store_id()); pass false to disable enforcement '
   'and revert to single-store behaviour. Returns the number of tables '
@@ -1814,6 +1828,7 @@ DECLARE
     ty TEXT;
     cur REGCLASS;
     armed BOOLEAN;
+    forced BOOLEAN;
     old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
     PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
@@ -1835,11 +1850,15 @@ BEGIN
                 'WITH CHECK (store_id = mentat.current_store_id())',
                 'store_isolation_current_' || ty, 'current_' || ty);
         END IF;
-        armed := (SELECT c.relrowsecurity FROM pg_class c
-                   WHERE c.oid = pg_catalog.format('mentat.%I', 'datoms_' || ty || '_new')::regclass);
+        SELECT c.relrowsecurity, c.relforcerowsecurity INTO armed, forced FROM pg_class c
+         WHERE c.oid = pg_catalog.format('mentat.%I', 'datoms_' || ty || '_new')::regclass;
         IF armed IS DISTINCT FROM (SELECT c.relrowsecurity FROM pg_class c WHERE c.oid = cur) THEN
             EXECUTE pg_catalog.format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', 'current_' || ty,
                                       CASE WHEN armed THEN 'ENABLE' ELSE 'DISABLE' END);
+        END IF;
+        IF forced IS DISTINCT FROM (SELECT c.relforcerowsecurity FROM pg_class c WHERE c.oid = cur) THEN
+            EXECUTE pg_catalog.format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', 'current_' || ty,
+                                      CASE WHEN forced THEN 'FORCE' ELSE 'NO FORCE' END);
         END IF;
     END LOOP;
     PERFORM pg_catalog.set_config('search_path', old_path, true);

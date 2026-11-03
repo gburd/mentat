@@ -473,6 +473,7 @@ RETURNS INT AS $$
 DECLARE
     t TEXT;
     n INT := 0;
+    forced BOOLEAN;
     narrow_tables TEXT[] := ARRAY[
         'datoms_ref_new', 'datoms_long_new', 'datoms_text_new',
         'datoms_double_new', 'datoms_instant_new', 'datoms_keyword_new',
@@ -488,6 +489,17 @@ BEGIN
         ELSE
             EXECUTE format('ALTER TABLE mentat.%I DISABLE ROW LEVEL SECURITY', t);
         END IF;
+        -- A projection is forced (FORCE ROW LEVEL SECURITY: the table's
+        -- owner is filtered too) when its log table is.
+        IF t LIKE 'current\_%' THEN
+            forced := (SELECT c.relforcerowsecurity FROM pg_catalog.pg_class c
+                        WHERE c.oid = format('mentat.%I', 'datoms_' || substr(t, 9) || '_new')::regclass);
+            IF forced IS DISTINCT FROM (SELECT c.relforcerowsecurity FROM pg_catalog.pg_class c
+                                         WHERE c.oid = format('mentat.%I', t)::regclass) THEN
+                EXECUTE format('ALTER TABLE mentat.%I %s ROW LEVEL SECURITY', t,
+                               CASE WHEN forced THEN 'FORCE' ELSE 'NO FORCE' END);
+            END IF;
+        END IF;
         n := n + 1;
     END LOOP;
     RETURN n;
@@ -496,7 +508,8 @@ $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION mentat.enable_multi_tenant_rls(boolean) IS
   'Toggle Row-Level Security on the nine narrow datom tables and the nine '
-  'current_<type> projection tables. '
+  'current_<type> projection tables, and give each projection its log table''s '
+  'FORCE ROW LEVEL SECURITY setting. '
   'Pass true to enforce per-store isolation (queries are filtered by '
   'store_id = mentat.current_store_id()); pass false to disable enforcement '
   'and revert to single-store behaviour. Returns the number of tables '

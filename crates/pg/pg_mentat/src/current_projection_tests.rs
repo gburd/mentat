@@ -753,7 +753,34 @@ mod tests {
                 seen.push(format!("{round} {tenant}: {}", row.join(" ")));
             }
         }
+        // FORCE ROW LEVEL SECURITY (the owner filtered too) on a log table:
+        // its projection gets it as well, from enable_multi_tenant_rls and
+        // from the upgrade's block.
+        let each = |stmt: &str| {
+            on(
+                "pr_db",
+                &format!(
+                    "DO $d$ DECLARE t TEXT; BEGIN FOREACH t IN ARRAY ARRAY['ref', 'long', 'text', 'double', \
+                       'instant', 'keyword', 'uuid', 'bytes', 'boolean'] LOOP \
+                       EXECUTE format('{stmt}', t); END LOOP; END $d$"
+                ),
+            )
+        };
+        let forced = || {
+            get(
+                "SELECT count(*) FROM pg_class WHERE relnamespace = 'mentat'::regnamespace \
+                   AND relname LIKE 'current\\_%' AND relforcerowsecurity",
+            )
+        };
+        each("ALTER TABLE mentat.datoms_%s_new FORCE ROW LEVEL SECURITY");
+        get("mentat.enable_multi_tenant_rls(true)");
+        let mut force = vec![forced()];
+        each("ALTER TABLE mentat.current_%s NO FORCE ROW LEVEL SECURITY");
+        on("pr_db", block);
+        force.push(forced());
+        each("ALTER TABLE mentat.datoms_%s_new NO FORCE ROW LEVEL SECURITY");
         let off = get("mentat.enable_multi_tenant_rls(false)");
+        force.push(forced());
         // The block takes ACCESS EXCLUSIVE locks held to commit, so it comes
         // after the upgrade's index builds, and a table already in the state
         // it wants is left alone: a second run (here, with RLS off on all
@@ -788,6 +815,11 @@ mod tests {
             ]
         );
         assert_eq!(off, "18");
+        assert_eq!(
+            force,
+            vec!["9", "9", "0"],
+            "FORCE mirrored: rls(true), upgrade, rls(false)"
+        );
         assert_eq!(locked, "0", "a second run of $rls$ locks nothing");
     }
 }
