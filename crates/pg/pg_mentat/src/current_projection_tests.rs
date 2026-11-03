@@ -754,6 +754,25 @@ mod tests {
             }
         }
         let off = get("mentat.enable_multi_tenant_rls(false)");
+        // The block takes ACCESS EXCLUSIVE locks held to commit, so it comes
+        // after the upgrade's index builds, and a table already in the state
+        // it wants is left alone: a second run (here, with RLS off on all
+        // eighteen) locks nothing.
+        let after = |tag: &str| upgrade.find(tag).unwrap() < upgrade.find("DO $rls$").unwrap();
+        assert!(
+            after("DO $ftsidx$")
+                && after("DO $views$")
+                && after("CREATE INDEX IF NOT EXISTS idx_current_text_fts"),
+            "$rls$ comes after the index builds"
+        );
+        on("pr_db", "BEGIN");
+        on("pr_db", block);
+        let locked = get(
+            "SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND mode = 'AccessExclusiveLock' \
+               AND relation IN (SELECT oid FROM pg_class WHERE relnamespace = 'mentat'::regnamespace \
+                                   AND relname LIKE 'current\\_%')",
+        );
+        on("pr_db", "COMMIT");
         Spi::run("SELECT dblink_disconnect('pr_db')").expect("close");
         on("pr_admin", "DROP DATABASE mentat_rls_proj");
         on("pr_admin", "DROP ROLE proj_tenant");
@@ -769,5 +788,6 @@ mod tests {
             ]
         );
         assert_eq!(off, "18");
+        assert_eq!(locked, "0", "a second run of $rls$ locks nothing");
     }
 }

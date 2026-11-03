@@ -668,9 +668,23 @@ the locks they take until it commits:
   `current_text` / `current_keyword`: an ACCESS EXCLUSIVE lock on the log
   table and a SHARE lock on the projection.
 
+Two more steps take ACCESS EXCLUSIVE locks, held until the upgrade
+commits:
+
+- Each named store's views (`facts`, `text_values`, ...) are replaced, so
+  a query on one of them waits from the moment its store is done until
+  commit. Its functions (`find_text`, `entity_value`, ...) and its tables
+  are not locked.
+- The last step gives the nine `mentat.current_<type>` tables their
+  Row-Level Security policy. Coming from 1.18 it creates the policies,
+  which locks those tables: from there to commit, which is short, every
+  read and write of the default store waits. A table already in the
+  wanted state is left alone, so running the step again takes no lock.
+
 While it runs, every write of a string or keyword value to an affected
 store waits (on the default store, so does every read of
-`mentat.datoms_text_new`); other writes and reads go on. Measured on an
+`mentat.datoms_text_new`); other writes, and reads of the tables, go on.
+Measured on an
 assert-enabled build: a pg_fts index over 100,000 values took 26 s to
 rebuild, the trigram move on 383,000 values 0.9 s. On a big store, plan a
 maintenance window, or set `lock_timeout` in the session: the upgrade then
