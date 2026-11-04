@@ -605,3 +605,33 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   sebastiaan-dev dispatched the v1.5.6 build (run 41801804989) unasked.
   v1.5.6/ and v2.0.0/ both serve mentat v1.19.0 (C_STRUCT, floor v1.5.6) on
   linux_amd64 and osx_arm64. Nothing open for 1.19.0 on the registry.
+
+## v1.19.1 RELEASED (2026-11-04) — tag v1.19.1 on c9ebe020
+- Fix: the 1.18.0 -> 1.19.0 upgrade script took its locks one at a time
+  and deadlocked with any concurrent t() (user report, #428). New direct
+  pg_mentat--1.18.0--1.19.1.sql = the released 1.18.0--1.19.0 script
+  (unchanged) after a first `upgrade-locks` section that takes every lock up
+  front with NOWAIT, rolls back and retries, and fails with 55P03 after 30 s.
+  pg_mentat--1.19.0--1.19.1.sql is empty. Paths: 1.18.0->1.19.1 one step,
+  1.17.2->1.18.0->1.19.1, 1.19.0->1.19.1. Docs for #429 (tempids "datomic.tx"
+  meaning; 1.19 behaviour changes take effect at library load).
+- Channels: GitHub Release (8 assets, run 41912831861 green), PGXN 1.19.1,
+  crates.io 20 crates at 1.19.1, DuckDB registry PR
+  duckdb/community-extensions#3529 by hand (fork run 41914785054;
+  linux_amd64 artifact C_STRUCT v1.19.1 loads in v1.5.6 + 2.0 CLIs).
+  After merge: the v1.5.6 dispatch (duckdb_version v1.5.6 +
+  ci_tools_version v2.0-cyanoptera); verify footers.
+- Release gate on c9ebe020 (woof account 176550300114, c7i.8xlarge
+  us-east-1; scripts ~/.cache/mentat-werk/rel/1191/, results in
+  rel/1191/results/): pgrx +script pg13 2204/0, pg14-19 2218/0; packages
+  pg15-19 GLIBC_2.34 with both new edges; upgrade from released 1.18.0 and
+  1.19.0 tarballs on pg15-19 takes the intended path, data + named stores
+  work, vs fresh only the script-feature functions and refresh_datalog_view
+  whitespace; trusted install OK, hijack f f t f; writer repro
+  (upgrade_with_writers.sh, two writers at 50/s) 5/5 on pg15/18/19, 0
+  deadlocks, 0 writer errors, longest write ~0.2 s; DuckDB build,
+  cross-version PASS, harness 64/0.
+- Gate-box lesson: `cargo pgrx init` in devbox-setup.sh can fail on a TLS
+  EOF fetching postgresql.org versions.rss; setup now retries it.
+- EC2 torn down: i-0427c58e372e0690a, SG, key (woof). woof expires
+  2026-11-10 18:43:17 UTC; its quotas were raised to match chef.
