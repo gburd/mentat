@@ -601,3 +601,7 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   (chef 842964983020, expires 2026-11-05 13:17:18 UTC). No mentat-* resources
   left in us-east-1/us-east-2/us-west-2. Gate logs kept in
   ~/.cache/mentat-werk/rel/119/results/.
+- DuckDB registry (checked 2026-11-04 12:10 UTC): #3522 merged 08:43 UTC;
+  sebastiaan-dev dispatched the v1.5.6 build (run 41801804989) unasked.
+  v1.5.6/ and v2.0.0/ both serve mentat v1.19.0 (C_STRUCT, floor v1.5.6) on
+  linux_amd64 and osx_arm64. Nothing open for 1.19.0 on the registry.
