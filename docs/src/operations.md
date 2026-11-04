@@ -676,10 +676,13 @@ lock they need first, in one go:
 - EXCLUSIVE on `mentat.cache_generation`, `mentat.subscriptions` and
   `mentat.materialized_views`, and SHARE on `mentat.stores` (reads go on).
 
-It never waits for a lock: if a reader or writer is using one of those
-tables, it releases what it took, waits 50-150 ms and tries again, for up
-to 30 s. So while it tries it holds nothing, and neither deadlocks nor
-holds up anyone. If it can't get them in 30 s (a long-running query or an
+It doesn't queue for a lock (it waits at most 1 ms for each view): if a
+reader or writer is using one of those tables, it releases what it took,
+sleeps 50-150 ms and tries again, for up to 30 s. So while it tries it
+holds nothing, and neither deadlocks nor holds up anyone. Measured on
+pg17 with a writer on each of two stores every 20 ms: 10 of 10 updates to
+1.19.0 deadlocked, 10 of 10 to 1.19.1 succeeded on the first try, and the
+longest write took 0.7 s. If it can't get them in 30 s (a long-running query or an
 open transaction on a store table), it fails with SQLSTATE 55P03, `could
 not lock the stores' tables`, and changes nothing: run it again, at a
 quieter moment or once that transaction ends. Don't set `lock_timeout` for
