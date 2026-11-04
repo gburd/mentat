@@ -5,8 +5,8 @@
 -- (#428). ALTER EXTENSION UPDATE takes the shortest path, so a 1.18.0
 -- database comes here in one step and never runs the 1.19.0 script, which
 -- deadlocked with live writers. From the pg-subs section on, this file is
--- pg_mentat--1.18.0--1.19.0.sql as released, byte for byte (the test
--- upgrade_lock_tests::edge_is_119_script checks it). Anything else 1.19.1
+-- pg_mentat--1.18.0--1.19.0.sql as released, byte for byte (checked by
+-- upgrade_path_tests::the_1_19_1_edge_is_the_1_19_0_script). Anything else 1.19.1
 -- changes goes in a section at the end of this file and of
 -- pg_mentat--1.19.0--1.19.1.sql.
 --
@@ -55,8 +55,8 @@ DECLARE
     busy TEXT;
     tries INT := 0;
     types TEXT := '(ref|boolean|long|double|instant|text|keyword|uuid|bytes)';
-    patience INTERVAL := INTERVAL '30 seconds';
-    deadline TIMESTAMPTZ := pg_catalog.clock_timestamp() + patience;
+    patience NUMERIC := 30;  -- seconds
+    deadline TIMESTAMPTZ := pg_catalog.clock_timestamp() + patience * INTERVAL '1 second';
     old_timeout TEXT := pg_catalog.current_setting('lock_timeout');
     old_path TEXT := pg_catalog.current_setting('search_path');
 BEGIN
@@ -105,7 +105,7 @@ BEGIN
             busy := SQLERRM;
         END;
         IF pg_catalog.clock_timestamp() >= deadline THEN
-            RAISE EXCEPTION 'pg_mentat upgrade: could not lock the stores'' tables in % (% tries): '
+            RAISE EXCEPTION 'pg_mentat upgrade: could not lock the stores'' tables in % s (% tries): '
                             'writers or readers are using them (%)', patience, tries, busy
                   USING ERRCODE = 'lock_not_available',
                         HINT = 'Run ALTER EXTENSION pg_mentat UPDATE again. While it tries, it holds no lock, '

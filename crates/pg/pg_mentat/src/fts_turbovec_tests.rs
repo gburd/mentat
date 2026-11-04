@@ -250,7 +250,7 @@ mod tests {
              WHERE a = {entid} AND store_id = 0 AND added"
         ))
         .expect("1.18 index");
-        let script = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let script = include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql");
         let start = script.find("DO $ftsidx$").expect("upgrade block");
         let end = script[start..].find("$ftsidx$;").unwrap() + start + "$ftsidx$;".len();
         let block = &script[start..end];

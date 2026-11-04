@@ -539,7 +539,7 @@ mod tests {
             out.sort();
             out
         };
-        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql");
         let upgrade = &upgrade[upgrade.find("-- === pg-views ===").expect("section")..];
         let upgrade = &upgrade[..upgrade
             .find("CREATE FUNCTION mentat.\"_store_virtual_tables\"")
@@ -715,7 +715,7 @@ mod tests {
             "GRANT USAGE ON SCHEMA mentat TO proj_tenant; \
              GRANT SELECT ON ALL TABLES IN SCHEMA mentat TO proj_tenant",
         );
-        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql");
         let block = &upgrade[upgrade.find("DO $rls$").unwrap()..];
         let block = &block[..block.find("$rls$;").unwrap() + "$rls$;".len()];
         let mut seen = Vec::new();

@@ -193,7 +193,7 @@ mod tests {
             vec!["Pat", "Patricia"],
             "1.18 reads the log"
         );
-        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql");
         let block = &upgrade[upgrade.find("DO $graphviews$").unwrap()..];
         let block = &block[..block.find("$graphviews$;").unwrap() + "$graphviews$;".len()];
         Spi::run(block).expect("upgrade");

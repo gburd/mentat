@@ -919,6 +919,8 @@ mod txfn_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod typed_value_tests;
 mod types;
+#[cfg(any(test, feature = "pg_test"))]
+mod upgrade_lock_tests;
 #[cfg(test)]
 mod upgrade_path_tests;
 #[cfg(any(test, feature = "pg_test"))]
