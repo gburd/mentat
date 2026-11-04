@@ -8,6 +8,32 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **pg_mentat: `ALTER EXTENSION pg_mentat UPDATE` from 1.18.0 no longer
+  deadlocks with live writers** (#428). The 1.18.0 -> 1.19.0 script took
+  its locks one at a time, so a `t()` or query that started while it ran
+  deadlocked with it (10 of 10 runs with a writer every 20 ms). A 1.18.0
+  database now updates straight to 1.19.1 (`pg_mentat--1.18.0--1.19.1.sql`,
+  the same steps), which first takes every lock the steps need, without
+  queueing: if a store table is in use it lets go of everything, retries
+  for up to 30 s, then fails with SQLSTATE 55P03 ("could not lock the
+  stores' tables") and changes nothing. Run it again. This replaces the
+  1.19.0 advice to set `lock_timeout`: don't set it for the update. Once it
+  has the locks, reads and writes of the stores wait until it commits
+  (0.7 s at most in the test above). A database already on 1.19.0 has
+  nothing to change (`pg_mentat--1.19.0--1.19.1.sql` is empty).
+
+### Changed
+
+- **Docs: what 1.19 changes before the update runs** (#429). The tempids
+  map's `"datomic.tx"` is the transaction id since 1.19.0 (it named a new,
+  separate entity before); code that took it for an annotation entity must
+  change. The 1.19 library's behaviour changes take effect when the server
+  loads it (at the restart), before `ALTER EXTENSION pg_mentat UPDATE`.
+  Operations §9 now says to update to 1.19.1 and to retry on the busy
+  error.
+
 ## [1.19.0] — current-state SQL, concurrent writers, enum idents, tx-fns on named stores
 
 Upgrading: `ALTER EXTENSION pg_mentat UPDATE` reaches 1.19.0 from 1.18.0

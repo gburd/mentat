@@ -611,9 +611,9 @@ mod tests {
         script_block(include_str!("../sql/pg_mentat--1.17.2--1.18.0.sql"), tag)
     }
 
-    /// The 1.18.0 -> 1.19.0 upgrade's `DO $tag$ ... $tag$;` block.
+    /// The 1.18.0 -> 1.19.1 upgrade's `DO $tag$ ... $tag$;` block.
     fn upgrade_119_block(tag: &str) -> String {
-        script_block(include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql"), tag)
+        script_block(include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql"), tag)
     }
 
     fn script_block(script: &str, tag: &str) -> String {
@@ -2624,7 +2624,7 @@ mod tests {
         tx("default", "[{:p/name \"rv-1\"}]");
         let rows =
             || -> Vec<String> { sorted(json("SELECT coalesce(jsonb_agg(n), '[]') FROM rv_names")) };
-        let script = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let script = include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql");
         let upgrade = &script[script
             .find("DROP FUNCTION IF EXISTS mentat.refresh_datalog_view")
             .expect("upgrade section")..];

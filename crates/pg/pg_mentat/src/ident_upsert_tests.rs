@@ -566,7 +566,7 @@ mod tests {
     #[pg_test]
     fn ident_upgrade_section() {
         let fresh = include_str!("../sql/32_moved_idents.sql");
-        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.0.sql");
+        let upgrade = include_str!("../sql/pg_mentat--1.18.0--1.19.1.sql");
         let funcs = &fresh[fresh.find("-- mentat.moved_idents(store TEXT").unwrap()..];
         assert!(
             upgrade.contains(funcs.trim_end()),
