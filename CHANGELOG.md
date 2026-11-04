@@ -8,6 +8,13 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.19.1] — the 1.18.0 -> 1.19 upgrade no longer deadlocks with live writers
+
+Upgrading: from 1.18.0, `ALTER EXTENSION pg_mentat UPDATE` now goes straight
+to 1.19.1 and takes all its locks before it changes anything (see Fixed).
+If it reports that the stores' tables are busy, run it again. From 1.19.0
+there is nothing to change. Everything in the 1.19.0 entry applies.
+
 ### Fixed
 
 - **pg_mentat: `ALTER EXTENSION pg_mentat UPDATE` from 1.18.0 no longer
