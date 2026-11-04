@@ -653,42 +653,57 @@ Measured on a 32-vCPU box, PostgreSQL 16.15, current-time queries
 
 ## 9. Upgrading to 1.19.0
 
-`ALTER EXTENSION pg_mentat UPDATE TO '1.19.0'` builds indexes, and it holds
-the locks they take until it commits:
+The 1.19 library changes how transactions and queries behave as soon as
+the server loads it, at the restart after you install it: before
+`ALTER EXTENSION pg_mentat UPDATE` runs, and whether or not it does. The
+CHANGELOG lists those changes; among them, the tempids map's `"datomic.tx"`
+is now the transaction id ([The transaction tempid](datomic-compat.md#the-transaction-tempid-datomictx)).
+The 1.19 library runs a 1.18.0 catalog, so a deploy can restart first and
+run the update later.
+
+Update from 1.18.0 to 1.19.1 or later, not to 1.19.0:
+`ALTER EXTENSION pg_mentat UPDATE` with no version (or `TO '1.19.1'`). The
+1.18.0 to 1.19.0 script takes its locks one at a time, as each step needs
+them; a `t()` or query that starts while it runs can deadlock with it, and
+with writes every few tens of milliseconds it fails nearly every time
+(#428). The 1.18.0 to 1.19.1 script runs the same steps, but takes every
+lock they need first, in one go:
+
+- ACCESS EXCLUSIVE on each store's tables the steps change or read: its
+  `schema`, `idents`, `fulltext`, `current_<type>` and `datoms_<type>_new`
+  tables, and on every view in its schema (the default store's and each
+  named store's);
+- EXCLUSIVE on `mentat.cache_generation`, `mentat.subscriptions` and
+  `mentat.materialized_views`, and SHARE on `mentat.stores` (reads go on).
+
+It never waits for a lock: if a reader or writer is using one of those
+tables, it releases what it took, waits 50-150 ms and tries again, for up
+to 30 s. So while it tries it holds nothing, and neither deadlocks nor
+holds up anyone. If it can't get them in 30 s (a long-running query or an
+open transaction on a store table), it fails with SQLSTATE 55P03, `could
+not lock the stores' tables`, and changes nothing: run it again, at a
+quieter moment or once that transaction ends. Don't set `lock_timeout` for
+it; it doesn't need one.
+
+Once it holds the locks, every read and write of the stores waits until it
+commits. It then builds indexes:
 
 - Each pg_fts index `mentat.create_fts_index` made (`mentat_fts_<entid>`)
   is dropped from `mentat.datoms_text_new` and built again on
-  `mentat.current_text`. That is an ACCESS EXCLUSIVE lock on
-  `mentat.datoms_text_new` and a SHARE lock on `mentat.current_text`.
+  `mentat.current_text`.
 - The full-text GIN index `idx_current_text_fts` is built on
-  `mentat.current_text` and on each named store's `current_text`: a SHARE
-  lock on each.
+  `mentat.current_text` and on each named store's `current_text`.
 - In each named store, the trigram indexes `create_store` made with
   pg_trgm move from `datoms_text_new` / `datoms_keyword_new` to
-  `current_text` / `current_keyword`: an ACCESS EXCLUSIVE lock on the log
-  table and a SHARE lock on the projection.
+  `current_text` / `current_keyword`.
 
-Two more steps take ACCESS EXCLUSIVE locks, held until the upgrade
-commits:
-
-- Each named store's views (`facts`, `text_values`, ...) are replaced, so
-  a query on one of them waits from the moment its store is done until
-  commit. Its functions (`find_text`, `entity_value`, ...) and its tables
-  are not locked.
-- The last step gives the nine `mentat.current_<type>` tables their
-  Row-Level Security policy. Coming from 1.18 it creates the policies,
-  which locks those tables: from there to commit, which is short, every
-  read and write of the default store waits. A table already in the
-  wanted state is left alone, so running the step again takes no lock.
-
-While it runs, every write of a string or keyword value to an affected
-store waits (on the default store, so does every read of
-`mentat.datoms_text_new`); other writes, and reads of the tables, go on.
-Measured on an
-assert-enabled build: a pg_fts index over 100,000 values took 26 s to
-rebuild, the trigram move on 383,000 values 0.9 s. On a big store, plan a
-maintenance window, or set `lock_timeout` in the session: the upgrade then
-fails and changes nothing instead of waiting.
+It also replaces each named store's views (`facts`, `text_values`, ...)
+and gives the nine `mentat.current_<type>` tables their Row-Level Security
+policy. On a store of a few hundred thousand datoms the whole upgrade takes
+about half a second, and that is how long writes wait. The index builds
+read every live string value: measured on an assert-enabled build, a pg_fts
+index over 100,000 values took 26 s to rebuild, the trigram move on 383,000
+values 0.9 s. On a big store, plan a maintenance window.
 
 The upgrade also deletes what `mentat_excise` left in the current-state
 tables on 1.5.0 to 1.18.0, for the entities `mentat.excision_log` lists.

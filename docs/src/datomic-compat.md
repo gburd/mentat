@@ -123,6 +123,17 @@ The tempids map has `"datomic.tx"` (the tx id) only when the transaction used
 it. The embedded engine and DuckDB also accept `(transaction-tx)` for the same
 entity. A tx-function may return `{:db/id "datomic.tx" ...}`.
 
+Code written for 1.18 or earlier may rely on the old meaning. There,
+`tempids` mapped `"datomic.tx"` to a new entity of its own, separate from
+the transaction; since 1.19.0 it maps it to the transaction id, the 4th
+element of each `tx-data` row. Code that takes it for a separate annotation
+entity must change. For example, code that counts a transaction's own rows
+(its `:db/txInstant` and its annotations) as "the rows whose entity is the
+transaction, plus the rows whose entity is `tempids->>'datomic.tx'`" now
+counts the `:db/txInstant` row twice. On pg_mentat the new meaning comes
+with the library: once the 1.19 `pg_mentat.so` is loaded (at the server's
+restart), `t()` reports it, before `ALTER EXTENSION pg_mentat UPDATE` runs.
+
 The transaction is a new entity and never upserts: asserting a
 `:db.unique/identity` or `:db.unique/value` value another entity holds is
 `:db.error/unique-conflict`, naming the attribute and value. An explicit
