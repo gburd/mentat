@@ -77,10 +77,10 @@ mod tests {
             .collect()
     }
 
-    /// A fresh database mentat_upgrade_locks with pg_mentat and a named store
-    /// lk_named, and sessions "up" (the upgrade) and "rd" (a client) on it.
-    /// False without dblink.
-    fn setup() -> bool {
+    /// A fresh database `db` with pg_mentat and a named store lk_named, and
+    /// sessions "up" (the upgrade) and "rd" (a client) on it. False without
+    /// dblink. Each test has its own `db`: tests run in parallel.
+    fn setup(db: &str) -> bool {
         crate::ensure_extension_loaded();
         let available: i64 =
             Spi::get_one("SELECT count(*) FROM pg_available_extensions WHERE name = 'dblink'")
@@ -101,14 +101,10 @@ mod tests {
             conn("postgres")
         ))
         .expect("connect");
-        on("lk_admin", "DROP DATABASE IF EXISTS mentat_upgrade_locks");
-        on("lk_admin", "CREATE DATABASE mentat_upgrade_locks");
+        on("lk_admin", &format!("DROP DATABASE IF EXISTS {db}"));
+        on("lk_admin", &format!("CREATE DATABASE {db}"));
         for c in ["up", "rd"] {
-            Spi::run(&format!(
-                "SELECT dblink_connect('{c}', '{}')",
-                conn("mentat_upgrade_locks")
-            ))
-            .expect("connect");
+            Spi::run(&format!("SELECT dblink_connect('{c}', '{}')", conn(db))).expect("connect");
         }
         on("up", "CREATE EXTENSION pg_mentat");
         for c in ["up", "rd"] {
@@ -125,9 +121,9 @@ mod tests {
         true
     }
 
-    fn finish() {
+    fn finish(db: &str) {
         Spi::run("SELECT dblink_disconnect('up'), dblink_disconnect('rd')").expect("close");
-        on("lk_admin", "DROP DATABASE mentat_upgrade_locks");
+        on("lk_admin", &format!("DROP DATABASE {db}"));
         Spi::run("SELECT dblink_disconnect('lk_admin')").expect("close");
     }
 
@@ -136,7 +132,7 @@ mod tests {
     /// settings it changes are back.
     #[pg_test]
     fn lock_block_takes_every_lock() {
-        if !setup() {
+        if !setup("mentat_ul_every") {
             return;
         }
         let path = get("up", "current_setting('search_path')");
@@ -176,7 +172,7 @@ mod tests {
         assert_eq!(get("up", "current_setting('lock_timeout')"), "0");
         assert_eq!(get("up", "current_setting('search_path')"), path);
         on("up", "ROLLBACK");
-        finish();
+        finish("mentat_ul_every");
     }
 
     /// A reader keeps current_text for the whole patience: the block fails
@@ -185,7 +181,7 @@ mod tests {
     /// that write deadlocked with the upgrade.
     #[pg_test]
     fn busy_store_fails_cleanly() {
-        if !setup() {
+        if !setup("mentat_ul_busy") {
             return;
         }
         // What the 1.19.0 report's writer held: a query's ACCESS SHARE.
@@ -214,14 +210,14 @@ mod tests {
         );
         on("rd", "COMMIT");
         on("up", "ROLLBACK");
-        finish();
+        finish("mentat_ul_busy");
     }
 
     /// A reader that ends while the block retries: the block then gets
     /// every lock.
     #[pg_test]
     fn lock_block_waits_out_a_short_reader() {
-        if !setup() {
+        if !setup("mentat_ul_short") {
             return;
         }
         on("rd", "BEGIN");
@@ -244,6 +240,6 @@ mod tests {
             Spi::run("SELECT count(*) FROM dblink_get_result('rd', false) AS t(r TEXT)")
                 .expect("drain");
         }
-        finish();
+        finish("mentat_ul_short");
     }
 }
