@@ -635,3 +635,11 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   EOF fetching postgresql.org versions.rss; setup now retries it.
 - EC2 torn down: i-0427c58e372e0690a, SG, key (woof). woof expires
   2026-11-10 18:43:17 UTC; its quotas were raised to match chef.
+- DuckDB registry for 1.19.1 (checked 2026-11-07 20:40 UTC): #3529 merged
+  2026-11-05 09:28 by sebastiaan-dev. v1.5.6/ serves 1.19.1 (linux_amd64,
+  osx_arm64, deployed 09:47). v2.0.0/ still serves 1.19.0: the merge's
+  default build, run 42002625404, failed in linux_arm64 `Build` (~30 s) and
+  linux_amd64 was cancelled, the same as #3526's merge build a minute
+  earlier; the fork built the same ref green. Re-runs need repo admin.
+  Asked on #3529 (comment 6712846365) for a re-run or dispatch. Verify after:
+  footer field 5 of v2.0.0/<platform>/mentat.duckdb_extension.gz = v1.19.1.
