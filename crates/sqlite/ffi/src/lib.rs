@@ -2420,8 +2420,9 @@ pub unsafe extern "C" fn store_entid_for_attribute(
     let store = &mut *store;
     let keyword_string = c_char_to_string(attr);
     let kw = kw_from_string(keyword_string);
-    let conn = store.conn();
-    let current_schema = conn.current_schema();
+    let current_schema = store
+        .current_schema()
+        .expect("Unable to read the store's schema");
     current_schema
         .get_entid(&kw)
         .expect("Unable to find entid for invalid attribute")

@@ -350,9 +350,11 @@ impl Repl {
                     .ok();
             }
             Command::Schema => {
-                let edn = self.store.conn().current_schema().to_edn_value();
-                match edn.to_pretty(120) {
-                    Ok(s) => println!("{}", s),
+                match self.store.current_schema() {
+                    Ok(schema) => match schema.to_edn_value().to_pretty(120) {
+                        Ok(s) => println!("{}", s),
+                        Err(e) => eprintln!("{}", e),
+                    },
                     Err(e) => eprintln!("{}", e),
                 };
             }
@@ -384,13 +386,16 @@ impl Repl {
         } else {
             serde_json::from_str(opts).map_err(|e| anyhow::anyhow!("options are not JSON: {e}"))?
         };
-        let schema = self.store.conn().current_schema();
+        let schema = self.store.current_schema()?;
         let (inputs, temporal) = mentat::options_from_json(&schema, query, &opts)?;
         Ok(self.store.q_once_temporal(query, inputs, temporal)?)
     }
 
     fn pull(&mut self, pattern: &str, entity: &str) {
-        let schema = self.store.conn().current_schema();
+        let schema = match self.store.current_schema() {
+            Ok(s) => s,
+            Err(e) => return fail!(self, "{}", e),
+        };
         let eid = match entity.parse::<i64>() {
             Ok(e) => Some(e),
             Err(_) => parse_namespaced_keyword(entity)

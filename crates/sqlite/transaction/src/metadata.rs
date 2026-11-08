@@ -17,10 +17,11 @@ pub struct Metadata {
     pub partition_map: PartitionMap,
     pub schema: Arc<Schema>,
     pub attribute_cache: SQLiteAttributeCache,
-    /// SQLite's `PRAGMA data_version` when this metadata was read or last
-    /// committed. It changes when ANOTHER connection commits to the file, so a
-    /// different value means the partition map and schema may be stale.
-    pub data_version: Option<i64>,
+    /// The SQLite connection (its handle's address) and its
+    /// `PRAGMA data_version` when this metadata was read or last committed.
+    /// The version changes when ANOTHER connection commits to the file, so a
+    /// different pair means the partition map and schema may be stale.
+    pub data_version: Option<(usize, i64)>,
 }
 
 impl Metadata {

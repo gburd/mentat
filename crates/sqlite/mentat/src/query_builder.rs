@@ -51,8 +51,7 @@ impl<'a> QueryBuilder<'a> {
     pub fn bind_ref_from_kw(&mut self, var: &str, value: Keyword) -> Result<&mut Self> {
         let entid = self
             .store
-            .conn()
-            .current_schema()
+            .current_schema()?
             .get_entid(&value)
             .ok_or_else(|| MentatError::UnknownAttribute(value.to_string()))?;
         self.values.insert(

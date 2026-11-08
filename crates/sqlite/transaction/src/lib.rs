@@ -316,10 +316,12 @@ impl<'a, 'c> InProgress<'a, 'c> {
         // Read before COMMIT, while we still hold the write lock: our own
         // commit doesn't move data_version, and after COMMIT another writer
         // could commit before we read it, which we would then never reload.
-        let data_version: Option<i64> = self
+        let data_version = self
             .transaction
-            .query_row("PRAGMA data_version", [], |r| r.get(0))
-            .ok();
+            .query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .ok()
+            // Safety: only the address is used, as an identity (as Conn does).
+            .map(|v| (unsafe { self.transaction.handle() } as usize, v));
         self.transaction.commit()?;
         mentat_db::db::restart_wal_if_large(&conn);
         drop(conn);

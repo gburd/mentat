@@ -262,9 +262,13 @@ impl ScriptBackend for MentatBackend {
         } else {
             let opts = serde_json::json!({ "inputs": inputs });
             Some(
-                crate::options_from_json(&store.conn().current_schema(), query_edn, &opts)
-                    .map_err(|e| e.to_string())?
-                    .0,
+                crate::options_from_json(
+                    &*store.current_schema().map_err(|e| e.to_string())?,
+                    query_edn,
+                    &opts,
+                )
+                .map_err(|e| e.to_string())?
+                .0,
             )
         };
         // Issue #328: an as-of/since db runs the query as temporal Datalog.
@@ -326,7 +330,7 @@ impl ScriptBackend for MentatBackend {
                 None => by_attr.push((a, vec![v])),
             }
         }
-        let schema = store.conn().current_schema();
+        let schema = store.current_schema().map_err(|e| e.to_string())?;
         let mut m = PMap::empty().assoc(mentat_script::kw_ns("db", "id"), Value::Int(eid));
         for (a, vals) in by_attr {
             let many = schema
@@ -353,7 +357,7 @@ impl ScriptBackend for MentatBackend {
         let store = map
             .get(&db.conn)
             .ok_or_else(|| format!("no open store for handle {}", db.conn))?;
-        let schema = store.conn().current_schema();
+        let schema = store.current_schema().map_err(|e| e.to_string())?;
         let many = schema
             .attribute_for_ident(&kw)
             .map(|(a, _)| a.multival)
@@ -418,8 +422,8 @@ impl ScriptBackend for MentatBackend {
             Value::Keyword(sym) => {
                 let kw = sym_to_keyword(sym);
                 store
-                    .conn()
                     .current_schema()
+                    .map_err(|e| e.to_string())?
                     .get_entid(&kw)
                     .map(|k| k.0)
                     .ok_or_else(|| format!("unknown ident {kw}"))
@@ -461,7 +465,7 @@ impl ScriptBackend for MentatBackend {
 /// The datom set backing a db value's reads, as `(e, keyword-a, edn-v)` rows.
 fn basis_datoms(db: &DbRef, store: &Store) -> Result<Vec<(i64, Keyword, edn::Value)>, String> {
     let sqlite = store.sqlite_ref();
-    let schema = store.conn().current_schema();
+    let schema = store.current_schema().map_err(|e| e.to_string())?;
 
     let to_kw = |a: &EntidOrIdent| -> Keyword {
         match a {

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use core_traits::{Entid, StructuredMap, TypedValue};
 
-use mentat_core::{HasSchema, Keyword, TxReport, ValueRc};
+use mentat_core::{HasSchema, Keyword, Schema, TxReport, ValueRc};
 use mentat_db::TxObserver;
 
 use mentat_transaction::{
@@ -42,7 +42,7 @@ pub(crate) fn db_fn_source(
     ident: &str,
 ) -> std::result::Result<Option<String>, String> {
     let db_fn = Keyword::namespaced("db", "fn");
-    let schema = store.conn.current_schema();
+    let schema = store.current_schema().map_err(|e| e.to_string())?;
     if schema.get_entid(&db_fn).is_none() {
         return Ok(None);
     }
@@ -100,8 +100,7 @@ impl Store {
     /// only the `:db/fn` attribute bootstrap applies.
     pub fn expand_tx_fns(&mut self, transaction: &str) -> Result<String> {
         let has_db_fn_attr = self
-            .conn
-            .current_schema()
+            .current_schema()?
             .get_entid(&Keyword::namespaced("db", "fn"))
             .is_some();
         if !has_db_fn_attr && transaction.contains(":db/fn") {
@@ -211,7 +210,7 @@ impl Store {
     }
 
     pub fn cache(&mut self, attr: &Keyword, direction: CacheDirection) -> Result<()> {
-        let schema = &self.conn.current_schema();
+        let schema = &self.current_schema()?;
         self.conn.cache(
             &mut self.sqlite,
             schema,
@@ -229,8 +228,19 @@ impl Store {
         self.conn.unregister_observer(key);
     }
 
+    /// The newest transaction in the store, including other connections'.
     pub fn last_tx_id(&self) -> Entid {
+        // Best effort: on a read error, our own last commit.
+        let _ = self.conn.refresh(&self.sqlite);
         self.conn.last_tx_id()
+    }
+
+    /// The store's current schema, including attributes other connections
+    /// installed. (`Store::conn().current_schema()` is this handle's copy,
+    /// as of its last read.)
+    pub fn current_schema(&self) -> Result<Arc<Schema>> {
+        self.conn.refresh(&self.sqlite)?;
+        Ok(self.conn.current_schema())
     }
 
     /// How mentat manages secondary indexes for this `Store` (see [`AutoIndex`]).
@@ -259,7 +269,7 @@ impl Store {
     }
 
     fn tune(&self, dry_run: bool) -> Result<Vec<crate::IndexAction>> {
-        let schema = self.conn.current_schema();
+        let schema = self.current_schema()?;
         self.advisor
             .borrow_mut()
             .tune(&self.sqlite, &schema, dry_run)

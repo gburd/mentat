@@ -7,7 +7,7 @@
 // the other connection installed were unknown (writes failed, queries
 // returned nothing). Reported from Improv, 2026-11-07.
 
-use mentat::{kw, Binding, Queryable, Store, TypedValue};
+use mentat::{kw, Binding, HasSchema, Queryable, Store, TypedValue};
 
 fn names(s: &Store) -> Vec<(i64, String)> {
     let r = s
@@ -194,4 +194,126 @@ fn a_writer_in_another_process() {
     let c = Store::open(&path).unwrap();
     assert_eq!(names(&c).len(), 2, "both writes survive");
     assert_eq!(shared_tx_ids(&c), 0);
+}
+
+/// Calls that read a Store's metadata without running a query: they must see
+/// another Store's schema and transactions too.
+#[test]
+fn schema_and_tx_accessors_see_other_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    let path = path.to_str().unwrap();
+    fresh(path);
+
+    let mut a = Store::open(path).unwrap();
+    let mut b = Store::open(path).unwrap();
+    let r = b
+        .transact(
+            "[{:db/ident :t/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+        )
+        .unwrap();
+    assert_eq!(a.last_tx_id(), r.tx_id);
+    assert!(a
+        .current_schema()
+        .unwrap()
+        .get_entid(&kw!(:t/age))
+        .is_some());
+    // Store::cache resolves the attribute through the schema.
+    a.cache(&kw!(:t/age), mentat::CacheDirection::Forward)
+        .unwrap();
+    // QueryBuilder resolves a keyword input through the schema.
+    let out = mentat::QueryBuilder::new(&mut a, "[:find ?e . :in ?a :where [?e :db/ident ?a]]")
+        .bind_ref_from_kw("?a", kw!(:t/age))
+        .map(|_| ())
+        .err();
+    assert!(out.is_none(), "{out:?}");
+}
+
+/// One Conn used with two SQLite connections to the file: each connection's
+/// data_version counts separately, so a version recorded on one says
+/// nothing about the other. Conn must reload when the connection changes.
+#[test]
+fn one_conn_over_two_sqlite_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    let path = path.to_str().unwrap();
+    fresh(path);
+
+    let mut c1 = mentat::new_connection(path).unwrap();
+    let c2 = mentat::new_connection(path).unwrap();
+    let conn = mentat::Conn::connect(&mut c1).unwrap();
+    // Another Store moves c1's and c2's versions by different amounts.
+    let mut w = Store::open(path).unwrap();
+    for i in 0..3 {
+        w.transact(&format!(r#"[{{:t/name "w{i}"}}]"#)).unwrap();
+        // c2 reads in between, so its count runs behind c1's.
+        if i == 0 {
+            conn.q_once(&c2, "[:find ?e :where [?e :t/name _]]", None)
+                .unwrap();
+        }
+    }
+    w.transact(
+        "[{:db/ident :t/age :db/valueType :db.type/long :db/cardinality :db.cardinality/one}]",
+    )
+    .unwrap();
+    w.transact(r#"[{:t/age 1}]"#).unwrap();
+    let n = conn
+        .q_once(&c1, "[:find ?e :where [?e :t/age _]]", None)
+        .unwrap()
+        .results
+        .into_rel()
+        .unwrap()
+        .row_count();
+    assert_eq!(n, 1);
+}
+
+/// Another connection commits in the instant after A's COMMIT, before A
+/// does anything else. If A read its data_version after COMMIT, it would take
+/// that commit as already seen and reuse its ids on the next write.
+#[test]
+fn a_commit_right_after_ours_is_not_missed() {
+    use std::sync::Mutex;
+    // trace_v2 takes a plain fn, so its state lives in a static: the path to
+    // write to, and whether A's COMMIT has started.
+    static INJECT: Mutex<Option<(String, bool)>> = Mutex::new(None);
+    fn on_stmt(e: rusqlite::trace::TraceEvent<'_>) {
+        let rusqlite::trace::TraceEvent::Stmt(_, sql) = e else {
+            return;
+        };
+        let mut g = INJECT.lock().unwrap();
+        match g.as_mut() {
+            Some((_, seen)) if !*seen => *seen = sql.trim().eq_ignore_ascii_case("COMMIT"),
+            Some(_) => {
+                // The first statement A runs after COMMIT: the lock is free.
+                let (path, _) = g.take().unwrap();
+                let mut b = Store::open(&path).unwrap();
+                b.transact(r#"[{:db/id "b" :t/name "from B"}]"#).unwrap();
+            }
+            None => {}
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.db");
+    let path = path.to_str().unwrap();
+    fresh(path);
+    let mut a = Store::open(path).unwrap();
+    a.transact(r#"[{:t/name "warm"}]"#).unwrap();
+
+    a.sqlite_mut().trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(on_stmt),
+    );
+    *INJECT.lock().unwrap() = Some((path.to_string(), false));
+    a.transact(r#"[{:db/id "a" :t/name "from A"}]"#).unwrap();
+    // B runs at A's next statement at the latest: the next transact's BEGIN.
+    a.transact(r#"[{:db/id "c" :t/name "from A again"}]"#)
+        .unwrap();
+    a.sqlite_mut()
+        .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    assert!(INJECT.lock().unwrap().is_none(), "B never ran");
+
+    let c = Store::open(path).unwrap();
+    assert_eq!(shared_tx_ids(&c), 0, "A's next write reused B's tx id");
+    assert_eq!(names(&c).len(), 4, "a write was lost");
 }

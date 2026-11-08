@@ -68,13 +68,17 @@ pub struct Conn {
     pub(crate) tx_observer_service: Mutex<TxObservationService>,
 }
 
-/// SQLite's `PRAGMA data_version`: unchanged by this connection's own
-/// commits, changed by any other connection's commit to the file.
-pub(crate) fn data_version(sqlite: &rusqlite::Connection) -> Result<i64> {
+/// SQLite's `PRAGMA data_version`, paired with the connection it came from
+/// (`Metadata::data_version`). The version is per connection: unchanged by
+/// its own commits, changed by any other connection's. A `Conn` used with a
+/// different connection than last time therefore always reloads.
+fn version_of(sqlite: &rusqlite::Connection) -> Result<(usize, i64)> {
     // Cached: this runs before every query and transaction.
-    Ok(sqlite
+    let v = sqlite
         .prepare_cached("PRAGMA data_version")?
-        .query_row([], |r| r.get(0))?)
+        .query_row([], |r| r.get(0))?;
+    // Safety: only the address is used, as an identity.
+    Ok((unsafe { sqlite.handle() } as usize, v))
 }
 
 impl Conn {
@@ -116,9 +120,12 @@ impl Conn {
     }
 
     pub fn connect(sqlite: &mut rusqlite::Connection) -> Result<Conn> {
-        let db = db::ensure_current_version(sqlite)?;
-        let conn = Conn::new(db.partition_map, db.schema);
-        conn.lock_metadata().data_version = Some(data_version(sqlite)?);
+        db::ensure_current_version(sqlite)?;
+        // ensure_current_version reads with several autocommit statements, so
+        // a commit between them could be half seen, or missed by a
+        // data_version read afterwards. Read again in one snapshot instead.
+        let conn = Conn::new(PartitionMap::default(), Schema::default());
+        conn.refresh(sqlite)?;
         Ok(conn)
     }
 
@@ -132,7 +139,7 @@ impl Conn {
     /// no other writer can commit before the caller's statements run. The SQL
     /// runs without the metadata lock held (see `lock_metadata`).
     fn refresh_if_stale(&self, sqlite: &rusqlite::Connection) -> Result<()> {
-        let now = data_version(sqlite)?;
+        let now = version_of(sqlite)?;
         let cache = {
             let m = self.lock_metadata();
             if m.data_version == Some(now) {
@@ -158,7 +165,7 @@ impl Conn {
     /// long-lived handle answers against the current schema.
     pub fn refresh(&self, sqlite: &rusqlite::Connection) -> Result<()> {
         // The common case, nothing new, is one PRAGMA.
-        let now = data_version(sqlite)?;
+        let now = version_of(sqlite)?;
         if self.lock_metadata().data_version == Some(now) {
             return Ok(());
         }
