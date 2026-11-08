@@ -315,9 +315,15 @@ impl<'a, 'c> InProgress<'a, 'c> {
         let conn = unsafe { rusqlite::Connection::from_handle(self.transaction.handle()) }?;
         self.transaction.commit()?;
         mentat_db::db::restart_wal_if_large(&conn);
+        // This connection's own commit doesn't move data_version, and no other
+        // connection committed while this one held the write lock, so the
+        // metadata below describes the file as of this version.
+        let data_version: Option<i64> =
+            conn.query_row("PRAGMA data_version", [], |r| r.get(0)).ok();
         drop(conn);
 
         metadata.generation += 1;
+        metadata.data_version = data_version;
         metadata.partition_map = self.partition_map;
 
         // Update the conn's cache if we made any changes.

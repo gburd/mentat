@@ -8,6 +8,24 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedded engine: a `Store` now sees what other connections committed to
+  its file.** It read its partition map (the next entid and tx id), schema
+  and cached attribute values once, at open. When another process, or a
+  second `Store` on the same file, committed, the first handle's next
+  transaction reused the tx id and entids the other had just used, so one
+  transaction's new entity silently replaced the other's values and its
+  `:db/txInstant`; attributes the other connection installed were unknown
+  (writes failed with "no entid found for ident", queries found nothing).
+  Every transaction and query now checks SQLite's `PRAGMA data_version` and,
+  if another connection committed, reads the partition map, schema and
+  cached attributes again first: about 1.4 µs per query, and a reload only
+  after someone else wrote. Inside a transaction's `BEGIN IMMEDIATE`, no
+  writer can commit between the check and the write. Reported from Improv;
+  every version up to 1.19.1 was affected. (pg_mentat and DuckDB stores
+  were not: they read their state from the database on each transaction.)
+
 ## [1.19.1] — the 1.18.0 -> 1.19 upgrade no longer deadlocks with live writers
 
 Upgrading: from 1.18.0, `ALTER EXTENSION pg_mentat UPDATE` now goes straight
