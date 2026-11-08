@@ -313,13 +313,15 @@ impl<'a, 'c> InProgress<'a, 'c> {
         // Safety: the connection outlives `self` ('c) and is not used
         // concurrently (we hold `&mut` to it through the transaction).
         let conn = unsafe { rusqlite::Connection::from_handle(self.transaction.handle()) }?;
+        // Read before COMMIT, while we still hold the write lock: our own
+        // commit doesn't move data_version, and after COMMIT another writer
+        // could commit before we read it, which we would then never reload.
+        let data_version: Option<i64> = self
+            .transaction
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .ok();
         self.transaction.commit()?;
         mentat_db::db::restart_wal_if_large(&conn);
-        // This connection's own commit doesn't move data_version, and no other
-        // connection committed while this one held the write lock, so the
-        // metadata below describes the file as of this version.
-        let data_version: Option<i64> =
-            conn.query_row("PRAGMA data_version", [], |r| r.get(0)).ok();
         drop(conn);
 
         metadata.generation += 1;
