@@ -12,17 +12,12 @@
 //! call); least recently used are dropped first. A store is removed from the
 //! cache while a call uses it, so a re-entrant call opens its own.
 //!
-//! Staleness: a `Store` caches its schema and partition map. If another
-//! connection (a thread with its own store, or another process) commits, a
-//! cached store would query with an old schema and, worse, allocate entids
-//! that are already taken. Every committed transaction advances the persisted
-//! tx high-water mark (`known_parts.idx` for `:db.part/tx`), so a store is
-//! current iff that mark equals its own `last_tx_id() + 1`: one primary-key
-//! read of a three-row table. Reads check before running; writes check INSIDE
-//! their `BEGIN IMMEDIATE` (nobody can commit between the check and ours). A
-//! stale store is reopened. Freshly opened stores are checked too:
-//! `Store::open` reads its metadata with several statements, and a commit
-//! between them would otherwise go unnoticed. The cache key includes the
+//! Staleness: a `Store` caches its schema and partition map, and checks
+//! SQLite's `data_version` before every query and transaction, reloading them
+//! if another connection (a thread with its own store, or another process)
+//! has committed. A write checks inside its `BEGIN IMMEDIATE`, so nobody can
+//! commit between the check and the write. So a cached store is never stale
+//! when used, and needs no check here. The cache key includes the
 //! file's inode, so a store file deleted and recreated at the same path is
 //! opened afresh. A store whose call fails is dropped, not cached.
 
@@ -51,11 +46,6 @@ fn key(path: &str) -> Option<Key> {
     let ino = 0;
     Some((p, ino))
 }
-
-/// Persisted next tx entid; maintained by every commit.
-const NEXT_TX: &str = "SELECT idx FROM known_parts WHERE part = ':db.part/tx'";
-/// Reopen attempts when the store keeps changing underneath us.
-const RETRIES: usize = 8;
 
 fn capacity() -> usize {
     static CAP: OnceLock<usize> = OnceLock::new();
@@ -101,8 +91,8 @@ fn with_store<T>(path: &str, f: impl FnOnce(&mut Store) -> Res<T>) -> Res<T> {
     r
 }
 
-/// Run a read-only `f` against a current store for `path`. The check and `f`
-/// share one read transaction, so they see the same snapshot.
+/// Run a read-only `f` against a current store for `path`, in one read
+/// transaction so all of `f` sees one snapshot.
 pub fn read<T, E: Display>(path: &str, f: impl FnOnce(&Store) -> Result<T, E>) -> Res<T> {
     with_store(path, |store| {
         let sql = |s: &Store, q: &str| {
@@ -110,50 +100,16 @@ pub fn read<T, E: Display>(path: &str, f: impl FnOnce(&Store) -> Result<T, E>) -
                 .execute_batch(q)
                 .map_err(|e| format!("{path:?}: {e}"))
         };
-        for _ in 0..RETRIES {
-            sql(store, "BEGIN")?;
-            let next: i64 = store
-                .sqlite_ref()
-                .query_row(NEXT_TX, [], |r| r.get(0))
-                .map_err(|e| format!("reading {path:?}: {e}"))?;
-            if next == store.last_tx_id() + 1 {
-                let r = f(store).map_err(|e| e.to_string());
-                sql(store, "COMMIT")?;
-                return r;
-            }
-            *store = open(path)?; // the old connection's drop ends its transaction
-        }
-        Err(format!(
-            "store {path:?} kept changing while reopening; retry"
-        ))
+        sql(store, "BEGIN")?;
+        let r = f(store).map_err(|e| e.to_string());
+        sql(store, "COMMIT")?;
+        r
     })
 }
 
-/// Transact `edn` against `path`, with the staleness check inside the write lock.
+/// Transact `edn` against `path`.
 pub fn transact(path: &str, edn: &str) -> Res<TxReport> {
-    with_store(path, |store| {
-        // User transaction functions (`:db/fn`) expand against the store
-        // before the write lock is taken (issue #333).
-        let edn = store.expand_tx_fns(edn).map_err(|e| e.to_string())?;
-        let edn = edn.as_str();
-        for _ in 0..RETRIES {
-            let mut ip = store.begin_transaction().map_err(|e| e.to_string())?;
-            let next: i64 = ip
-                .transaction
-                .query_row(NEXT_TX, [], |r| r.get(0))
-                .map_err(|e| format!("reading {path:?}: {e}"))?;
-            if next == ip.last_tx_id() + 1 {
-                let report = ip.transact(edn).map_err(|e| e.to_string())?;
-                ip.commit().map_err(|e| e.to_string())?;
-                return Ok(report);
-            }
-            drop(ip); // rolls back
-            *store = open(path)?;
-        }
-        Err(format!(
-            "store {path:?} kept changing while reopening; retry"
-        ))
-    })
+    with_store(path, |store| store.transact(edn).map_err(|e| e.to_string()))
 }
 
 #[cfg(test)]

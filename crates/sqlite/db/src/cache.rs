@@ -1561,6 +1561,27 @@ impl SQLiteAttributeCache {
     pub fn unregister_all(&mut self) {
         self.make_mut().unregister_all_attributes();
     }
+
+    /// The same attributes cached the same ways, with values read again from
+    /// `sqlite` against `schema`: for when another connection has committed.
+    /// An attribute `schema` no longer has is dropped.
+    // shortcut: re-reads every cached value (about 33 ms for 100k values) after
+    // any other connection's commit; apply the log since our last tx instead
+    // if a cached store shares its file with a busy writer.
+    pub fn reloaded(&self, schema: &Schema, sqlite: &rusqlite::Connection) -> Result<Self> {
+        let mut fresh = SQLiteAttributeCache::default();
+        for &a in &self.inner.forward_cached_attributes {
+            if schema.attribute_for_entid(a).is_some() {
+                fresh.register_forward(schema, sqlite, a)?;
+            }
+        }
+        for &a in &self.inner.reverse_cached_attributes {
+            if schema.attribute_for_entid(a).is_some() {
+                fresh.register_reverse(schema, sqlite, a)?;
+            }
+        }
+        Ok(fresh)
+    }
 }
 
 impl UpdateableCache<DbError> for SQLiteAttributeCache {

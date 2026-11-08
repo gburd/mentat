@@ -955,8 +955,9 @@ pub(crate) fn read_attribute_map(conn: &rusqlite::Connection) -> Result<Attribut
 }
 
 /// Read the materialized views from the given SQL store and return a Mentat `DB` for querying and
-/// applying transactions.
-pub(crate) fn read_db(conn: &rusqlite::Connection) -> Result<DB> {
+/// applying transactions: what `Conn::connect` reads at open, and reads again
+/// when another connection has committed since.
+pub fn read_db(conn: &rusqlite::Connection) -> Result<DB> {
     let partition_map = read_partition_map(conn)?;
     let ident_map = read_ident_map(conn)?;
     let attribute_map = read_attribute_map(conn)?;

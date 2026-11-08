@@ -68,6 +68,19 @@ pub struct Conn {
     pub(crate) tx_observer_service: Mutex<TxObservationService>,
 }
 
+/// SQLite's `PRAGMA data_version`, paired with the connection it came from
+/// (`Metadata::data_version`). The version is per connection: unchanged by
+/// its own commits, changed by any other connection's. A `Conn` used with a
+/// different connection than last time therefore always reloads.
+fn version_of(sqlite: &rusqlite::Connection) -> Result<(usize, i64)> {
+    // Cached: this runs before every query and transaction.
+    let v = sqlite
+        .prepare_cached("PRAGMA data_version")?
+        .query_row([], |r| r.get(0))?;
+    // Safety: only the address is used, as an identity.
+    Ok((unsafe { sqlite.handle() } as usize, v))
+}
+
 impl Conn {
     // Intentionally not public.
     fn new(partition_map: PartitionMap, schema: Schema) -> Conn {
@@ -96,14 +109,77 @@ impl Conn {
     /// The current schema and attribute cache, both cheap `Arc` clones, taken
     /// under the lock and released before any query runs. An interrupted or
     /// failing query therefore never holds (or poisons) the metadata lock.
-    fn snapshot(&self) -> (Arc<Schema>, SQLiteAttributeCache) {
+    /// Brought up to date with other connections' commits first (`refresh`).
+    fn snapshot(
+        &self,
+        sqlite: &rusqlite::Connection,
+    ) -> Result<(Arc<Schema>, SQLiteAttributeCache)> {
+        self.refresh(sqlite)?;
         let m = self.lock_metadata();
-        (m.schema.clone(), m.attribute_cache.clone())
+        Ok((m.schema.clone(), m.attribute_cache.clone()))
     }
 
     pub fn connect(sqlite: &mut rusqlite::Connection) -> Result<Conn> {
-        let db = db::ensure_current_version(sqlite)?;
-        Ok(Conn::new(db.partition_map, db.schema))
+        db::ensure_current_version(sqlite)?;
+        // ensure_current_version reads with several autocommit statements, so
+        // a commit between them could be half seen, or missed by a
+        // data_version read afterwards. Read again in one snapshot instead.
+        let conn = Conn::new(PartitionMap::default(), Schema::default());
+        conn.refresh(sqlite)?;
+        Ok(conn)
+    }
+
+    /// If another connection has committed to the file since this `Conn`'s
+    /// metadata was read (SQLite's `data_version` moved), read the partition
+    /// map, schema and cached attribute values again. Without this a
+    /// long-lived handle hands out entids and tx ids another connection
+    /// already used, and doesn't know attributes it installed.
+    ///
+    /// For a write, `sqlite` is inside the caller's IMMEDIATE transaction, so
+    /// no other writer can commit before the caller's statements run. The SQL
+    /// runs without the metadata lock held (see `lock_metadata`).
+    fn refresh_if_stale(&self, sqlite: &rusqlite::Connection) -> Result<()> {
+        let now = version_of(sqlite)?;
+        let cache = {
+            let m = self.lock_metadata();
+            if m.data_version == Some(now) {
+                return Ok(());
+            }
+            m.attribute_cache.clone()
+        };
+        let db = db::read_db(sqlite)?;
+        let cache = cache.reloaded(&db.schema, sqlite)?;
+        let mut m = self.lock_metadata();
+        if m.data_version != Some(now) {
+            m.partition_map = db.partition_map;
+            m.schema = Arc::new(db.schema);
+            m.attribute_cache = cache;
+            m.generation += 1;
+            m.data_version = Some(now);
+        }
+        Ok(())
+    }
+
+    /// Bring this `Conn`'s metadata up to date with commits other connections
+    /// made to the file (see `refresh_if_stale`). Every query calls it, so a
+    /// long-lived handle answers against the current schema.
+    pub fn refresh(&self, sqlite: &rusqlite::Connection) -> Result<()> {
+        // The common case, nothing new, is one PRAGMA.
+        let now = version_of(sqlite)?;
+        if self.lock_metadata().data_version == Some(now) {
+            return Ok(());
+        }
+        if !sqlite.is_autocommit() {
+            // Already in a transaction: its snapshot is what we read.
+            return self.refresh_if_stale(sqlite);
+        }
+        // One read snapshot, so the version and the metadata agree.
+        sqlite.execute_batch("BEGIN DEFERRED")?;
+        let r = self.refresh_if_stale(sqlite);
+        let end = sqlite.execute_batch("COMMIT");
+        r?;
+        end?;
+        Ok(())
     }
 
     /// Yield a clone of the current `Schema` instance.
@@ -145,7 +221,7 @@ impl Conn {
         T: Into<Option<QueryInputs>>,
     {
         // Doesn't clone, unlike `current_schema`.
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         q_once(sqlite, known, query, inputs)
     }
@@ -160,7 +236,7 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         mentat_transaction::query::q_once_value_filtered(sqlite, known, query, inputs)
     }
@@ -208,7 +284,7 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         mentat_transaction::query::q_once_temporal(sqlite, known, query, inputs, basis)
     }
@@ -224,7 +300,7 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, _) = self.snapshot();
+        let (schema, _) = self.snapshot(sqlite)?;
         q_uncached(sqlite, &schema, query, inputs)
     }
 
@@ -237,7 +313,7 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         q_prepare(sqlite, known, query, inputs)
     }
@@ -251,7 +327,7 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         q_explain(sqlite, known, query, inputs)
     }
@@ -267,7 +343,7 @@ impl Conn {
     where
         T: Into<Option<QueryInputs>>,
     {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         mentat_transaction::query::q_explain_temporal(sqlite, known, query, inputs, temporal)
     }
@@ -282,7 +358,7 @@ impl Conn {
         E: IntoIterator<Item = Entid>,
         A: IntoIterator<Item = Entid>,
     {
-        let (schema, _) = self.snapshot();
+        let (schema, _) = self.snapshot(sqlite)?;
         pull_attributes_for_entities(&schema, &mentat_sql::sqlite(sqlite), entities, attributes)
             .map_err(|e| e.into())
     }
@@ -296,7 +372,7 @@ impl Conn {
     where
         A: IntoIterator<Item = Entid>,
     {
-        let (schema, _) = self.snapshot();
+        let (schema, _) = self.snapshot(sqlite)?;
         pull_attributes_for_entity(&schema, &mentat_sql::sqlite(sqlite), entity, attributes)
             .map_err(|e| e.into())
     }
@@ -310,7 +386,7 @@ impl Conn {
         pattern: &str,
         basis: Option<mentat_query_algebrizer::TemporalBound>,
     ) -> Result<StructuredMap> {
-        let (schema, _) = self.snapshot();
+        let (schema, _) = self.snapshot(sqlite)?;
         let specs = edn::parse::pull_pattern(pattern)?;
         Ok(pull_pattern_for_entity(
             &schema,
@@ -327,7 +403,7 @@ impl Conn {
         entity: Entid,
         attribute: &edn::Keyword,
     ) -> Result<Vec<TypedValue>> {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         lookup_values_for_attribute(sqlite, known, entity, attribute)
     }
@@ -338,7 +414,7 @@ impl Conn {
         entity: Entid,
         attribute: &edn::Keyword,
     ) -> Result<Option<TypedValue>> {
-        let (schema, cache) = self.snapshot();
+        let (schema, cache) = self.snapshot(sqlite)?;
         let known = Known::new(&schema, Some(&cache));
         lookup_value_for_attribute(sqlite, known, entity, attribute)
     }
@@ -350,6 +426,7 @@ impl Conn {
         behavior: TransactionBehavior,
     ) -> Result<InProgress<'m, 'conn>> {
         let tx = sqlite.transaction_with_behavior(behavior)?;
+        self.refresh_if_stale(&tx)?;
         let (current_generation, current_partition_map, current_schema, cache_cow) = {
             // The mutex is taken during this block.
             let current: &Metadata = &self.lock_metadata();

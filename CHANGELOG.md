@@ -8,6 +8,35 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedded engine: a `Store` now sees what other connections committed to
+  its file.** It read its partition map (the next entid and tx id), schema
+  and cached attribute values once, at open. When another process, or a
+  second `Store` on the same file, committed, the first handle's next
+  transaction reused the tx id and entids the other had just used, so one
+  transaction's new entity silently replaced the other's values and its
+  `:db/txInstant`; attributes the other connection installed were unknown
+  (writes failed with "no entid found for ident", queries found nothing).
+  Every transaction and query now checks SQLite's `PRAGMA data_version` and,
+  if another connection committed, reads the partition map, schema and
+  cached attributes again first. Inside a transaction's `BEGIN IMMEDIATE`,
+  no writer can commit between the check and the write. The check costs
+  about 1.3 µs per query. A reload happens only after someone else wrote:
+  about 0.5 ms with a 200-attribute schema, plus re-reading every cached
+  attribute (about 33 ms for 100k cached values). Reported from Improv;
+  every version up to 1.19.1 was affected. (pg_mentat and DuckDB stores
+  were not: they read their state from the database on each transaction.)
+- New `Store::current_schema()` returns the schema including other
+  connections' attributes. `Store::last_tx_id()`, `Store::cache`,
+  `QueryBuilder::bind_ref_from_kw`, the CLI's `.schema` / `.query` / `.pull`,
+  the FFI's `store_entid_for_attribute`, and scripts' `entity` / `read` /
+  input binding now use it. `Store::conn().current_schema()` is still this
+  handle's own copy, as of its last read.
+- The SQLite and DuckDB extensions' per-thread store cache no longer
+  reopens a store after another connection writes; the store refreshes
+  itself.
+
 ## [1.19.1] — the 1.18.0 -> 1.19 upgrade no longer deadlocks with live writers
 
 Upgrading: from 1.18.0, `ALTER EXTENSION pg_mentat UPDATE` now goes straight

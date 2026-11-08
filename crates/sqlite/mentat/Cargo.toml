@@ -42,10 +42,11 @@ uuid = { version = "~1.25", features = ["v4", "serde"] }
 version = "~0.40"
 features = ["limits", "bundled"]
 
-# `hooks` for progress_handler: tests count SQLite VM steps.
+# `hooks` for progress_handler: tests count SQLite VM steps. `trace` lets a
+# test commit from another connection at an exact statement.
 [dev-dependencies.rusqlite]
 version = "~0.40"
-features = ["hooks"]
+features = ["hooks", "trace"]
 
 [dependencies.edn]
 package = "mentat_edn"

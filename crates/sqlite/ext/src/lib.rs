@@ -449,9 +449,12 @@ fn results_json(spec: &FindSpec, results: QueryResults) -> Json {
 fn query_json(db: &str, query: &str, opts: Option<&str>) -> Res<String> {
     let opts = parse_opts(opts)?;
     let out = store_cache::read(db, |store| {
-        let (inputs, temporal) =
-            mentat::options_from_json(&store.conn().current_schema(), query, &opts)
-                .map_err(|e| format!("edn_q: {e}"))?;
+        let (inputs, temporal) = mentat::options_from_json(
+            &*store.current_schema().map_err(|e| format!("edn_q: {e}"))?,
+            query,
+            &opts,
+        )
+        .map_err(|e| format!("edn_q: {e}"))?;
         store
             .q_once_temporal(query, inputs, temporal)
             .map_err(|e| e.to_string())

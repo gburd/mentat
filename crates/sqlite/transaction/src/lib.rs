@@ -313,11 +313,21 @@ impl<'a, 'c> InProgress<'a, 'c> {
         // Safety: the connection outlives `self` ('c) and is not used
         // concurrently (we hold `&mut` to it through the transaction).
         let conn = unsafe { rusqlite::Connection::from_handle(self.transaction.handle()) }?;
+        // Read before COMMIT, while we still hold the write lock: our own
+        // commit doesn't move data_version, and after COMMIT another writer
+        // could commit before we read it, which we would then never reload.
+        let data_version = self
+            .transaction
+            .query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .ok()
+            // Safety: only the address is used, as an identity (as Conn does).
+            .map(|v| (unsafe { self.transaction.handle() } as usize, v));
         self.transaction.commit()?;
         mentat_db::db::restart_wal_if_large(&conn);
         drop(conn);
 
         metadata.generation += 1;
+        metadata.data_version = data_version;
         metadata.partition_map = self.partition_map;
 
         // Update the conn's cache if we made any changes.
