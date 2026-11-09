@@ -643,3 +643,41 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   earlier; the fork built the same ref green. Re-runs need repo admin.
   Asked on #3529 (comment 6712846365) for a re-run or dispatch. Verify after:
   footer field 5 of v2.0.0/<platform>/mentat.duckdb_extension.gz = v1.19.1.
+
+## v1.20.0 released (2026-11-09)
+
+- Signed tag `v1.20.0` on c3695412 (origin + github). Commits: 0be4d8e6,
+  c4517fd1, e0fd49d8 (#430, stale Store metadata; merge 400ff8e9), 168c61d1
+  (deps), e659d47e (release bump), c3695412 (CHANGELOG names #430/#431).
+- Why: RUSTSEC-2026-0459 (#431). libsqlite3-sys 0.38.2 bundled SQLite 3.53.2;
+  now rusqlite 0.41.1 / libsqlite3-sys 0.39.1 / SQLite 3.54.1. Improv
+  (rusqlite 0.40 because mentat pinned ~0.40) was blocked: one program can link
+  one bundled libsqlite3-sys. MSRV 1.88 -> 1.90 (rusqlite 0.41: 1.89,
+  ordered-float 5.5: 1.90); 1.90.0 builds mentatdb + mentat_cli.
+- Out: GitHub Release 8 assets (run 42641137563), PGXN 1.20.0, crates.io 20
+  crates, DuckDB registry PR duckdb/community-extensions#3574 (by hand; fork run
+  42644860565 linux green, footer `C_STRUCT v1.20.0 v1.5.6`). Published
+  mentat-cli and libmentat_sqlite.so carry SQLITE_SOURCE_ID 2026-10-16 555e07ef
+  (3.54.1); the DuckDB extension has no SQLite.
+- Gate (woof box, results ~/.cache/mentat-werk/rel/120/results/): pgrx +script
+  pg13 2204, pg14-19 2218, all 0 failed; packages pg15-19 glibc 2.34; upgrade ==
+  fresh from released 1.18.0 (path 1.18.0--1.19.1--1.20.0) and 1.19.1, the known
+  FN/OB diffs only; trusted install; hijack f f t f; #428 writer repro 5/5 on
+  pg15/18/19 with 0 deadlocks; long reader -> busy after 30.1 s, writers
+  unaffected; DuckDB build, xv PASS (v1.5.6 + v2.0), harness 64/0. werk: ws
+  1932/0, mino 211/0, mino-rs 157/0, ext 9/0, clippy x3, fmt, deny.
+- The second bug report given with this release
+  (/tmp/pg_mentat-1.19.0-upgrade-deadlock-2026-11-03.md) is byte-identical to
+  #428's, fixed in 1.19.1 and re-proved above on the 1.20.0 path.
+- EC2 torn down: i-05c6d4f34e8c1f0df, SG, key (woof). No mentat EC2 resources.
+- Lessons: the gate box needs `git submodule update --init` in the pushed tree
+  (dev.sh push copies the worktree; a fresh worktree has an empty
+  extension-ci-tools, so `make configure` fails). The installcheck workflow
+  (PG16 from Ubuntu's archive) fails since ubuntu-latest moved to 26.04,
+  which has no postgresql-16; it has failed on every push since 2026-11-04
+  and needs PGDG like release.yml. A `git checkout` meant for another clone
+  ran in ~/ws/mentat after a failed `cd`: always `cd X && ...`.
+- Next: watch #3574 (merge, then a maintainer dispatches v1.5.6; check footers on
+  v1.5.6/ and v2.0.0/); v2.0.0/ may still serve 1.19.0 (#3529's merge build
+  failed). Improv: replies drafted in ~/.cache/mentat-werk/reply-*.md, patch
+  ~/.cache/mentat-werk/improv/rusqlite-0.41.patch.
