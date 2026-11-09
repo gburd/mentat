@@ -2356,7 +2356,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mentat_cli"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_core"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "chrono",
  "enumset",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_core_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2412,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_db"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "env_logger",
  "indexmap",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_db_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_duckdb"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "duckdb",
  "mentat_core",
@@ -2463,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_duckdb_store"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_edn"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_public_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "http",
  "hyper",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "itertools 0.15.0",
  "mentat_core",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "indexmap",
  "mentat_core",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_db_traits",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_sql"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_scale_runner"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentatdb",
  "serde_json",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_script"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2652,14 +2652,14 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql_traits"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_sqlite_ext"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentatdb",
  "serde_json",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_transaction"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2687,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "mentatd"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2721,7 +2721,7 @@ dependencies = [
 
 [[package]]
 name = "mentatdb"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "assert_approx_eq",
  "chrono",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "mino-rs"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "fancy-regex",
  "mino_gc",
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "pg_mentat"
-version = "1.19.1"
+version = "1.20.0"
 dependencies = [
  "chrono",
  "ciborium",

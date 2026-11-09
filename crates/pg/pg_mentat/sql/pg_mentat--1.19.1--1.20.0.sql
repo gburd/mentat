@@ -1,0 +1,10 @@
+-- pg_mentat 1.19.1 -> 1.20.0 upgrade.
+--
+-- 1.20.0 changes no SQL objects: its changes are in the embedded SQLite
+-- engine (bundled SQLite 3.54.1, stores that see other connections'
+-- commits) and in dependencies. A 1.19.1 database has nothing to change.
+--
+-- Each section below belongs to one change; add yours as a new section under a
+-- line `-- === <name> ===`. Script-time rules: pg_catalog-qualify every call,
+-- pin search_path per DO block with pg_catalog.set_config and restore it, and
+-- never SET LOCAL search_path (scripts/pg/check-script-search-path.py).

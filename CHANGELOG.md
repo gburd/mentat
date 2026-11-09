@@ -6,7 +6,47 @@ PostgreSQL extension, which share one front-end) are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.20.0] — bundled SQLite 3.54.1 (RUSTSEC-2026-0459), stores see other connections' commits
+
+Upgrading a Rust crate: mentat now builds on **rusqlite 0.41** (bundled
+SQLite **3.54.1**) and needs **Rust 1.90**. An application that also
+depends on rusqlite must move to 0.41 in the same change: two bundled
+`libsqlite3-sys` versions can't link into one program (`links =
+"sqlite3"`). Read **Breaking (Rust API)**. pg_mentat: no SQL changes; the
+upgrade from 1.19.1 is empty (`pg_mentat--1.19.1--1.20.0.sql`). From 1.18.0,
+`ALTER EXTENSION pg_mentat UPDATE` goes 1.18.0 -> 1.19.1 -> 1.20.0, so it
+takes the 1.19.1 lock-first script and doesn't deadlock with live writers
+(#428); never `UPDATE TO '1.19.0'`. The SQLite loadable extension bundles
+the fixed SQLite.
+
+### Security
+
+- **Bundled SQLite 3.53.2 -> 3.54.1: RUSTSEC-2026-0459 / CVE-2026-119375 /
+  GHSA-72w2-rjgg-q729.** SQLite before 3.54.0 can return uninitialized
+  page-cache memory when it opens a database together with a `-wal` file
+  whose page size differs from the database's. A crafted pair of files can
+  make ordinary queries return stale bytes from the process's memory, and
+  a program that writes query results back can then save them into the
+  file. Anything that opens a mentat store (`.db` plus `-wal`) it didn't
+  write itself is exposed: the embedded crates (`mentatdb`, `mentat_cli`)
+  and the SQLite loadable extension (its engine keeps its own bundled copy)
+  ship SQLite. `libsqlite3-sys` 0.38.2 -> 0.39.1 via rusqlite 0.40.2 ->
+  0.41.1. The DuckDB extension contains no SQLite (since 1.11), and
+  pg_mentat and mentatd don't use it. The `sqlcipher` feature builds
+  SQLCipher instead, whose bundled SQLite (3.53.4 in `sqlcipher-src`
+  419.0.6) is still affected; it isn't part of any released artifact.
+
+### Breaking (Rust API)
+
+- **rusqlite 0.40 -> 0.41.** `Store::sqlite_ref()` / `sqlite_mut()`,
+  `Conn::connect` and every other API taking or returning a
+  `rusqlite::Connection` now use rusqlite 0.41's type. Code that calls
+  rusqlite on it moves to 0.41 too; 0.41 itself changed, among others,
+  hook setters (`trace_v2`, `progress_handler`, ...), which take
+  `&mut Connection` and return `Result` (rusqlite's use-after-free fix,
+  #1899), and `Statement::column_names` returns an iterator.
+- **MSRV 1.88 -> 1.90** (rusqlite 0.41 needs 1.89, ordered-float 5.5 1.90).
+- `uuid` ~1.25 -> ~1.29 and `http` ~1.1 -> ~1.5 in the published crates.
 
 ### Fixed
 
@@ -36,6 +76,17 @@ and the project follows [Semantic Versioning](https://semver.org/).
 - The SQLite and DuckDB extensions' per-thread store cache no longer
   reopens a store after another connection writes; the store refreshes
   itself.
+
+### Changed
+
+- Dependencies: every crate on its newest compatible version
+  (`cargo update`); and, inside crates whose types aren't in mentat's API,
+  new major versions: petgraph 0.8, fancy-regex 0.20 (mino's regexes;
+  mostly matching fixes), dirs 7 (CLI); pg_mentat parking_lot 0.13, lru
+  0.19; mentatd tower-http 0.7, tokio-tungstenite 0.30, toml 1.2, lru
+  0.19, and dev-only reqwest 0.13, criterion 0.8. duckdb-rs stays on
+  1.10506 (DuckDB v1.5.6): that is the extension's C API floor, so one
+  binary loads into DuckDB v1.5.6 and v2.0.
 
 ## [1.19.1] — the 1.18.0 -> 1.19 upgrade no longer deadlocks with live writers
 
