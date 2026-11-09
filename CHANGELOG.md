@@ -22,7 +22,7 @@ the fixed SQLite.
 ### Security
 
 - **Bundled SQLite 3.53.2 -> 3.54.1: RUSTSEC-2026-0459 / CVE-2026-119375 /
-  GHSA-72w2-rjgg-q729.** SQLite before 3.54.0 can return uninitialized
+  GHSA-72w2-rjgg-q729** (#431). SQLite before 3.54.0 can return uninitialized
   page-cache memory when it opens a database together with a `-wal` file
   whose page size differs from the database's. A crafted pair of files can
   make ordinary queries return stale bytes from the process's memory, and
@@ -64,7 +64,7 @@ the fixed SQLite.
   no writer can commit between the check and the write. The check costs
   about 1.3 µs per query. A reload happens only after someone else wrote:
   about 0.5 ms with a 200-attribute schema, plus re-reading every cached
-  attribute (about 33 ms for 100k cached values). Reported from Improv;
+  attribute (about 33 ms for 100k cached values) (#430). Reported from Improv;
   every version up to 1.19.1 was affected. (pg_mentat and DuckDB stores
   were not: they read their state from the database on each transaction.)
 - New `Store::current_schema()` returns the schema including other
