@@ -5,7 +5,7 @@
 ### From Source
 
 Prerequisites:
-- Rust 1.88+ (install via [rustup](https://rustup.rs/))
+- Rust 1.90+ (install via [rustup](https://rustup.rs/))
 - PostgreSQL 15-17 with development headers
 - LLVM/Clang development libraries (for pgrx bindgen)
 - `pkg-config`, `build-essential` (or equivalent)

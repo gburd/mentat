@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://codeberg.org/gregburd/mentat"
 
 [dependencies.rusqlite]
-version = "~0.40"
+version = "~0.41"
 features = ["limits", "bundled"]
 
 [dependencies.edn]

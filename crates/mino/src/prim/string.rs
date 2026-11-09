@@ -450,7 +450,7 @@ fn regex_replace(
 /// Compute one match's replacement text: expand a `$N` template or call a fn.
 fn build_replacement(
     it: &mut Interp,
-    caps: &fancy_regex::Captures,
+    caps: &fancy_regex::Captures<str>,
     repl: &Value,
 ) -> Result<String, Throw> {
     let n_groups = caps.len() - 1;
@@ -484,7 +484,7 @@ fn build_replacement(
 
 /// Expand a `$N` template: `$0` whole match, `$1`.. groups; `\$`/`\\` are
 /// literal `$`/`\`. A `$N` past the last group throws MCT001 (matches mino).
-fn expand_template(tmpl: &str, caps: &fancy_regex::Captures) -> Result<String, Throw> {
+fn expand_template(tmpl: &str, caps: &fancy_regex::Captures<str>) -> Result<String, Throw> {
     let b = tmpl.as_bytes();
     let mut out = String::new();
     let mut i = 0;

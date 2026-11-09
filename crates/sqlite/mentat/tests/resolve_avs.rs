@@ -248,9 +248,10 @@ fn grow(s: &Store, key: i64, title: i64, from: usize, n: usize) {
 /// SQLite VM steps (progress-handler calls at N = 1) for one `resolve_avs` of
 /// `pairs`, and its time, for information only. A first call prepares and
 /// caches the statement, so only execution counts.
-fn resolve_ops(s: &Store, pairs: &[AVPair]) -> (u64, Duration) {
+fn resolve_ops(s: &mut Store, pairs: &[AVPair]) -> (u64, Duration) {
     let refs: Vec<&AVPair> = pairs.iter().collect();
-    let c = s.sqlite_ref();
+    // rusqlite 0.41: setting a hook needs `&mut Connection`.
+    let c = s.sqlite_mut();
     assert_eq!(c.resolve_avs(&refs).unwrap().len(), pairs.len());
     let ops = Arc::new(AtomicU64::new(0));
     let o = Arc::clone(&ops);
@@ -293,14 +294,14 @@ fn ops_small_big(pairs: impl Fn(i64, i64) -> Vec<AVPair>) -> (u64, u64) {
     let pairs = pairs(key, title);
 
     grow(&s, key, title, 0, 10_000);
-    let (small, ts) = resolve_ops(&s, &pairs);
+    let (small, ts) = resolve_ops(&mut s, &pairs);
     grow(&s, key, title, 10_000, 100_000);
     let n: i64 = s
         .sqlite_ref()
         .query_row("SELECT count(*) FROM datoms", [], |r| r.get(0))
         .unwrap();
     assert!(n > 100_000, "{n} datoms");
-    let (big, tb) = resolve_ops(&s, &pairs);
+    let (big, tb) = resolve_ops(&mut s, &pairs);
     println!(
         "{} lookups: {small} VM steps ({ts:?}) at ~11k datoms, {big} ({tb:?}) at {n}",
         pairs.len()

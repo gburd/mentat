@@ -17,7 +17,8 @@ pub trait EnumSetExtensions<T: ::enumset::EnumSetType + Clone> {
     fn of_both(x: T, y: T) -> EnumSet<T>;
 
     /// Return a clone of `self` with `y` added.
-    #[expect(dead_code)]
+    // Used only by the tests, so `expect` would fail in test builds.
+    #[cfg_attr(not(test), expect(dead_code))]
     fn with(&self, y: T) -> EnumSet<T>;
 }
 

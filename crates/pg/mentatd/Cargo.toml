@@ -3,7 +3,7 @@ name = "mentatd"
 publish = false
 version = "1.19.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 authors = ["Gregory Burd <greg@burd.me>"]
 license = "Apache-2.0"
 repository = "https://github.com/gburd/pg_mentat"
@@ -23,7 +23,7 @@ axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1.45.0", features = ["full"] }
 tokio-stream = "0.1"
 tower = "0.5.3"
-tower-http = { version = "0.6.2", features = ["trace", "timeout", "cors"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout", "cors"] }
 
 # PostgreSQL
 tokio-postgres = { version = "0.7.12", features = ["with-serde_json-1"] }
@@ -32,13 +32,13 @@ deadpool-postgres = "0.14.0"
 # Serialization
 serde = { version = "1.0.221", features = ["derive"] }
 serde_json = "1.0.144"
-toml = "0.8.20"
+toml = "1.2"
 
 # EDN parsing (from workspace)
 edn = { package = "mentat_edn", path = "../../edn", version = "=1.19.1" }
 
 # Caching
-lru = "0.18"
+lru = "0.19"
 
 # Metrics
 prometheus = "0.14"
@@ -57,12 +57,12 @@ chrono = "0.4.39"
 hex = "0.4.3"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 futures-util = "0.3"
 hyper = "1.6.0"
-reqwest = { version = "0.12.14", features = ["json"] }
+reqwest = { version = "0.13.5", features = ["json"] }
 tokio-test = "0.4.4"
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 uuid = { version = "1.21.0", features = ["v4"] }
 
 [[bench]]

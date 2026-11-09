@@ -22,7 +22,7 @@ path = "../sql-traits"
 version = "=1.19.1"
 
 [dependencies.rusqlite]
-version = "~0.40"
+version = "~0.41"
 features = ["limits", "bundled"]
 
 [dependencies.edn]

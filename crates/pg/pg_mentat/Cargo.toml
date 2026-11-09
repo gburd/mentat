@@ -40,8 +40,8 @@ uuid = "1"
 ordered-float = "5.1.0"
 chrono = "0.4"
 
-lru = "0.18"
-parking_lot = "0.12"
+lru = "0.19"
+parking_lot = "0.13"
 
 # Optional: the mino Clojure-dialect interpreter, behind the `script` feature.
 # Pure-Rust, single-threaded, no FFI/threads/global state -- safe to embed in

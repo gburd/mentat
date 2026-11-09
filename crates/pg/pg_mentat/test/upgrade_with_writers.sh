@@ -23,7 +23,7 @@
 #                      writers. 1.19.1 gives up with the busy error after 30 s
 #                      and the writers go on; 1.19.0 stalls them until the
 #                      reader ends, then deadlocks or succeeds.
-#   paths              pg_extension_update_paths for 1.17.2 / 1.18.0 / 1.19.0.
+#   paths              pg_extension_update_paths from 1.17.2 / 1.18.0 / 1.19.x.
 #
 # Run it with the new library and the upgrade scripts installed and the server
 # restarted after seed. Environment: PGHOST, PGPORT, PGUSER as for psql;
@@ -160,7 +160,7 @@ reader() {
 
 paths() {
     q "$TEMPLATE" "SELECT source || ' -> ' || target || ': ' || coalesce(path, '(none)') FROM pg_extension_update_paths('pg_mentat')
-                    WHERE source IN ('1.17.2', '1.18.0', '1.19.0') AND target IN ('1.19.0', '1.19.1') ORDER BY 1"
+                    WHERE source IN ('1.17.2', '1.18.0', '1.19.0', '1.19.1') AND target IN ('1.19.0', '1.19.1', '1.20.0') ORDER BY 1"
 }
 
 cmd=${1:-}

@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Rust 1.88+ (stable)
+- Rust 1.90+ (stable)
 - PostgreSQL 16 development headers (or 13-19)
 - LLVM 18 / Clang (for pgrx bindgen)
 - cargo-pgrx 0.19.3

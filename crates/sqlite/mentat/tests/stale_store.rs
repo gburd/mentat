@@ -272,26 +272,29 @@ fn one_conn_over_two_sqlite_connections() {
 /// that commit as already seen and reuse its ids on the next write.
 #[test]
 fn a_commit_right_after_ours_is_not_missed() {
-    use std::sync::Mutex;
-    // trace_v2 takes a plain fn, so its state lives in a static: the path to
-    // write to, and whether A's COMMIT has started.
-    static INJECT: Mutex<Option<(String, bool)>> = Mutex::new(None);
-    fn on_stmt(e: rusqlite::trace::TraceEvent<'_>) {
-        let rusqlite::trace::TraceEvent::Stmt(_, sql) = e else {
-            return;
-        };
-        let mut g = INJECT.lock().unwrap();
-        match g.as_mut() {
-            Some((_, seen)) if !*seen => *seen = sql.trim().eq_ignore_ascii_case("COMMIT"),
-            Some(_) => {
-                // The first statement A runs after COMMIT: the lock is free.
-                let (path, _) = g.take().unwrap();
-                let mut b = Store::open(&path).unwrap();
-                b.transact(r#"[{:db/id "b" :t/name "from B"}]"#).unwrap();
+    use std::sync::{Arc, Mutex};
+    // The path to write to once armed, and whether A's COMMIT has started.
+    type Inject = Arc<Mutex<Option<(String, bool)>>>;
+    let inject: Inject = Arc::default();
+    let hook = {
+        let inject = inject.clone();
+        move |e: rusqlite::trace::TraceEvent<'_>| {
+            let rusqlite::trace::TraceEvent::Stmt(_, sql) = e else {
+                return;
+            };
+            let mut g = inject.lock().unwrap();
+            match g.as_mut() {
+                Some((_, seen)) if !*seen => *seen = sql.trim().eq_ignore_ascii_case("COMMIT"),
+                Some(_) => {
+                    // The first statement A runs after COMMIT: the lock is free.
+                    let (path, _) = g.take().unwrap();
+                    let mut b = Store::open(&path).unwrap();
+                    b.transact(r#"[{:db/id "b" :t/name "from B"}]"#).unwrap();
+                }
+                None => {}
             }
-            None => {}
         }
-    }
+    };
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("t.db");
@@ -300,18 +303,24 @@ fn a_commit_right_after_ours_is_not_missed() {
     let mut a = Store::open(path).unwrap();
     a.transact(r#"[{:t/name "warm"}]"#).unwrap();
 
-    a.sqlite_mut().trace_v2(
-        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-        Some(on_stmt),
-    );
-    *INJECT.lock().unwrap() = Some((path.to_string(), false));
+    a.sqlite_mut()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(hook),
+        )
+        .unwrap();
+    *inject.lock().unwrap() = Some((path.to_string(), false));
     a.transact(r#"[{:db/id "a" :t/name "from A"}]"#).unwrap();
     // B runs at A's next statement at the latest: the next transact's BEGIN.
     a.transact(r#"[{:db/id "c" :t/name "from A again"}]"#)
         .unwrap();
     a.sqlite_mut()
-        .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
-    assert!(INJECT.lock().unwrap().is_none(), "B never ran");
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
+    assert!(inject.lock().unwrap().is_none(), "B never ran");
 
     let c = Store::open(path).unwrap();
     assert_eq!(shared_tx_ids(&c), 0, "A's next write reused B's tx id");

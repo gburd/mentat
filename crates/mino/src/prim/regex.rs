@@ -198,7 +198,7 @@ fn bad_pattern(ctx: &str) -> Throw {
 /// Build the match result at a `fancy_regex::Captures`: a plain string when
 /// the pattern has NO groups, or `[whole g1 g2 ...]` (nil for unmatched
 /// groups) when it does. Ports `match_vector` + the groupless branch.
-fn match_result(caps: &fancy_regex::Captures) -> Value {
+fn match_result(caps: &fancy_regex::Captures<str>) -> Value {
     let n_groups = caps.len() - 1; // group 0 is the whole match
     let whole = caps.get(0).map(|m| m.as_str()).unwrap_or("");
     if n_groups == 0 {

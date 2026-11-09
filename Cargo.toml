@@ -54,7 +54,7 @@ version = "1.19.1"
 edition = "2021"
 # MSRV of the published (crates.io) crates. pg_mentat overrides it with 1.96
 # (pgrx 0.19); rust-toolchain.toml pins the build toolchain.
-rust-version = "1.88"
+rust-version = "1.90"
 license = "Apache-2.0"
 repository = "https://codeberg.org/gregburd/mentat"
 authors = [
@@ -75,7 +75,7 @@ authors = [
 # § 1.13 — one version per shared third-party dep (higher of each pair).
 itertools = "0.15"
 ordered-float = "5.3"
-uuid = "1.25"
+uuid = "1.29"
 chrono = "0.4.45"
 peg = "0.8.6"
 pretty = "0.12.5"
@@ -83,7 +83,7 @@ indexmap = "2.14"
 bytes = "1.12"
 serde = "1.0.229"
 thiserror = "2.0"
-rusqlite = "0.40"
+rusqlite = "0.41"
 mino-rs = { path = "crates/mino" }
 
 [workspace.lints.clippy]
