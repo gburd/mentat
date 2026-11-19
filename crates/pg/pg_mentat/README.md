@@ -19,10 +19,10 @@ that provides:
 
 ### Prerequisites
 
-- PostgreSQL 13-19 (16 recommended; 19 tested on 19rc1)
+- PostgreSQL 13-19 (16 recommended), at least 14.25 / 15.20 / 16.16 / 17.12 / 18.7 / 19.0 (CVE-2026-6460); 13 is end-of-life
 - Rust stable toolchain (1.88+)
 - LLVM/Clang development libraries
-- cargo-pgrx 0.19.3 (Rust 1.96+)
+- cargo-pgrx 0.19.4 (Rust 1.96+)
 
 ### Build and Install
 

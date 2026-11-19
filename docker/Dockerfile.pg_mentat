@@ -28,7 +28,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain 1.96.0
 
 # Install cargo-pgrx matching the version in pg_mentat/Cargo.toml
-RUN cargo install --locked cargo-pgrx --version '=0.19.3'
+RUN cargo install --locked cargo-pgrx --version '=0.19.4'
 
 # Initialize pgrx for the system PG16 installation
 RUN cargo pgrx init --pg16 /usr/bin/pg_config

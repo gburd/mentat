@@ -13,6 +13,10 @@ version = 2
 ignore = [
     "RUSTSEC-2021-0127",  # serde_cbor unmaintained (informational); via pgrx 0.19
     "RUSTSEC-2026-0215",  # smallstr unmaintained (informational); CLI-only, via linefeed 0.6 -> mortal 0.2 REPL line editor
+    # chrono unmaintained (informational, no patched version). It is in the public API
+    # (TypedValue::Instant) and comes through arrow/duckdb too; replacing it is a breaking
+    # change tracked in #433. Added 2026-11-19; revisit by 2027-02-01.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]

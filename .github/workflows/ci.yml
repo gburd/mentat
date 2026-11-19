@@ -26,7 +26,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  PGRX_VERSION: "0.19.3"
+  PGRX_VERSION: "0.19.4"
   RUST_TOOLCHAIN: "1.96.0"
 
 jobs:
@@ -256,13 +256,13 @@ jobs:
           restore-keys: ci-pg${{ matrix.pg }}-${{ runner.os }}-
       - name: Install cargo-pgrx
         run: cargo install --locked cargo-pgrx --version "${PGRX_VERSION}"
-      # pgrx 0.19.3's `download` for pg19 fetches 19beta4; test the
-      # release candidate instead.
+      # pgrx 0.19.4's `download` for pg19 fetches 19rc2; test the 19.0
+      # release instead.
       - name: pgrx init (download PG${{ matrix.pg }})
         run: |
           if [ "${{ matrix.pg }}" = 19 ]; then
-            curl -sSfL https://ftp.postgresql.org/pub/source/v19rc1/postgresql-19rc1.tar.bz2 | tar xj -C "$RUNNER_TEMP"
-            (cd "$RUNNER_TEMP/postgresql-19rc1" && ./configure --prefix="$HOME/pg19" --without-icu >/dev/null && make -s -j"$(nproc)" >/dev/null && make -s install >/dev/null)
+            curl -sSfL https://ftp.postgresql.org/pub/source/v19.0/postgresql-19.0.tar.bz2 | tar xj -C "$RUNNER_TEMP"
+            (cd "$RUNNER_TEMP/postgresql-19.0" && ./configure --prefix="$HOME/pg19" --without-icu >/dev/null && make -s -j"$(nproc)" >/dev/null && make -s install >/dev/null)
             cargo pgrx init --pg19 "$HOME/pg19/bin/pg_config"
           else
             cargo pgrx init --pg${{ matrix.pg }} download
