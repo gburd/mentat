@@ -157,7 +157,7 @@
               # pg_config WITHOUT running `cargo pgrx init`.
               printf '[configs]\n${pgFeature} = "%s"\n' \
                 "${pgPkg.pg_config}/bin/pg_config" > "$PGRX_HOME/config.toml"
-              cargo install --locked cargo-pgrx --version '=0.19.3' --root "$CARGO_HOME/pgrx-tools"
+              cargo install --locked cargo-pgrx --version '=0.19.4' --root "$CARGO_HOME/pgrx-tools"
               export PATH="$CARGO_HOME/pgrx-tools/bin:$PATH"
               (cd crates/pg/pg_mentat && cargo pgrx package \
                 --no-default-features --features ${pgFeature} \
@@ -296,7 +296,7 @@
             # Helper: install and initialize cargo-pgrx
             setup-pgrx() {
               echo "Installing cargo-pgrx 0.17..."
-              cargo install --locked cargo-pgrx --version '=0.19.3'
+              cargo install --locked cargo-pgrx --version '=0.19.4'
               echo "Initializing pgrx with the dev-shell PostgreSQL 16..."
               cargo pgrx init --pg16="${postgresql.pg_config}/bin/pg_config"
               echo "pgrx setup complete."

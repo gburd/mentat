@@ -7,7 +7,7 @@
 - Rust 1.90+ (stable)
 - PostgreSQL 16 development headers (or 13-19)
 - LLVM 18 / Clang (for pgrx bindgen)
-- cargo-pgrx 0.19.3
+- cargo-pgrx 0.19.4
 
 ### Nix (Recommended)
 
@@ -27,7 +27,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup default stable
 
 # Install cargo-pgrx
-cargo install cargo-pgrx --version 0.19.3
+cargo install cargo-pgrx --version 0.19.4
 
 # Initialize pgrx (downloads and builds PostgreSQL)
 cargo pgrx init --pg16 $(which pg_config)

@@ -19,7 +19,7 @@
 | Version | 1.5.0 |
 | PostgreSQL | 13, 14, 15, 16 (default), 17, 18 |
 | Rust | 1.90+ |
-| pgrx | 0.19.3 |
+| pgrx | 0.19.4 |
 | License | Apache-2.0 |
 | Repository | <https://github.com/gburd/pg_mentat> |
 

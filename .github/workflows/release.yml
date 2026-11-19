@@ -17,7 +17,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  PGRX_VERSION: "0.19.3"
+  PGRX_VERSION: "0.19.4"
   RUST_TOOLCHAIN: "1.96.0"
 
 jobs:
@@ -97,15 +97,11 @@ jobs:
       - name: Install PostgreSQL ${{ matrix.pg_version }}
         run: |
           # Debian's own repos carry one PG major; add PGDG so pg15..pg19 are
-          # all installable. A PostgreSQL major that isn't final yet (19 is at
-          # rc1) is in its own PGDG component, named after the major; add that
-          # component only for that leg.
+          # all installable from its main component.
           install -d /usr/share/postgresql-common/pgdg
           curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
             --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          COMPONENTS="main"
-          if [ "${{ matrix.pg_version }}" = 19 ]; then COMPONENTS="main 19"; fi
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg ${COMPONENTS}" \
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             > /etc/apt/sources.list.d/pgdg.list
           apt-get update
           apt-get install -y --no-install-recommends \

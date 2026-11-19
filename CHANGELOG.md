@@ -8,6 +8,22 @@ and the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **pg_mentat is built with pgrx 0.19.4, for CVE-2026-6460.** PostgreSQL
+  14.25, 15.20, 16.16, 17.12, 18.7 and 19.0 record a version in each
+  composite datum and check it before reading an attribute, so a row formed
+  under an incompatible definition of its type raises an ERROR instead of
+  being misread. pgrx 0.19.3 read composite attributes with its own code and
+  skipped that check; 0.19.4 performs it when built against the fixed headers.
+  **Minimum minor releases:** a pg_mentat built against those headers (every
+  release package from this one on) won't load into an earlier minor
+  release: `CREATE EXTENSION` or the server's load fails with `undefined
+  symbol: DatumGetHeapTupleHeader` (tested on 17.11). Update PostgreSQL to the
+  November 2026 minor release before installing. PostgreSQL 13 is
+  end-of-life (13.23) and gets no fix; pg_mentat still builds and passes its
+  tests there, without the check.
+
 ### Fixed
 
 - **An explicit entid no longer upserts; one transaction can move a unique
@@ -27,6 +43,15 @@ and the project follows [Semantic Versioning](https://semver.org/).
   entities asserting one new unique value is a conflict too. Behaviour change:
   a transaction that relied on the silent no-op now fails; tempid upserts are
   unchanged. Docs: datomic-compat "Upsert and moving a unique value".
+
+### Changed
+
+- **PostgreSQL 19.0 is supported and tested.** CI builds and tests pg19
+  against the 19.0 release (it used 19rc1), and the release workflow installs
+  pg19 from PGDG's main component. The pg19 packages of 1.20.0 (built on
+  19rc1) load and work on 19.0.
+- CI: installcheck installs PostgreSQL 16 from PGDG; ubuntu-latest (26.04) has
+  none in its archive, so the job failed on every push (#432).
 
 ## [1.20.0] — bundled SQLite 3.54.1 (RUSTSEC-2026-0459), stores see other connections' commits
 
