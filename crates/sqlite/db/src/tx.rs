@@ -46,7 +46,7 @@
 //! keep everything straight.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::iter::once;
 
 use crate::db;
@@ -452,33 +452,48 @@ where
         Ok(())
     }
 
-    /// A :db/unique value asserted on the transaction entity (by "datomic.tx" or
-    /// `(transaction-tx)`) that another entity holds, or asserts in this transaction, is a
-    /// unique conflict: the transaction is a known entity, so it never upserts (#414).
-    fn check_tx_entity_unique_values(&self, trie: &AEVTrie) -> Result<()> {
-        let tx = self.tx_id;
-        let mut held: Vec<(AVPair, &Attribute)> = vec![];
+    /// A :db/unique value an entity asserts that another entity holds, or asserts in this
+    /// transaction, is a unique conflict, unless the holder lets it go in this transaction
+    /// (retracts it, or replaces a cardinality-one value), as Datomic checks uniqueness on the
+    /// resulting database. Upsert has already moved a tempid that names a held
+    /// :db.unique/identity value onto its holder, so what is left is an explicit entid, the
+    /// transaction entity (#414), or a :db.unique/value assertion: none of them upserts.
+    fn check_unique_values(&self, trie: &AEVTrie) -> Result<()> {
+        let mut held: Vec<(AVPair, &Attribute, Entid)> = vec![];
         for ((a, attribute), evs) in trie {
-            let Some(ars) = evs.get(&tx).filter(|_| attribute.unique.is_some()) else {
+            if attribute.unique.is_none() {
                 continue;
-            };
-            for v in &ars.add {
-                if let Some((&e, _)) = evs.iter().find(|(&e, o)| e != tx && o.add.contains(v)) {
-                    bail!(self.unique_conflict(*a, attribute, v, e));
+            }
+            for (&e, ars) in evs {
+                for v in &ars.add {
+                    if let Some((&other, _)) =
+                        evs.iter().find(|(&o, ars)| o != e && ars.add.contains(v))
+                    {
+                        bail!(self.unique_conflict(*a, attribute, v, other, e));
+                    }
+                    held.push(((*a, v.clone()), attribute, e));
                 }
-                held.push(((*a, v.clone()), attribute));
             }
         }
         if held.is_empty() {
             return Ok(());
         }
-        let avs: Vec<&AVPair> = held.iter().map(|(av, _)| av).collect();
-        let holders = self.store.resolve_avs(&avs[..])?;
-        for (av @ (a, v), attribute) in &held {
+        // One value type per resolve_avs call: DuckDB's VALUES list can't mix
+        // types in one column.
+        let mut holders = HashMap::new();
+        let mut by_type: BTreeMap<ValueType, Vec<&AVPair>> = BTreeMap::new();
+        for (av, _, _) in &held {
+            by_type.entry(av.1.value_type()).or_default().push(av);
+        }
+        for avs in by_type.values() {
+            for (&av, &e) in self.store.resolve_avs(&avs[..])?.iter() {
+                holders.insert(av, e);
+            }
+        }
+        for (av @ (a, v), attribute, e) in &held {
             let Some(&holder) = holders.get(av) else {
                 continue;
             };
-            // Unless the holder lets the value go in this transaction.
             let released = trie
                 .get(&(*a, *attribute))
                 .and_then(|evs| evs.get(&holder))
@@ -486,8 +501,8 @@ where
                     o.retract.contains(v)
                         || (!attribute.multival && !o.add.is_empty() && !o.add.contains(v))
                 });
-            if holder != tx && !released {
-                bail!(self.unique_conflict(*a, attribute, v, holder));
+            if holder != *e && !released {
+                bail!(self.unique_conflict(*a, attribute, v, holder, *e));
             }
         }
         Ok(())
@@ -499,6 +514,7 @@ where
         attribute: &Attribute,
         v: &TypedValue,
         holder: Entid,
+        e: Entid,
     ) -> DbErrorKind {
         use crate::db::TypedSQLValue;
         DbErrorKind::UniqueConflict {
@@ -512,7 +528,7 @@ where
             },
             value: v.to_edn_value_pair().0.to_string(),
             holder,
-            e: self.tx_id,
+            e,
         }
     }
 
@@ -1329,7 +1345,7 @@ where
                 ));
             }
 
-            self.check_tx_entity_unique_values(&aev_trie)?;
+            self.check_unique_values(&aev_trie)?;
 
             // Pipeline stage 4: final terms (after rewriting) -> DB insertions.
             // Collect into non_fts_*.

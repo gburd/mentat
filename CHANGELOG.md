@@ -6,6 +6,28 @@ PostgreSQL extension, which share one front-end) are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **An explicit entid no longer upserts; one transaction can move a unique
+  value** (#424 item 1; reported 2026-11-18). On pg_mentat, asserting a
+  `:db.unique/identity` value another entity holds on an explicit entid moved
+  the assertion onto the holder: `[[:db/add C :a "v"]]` alone changed
+  nothing and reported nothing (the write was lost), and retracting the value
+  from its holder S in the same transaction failed with an AddRetractConflict
+  naming S. A `:db.unique/value` move failed with `:db.error/unique-conflict`
+  although the transaction released the value. The embedded engine and
+  DuckDB failed the lone assertion with "failed to add datoms not already
+  present". Now, on every backend and as in Datomic: only an entity the
+  transaction creates upserts; an explicit entid asserting a value another
+  entity holds is `:db.error/unique-conflict`; and uniqueness is checked on
+  the resulting database, so retracting the value from its holder in the same
+  transaction (either order, or `:db/retractEntity`) frees it. Two explicit
+  entities asserting one new unique value is a conflict too. Behaviour change:
+  a transaction that relied on the silent no-op now fails; tempid upserts are
+  unchanged. Docs: datomic-compat "Upsert and moving a unique value".
+
 ## [1.20.0] — bundled SQLite 3.54.1 (RUSTSEC-2026-0459), stores see other connections' commits
 
 Upgrading a Rust crate: mentat now builds on **rusqlite 0.41** (bundled

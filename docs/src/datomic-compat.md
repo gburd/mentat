@@ -74,6 +74,33 @@ attribute. To write two refs in that case, make the first one a lookup ref
 {:form/fields [[:db/ident :user/id] :user/name]} ; two refs: :user/id and :user/name
 ```
 
+### Upsert and moving a unique value
+
+Only an entity the transaction creates (a tempid, or a map without `:db/id`)
+upserts: when it asserts a `:db.unique/identity` value another entity holds,
+it becomes that entity, as Datomic documents. An explicit entid never
+upserts. Asserting a `:db.unique/identity` or `:db.unique/value` value that
+another entity holds on an explicit entid is `:db.error/unique-conflict`,
+naming the attribute, the value and both entities, on every backend (since
+1.21.0). Before that, pg_mentat moved the assertion onto the holder, so
+`[[:db/add C :person/handle "jdoe"]]` with the value on another entity
+changed nothing and reported nothing, and the embedded engine failed with
+an internal error.
+
+Uniqueness is checked on the database the transaction leaves behind, as in
+Datomic: a value the transaction retracts from its holder is free for
+another entity in the same transaction. So one transaction can move a
+unique value, in either order, or by retracting the old holder:
+
+```clojure
+[[:db/retract S :person/handle "jdoe"] [:db/add C :person/handle "jdoe"]]
+[[:db/retractEntity S] {:db/id C :person/handle "jdoe"}]
+```
+
+Two explicit entities asserting one new unique value in one transaction is
+a conflict too; two tempids asserting one `:db.unique/identity` value are
+one entity.
+
 ### Re-asserting and renaming an ident
 
 `:db/ident` is `:db.unique/identity`, so a map or list entity that names an
@@ -283,7 +310,7 @@ pg_mentat a tx-function can't open any other store or transact; see
 | `:db/valueType` | Yes | Yes | **Complete** (9 types) |
 | `:db/cardinality` | Yes | Yes | **Complete** (one/many) |
 | `:db/unique` (value) | Yes | Yes | **Complete** |
-| `:db/unique` (identity) | Yes | Yes | **Complete** + upsert |
+| `:db/unique` (identity) | Yes | Yes | **Complete** + upsert (tempids only); see [Upsert and moving a unique value](#upsert-and-moving-a-unique-value) |
 | `:db/index` | Yes | Yes | **Complete** |
 | `:db/fulltext` | Yes | Yes | **Complete** -- BM25 scoring |
 | `:db/isComponent` | Yes | Yes | **Complete** -- cascade retraction |
