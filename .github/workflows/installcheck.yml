@@ -60,6 +60,14 @@ jobs:
           # and the default port follow the newest. Use 16's own pg_config, and
           # check that port 5432 is the 16 cluster.
           echo "PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config" >> "$GITHUB_ENV"
+          # The image's cluster (18) holds port 5432 and the 16 package creates
+          # none: drop the others and create a 16 cluster on 5432.
+          pg_lsclusters
+          pg_lsclusters -h | awk '$1 != 16 {print $1, $2}' | while read -r v c; do
+            sudo pg_dropcluster --stop "$v" "$c"
+          done
+          pg_lsclusters -h | grep -q '^16 ' || sudo pg_createcluster 16 main --port 5432 --start
+          sudo systemctl restart postgresql
           pg_lsclusters
           sudo -u postgres psql -p 5432 -tAc "SHOW server_version_num" | grep -q '^16'
 
