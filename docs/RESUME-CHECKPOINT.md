@@ -686,3 +686,28 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   closed too. v1.5.6/ still serves 1.19.1: asked on #3574 (comment
   7016255734) for the variegata dispatch. Verify after: footer field 4 of
   v1.5.6/<platform>/mentat.duckdb_extension.gz = v1.20.0.
+
+## After 1.20.0, on master (2026-11-19), unreleased
+
+- c45b22ac on master, CI green on every job (test-pg pg13..pg19, installcheck).
+- fce2817f (merge 17eb5a20): explicit entids don't upsert; one transaction can
+  move a unique value (report 2026-11-18, #424 part 1). Behaviour change: a lone
+  explicit-entid assert of a held value is now :db.error/unique-conflict (it was
+  a silent no-op on pg). Reply draft ~/.cache/mentat-werk/reply-identity-move.md.
+- d9eeef63 (merge d8cecce7): pgrx 0.19.4 for CVE-2026-6460 (user: security over
+  compatibility). Builds against 14.25/15.20/16.16/17.12/18.7/19.0 headers don't
+  load into earlier minors (tested: 17.11 -> undefined symbol
+  DatumGetHeapTupleHeader). PG13 EOL at 13.23, builds without the check. CI pg19
+  builds 19.0 from source; release.yml pg19 from PGDG main. cargo-pgrx 0.19.4 on
+  werk: ~/.cache/mentat-werk/pgrx-tools-0194 (env.sh still points at 0.19.3).
+  Patched PG builds on werk: /scratch/mentat-pg19/install (19.0), install17 (17.12);
+  pgrx home /scratch/mentat-pgrx/p194.
+- installcheck fixed (#432, merge c45b22ac): PGDG PG16, its own pg_config, a 16
+  cluster on 5432, PGRX_HOME through sudo.
+- deny.toml ignores RUSTSEC-2026-0543 (chrono unmaintained) until 2027-02-01; #433.
+- Gates: pgrx pg13 2205, pg17.12 / pg19.0 2219 (merged tree); ws 1933, mino 212,
+  DuckDB 65.
+- Next release needs: a version bump (1.21.0: behaviour change + new PG minimums),
+  a new AWS burner (woof expired), the EC2 gate on patched PGDG minors.
+- /scratch was 96% full: /scratch/mentat-trash holds 210 GB of this session's
+  build trees and needs deleting by the user (agent deletes are policy-blocked).
