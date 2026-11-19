@@ -56,6 +56,20 @@ jobs:
               postgresql-16 postgresql-server-dev-16 postgresql-client-16 \
               libpq-dev build-essential pkg-config libclang-dev clang
           sudo systemctl enable --now postgresql
+          # The runner image ships another PostgreSQL too, and /usr/bin/pg_config
+          # and the default port follow the newest. Use 16's own pg_config, and
+          # check that port 5432 is the 16 cluster.
+          echo "PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config" >> "$GITHUB_ENV"
+          # The image's cluster (18) holds port 5432 and the 16 package creates
+          # none: drop the others and create a 16 cluster on 5432.
+          pg_lsclusters
+          pg_lsclusters -h | awk '$1 != 16 {print $1, $2}' | while read -r v c; do
+            sudo pg_dropcluster --stop "$v" "$c"
+          done
+          pg_lsclusters -h | grep -q '^16 ' || sudo pg_createcluster 16 main --port 5432 --start
+          sudo systemctl restart postgresql
+          pg_lsclusters
+          sudo -u postgres psql -p 5432 -tAc "SHOW server_version_num" | grep -q '^16'
 
       - name: Configure postgres superuser + trust auth
         run: |
@@ -87,7 +101,7 @@ jobs:
 
       - name: pgrx init (use system PG16)
         run: |
-          cargo pgrx init --pg16 "$(which pg_config)"
+          cargo pgrx init --pg16 "$PG_CONFIG"
 
       - name: cargo build (pg16)
         working-directory: crates/pg/pg_mentat
@@ -96,9 +110,10 @@ jobs:
       - name: cargo pgrx install (pg16)
         working-directory: crates/pg/pg_mentat
         run: |
-          sudo -E env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
+          # sudo resets HOME; keep the runner's ~/.pgrx (pgrx init's).
+          sudo -E env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "PGRX_HOME=$HOME/.pgrx" \
               cargo pgrx install --no-default-features --features pg16 \
-                --pg-config "$(which pg_config)"
+                --pg-config "$PG_CONFIG"
 
       - name: Run smoke.sql
         env:
