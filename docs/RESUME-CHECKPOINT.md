@@ -681,3 +681,8 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   v1.5.6/ and v2.0.0/); v2.0.0/ may still serve 1.19.0 (#3529's merge build
   failed). Improv: replies drafted in ~/.cache/mentat-werk/reply-*.md, patch
   ~/.cache/mentat-werk/improv/rusqlite-0.41.patch.
+- DuckDB registry for 1.20.0 (checked 2026-11-11): #3574 merged 16:45 UTC;
+  v2.0.0/ serves 1.20.0 (linux_amd64, osx_arm64), so #3529's v2.0.0 gap is
+  closed too. v1.5.6/ still serves 1.19.1: asked on #3574 (comment
+  7016255734) for the variegata dispatch. Verify after: footer field 4 of
+  v1.5.6/<platform>/mentat.duckdb_extension.gz = v1.20.0.
