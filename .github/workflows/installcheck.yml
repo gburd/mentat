@@ -110,7 +110,8 @@ jobs:
       - name: cargo pgrx install (pg16)
         working-directory: crates/pg/pg_mentat
         run: |
-          sudo -E env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" \
+          # sudo resets HOME; keep the runner's ~/.pgrx (pgrx init's).
+          sudo -E env "PATH=$PATH" "CARGO_HOME=$CARGO_HOME" "PGRX_HOME=$HOME/.pgrx" \
               cargo pgrx install --no-default-features --features pg16 \
                 --pg-config "$PG_CONFIG"
 
