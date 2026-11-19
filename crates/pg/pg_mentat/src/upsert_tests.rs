@@ -369,4 +369,126 @@ mod tests {
         }
         Spi::run("SELECT drop_store('up_freed_s')").expect("drop_store");
     }
+
+    /// Moving a unique value from one entity to another in one transaction
+    /// (reported 2026-11-18 against 1.20.0). An explicit entid never upserts,
+    /// as in Datomic: asserting a value another entity holds is a unique
+    /// conflict, not a silent no-op. Retracting the value from its holder in
+    /// the same transaction frees it, in either order and by retractEntity,
+    /// for :db.unique/identity and :db.unique/value, cardinality one and many.
+    #[pg_test]
+    fn test_upsert_move_unique_value_in_one_transaction() {
+        setup();
+        Spi::run(
+            "CREATE OR REPLACE FUNCTION pg_temp.capture(stmt TEXT) RETURNS TEXT \
+             LANGUAGE plpgsql AS $$ BEGIN EXECUTE stmt; RETURN ''; \
+             EXCEPTION WHEN OTHERS THEN RETURN SQLERRM; END $$",
+        )
+        .expect("capture helper");
+        Spi::run("SELECT create_store('up_move_s')").expect("create_store");
+        let t = |store: &str, edn: &str| -> serde_json::Value {
+            let out = Spi::get_one::<String>(&format!(
+                "SELECT t('{store}', '{}')",
+                edn.replace('\'', "''")
+            ))
+            .unwrap_or_else(|e| panic!("{store} {edn}: {e}"))
+            .expect("NULL");
+            serde_json::from_str(&out).expect("tx report")
+        };
+        let err = |store: &str, edn: &str| -> String {
+            let stmt = format!("SELECT t('{store}', '{}')", edn.replace('\'', "''"));
+            Spi::get_one::<String>(&format!(
+                "SELECT pg_temp.capture('{}')",
+                stmt.replace('\'', "''")
+            ))
+            .expect("capture")
+            .unwrap_or_default()
+        };
+        let holders = |store: &str, a: &str, v: &str| -> Vec<i64> {
+            let r = Spi::get_one::<pgrx::JsonB>(&format!(
+                "SELECT q('{store}', '[:find [?e ...] :where [?e {a} \"{v}\"]]', '{{}}'::jsonb)"
+            ))
+            .expect("q")
+            .expect("NULL")
+            .0;
+            let mut es: Vec<i64> = r["result"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+                .unwrap_or_default();
+            es.sort();
+            es
+        };
+        for store in ["default", "up_move_s"] {
+            t(
+                store,
+                "[{:db/ident :mv/n :db/valueType :db.type/string \
+                        :db/cardinality :db.cardinality/one}]",
+            );
+            for card in ["one", "many"] {
+                for uniq in ["identity", "value"] {
+                    let a = format!(":mv/{card}-{uniq}");
+                    t(
+                        store,
+                        &format!(
+                            "[{{:db/ident {a} :db/valueType :db.type/string \
+                           :db/cardinality :db.cardinality/{card} :db/unique :db.unique/{uniq} \
+                           :db/index true}}]"
+                        ),
+                    );
+                    let what = format!("{store} {a}");
+                    let moves = [
+                        "[[:db/retract S A \"V\"] [:db/add C A \"V\"]]",
+                        "[[:db/add C A \"V\"] [:db/retract S A \"V\"]]",
+                        "[[:db/retractEntity S] {:db/id C A \"V\"}]",
+                    ];
+                    for (i, mv) in moves.iter().enumerate() {
+                        let v = format!("v{i}");
+                        let r = t(store, &format!(
+                            "[{{:db/id \"c\" :mv/n \"C\"}} {{:db/id \"s\" :mv/n \"S\" {a} \"{v}\"}}]"
+                        ));
+                        let c = r["tempids"]["c"].as_i64().expect("c");
+                        let s = r["tempids"]["s"].as_i64().expect("s");
+                        // Alone, the assertion on C is a conflict, not dropped.
+                        let e = err(store, &format!("[[:db/add {c} {a} \"{v}\"]]"));
+                        assert!(e.contains(":db.error/unique-conflict"), "{what}: {e:?}");
+                        assert_eq!(holders(store, &a, &v), vec![s], "{what}");
+                        // With the retraction from S in the same transaction, it moves.
+                        let tx = mv
+                            .replace('S', &s.to_string())
+                            .replace('C', &c.to_string())
+                            .replace('A', &a)
+                            .replace("\"V\"", &format!("\"{v}\""));
+                        let r = t(store, &tx);
+                        assert_eq!(holders(store, &a, &v), vec![c], "{what} {tx}: {r}");
+                    }
+                    // A tempid still upserts into the holder.
+                    let r = t(store, &format!("[{{:db/id \"h\" :mv/n \"H\" {a} \"w\"}}]"));
+                    let h = r["tempids"]["h"].as_i64().expect("h");
+                    if uniq == "identity" {
+                        let r = t(store, &format!("[{{:db/id \"x\" {a} \"w\" :mv/n \"X\"}}]"));
+                        assert_eq!(r["tempids"]["x"].as_i64(), Some(h), "{what}: {r}");
+                    } else {
+                        let e = err(store, &format!("[{{:db/id \"x\" {a} \"w\"}}]"));
+                        assert!(e.contains(":db.error/unique-conflict"), "{what}: {e:?}");
+                    }
+                    // Two explicit entities can't both assert one new value.
+                    let r = t(
+                        store,
+                        "[{:db/id \"p\" :mv/n \"P\"} {:db/id \"q\" :mv/n \"Q\"}]",
+                    );
+                    let (p, q) = (
+                        r["tempids"]["p"].as_i64().unwrap(),
+                        r["tempids"]["q"].as_i64().unwrap(),
+                    );
+                    let e = err(
+                        store,
+                        &format!("[[:db/add {p} {a} \"z\"] [:db/add {q} {a} \"z\"]]"),
+                    );
+                    assert!(e.contains(":db.error/unique-conflict"), "{what}: {e:?}");
+                    assert!(holders(store, &a, "z").is_empty(), "{what}");
+                }
+            }
+        }
+        Spi::run("SELECT drop_store('up_move_s')").expect("drop_store");
+    }
 }

@@ -1039,3 +1039,29 @@ fn datomic_tx_tempid_unique_conflict() {
         );
     }
 }
+
+/// Moving a :db/unique value from one entity to another in one transaction, as on SQLite and
+/// pg_mentat (crates/sqlite/mentat/tests/unique_move.rs): an explicit entid asserting a value
+/// another entity holds is a unique conflict, not a silent no-op; retracting it from the holder
+/// in the same transaction frees it.
+#[test]
+fn move_a_unique_value_in_one_transaction() {
+    let c = Connection::open_in_memory().unwrap();
+    let s = seeded(&c);
+    let holders = |v: &str| q(&s, &format!(r#"[:find ?e :where [?e :person/name "{v}"]]"#));
+    let r = s
+        .transact(r#"[{:db/id "c" :person/age 1} {:db/id "s" :person/name "Jane"}]"#)
+        .unwrap();
+    let (c_, s_) = (r.tempids["c"], r.tempids["s"]);
+    let err = s
+        .transact(&format!(r#"[[:db/add {c_} :person/name "Jane"]]"#))
+        .expect_err("alone")
+        .to_string();
+    assert!(err.contains(":db.error/unique-conflict"), "{err}");
+    assert_eq!(holders("Jane"), vec![vec![s_.to_string()]]);
+    s.transact(&format!(
+        r#"[[:db/add {c_} :person/name "Jane"] [:db/retract {s_} :person/name "Jane"]]"#
+    ))
+    .expect("move");
+    assert_eq!(holders("Jane"), vec![vec![c_.to_string()]]);
+}

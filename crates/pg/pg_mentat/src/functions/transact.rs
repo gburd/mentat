@@ -1329,10 +1329,13 @@ fn execute_transaction_inner(
     //            identity-unique value (in-transaction unification).
     let mut upsert_remaps: BTreeMap<i64, i64> = ident_remaps; // old_eid -> target_eid
 
-    // Phase A: DB-level upsert resolution. The transaction is never remapped: it
-    // is a new entity, and a unique value it asserts that another holds is a conflict.
+    // Phase A: DB-level upsert resolution. Only an entity this transaction
+    // allocated (a tempid, or a map without :db/id) upserts, as in Datomic. An
+    // explicit entid, and the transaction itself, is never remapped: a unique
+    // value it asserts that another entity holds is a conflict, unless this
+    // transaction retracts it from that entity (validate_datom_constraints).
     for datom in &pending_datoms {
-        if !datom.added || datom.e == tx_id {
+        if !datom.added || !fresh.contains(&datom.e) {
             continue;
         }
         if let Some(attr_info) = lookup_attribute_info(datom.a) {
@@ -1381,6 +1384,11 @@ fn execute_transaction_inner(
                 }
             }
         }
+        // An entity this transaction allocated that is still unresolved (not
+        // upserted in Phase A) can merge; an explicit entid, or an entity a
+        // tempid upserted into, can't be merged into another.
+        let mergeable =
+            |remaps: &BTreeMap<i64, i64>, e: i64| fresh.contains(&e) && !remaps.contains_key(&e);
 
         // For each pair, check if they share the same (attr, value) but different
         // entities. Resolve each endpoint through the existing remap chain at
@@ -1421,8 +1429,16 @@ fn execute_transaction_inner(
                 if root_i == root_j {
                     continue; // already unified
                 }
-                // First one seen wins as canonical; point the other root at it.
-                let (canonical, merged) = (root_i, root_j);
+                // A fresh root merges into the other one (first seen wins when
+                // both are fresh). Two explicit entids are left apart: asserting
+                // one identity value on both is a unique conflict.
+                let (canonical, merged) = if mergeable(&upsert_remaps, root_j) {
+                    (root_i, root_j)
+                } else if mergeable(&upsert_remaps, root_i) {
+                    (root_j, root_i)
+                } else {
+                    continue;
+                };
                 upsert_remaps.insert(merged, canonical);
             }
         }
@@ -2788,7 +2804,15 @@ fn validate_datom_constraints(
         // claim it between this check and our commit.
         let existing_entity = check_unique_typed_value(datom.a, &datom.v, schema)?;
 
-        if let Some(existing_e) = existing_entity {
+        // A value this transaction retracts from its holder is free for another
+        // entity: one transaction can move a unique value (as Datomic checks
+        // uniqueness on the resulting database).
+        let released = |holder: i64| {
+            all_pending
+                .iter()
+                .any(|d| !d.added && d.e == holder && d.a == datom.a && d.v == datom.v)
+        };
+        if let Some(existing_e) = existing_entity.filter(|&h| !released(h)) {
             if existing_e != datom.e {
                 // For :db.unique/identity, this should not happen after the
                 // upsert remapping pass -- the datom.e should have been remapped
