@@ -153,6 +153,12 @@
               runHook preBuild
               export CARGO_HOME=$(mktemp -d)
               export PGRX_HOME=$(mktemp -d)
+              # pgrx 0.19.4 compiles in the CVE-2026-6460 composite-datum check
+              # only when the PostgreSQL headers have it: refuse to build without
+              # (a nixpkgs lock older than the November 2026 minor releases).
+              grep -q HeapTupleHeaderIsVersionedDatum \
+                "$(${pgPkg.pg_config}/bin/pg_config --includedir-server)/access/htup_details.h" \
+                || { echo "ERROR: PostgreSQL ${pgPkg.version} headers lack the CVE-2026-6460 fix; update flake.lock" >&2; exit 1; }
               # Seed PGRX_HOME so cargo-pgrx maps the feature to this PG's
               # pg_config WITHOUT running `cargo pgrx init`.
               printf '[configs]\n${pgFeature} = "%s"\n' \
@@ -364,16 +370,14 @@
           default = self.packages.${system}.pg_mentat-pg16;
 
           # Per-PG-major extension builds (PGXS layout, mirrors pg_fts).
-          # nixpkgs-unstable dropped postgresql_13 (EOL upstream); pg13 is still
-          # built + tested in the Forgejo/GitHub CI matrices via apt/pgrx.
-          pg_mentat-pg14 = mkPgMentatExtension { pgPkg = pkgs.postgresql_14; pgFeature = "pg14"; };
+          # nixpkgs dropped postgresql_13 and postgresql_14 (end-of-life
+          # upstream); both are still built + tested in the Forgejo/GitHub CI
+          # matrices via apt/pgrx.
           pg_mentat-pg15 = mkPgMentatExtension { pgPkg = pkgs.postgresql_15; pgFeature = "pg15"; };
           pg_mentat-pg16 = mkPgMentatExtension { pgPkg = pkgs.postgresql_16; pgFeature = "pg16"; };
           pg_mentat-pg17 = mkPgMentatExtension { pgPkg = pkgs.postgresql_17; pgFeature = "pg17"; };
           pg_mentat-pg18 = mkPgMentatExtension { pgPkg = pkgs.postgresql_18; pgFeature = "pg18"; };
-          # pg19: no output yet. The locked nixpkgs (2026-05) has no
-          # postgresql_19, and nixos-unstable's is 19beta4. Add it once nixpkgs
-          # ships 19.0. PG19 is built and tested in CI/release via apt + pgrx.
+          pg_mentat-pg19 = mkPgMentatExtension { pgPkg = pkgs.postgresql_19; pgFeature = "pg19"; };
 
           # SQLite embedded CLI (crates/sqlite/cli, crate `mentat_cli`).
           mentat-cli = mkCargoBin { pname = "mentat-cli"; cargoPkg = "mentat_cli"; };
@@ -391,6 +395,7 @@
           pg16 = self.packages.${system}.pg_mentat-pg16;
           pg17 = self.packages.${system}.pg_mentat-pg17;
           pg18 = self.packages.${system}.pg_mentat-pg18;
+          pg19 = self.packages.${system}.pg_mentat-pg19;
 
           # Guard the version single-source-of-truth: the pg_mentat control
           # file's default_version (which drives extVersion) and the Cargo

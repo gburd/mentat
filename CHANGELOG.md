@@ -6,6 +6,32 @@ PostgreSQL extension, which share one front-end) are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [1.21.1] — the Nix flake builds pg_mentat with the CVE-2026-6460 check, and for PostgreSQL 19
+
+Only the Nix flake changes; the release packages, crates and extensions are
+1.21.0's with a new version. `ALTER EXTENSION pg_mentat UPDATE` from 1.21.0
+changes nothing (`pg_mentat--1.21.0--1.21.1.sql` is empty).
+
+### Security
+
+- **The flake's pg_mentat builds lacked the CVE-2026-6460 check.** `flake.lock`
+  pinned a May 2026 nixpkgs whose PostgreSQL packages (15.17, 16.13, 17.9, 18.3)
+  predate the November minor releases, and pgrx 0.19.4 compiles the check in
+  only when the headers have it. So `nix build .#pg_mentat-pgNN` from 1.21.0
+  (and earlier) built a pg_mentat without it, though the GitHub release
+  packages have it. The lock now pins a nixpkgs with 15.20, 16.16, 17.12, 18.7
+  and 19.0, and a flake build refuses headers without the fix.
+
+### Changed
+
+- **New flake output `pg_mentat-pg19`** (PostgreSQL 19.0), and `checks.pg19`.
+- **Removed flake output `pg_mentat-pg14`**: nixpkgs dropped postgresql_14,
+  end-of-life since 2026-11-12. PostgreSQL 14 is still built and tested in CI
+  and builds from source with cargo-pgrx.
+- The flake's nixpkgs is a nixpkgs master commit (2026-11-20): PostgreSQL 19.0
+  had not reached nixos-unstable yet. The next `nix flake update` goes back to
+  nixos-unstable.
+
 ## [1.21.0] — pgrx 0.19.4 (CVE-2026-6460), PostgreSQL 19.0, explicit entids don't upsert
 
 Upgrading pg_mentat: **first update PostgreSQL to the November 2026 minor

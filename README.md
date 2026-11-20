@@ -169,8 +169,8 @@ cargo pgrx install --release --no-default-features --features pg16
 Or with Nix (no pgrx toolchain to set up by hand):
 
 ```bash
-nix build --option sandbox relaxed .#pg_mentat-pg16   # or .#pg_mentat-pg14 … .#pg_mentat-pg18
-# from another flake: github:gburd/mentat/v1.11.0#pg_mentat-pg18
+nix build --option sandbox relaxed .#pg_mentat-pg16   # or .#pg_mentat-pg15 … .#pg_mentat-pg19
+# from another flake: github:gburd/mentat/v1.21.1#pg_mentat-pg19
 ```
 
 The build fetches crates and `cargo-pgrx` from the network, so the derivation

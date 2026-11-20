@@ -1,0 +1,10 @@
+-- pg_mentat 1.21.0 -> 1.21.1 upgrade.
+--
+-- 1.21.1 changes no SQL objects and no library code. It fixes the Nix flake,
+-- whose PostgreSQL packages predated the CVE-2026-6460 fix, so its pg_mentat
+-- builds lacked the check. A 1.21.0 database has nothing to change.
+--
+-- Each section below belongs to one change; add yours as a new section under a
+-- line `-- === <name> ===`. Script-time rules: pg_catalog-qualify every call,
+-- pin search_path per DO block with pg_catalog.set_config and restore it, and
+-- never SET LOCAL search_path (scripts/pg/check-script-search-path.py).
