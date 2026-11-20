@@ -711,3 +711,36 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   a new AWS burner (woof expired), the EC2 gate on patched PGDG minors.
 - /scratch was 96% full: /scratch/mentat-trash holds 210 GB of this session's
   build trees and needs deleting by the user (agent deletes are policy-blocked).
+
+## v1.21.0 and v1.21.1 released (2026-11-20)
+
+- v1.21.0 (signed tag on 60f65b8a): pgrx 0.19.4 (CVE-2026-6460), PostgreSQL 19.0,
+  explicit entids don't upsert / one transaction can move a unique value (#424
+  part 1), rusqlite 0.43 (use-after-free fixes; SQLite still 3.54.1), synstructure
+  0.14 (mino_gc_derive 0.5.1, mino_gc 0.5.2), release.yml refuses headers without
+  the CVE fix. Gate on the breakfast box (account 847218423625, torn down): pgrx
+  pg13 2205, pg14-19 2219; packages pg15-19 glibc 2.34 with the CVE symbols;
+  upgrade == fresh from released 1.18.0/1.19.1/1.20.0 on pg15-19 (known FN/OB
+  diffs only); trusted install; hijack f f t f; #428 writers 5/5 on pg15/18/19;
+  reader -> busy after 30 s; DuckDB build + xv (v1.5.6 + v2.0) + harness 65.
+  Results ~/.cache/mentat-werk/rel/121/results/.
+- v1.21.1 (signed tag on dc6f0e42): the flake. Its nixpkgs lock (2026-05) had
+  PostgreSQL 15.17..18.3, so `nix build .#pg_mentat-pgNN` lacked the CVE check.
+  Lock -> nixpkgs master 0d43da39 (15.20, 16.16, 17.12, 18.7, 19.0); new
+  pg_mentat-pg19, pg_mentat-pg14 dropped (nixpkgs dropped 14); the flake build
+  refuses unpatched headers. All flake outputs built and checked; the pg19 one
+  ran on nixpkgs' PG 19.0. No code or SQL changes.
+- Both: GitHub Release 8 assets, PGXN, crates.io 22 crates. DuckDB registry PR
+  duckdb/community-extensions#3686 for 1.21.0 (by hand; fork run 44767005778
+  green on all four platforms, footer C_STRUCT v1.21.0 v1.5.6). 1.21.1 needs no
+  registry PR (DuckDB extension unchanged). v1.5.6/ still serves 1.19.1 pending
+  the maintainer dispatch asked for on #3574.
+- pg15 packages reference only DatumGetHeapTupleHeader, not heap_datum_check: in
+  15 pgrx's heap_getattr port isn't reached (pg_mentat reads through
+  SPI_getbinval, the server's own, patched). Same in the release package.
+- publish.sh now checks each crate's own version (mino_gc / mino_gc_derive
+  don't track the workspace version).
+- /scratch hit 97% again: /scratch/mentat-trash holds today's build trees and
+  worktrees for the user to delete.
+- Replies drafted, not sent: ~/.cache/mentat-werk/reply-identity-move.md,
+  reply-improv-rustsec-0459.md, reply-stale-store.md.
