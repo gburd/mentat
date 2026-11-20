@@ -50,7 +50,7 @@ default-members = [
 exclude = ["crates/sqlite/fixtures", "crates/duckdb/store/tests-harness"]
 
 [workspace.package]
-version = "1.20.0"
+version = "1.21.0"
 edition = "2021"
 # MSRV of the published (crates.io) crates. pg_mentat overrides it with 1.96
 # (pgrx 0.19); rust-toolchain.toml pins the build toolchain.
@@ -83,7 +83,7 @@ indexmap = "2.14"
 bytes = "1.12"
 serde = "1.0.229"
 thiserror = "2.0"
-rusqlite = "0.41"
+rusqlite = "0.43"
 mino-rs = { path = "crates/mino" }
 
 [workspace.lints.clippy]

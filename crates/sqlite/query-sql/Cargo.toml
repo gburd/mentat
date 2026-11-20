@@ -7,32 +7,32 @@ license = "Apache-2.0"
 repository = "https://codeberg.org/gregburd/mentat"
 
 [dependencies.rusqlite]
-version = "~0.41"
+version = "~0.43"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.mentat_sql]
 path = "../sql"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.mentat_query_algebrizer]
 path = "../query-algebrizer"
-version = "=1.20.0"
+version = "=1.21.0"

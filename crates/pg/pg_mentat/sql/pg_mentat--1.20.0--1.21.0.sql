@@ -1,0 +1,10 @@
+-- pg_mentat 1.20.0 -> 1.21.0 upgrade.
+--
+-- 1.21.0 changes no SQL objects. Its changes are in the library: it is built
+-- with pgrx 0.19.4 (CVE-2026-6460), and an explicit entid no longer upserts
+-- through a :db.unique/identity value. A 1.20.0 database has nothing to change.
+--
+-- Each section below belongs to one change; add yours as a new section under a
+-- line `-- === <name> ===`. Script-time rules: pg_catalog-qualify every call,
+-- pin search_path per DO block with pg_catalog.set_config and restore it, and
+-- never SET LOCAL search_path (scripts/pg/check-script-search-path.py).

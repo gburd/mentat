@@ -109,6 +109,11 @@ jobs:
               postgresql-server-dev-${{ matrix.pg_version }} \
               postgresql-client-${{ matrix.pg_version }} \
               libpq-dev
+          # pgrx 0.19.4 compiles the CVE-2026-6460 composite-datum check in only
+          # when the headers have it: refuse to package against older ones.
+          grep -q HeapTupleHeaderIsVersionedDatum \
+            "$(/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config --includedir-server)/access/htup_details.h" \
+            || { echo "::error::PG${{ matrix.pg_version }} headers predate the CVE-2026-6460 fix"; exit 1; }
 
       - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
         uses: dtolnay/rust-toolchain@master

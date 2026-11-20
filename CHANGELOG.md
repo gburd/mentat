@@ -6,7 +6,21 @@ PostgreSQL extension, which share one front-end) are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.21.0] — pgrx 0.19.4 (CVE-2026-6460), PostgreSQL 19.0, explicit entids don't upsert
+
+Upgrading pg_mentat: **first update PostgreSQL to the November 2026 minor
+release** (15.20, 16.16, 17.12, 18.7 or 19.0 for the release packages,
+which cover 15-19). The 1.21.0 packages are built against those headers and
+fail to load into an earlier minor release (`undefined symbol:
+DatumGetHeapTupleHeader`); see Security. Building from source for 14 needs
+14.25 headers; PostgreSQL 13 is end-of-life and has no fixed release.
+`ALTER EXTENSION pg_mentat UPDATE` from 1.20.0 changes nothing
+(`pg_mentat--1.20.0--1.21.0.sql` is empty). Read **Fixed**: a transaction
+that asserted a unique value another entity holds, on an explicit entid, used
+to succeed silently on pg_mentat and now fails with `:db.error/unique-conflict`.
+
+Upgrading a Rust crate: rusqlite 0.41 -> 0.43 (see Changed). Code that uses
+the exposed `rusqlite::Connection` moves to 0.43.
 
 ### Security
 
@@ -52,6 +66,18 @@ and the project follows [Semantic Versioning](https://semver.org/).
   19rc1) load and work on 19.0.
 - CI: installcheck installs PostgreSQL 16 from PGDG; ubuntu-latest (26.04) has
   none in its archive, so the job failed on every push (#432).
+- **rusqlite 0.41.1 -> 0.43.0** (libsqlite3-sys 0.40.0, still SQLite 3.54.1).
+  Its 0.42 and 0.43 releases fix several use-after-frees reachable from safe
+  API (in sessions, changesets, `column_metadata` and `rarray`, none of which
+  mentat uses) and reject empty SQL. Breaking for Rust code that uses the
+  exposed `rusqlite::Connection`: it moves to 0.43 with mentat. MSRV stays 1.90.
+- Dependencies: every crate on its newest compatible version (`cargo update`);
+  synstructure 0.14 in mino_gc_derive (published as mino_gc_derive 0.5.1 and
+  mino_gc 0.5.2). Not moved: num-bigint 0.5 (num-rational has no release
+  for it), duckdb-rs (the extension's v1.5.6 C API floor), pgrx 0.20 (drops
+  PostgreSQL 13 and 14, needs Rust 1.99).
+- `deny.toml` ignores RUSTSEC-2026-0543 (chrono unmaintained, informational,
+  no fixed version) until 2027-02-01; replacing chrono is #433.
 
 ## [1.20.0] — bundled SQLite 3.54.1 (RUSTSEC-2026-0459), stores see other connections' commits
 

@@ -13,19 +13,19 @@ sqlcipher = ["rusqlite/sqlcipher"]
 ordered-float = "5.3"
 
 [dependencies.rusqlite]
-version = "~0.41"
+version = "~0.43"
 features = ["limits", "bundled"]
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.sql_traits]
 package = "mentat_sql_traits"
 path = "../sql-traits"
-version = "=1.20.0"
+version = "=1.21.0"

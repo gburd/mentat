@@ -1,6 +1,6 @@
 [package]
 name = "mino_gc"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["Manish Goregaokar <manishsmail@gmail.com>", "Nika Layzell <nika@thelayzells.com>"]
 description = "Tracing garbage collector plugin for Rust."
 repository = "https://github.com/Manishearth/rust-gc"
@@ -22,7 +22,7 @@ unstable-config = []
 unstable-stats = []
 
 [dependencies]
-gc_derive = { package = "mino_gc_derive", path = "../gc_derive", version = "0.5.0", optional = true }
+gc_derive = { package = "mino_gc_derive", path = "../gc_derive", version = "0.5.1", optional = true }
 serde = { version = "1.0.0", optional = true }
 
 [dev-dependencies]

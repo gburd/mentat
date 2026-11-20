@@ -23,31 +23,31 @@ serde_json = { version = "~1.0", optional = true }
 serde_derive = { version = "~1.0", optional = true }
 
 [dependencies.rusqlite]
-version = "~0.41"
+version = "~0.43"
 features = ["limits", "bundled"]
 
 [dependencies.edn]
 package = "mentat_edn"
 path = "../../edn"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.mentat_core]
 path = "../../core"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.core_traits]
 package = "mentat_core_traits"
 path = "../../core-traits"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.db_traits]
 package = "mentat_db_traits"
 path = "../db-traits"
-version = "=1.20.0"
+version = "=1.21.0"
 
 [dependencies.mentat_sql]
 path = "../sql"
-version = "=1.20.0"
+version = "=1.21.0"
 
 # TODO: This should be in dev-dependencies.
 [dependencies.tabwriter]
