@@ -744,3 +744,30 @@ DuckDB storage, test, qualify and re-release it. Don't change the README and reg
   worktrees for the user to delete.
 - Replies drafted, not sent: ~/.cache/mentat-werk/reply-identity-move.md,
   reply-improv-rustsec-0459.md, reply-stale-store.md.
+
+## v1.22.0 released (2026-11-21): pg_gaps integration
+
+- Signed tag v1.22.0 on ac70a081 (feature 4d034f21). pg_gaps
+  (~/ws/pg_gaps, codeberg gregburd/pg_gaps, 0.1.0, PG17+): BayesStore-style
+  inference over missing values. pg_mentat adds sql/33_pg_gaps_helpers.sql:
+  mentat.has_pg_gaps, gaps_column, create_gaps_view (security_invoker view, one
+  row per entity, NULL = missing; refuses PG<15), gaps_declare (declare_attribute
+  + add_stripe by ident, domain from data); where-fns gaps-marginals /
+  gaps-impute in functions/query.rs (build_pg_gaps_join; matches the column by
+  its COMMENT = ident). docs/src/pg_gaps.md. 13 tests in pg_gaps_tests.rs.
+  Reviewed + re-reviewed by sub-agents (notes ~/.cache/mentat-werk/review-gaps/).
+- Gate (breakfast box, torn down): pgrx pg13 2219, pg14-19 2233, all with
+  pg_gaps happy paths run (pg_gaps built into PGDG 17-19 and pgrx 13/14 skip);
+  packages pg15-19 with CVE symbols and the 1.21.1->1.22.0 edge; upgrades from
+  released 1.19.1/1.20.0/1.21.1 == fresh (known diffs); trusted install; hijack
+  f f t f; #428 writers 5/5 pg15/18/19 (first run's images lacked
+  pg_mentat--1.18.0.sql: the gate's image step copies only the from-versions'
+  scripts; rerun added it); reader busy at 30 s; DuckDB xv + harness 65.
+  Results ~/.cache/mentat-werk/rel/122/results/. werk: pg13 2219, pg17 2233,
+  pg19 2233, ws 1933, mino 212, mino-rs+gc 191, ext 9, DuckDB 65, clippy, deny.
+- Out: GitHub Release 8 assets, PGXN 1.22.0, crates.io 22, DuckDB PR #3694
+  (fork run 44953402535 green on 4 platforms). #3686 (1.21.0) merged; registry
+  v2.0.0/ still showed 1.20.0 and v1.5.6/ 1.21.0 at 21:20Z (deploy lag/dispatch).
+- The released pg19 package + pg_gaps ran the docs' quick start end to end.
+- Gate lesson: when the upgrade from-versions change, relgate*-b.sh's image
+  step must still include pg_mentat--1.18.0.sql for the writers test.
