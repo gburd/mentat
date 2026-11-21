@@ -226,7 +226,8 @@ history patterns, and collection/tuple/relation `:in` bindings. The PostgreSQL
 backend adds features unique to it: LISTEN/NOTIFY reactive subscriptions and
 optional, soft integrations with first-party and third-party extensions —
 `pg_fts` (BM25 full-text), `pg_turbovec` and `pgvector` (vector similarity),
-`pg_tre` (fuzzy regex), `pg_trgm`, PostGIS, `rum`, and more. Each is detected at
+`pg_gaps` (probabilistic inference over missing values), `pg_tre` (fuzzy
+regex), `pg_trgm`, PostGIS, `rum`, and more. Each is detected at
 runtime via `mentat.has_<ext>()` and never required. See
 [Architecture](docs/src/architecture.md) for the full feature-by-backend table.
 

@@ -2891,6 +2891,13 @@ fn build_sql_from_datalog_enriched(
                 &store_id_param,
             )?;
             fts_joins.push(fj);
+        } else if matches!(op_name, "gaps-marginals" | "gaps-impute") {
+            // pg_gaps inference over a mentat.create_gaps_view view:
+            //   (gaps-marginals "model" :attr) binds [[?e ?value ?probability]]
+            //   (gaps-impute "model" :attr)    binds [[?e ?value ?probability]]
+            // See build_pg_gaps_join and docs/src/pg_gaps.md.
+            let fj = build_pg_gaps_join(wf, fts_idx, builder, &mut extra_var_bindings)?;
+            fts_joins.push(fj);
         } else if matches!(op_name, "infer-walk" | "infer-describe" | "infer-predict") {
             // pg_infer set-returning verbs:
             //   (infer-walk "prompt" top [model])      — trace gate activations
@@ -3543,6 +3550,15 @@ fn build_sql_from_datalog_enriched(
                         &arm_store_id_param,
                     )?;
                     arm_fts_joins.push(fts_join);
+                } else if matches!(op_name, "gaps-marginals" | "gaps-impute") {
+                    let fts_idx = fts_joins.len() + idx;
+                    let fts_join = build_pg_gaps_join(
+                        wf,
+                        fts_idx,
+                        &mut arm_builder,
+                        &mut arm_extra_var_bindings,
+                    )?;
+                    arm_fts_joins.push(fts_join);
                 } else if matches!(op_name, "infer-walk" | "infer-describe" | "infer-predict") {
                     let fts_idx = fts_joins.len() + idx;
                     let fts_join = build_pg_infer_table_join(
@@ -3604,7 +3620,7 @@ fn build_sql_from_datalog_enriched(
                 } else {
                     return Err(format!(
                         ":db.error/unsupported-query Function '{}' is not supported inside OR branches. \
-                         Supported: fulltext, fuzzy-match, similar-to, rum-fulltext, vector-near, turbovec-near, bm25-match, infer-near, infer-walk, infer-describe, infer-predict, geom-near, geom-within, geom-contains, geom-intersects, levenshtein, soundex, metaphone, \
+                         Supported: fulltext, fuzzy-match, similar-to, rum-fulltext, vector-near, turbovec-near, bm25-match, infer-near, infer-walk, infer-describe, infer-predict, gaps-marginals, gaps-impute, geom-near, geom-within, geom-contains, geom-intersects, levenshtein, soundex, metaphone, \
                          daitch-mokotoff, *, +, -, /.",
                         op_name
                     ).into());
@@ -5465,6 +5481,119 @@ fn build_pg_infer_table_join(
         where_parts: Vec::new(),
         score_expr: None,
         entity_alias: None, // pg_infer set-returning verbs don't bind ?e
+    })
+}
+
+/// Compile a pg_gaps inference verb over a view made by
+/// `mentat.create_gaps_view`:
+///
+///   `[(gaps-marginals "model" :attr) [[?e ?value ?p ?component]]]` -> one row
+///     per value of each missing `:attr` value: the entity, a value of the
+///     domain, its posterior probability, and its grounded component
+///     (`gaps.marginals`);
+///   `[(gaps-impute "model" :attr) [[?e ?value ?p ?component]]]` -> one row per
+///     missing value: its value in the most probable completion of the
+///     component, and that completion's probability (`gaps.impute`; NULL for a
+///     sampled component).
+///
+/// `?component` is optional. The model is a string (pg_gaps model names are
+/// text). The attribute is the model's column whose COMMENT is the ident,
+/// which `create_gaps_view` writes, so two views with the same column name in
+/// one model don't mix. ?value is text in the view's spelling (`:ns/name` for
+/// keywords and enum refs). Each call grounds the whole model once. Rows of one
+/// component are not independent: multiplying their probabilities is not a
+/// joint probability (pg_gaps' Principle 1).
+///
+/// pg_gaps is the optional dependency; without it the query is refused with
+/// :db.error/missing-extension.
+fn build_pg_gaps_join(
+    wf: &WhereFn,
+    fts_idx: usize,
+    builder: &mut SqlBuilder<'_>,
+    var_bindings: &mut HashMap<String, String>,
+) -> Result<FtsJoin, Box<dyn std::error::Error + Send + Sync>> {
+    let op = wf.operator.0.as_str();
+    let func = if op == "gaps-impute" {
+        "impute"
+    } else {
+        "marginals"
+    };
+    if wf.args.len() != 2 {
+        return Err(format!(
+            ":db.error/fn-arity {op} requires exactly 2 arguments (\"model\" :attr), got {}. \
+             Example: [({op} \"cancer\" :patient/smoker) [[?e ?value ?p]]]",
+            wf.args.len()
+        )
+        .into());
+    }
+    let model = match &wf.args[0] {
+        FnArg::Constant(NonIntegerConstant::Text(s)) => builder.bind_text(s.as_ref().clone()),
+        _ => {
+            return Err(format!(
+                ":db.error/fn-arg {op} first argument must be the pg_gaps model name, a string."
+            )
+            .into())
+        }
+    };
+    let ident = match &wf.args[1] {
+        FnArg::IdentOrKeyword(kw) => builder.bind_text(keyword_to_ident(kw)),
+        _ => {
+            return Err(format!(
+                ":db.error/fn-arg {op} second argument must be a keyword attribute \
+                 (e.g. :patient/smoker)."
+            )
+            .into())
+        }
+    };
+    let Binding::BindRel(ref vars) = wf.binding else {
+        return Err(format!(
+            ":db.error/fn-binding {op} requires a relation binding [[?e ?value ?p]]."
+        )
+        .into());
+    };
+    if vars.len() > 4 {
+        return Err(format!(
+            ":db.error/fn-binding {op} binds at most 4 variables [[?e ?value ?p ?component]]."
+        )
+        .into());
+    }
+    let Some(gaps) = crate::functions::virtual_tables::extension_schema("pg_gaps") else {
+        return Err(format!(
+            ":db.error/missing-extension {op} needs pg_gaps, which is not installed in this \
+             database. pg_gaps is an OPTIONAL probabilistic-inference extension for pg_mentat \
+             (PostgreSQL 17+); install it per https://codeberg.org/gregburd/pg_gaps and run \
+             CREATE EXTENSION pg_gaps."
+        )
+        .into());
+    };
+    let dt_alias = format!("gx_d{}", fts_idx);
+    // The model's column whose comment is the ident (create_gaps_view writes
+    // it), by relation and name, so a same-named column of another view in the
+    // model is not mixed in.
+    let from_fragment = format!(
+        "(SELECT (g.entity->>'e')::BIGINT AS e, g.value AS gaps_value, \
+                 g.probability AS gaps_p, g.component AS gaps_component \
+          FROM {gaps}.{func}({model}) g \
+          JOIN pg_catalog.pg_attribute ga \
+            ON ga.attrelid = g.rel AND ga.attname = g.attname \
+           AND pg_catalog.col_description(ga.attrelid, ga.attnum) = {ident}) AS {dt_alias}"
+    );
+    let cols = ["e::TEXT", "gaps_value", "gaps_p", "gaps_component"];
+    let mut entity_var = None;
+    for (i, vop) in vars.iter().enumerate() {
+        if let VariableOrPlaceholder::Variable(ref v) = vop {
+            let var_name = format!("{}", v);
+            if i == 0 {
+                entity_var = Some(var_name.clone());
+            }
+            var_bindings.insert(var_name, format!("{dt_alias}.{}", cols[i]));
+        }
+    }
+    Ok(FtsJoin {
+        from_fragment,
+        where_parts: Vec::new(),
+        score_expr: None,
+        entity_alias: entity_var.map(|n| (n, dt_alias)),
     })
 }
 

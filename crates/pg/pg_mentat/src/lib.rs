@@ -836,6 +836,8 @@ mod parameterized_value_tests;
 #[cfg(any(test, feature = "pg_test"))]
 mod performance_benchmark_tests;
 #[cfg(any(test, feature = "pg_test"))]
+pub mod pg_gaps_tests;
+#[cfg(any(test, feature = "pg_test"))]
 pub mod pg_infer_tests;
 #[cfg(any(test, feature = "pg_test"))]
 pub mod pg_trgm_tests;
@@ -1273,6 +1275,24 @@ extension_sql_file!(
     "../sql/32_moved_idents.sql",
     name = "moved_idents",
     requires = ["bootstrap_schema", "narrow_storage", "current_projection"],
+);
+
+// Optional pg_gaps (codeberg.org/gregburd/pg_gaps, PostgreSQL license)
+// integration: mentat.has_pg_gaps(), mentat.gaps_column(),
+// mentat.create_gaps_view() (one row per entity, one column per attribute,
+// NULL = missing) and mentat.gaps_declare(). The (gaps-marginals "model" :attr)
+// and (gaps-impute "model" :attr) where-fns are dispatched in
+// functions/query.rs. pg_gaps needs PG17+; the view needs PG15+. See
+// docs/src/pg_gaps.md.
+extension_sql_file!(
+    "../sql/33_pg_gaps_helpers.sql",
+    name = "pg_gaps_helpers",
+    requires = [
+        "bootstrap_schema",
+        "narrow_storage",
+        "current_projection",
+        "store_layout"
+    ],
 );
 
 // Deprecated pre-1.9.0 names (public.mentat_transact / mentat_query /

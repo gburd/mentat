@@ -28,6 +28,7 @@
 - [Cross-Database Datalog via postgres_fdw](./postgres-fdw.md)
 - [Transactional Event Stream via PgQue](./pgque.md)
 - [Model-Knowledge Search via pg_infer](./pg_infer.md)
+- [Probabilistic Inference over Missing Values via pg_gaps](./pg_gaps.md)
 - [Geospatial Search via PostGIS](./postgis.md)
 - [Property Graph Queries via PG19 SQL/PGQ](./pg19_graph.md)
 - [Time-Series Storage via TimescaleDB](./timescaledb.md)
