@@ -1340,9 +1340,9 @@ dependencies = [
 
 [[package]]
 name = "env_filter"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
+checksum = "288efae2d67fb0418d01f837feb55c7a9cdc4c5db38d3dee91324a1c7ec6fd31"
 dependencies = [
  "log",
  "regex",
@@ -1350,9 +1350,9 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
-version = "0.11.11"
+version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
+checksum = "82bdfc6e01c305a3ea46ed815b06ac0b379d7c5eac588fa4464048d731c4dcdf"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1476,9 +1476,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -2028,9 +2028,9 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "jiff"
-version = "0.2.46"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "175dc66334db3b9ab9985bf8b61cfed50dc16d20964bb47f9e479adcae984a7f"
+checksum = "c5e77cbfb9fff4798e283c2d69dff39fc2c45e7da017e5ce95b654e46ea41236"
 dependencies = [
  "jiff-core",
  "jiff-static",
@@ -2042,23 +2042,23 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.8"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e599b80292e597019b8b3e392de3f4bea2959ddfb8c7dff60e035e9e311a2c1b"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.46"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7b1af7547d47354bc438d797e3854601bde8f8d185780c5ba4ab27afa54f1ba"
+checksum = "e9067a0b23e5be3147d56b2dcf652b18e6b1364caca93fb157653b6fbcab23a9"
 dependencies = [
  "jiff-core",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2310,9 +2310,9 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "lru"
-version = "0.19.0"
+version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
+checksum = "83be4da409554841af087163ad187608824ad8ca8713d8e124c8e0f704a2f92f"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -2356,7 +2356,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mentat_cli"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_core"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "chrono",
  "enumset",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_core_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2412,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_db"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "env_logger",
  "indexmap",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_db_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_duckdb"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "duckdb",
  "mentat_core",
@@ -2463,7 +2463,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_duckdb_store"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_edn"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_public_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "http",
  "hyper",
@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "itertools 0.15.0",
  "mentat_core",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -2550,7 +2550,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "indexmap",
  "mentat_core",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2601,7 +2601,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_db_traits",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_sql"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_scale_runner"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentatdb",
  "serde_json",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_script"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2652,14 +2652,14 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql_traits"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mentat_sqlite_ext"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentatdb",
  "serde_json",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "mentat_transaction"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -2687,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "mentatd"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2711,7 +2711,7 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tokio-tungstenite 0.30.0",
- "toml 1.2.1+spec-1.1.0",
+ "toml 1.2.2+spec-1.1.0",
  "tower",
  "tower-http 0.7.1",
  "tracing",
@@ -2721,7 +2721,7 @@ dependencies = [
 
 [[package]]
 name = "mentatdb"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "assert_approx_eq",
  "chrono",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "mino-rs"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "fancy-regex",
  "mino_gc",
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "pg_mentat"
-version = "1.21.1"
+version = "1.22.0"
 dependencies = [
  "chrono",
  "ciborium",
@@ -3293,7 +3293,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "toml 1.2.1+spec-1.1.0",
+ "toml 1.2.2+spec-1.1.0",
  "url",
  "winapi",
 ]
@@ -4813,9 +4813,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.2.1+spec-1.1.0"
+version = "1.2.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5755c51863cdac711f1956baf8eb9588e060755f7d3c4c979e70ea1e1f32cd7"
+checksum = "5426cb1b964690d913f6c5c1a1ae0b42f428ec506bb4d452876d7a209c9bca3b"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -4846,9 +4846,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.5+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+checksum = "e6769c452d71ba30696c6b37770c439a9cc9110f47f7d5cdbeda79840ef5ea31"
 dependencies = [
  "winnow 1.0.5",
 ]
@@ -5141,9 +5141,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -5210,9 +5210,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "walkdir"
-version = "2.5.0"
+version = "2.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+checksum = "b42e295b7452c4604982280d8586001fcad9b8b201cac67bca9771e7a7475403"
 dependencies = [
  "same-file",
  "winapi-util",
@@ -5683,18 +5683,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
+checksum = "ed43f3060383c64b000f3c630550aebdfa9d3b76d48de32390483dd2cc7e0865"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.63"
+version = "0.8.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
+checksum = "a5cbd820fe3e35fb38c83b6dc7e6b1618bc46e0cd10073ae94e8d52dc468d8b9"
 dependencies = [
  "proc-macro2",
  "quote",

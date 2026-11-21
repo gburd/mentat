@@ -73,3 +73,13 @@ fn the_1_19_1_edge_is_the_1_19_0_script() {
     // The lock section is the only thing ahead of the 1.19.0 script.
     assert_eq!(head.lines().filter(|l| l.starts_with("-- === ")).count(), 1);
 }
+
+/// The 1.21.1 -> 1.22.0 upgrade creates the pg_gaps helpers with the same
+/// definitions a fresh install gets from sql/33_pg_gaps_helpers.sql.
+#[test]
+fn the_1_22_0_edge_has_the_fresh_pg_gaps_helpers() {
+    let fresh = include_str!("../sql/33_pg_gaps_helpers.sql");
+    let edge = include_str!("../sql/pg_mentat--1.21.1--1.22.0.sql");
+    let defs = |s: &'static str| &s[s.find("-- mentat.has_pg_gaps()").unwrap()..];
+    assert_eq!(defs(edge), defs(fresh));
+}

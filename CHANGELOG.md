@@ -6,6 +6,43 @@ PostgreSQL extension, which share one front-end) are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/).
 
+## [1.22.0] — pg_gaps: probabilistic inference over mentat's missing values
+
+Upgrading pg_mentat: `ALTER EXTENSION pg_mentat UPDATE` from 1.21.1 adds the
+pg_gaps helper functions (`pg_mentat--1.21.1--1.22.0.sql`) and changes nothing
+else. The PostgreSQL minimums of 1.21.0 still apply (the November 2026 minor
+releases; see 1.21.0).
+
+### Added
+
+- **pg_gaps integration** (optional; pg_gaps needs PostgreSQL 17+).
+  [pg_gaps](https://codeberg.org/gregburd/pg_gaps) answers queries over
+  incomplete relations with probabilities from a first-order Bayesian network.
+  An entity with no current value for a cardinality-one attribute is exactly a
+  missing value to it, and pg_mentat now connects the two:
+  - `mentat.create_gaps_view(view, attrs, store, entities)` makes the relation
+    pg_gaps models: one row per entity, one text column per attribute, NULL
+    where the entity has no current value. Values are spelled as you write a
+    domain (`:yn/yes` for an enum ref, `:ns/name` for a keyword, `true`, numbers,
+    strings). The view reads the current-state tables, so models see each
+    commit, and it is `security_invoker`, so the caller's privileges and
+    row-level security apply (PostgreSQL 15+ for that; it refuses older
+    servers rather than read as its owner). Works without pg_gaps.
+  - `mentat.gaps_declare(model, view, attr, domain, stripe)` declares an
+    attribute, by its ident, as a probabilistic attribute of a pg_gaps model,
+    with the domain read from the data unless given, and adds its stripe.
+  - Datalog where-fns `[(gaps-marginals "model" :attr) [[?e ?value ?p
+    ?component]]]` (the posterior of every missing value) and `[(gaps-impute
+    "model" :attr) [[?e ?value ?p ?component]]]` (the most likely completion),
+    joining back to the entities; the attribute is the view column whose
+    comment is its ident.
+  - `mentat.has_pg_gaps()` and `mentat.gaps_column(ident)`.
+  See docs/src/pg_gaps.md.
+
+### Changed
+
+- Dependencies: `cargo update` (jiff 1.0, url 2.5.9, lru 0.19.1 and others).
+
 ## [1.21.1] — the Nix flake builds pg_mentat with the CVE-2026-6460 check, and for PostgreSQL 19
 
 Only the Nix flake changes; the release packages, crates and extensions are
